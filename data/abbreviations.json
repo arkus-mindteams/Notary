@@ -1,0 +1,16 @@
+{
+  "abbreviations": {
+    "MTS": "METROS",
+    "M2": "METROS CUADRADOS",
+    "AC": "ÁREA COMÚN",
+    "ACS": "ÁREA COMÚN DE SERVICIO",
+    "E-B": "EDIFICIO B",
+    "CON": "COLINDA CON"
+  },
+  "cardinalDirections": {
+    "north": "AL NORTE",
+    "south": "AL SUR",
+    "east": "AL ORIENTE",
+    "west": "AL PONIENTE"
+  }
+}

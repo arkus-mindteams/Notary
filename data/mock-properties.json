@@ -1,0 +1,235 @@
+{
+  "properties": [
+    {
+      "id": "unit_b2",
+      "name": "UNIDAD B-2",
+      "surface": "55.980 m2",
+      "boundaries": {
+        "west": [
+          {
+            "measurement": "6.750",
+            "unit": "MTS",
+            "description": "CON UNIDAD B-4",
+            "regionId": "b2_west_1"
+          },
+          {
+            "measurement": "1.750",
+            "unit": "MTS",
+            "description": "CON CUBO DE ILUMINACION",
+            "regionId": "b2_west_2"
+          }
+        ],
+        "north": [
+          {
+            "measurement": "2.550",
+            "unit": "MTS",
+            "description": "CON CUBO DE ILUMINACION",
+            "regionId": "b2_north_2"
+          },
+          {
+            "measurement": "4.720",
+            "unit": "MTS",
+            "description": "CON JUNTA CONSTRUCTIVA 1",
+            "regionId": "b2_north_1"
+          }
+        ],
+        "east": [
+          {
+            "measurement": "0.520",
+            "unit": "MTS",
+            "description": "CON AREA COMUN DE SERVICIO 7 DE EDIFICIO B (ACS-7 DE E-B)",
+            "regionId": "b2_east_2"
+          },
+          {
+            "measurement": "3.480",
+            "unit": "MTS",
+            "description": "CON AREA COMUN (AC-12)",
+            "regionId": "b2_east_3"
+          },
+          {
+            "measurement": "4.500",
+            "unit": "MTS",
+            "description": "CON AREA COMUN (AC-12)",
+            "regionId": "b2_east_1"
+          }
+        ],
+        "south": [
+          {
+            "measurement": "0.300",
+            "unit": "MTS",
+            "description": "CON AREA COMUN (AC-12)",
+            "regionId": "b2_south_2"
+          },
+          {
+            "measurement": "5.370",
+            "unit": "MTS",
+            "description": "CON AREA COMUN 1.1 DE EDIFICIO B EN PLANTA BAJA (AC1.1EB-PB)",
+            "regionId": "b2_south_3"
+          },
+          {
+            "measurement": "1.600",
+            "unit": "MTS",
+            "description": "CON AREA COMUN 1 DE EDIFICIO B EN PLANTA BAJA (AC1EB-PB)",
+            "regionId": "b2_south_4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit_cubo_iluminacion",
+      "name": "CUBO DE ILUMINACION",
+      "surface": "4.463 m2",
+      "boundaries": {
+        "west": [
+          {
+            "measurement": "1.750",
+            "unit": "MTS",
+            "description": "CON UNIDAD B-4",
+            "regionId": "cubo_west_1"
+          }
+        ],
+        "north": [
+          {
+            "measurement": "2.550",
+            "unit": "MTS",
+            "description": "CON JUNTA CONSTRUCTIVA 2",
+            "regionId": "cubo_north_1"
+          }
+        ],
+        "east": [
+          {
+            "measurement": "1.750",
+            "unit": "MTS",
+            "description": "CON UNIDAD B-2",
+            "regionId": "cubo_east_1"
+          }
+        ],
+        "south": [
+          {
+            "measurement": "2.550",
+            "unit": "MTS",
+            "description": "CON UNIDAD B-2",
+            "regionId": "cubo_south_1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit_junta_constructiva_1",
+      "name": "JUNTA CONSTRUCTIVA 1",
+      "surface": "0.118 m2",
+      "boundaries": {
+        "west": [
+          {
+            "measurement": "0.025",
+            "unit": "MTS",
+            "description": "CON JUNTA CONSTRUCTIVA 2",
+            "regionId": "jc1_west_1"
+          }
+        ],
+        "north": [
+          {
+            "measurement": "4.720",
+            "unit": "MTS",
+            "description": "CON UNIDAD C-1",
+            "regionId": "jc1_north_1"
+          }
+        ],
+        "east": [
+          {
+            "measurement": "0.025",
+            "unit": "MTS",
+            "description": "CON AREA COMUN DE SERVICIO 7 DE EDIFICIO B (ACS-7 DE E-B)",
+            "regionId": "jc1_east_1"
+          }
+        ],
+        "south": [
+          {
+            "measurement": "4.720",
+            "unit": "MTS",
+            "description": "CON UNIDAD B-2",
+            "regionId": "jc1_south_1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit_junta_constructiva_2",
+      "name": "JUNTA CONSTRUCTIVA 2",
+      "surface": "0.064 m2",
+      "boundaries": {
+        "west": [
+          {
+            "measurement": "0.025",
+            "unit": "MTS",
+            "description": "CON UNIDAD B-4",
+            "regionId": "jc2_west_1"
+          }
+        ],
+        "north": [
+          {
+            "measurement": "2.550",
+            "unit": "MTS",
+            "description": "CON UNIDAD C-1",
+            "regionId": "jc2_north_1"
+          }
+        ],
+        "east": [
+          {
+            "measurement": "0.025",
+            "unit": "MTS",
+            "description": "CON JUNTA CONSTRUCTIVA 1",
+            "regionId": "jc2_east_1"
+          }
+        ],
+        "south": [
+          {
+            "measurement": "2.550",
+            "unit": "MTS",
+            "description": "CON CUBO DE ILUMINACION",
+            "regionId": "jc2_south_1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unit_cajon_estacionamiento",
+      "name": "CAJON DE ESTACIONAMIENTO",
+      "surface": "14.310 m2",
+      "boundaries": {
+        "west": [
+          {
+            "measurement": "2.650",
+            "unit": "MTS",
+            "description": "CON AREA COMUN (AC-12)",
+            "regionId": "cajon_west_1"
+          }
+        ],
+        "north": [
+          {
+            "measurement": "5.400",
+            "unit": "MTS",
+            "description": "CON AREA COMUN (AC-12)",
+            "regionId": "cajon_north_1"
+          }
+        ],
+        "east": [
+          {
+            "measurement": "2.650",
+            "unit": "MTS",
+            "description": "CON AREA COMUN (AC-9)",
+            "regionId": "cajon_east_1"
+          }
+        ],
+        "south": [
+          {
+            "measurement": "5.400",
+            "unit": "MTS",
+            "description": "CON EST_B-4",
+            "regionId": "cajon_south_1"
+          }
+        ]
+      }
+    }
+  ]
+}

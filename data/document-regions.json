@@ -1,0 +1,179 @@
+{
+  "regions": {
+    "unit_b2": {
+      "x": 4,
+      "y": 8,
+      "width": 92,
+      "height": 87,
+      "label": "UNIDAD B-2"
+    },
+    "unit_cubo_iluminacion": {
+      "x": 75,
+      "y": 8,
+      "width": 18,
+      "height": 15,
+      "label": "CUBO DE ILUMINACION"
+    },
+    "unit_junta_constructiva_1": {
+      "x": 88,
+      "y": 25,
+      "width": 8,
+      "height": 30,
+      "label": "JUNTA CONSTRUCTIVA 1"
+    },
+    "unit_junta_constructiva_2": {
+      "x": 88,
+      "y": 55,
+      "width": 8,
+      "height": 15,
+      "label": "JUNTA CONSTRUCTIVA 2"
+    },
+    "unit_cajon_estacionamiento": {
+      "x": 15,
+      "y": 85,
+      "width": 75,
+      "height": 10,
+      "label": "CAJON DE ESTACIONAMIENTO"
+    },
+    "b2_west": {
+      "x": 4,
+      "y": 8,
+      "width": 8,
+      "height": 77,
+      "label": "AL OESTE"
+    },
+    "b2_north": {
+      "x": 75,
+      "y": 8,
+      "width": 18,
+      "height": 12,
+      "label": "AL NORTE"
+    },
+    "b2_east": {
+      "x": 88,
+      "y": 25,
+      "width": 8,
+      "height": 60,
+      "label": "AL ESTE"
+    },
+    "b2_south": {
+      "x": 15,
+      "y": 82,
+      "width": 75,
+      "height": 11,
+      "label": "AL SUR"
+    },
+    "cubo_west": {
+      "x": 75,
+      "y": 8,
+      "width": 3,
+      "height": 15,
+      "label": "AL OESTE"
+    },
+    "cubo_north": {
+      "x": 75,
+      "y": 8,
+      "width": 18,
+      "height": 3,
+      "label": "AL NORTE"
+    },
+    "cubo_east": {
+      "x": 90,
+      "y": 8,
+      "width": 3,
+      "height": 15,
+      "label": "AL ESTE"
+    },
+    "cubo_south": {
+      "x": 75,
+      "y": 20,
+      "width": 18,
+      "height": 3,
+      "label": "AL SUR"
+    },
+    "junta1_west": {
+      "x": 88,
+      "y": 25,
+      "width": 2,
+      "height": 30,
+      "label": "AL OESTE"
+    },
+    "junta1_north": {
+      "x": 88,
+      "y": 25,
+      "width": 8,
+      "height": 2,
+      "label": "AL NORTE"
+    },
+    "junta1_east": {
+      "x": 94,
+      "y": 25,
+      "width": 2,
+      "height": 30,
+      "label": "AL ESTE"
+    },
+    "junta1_south": {
+      "x": 88,
+      "y": 53,
+      "width": 8,
+      "height": 2,
+      "label": "AL SUR"
+    },
+    "junta2_west": {
+      "x": 88,
+      "y": 55,
+      "width": 2,
+      "height": 15,
+      "label": "AL OESTE"
+    },
+    "junta2_north": {
+      "x": 88,
+      "y": 55,
+      "width": 8,
+      "height": 2,
+      "label": "AL NORTE"
+    },
+    "junta2_east": {
+      "x": 94,
+      "y": 55,
+      "width": 2,
+      "height": 15,
+      "label": "AL ESTE"
+    },
+    "junta2_south": {
+      "x": 88,
+      "y": 68,
+      "width": 8,
+      "height": 2,
+      "label": "AL SUR"
+    },
+    "cajon_west": {
+      "x": 15,
+      "y": 85,
+      "width": 2,
+      "height": 10,
+      "label": "AL OESTE"
+    },
+    "cajon_north": {
+      "x": 15,
+      "y": 85,
+      "width": 75,
+      "height": 2,
+      "label": "AL NORTE"
+    },
+    "cajon_east": {
+      "x": 88,
+      "y": 85,
+      "width": 2,
+      "height": 10,
+      "label": "AL ESTE"
+    },
+    "cajon_south": {
+      "x": 15,
+      "y": 93,
+      "width": 75,
+      "height": 2,
+      "label": "AL SUR"
+    }
+  }
+}
