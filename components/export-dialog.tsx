@@ -13,14 +13,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Download, FileText, Calendar, MapPin } from "lucide-react"
-import type { TransformedSegment } from "@/lib/text-transformer"
 import type { PropertyUnit } from "@/lib/ocr-simulator"
 
 interface ExportDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   units: PropertyUnit[]
-  unitSegments: Map<string, TransformedSegment[]>
+  unitSegments?: Map<string, any[]>
   onExport: (metadata: ExportMetadata) => void
 }
 
@@ -31,7 +30,7 @@ export interface ExportMetadata {
   date: string
 }
 
-export function ExportDialog({ open, onOpenChange, units, unitSegments, onExport }: ExportDialogProps) {
+export function ExportDialog({ open, onOpenChange, units, unitSegments = new Map(), onExport }: ExportDialogProps) {
   const totalSurface = units.reduce((sum, unit) => {
     const numericSurface = Number.parseFloat(unit.surface.replace(/[^\d.]/g, ""))
     return sum + (isNaN(numericSurface) ? 0 : numericSurface)

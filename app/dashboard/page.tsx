@@ -6,6 +6,7 @@ import { ProtectedRoute } from '@/components/protected-route'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { FileText, Upload, CheckCircle2, Clock } from 'lucide-react'
+import { OCRStatusTest } from '@/components/ocr-status-test'
 import Link from 'next/link'
 
 export default function DashboardPage() {
@@ -72,6 +73,9 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* OCR Status Test */}
+        <OCRStatusTest />
 
         {/* Main Action */}
         <Card>

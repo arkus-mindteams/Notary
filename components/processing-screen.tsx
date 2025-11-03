@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import { Loader2, FileSearch, CheckCircle2 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
@@ -13,6 +13,7 @@ interface ProcessingScreenProps {
 export function ProcessingScreen({ fileName, onComplete }: ProcessingScreenProps) {
   const [progress, setProgress] = useState(0)
   const [currentStep, setCurrentStep] = useState(0)
+  const hasCompletedRef = useRef(false)
 
   const steps = [
     { label: "Analizando documento", icon: FileSearch },
@@ -26,7 +27,12 @@ export function ProcessingScreen({ fileName, onComplete }: ProcessingScreenProps
       setProgress((prev) => {
         if (prev >= 100) {
           clearInterval(interval)
-          setTimeout(onComplete, 500)
+          setTimeout(() => {
+            if (!hasCompletedRef.current) {
+              hasCompletedRef.current = true
+              onComplete()
+            }
+          }, 500)
           return 100
         }
         return prev + 2
@@ -34,7 +40,7 @@ export function ProcessingScreen({ fileName, onComplete }: ProcessingScreenProps
     }, 60)
 
     return () => clearInterval(interval)
-  }, [onComplete])
+  }, []) // Empty dependency array - only run once
 
   useEffect(() => {
     const stepInterval = setInterval(() => {

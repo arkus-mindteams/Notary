@@ -1,12 +1,9 @@
-import type { TransformedSegment } from "./text-transformer"
 import type { PropertyUnit } from "./ocr-simulator"
 import type { ExportMetadata } from "@/components/export-dialog"
 
 export function generateNotarialDocument(
-  allSegments: TransformedSegment[],
   metadata: ExportMetadata,
   units: PropertyUnit[],
-  unitSegments: Map<string, TransformedSegment[]>,
 ): string {
   const header = `ESCRITURA DE DESLINDE
 
@@ -20,72 +17,10 @@ MEDIDAS Y COLINDANCIAS:
 
   const unitsText = units
     .map((unit) => {
-      const segments = unitSegments.get(unit.id) || []
-      if (segments.length === 0) return ""
+      // Use the unit-level notarialText that's already aggregated
+      if (!unit.notarialText || unit.notarialText.length === 0) return ""
 
-      // Convert unit name to notarial format
-      let unitName = unit.name
-      unitName = unitName.replace(/-(\d+)/g, (match, num) => {
-        const numMap: { [key: string]: string } = {
-          "1": "uno",
-          "2": "dos",
-          "3": "tres",
-          "4": "cuatro",
-          "5": "cinco",
-        }
-        return ` guion ${numMap[num] || num}`
-      })
-
-      // Group segments by direction
-      const directions = ["AL OESTE", "AL NORTE", "AL ESTE", "AL SUR"]
-      const directionSegments: { [key: string]: TransformedSegment[] } = {}
-
-      segments.forEach((seg) => {
-        if (!directionSegments[seg.direction]) {
-          directionSegments[seg.direction] = []
-        }
-        directionSegments[seg.direction].push(seg)
-      })
-
-      // Build continuous text
-      let unitText = `${unitName}: `
-
-      directions.forEach((direction, index) => {
-        const segs = directionSegments[direction]
-        if (!segs || segs.length === 0) return
-
-        const connector = index === 0 ? "Al" : index === 3 ? "y, al" : "al"
-        const directionName = direction.replace("AL ", "").toLowerCase()
-
-        unitText += `${connector} ${directionName}, `
-
-        if (segs.length === 1) {
-          const text = segs[0].notarialText.split(": ")[1]
-          unitText += `en ${text}`
-        } else {
-          const numWords = ["", "un", "dos", "tres", "cuatro", "cinco"]
-          unitText += `en ${numWords[segs.length] || segs.length} tramos`
-
-          segs.forEach((seg, segIndex) => {
-            const text = seg.notarialText.split(": ")[1]
-            const ordinals = ["", "primero", "segundo", "tercero", "cuarto", "quinto"]
-
-            if (segIndex === 0) {
-              unitText += ` el ${ordinals[1]} de ${text}`
-            } else if (segIndex === segs.length - 1) {
-              unitText += `, y el ${ordinals[segIndex + 1] || "último"} de ${text}`
-            } else {
-              unitText += `, el ${ordinals[segIndex + 1]} de ${text}`
-            }
-          })
-        }
-
-        if (index < directions.length - 1) {
-          unitText += "; "
-        }
-      })
-
-      return unitText + "."
+      return unit.notarialText
     })
     .filter(Boolean)
     .join("\n\n")

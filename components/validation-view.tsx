@@ -189,7 +189,6 @@ export function ValidationView({ documentUrl, units, unitSegments, onBack }: Val
                     segments={editedUnits.get(unit.id) || []}
                     highlightedRegion={highlightedRegion}
                     onSegmentHover={setHighlightedRegion}
-                    showNotarial={true}
                     editable={true}
                     onSegmentsChange={(newSegments) => handleSegmentsChange(unit.id, newSegments)}
                     unitRegionId={getUnitRegionId(unit.id)}

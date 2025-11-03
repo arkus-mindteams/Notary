@@ -31,7 +31,8 @@ Sistema web frontend para abogados y notarios que permite procesar documentos de
 - **Base de Datos**: Supabase (PostgreSQL)
 - **Autenticación**: Supabase Auth
 - **Storage**: Supabase Storage
-- **IA**: Cursos (procesamiento de documentos)
+- **OCR**: Mistral AI OCR API (extracción de texto de imágenes y PDFs)
+- **IA**: OpenAI GPT-4 (conversión a texto notarial)
 - **Automatización**: N8N (workflows)
 
 ## 📚 Documentación
@@ -46,6 +47,8 @@ Sistema web frontend para abogados y notarios que permite procesar documentos de
 - Node.js 18+ 
 - npm o yarn
 - Cuenta de Supabase (para backend)
+- **Mistral AI API Key** (para OCR de imágenes y PDFs)
+- **OpenAI API Key** (para conversión a texto notarial)
 
 ### Pasos de Instalación
 
@@ -58,8 +61,8 @@ cd notaria-deslinde
 npm install
 
 # 3. Configurar variables de entorno
-cp .env.example .env.local
-# Editar .env.local con tus credenciales de Supabase
+cp env.example .env.local
+# Editar .env.local con tus credenciales de Supabase y OpenAI
 
 # 4. Ejecutar en desarrollo
 npm run dev
@@ -74,6 +77,12 @@ npm run dev
 # Supabase
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+
+# Mistral AI (OCR)
+MISTRAL_API_KEY=your_mistral_api_key
+
+# OpenAI (Notarial processing)
+OPENAI_API_KEY=your_openai_api_key
 
 # Aplicación
 NEXT_PUBLIC_APP_URL=http://localhost:3000

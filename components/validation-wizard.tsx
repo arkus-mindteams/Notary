@@ -2,42 +2,59 @@
 
 import { useState, useEffect } from "react"
 import { DocumentViewer } from "./document-viewer"
-import { TextSegmentPanel } from "./text-segment-panel"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck } from "lucide-react"
-import type { TransformedSegment } from "@/lib/text-transformer"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, Plus, X, Edit2, Check } from "lucide-react"
 import type { PropertyUnit } from "@/lib/ocr-simulator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { generateNotarialDocument, downloadDocument, generateFilename } from "@/lib/document-exporter"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 
 interface ValidationWizardProps {
   documentUrl: string
   units: PropertyUnit[]
-  unitSegments: Map<string, TransformedSegment[]>
   onBack: () => void
   fileName?: string
 }
 
-export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fileName }: ValidationWizardProps) {
+export function ValidationWizard({ documentUrl, units, onBack, fileName }: ValidationWizardProps) {
   const [currentUnitIndex, setCurrentUnitIndex] = useState(0)
-  const [editedUnits, setEditedUnits] = useState<Map<string, TransformedSegment[]>>(unitSegments)
   const [authorizedUnits, setAuthorizedUnits] = useState<Set<string>>(new Set())
   const [showExportDialog, setShowExportDialog] = useState(false)
   const [lastSaved, setLastSaved] = useState<Date>(new Date())
   const [hasChanges, setHasChanges] = useState(false)
-  const [selectedRegion, setSelectedRegion] = useState<string | null>(null)
+  const [availableUnits, setAvailableUnits] = useState<PropertyUnit[]>(units)
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [unitToDelete, setUnitToDelete] = useState<string | null>(null)
+  const [editingUnitName, setEditingUnitName] = useState(false)
+  const [editingUnitSurface, setEditingUnitSurface] = useState(false)
+  const [editedUnitName, setEditedUnitName] = useState('')
+  const [editedUnitSurface, setEditedUnitSurface] = useState('')
 
-  const currentUnit = units[currentUnitIndex]
-  const progress = ((currentUnitIndex + 1) / units.length) * 100
-  const isLastUnit = currentUnitIndex === units.length - 1
+  const currentUnit = availableUnits[currentUnitIndex]
+  const progress = ((currentUnitIndex + 1) / availableUnits.length) * 100
+  const isLastUnit = currentUnitIndex === availableUnits.length - 1
   const isFirstUnit = currentUnitIndex === 0
   const isCurrentUnitAuthorized = authorizedUnits.has(currentUnit?.id)
-  const allUnitsAuthorized = units.every((unit) => authorizedUnits.has(unit.id))
+  const allUnitsAuthorized = availableUnits.every((unit) => authorizedUnits.has(unit.id))
 
   useEffect(() => {
-    setSelectedRegion(null)
+    setEditingUnitName(false)
+    setEditingUnitSurface(false)
+    setEditedUnitName('')
+    setEditedUnitSurface('')
   }, [currentUnitIndex])
 
   useEffect(() => {
@@ -51,25 +68,18 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
     }
   }, [hasChanges])
 
-  const getUnitRegionId = (unitId: string): string => {
-    const unitIdMap: Record<string, string> = {
-      unit_b2: "unit_b2",
-      unit_cubo_iluminacion: "unit_cubo_iluminacion",
-      unit_junta_constructiva_1: "unit_junta_constructiva_1",
-      unit_junta_constructiva_2: "unit_junta_constructiva_2",
-      unit_cajon_estacionamiento: "unit_cajon_estacionamiento",
-    }
-    return unitIdMap[unitId] || ""
-  }
-
-  const handleSegmentClick = (regionId: string | null) => {
-    setSelectedRegion(regionId)
-  }
-
-  const handleSegmentsChange = (unitId: string, newSegments: TransformedSegment[]) => {
-    const newEditedUnits = new Map(editedUnits)
-    newEditedUnits.set(unitId, newSegments)
-    setEditedUnits(newEditedUnits)
+  const handleNotarialTextChange = (unitId: string, newNotarialText: string) => {
+    const newAvailableUnits = availableUnits.map(unit => {
+      if (unit.id === unitId) {
+        return {
+          ...unit,
+          notarialText: newNotarialText
+        }
+      }
+      return unit
+    })
+    setAvailableUnits(newAvailableUnits)
+    
     setHasChanges(true)
 
     const newAuthorizedUnits = new Set(authorizedUnits)
@@ -95,12 +105,86 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
     }
   }
 
+  const handleAddUnit = () => {
+    const newUnit: PropertyUnit = {
+      id: `unit_manual_${Date.now()}`,
+      name: 'Nueva Unidad',
+      surface: '0 M2',
+      notarialText: '',
+      boundaries: {
+        norte: [],
+        sur: [],
+        este: [],
+        oeste: []
+      }
+    }
+    const newAvailableUnits = [...availableUnits, newUnit]
+    setAvailableUnits(newAvailableUnits)
+    setCurrentUnitIndex(newAvailableUnits.length - 1)
+    setHasChanges(true)
+  }
+
+  const handleDeleteUnit = (unitId: string, index: number) => {
+    setUnitToDelete(unitId)
+    setShowDeleteDialog(true)
+  }
+
+  const confirmDeleteUnit = () => {
+    if (!unitToDelete) return
+    
+    const unitIndex = availableUnits.findIndex(u => u.id === unitToDelete)
+    if (unitIndex === -1) return
+    
+    const newAvailableUnits = availableUnits.filter(u => u.id !== unitToDelete)
+    setAvailableUnits(newAvailableUnits)
+    
+    // Remove from authorized units
+    const newAuthorizedUnits = new Set(authorizedUnits)
+    newAuthorizedUnits.delete(unitToDelete)
+    setAuthorizedUnits(newAuthorizedUnits)
+    
+    // Adjust current index if needed
+    if (currentUnitIndex >= newAvailableUnits.length && newAvailableUnits.length > 0) {
+      setCurrentUnitIndex(newAvailableUnits.length - 1)
+    } else if (newAvailableUnits.length === 0) {
+      setCurrentUnitIndex(0)
+    }
+    
+    setHasChanges(true)
+    setShowDeleteDialog(false)
+    setUnitToDelete(null)
+  }
+
+  const handleSaveUnitName = () => {
+    if (!editedUnitName.trim()) return
+    
+    const newAvailableUnits = [...availableUnits]
+    newAvailableUnits[currentUnitIndex] = {
+      ...newAvailableUnits[currentUnitIndex],
+      name: editedUnitName.trim()
+    }
+    setAvailableUnits(newAvailableUnits)
+    setEditingUnitName(false)
+    setHasChanges(true)
+  }
+
+  const handleSaveUnitSurface = () => {
+    if (!editedUnitSurface.trim()) return
+    
+    const newAvailableUnits = [...availableUnits]
+    newAvailableUnits[currentUnitIndex] = {
+      ...newAvailableUnits[currentUnitIndex],
+      surface: editedUnitSurface.trim()
+    }
+    setAvailableUnits(newAvailableUnits)
+    setEditingUnitSurface(false)
+    setHasChanges(true)
+  }
+
   const handleExport = (metadata: ExportMetadata) => {
     const documentContent = generateNotarialDocument(
-      Array.from(editedUnits.values()).flat(),
       metadata,
-      units,
-      editedUnits,
+      availableUnits,
     )
     const filename = generateFilename(metadata.propertyName)
     downloadDocument(documentContent, filename)
@@ -114,8 +198,6 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
   }
 
   if (!currentUnit) return null
-
-  const displayRegion = selectedRegion || getUnitRegionId(currentUnit.id)
 
   return (
     <div className="flex flex-col h-full bg-background">
@@ -151,16 +233,16 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs sm:text-sm">
               <span className="font-medium">
-                Unidad {currentUnitIndex + 1} de {units.length}
+                Unidad {currentUnitIndex + 1} de {availableUnits.length}
               </span>
               <span className="text-muted-foreground">
-                {authorizedUnits.size}/{units.length} autorizadas
+                {authorizedUnits.size}/{availableUnits.length} autorizadas
               </span>
             </div>
             <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
               <div
                 className="h-full bg-green-500 transition-all duration-300"
-                style={{ width: `${(authorizedUnits.size / units.length) * 100}%` }}
+                style={{ width: `${availableUnits.length > 0 ? (authorizedUnits.size / availableUnits.length) * 100 : 0}%` }}
               />
               <div
                 className="absolute top-0 h-full bg-primary transition-all duration-300"
@@ -170,29 +252,48 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
 
             {/* Unit Pills */}
             <div className="flex gap-2 overflow-x-auto pt-2 pb-1 -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap">
-              {units.map((unit, index) => {
+              {availableUnits.map((unit, index) => {
                 const isAuthorized = authorizedUnits.has(unit.id)
                 const isCurrent = index === currentUnitIndex
 
                 return (
-                  <button
+                  <div
                     key={unit.id}
-                    onClick={() => setCurrentUnitIndex(index)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-                      isCurrent && isAuthorized
-                        ? "bg-green-600 text-white ring-2 ring-green-400 ring-offset-2"
-                        : isCurrent
-                          ? "bg-primary text-primary-foreground ring-2 ring-primary/50 ring-offset-2"
-                          : isAuthorized
-                            ? "bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400"
-                            : "bg-muted text-muted-foreground hover:bg-muted/80"
-                    }`}
+                    className="flex items-center gap-1 shrink-0"
                   >
-                    {isAuthorized && <CheckCircle2 className="h-3 w-3" />}
-                    {unit.name}
-                  </button>
+                    <button
+                      onClick={() => setCurrentUnitIndex(index)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                        isCurrent && isAuthorized
+                          ? "bg-green-600 text-white ring-2 ring-green-400 ring-offset-2"
+                          : isCurrent
+                            ? "bg-primary text-primary-foreground ring-2 ring-primary/50 ring-offset-2"
+                            : isAuthorized
+                              ? "bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400"
+                              : "bg-muted text-muted-foreground hover:bg-muted/80"
+                      }`}
+                    >
+                      {isAuthorized && <CheckCircle2 className="h-3 w-3" />}
+                      {unit.name}
+                    </button>
+                    <button
+                      onClick={() => handleDeleteUnit(unit.id, index)}
+                      className="p-1 rounded-full hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                      title="Eliminar unidad"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
                 )
               })}
+              <button
+                onClick={handleAddUnit}
+                className="px-3 py-1.5 rounded-full text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-all whitespace-nowrap shrink-0 flex items-center gap-1.5"
+                title="Agregar unidad"
+              >
+                <Plus className="h-3 w-3" />
+                Agregar
+              </button>
             </div>
           </div>
         </div>
@@ -216,7 +317,7 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
             <div className="h-[300px] sm:h-[400px] lg:h-full overflow-auto">
               <DocumentViewer 
                 documentUrl={documentUrl} 
-                highlightedRegion={displayRegion} 
+                highlightedRegion={null} 
                 onRegionHover={() => {}} 
                 fileName={fileName}
               />
@@ -230,8 +331,112 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                     {/* Header con información de la unidad */}
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
-                        <h2 className="text-base sm:text-lg font-semibold truncate">{currentUnit.name}</h2>
-                        <p className="text-xs sm:text-sm text-muted-foreground mt-1">Superficie: {currentUnit.surface}</p>
+                        <div className="flex items-center gap-2">
+                          {editingUnitName ? (
+                            <div className="flex items-center gap-1 flex-1">
+                              <Input
+                                value={editedUnitName}
+                                onChange={(e) => setEditedUnitName(e.target.value)}
+                                className="flex-1 text-base sm:text-lg font-semibold"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleSaveUnitName()
+                                  if (e.key === 'Escape') {
+                                    setEditingUnitName(false)
+                                    setEditedUnitName('')
+                                  }
+                                }}
+                              />
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7"
+                                onClick={handleSaveUnitName}
+                              >
+                                <Check className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7"
+                                onClick={() => {
+                                  setEditingUnitName(false)
+                                  setEditedUnitName('')
+                                }}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <>
+                              <h2 className="text-base sm:text-lg font-semibold truncate flex-1">{currentUnit.name}</h2>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7 shrink-0"
+                                onClick={() => {
+                                  setEditedUnitName(currentUnit.name)
+                                  setEditingUnitName(true)
+                                }}
+                              >
+                                <Edit2 className="h-4 w-4" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-1">
+                          {editingUnitSurface ? (
+                            <div className="flex items-center gap-1 flex-1">
+                              <Input
+                                value={editedUnitSurface}
+                                onChange={(e) => setEditedUnitSurface(e.target.value)}
+                                className="flex-1 text-xs sm:text-sm"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleSaveUnitSurface()
+                                  if (e.key === 'Escape') {
+                                    setEditingUnitSurface(false)
+                                    setEditedUnitSurface('')
+                                  }
+                                }}
+                              />
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-6 w-6"
+                                onClick={handleSaveUnitSurface}
+                              >
+                                <Check className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-6 w-6"
+                                onClick={() => {
+                                  setEditingUnitSurface(false)
+                                  setEditedUnitSurface('')
+                                }}
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <>
+                              <p className="text-xs sm:text-sm text-muted-foreground">Superficie: {currentUnit.surface}</p>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-6 w-6 shrink-0"
+                                onClick={() => {
+                                  setEditedUnitSurface(currentUnit.surface)
+                                  setEditingUnitSurface(true)
+                                }}
+                              >
+                                <Edit2 className="h-3 w-3" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
                       </div>
                       {isCurrentUnitAuthorized ? (
                         <div className="flex items-center gap-2 text-success shrink-0">
@@ -260,7 +465,7 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                       </Button>
 
                       <div className="text-xs text-muted-foreground px-2 py-1 bg-muted rounded-md">
-                        {currentUnitIndex + 1} de {units.length}
+                        {currentUnitIndex + 1} de {availableUnits.length}
                       </div>
 
                       <Button
@@ -278,18 +483,18 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-auto">
-                  <TextSegmentPanel
-                    title="Texto Notarial"
-                    subtitle="Revisa y edita si es necesario"
-                    segments={editedUnits.get(currentUnit.id) || []}
-                    highlightedRegion={selectedRegion}
-                    onSegmentHover={handleSegmentClick}
-                    showNotarial={true}
-                    editable={true}
-                    onSegmentsChange={(newSegments) => handleSegmentsChange(currentUnit.id, newSegments)}
-                    unitRegionId=""
-                    unitId={currentUnit.id}
-                  />
+                  <div className="space-y-2">
+                    <div>
+                      <h3 className="text-sm font-semibold mb-1">Texto Notarial</h3>
+                      <p className="text-xs text-muted-foreground mb-2">Revisa y edita si es necesario</p>
+                    </div>
+                    <Textarea
+                      value={currentUnit.notarialText || ''}
+                      onChange={(e) => handleNotarialTextChange(currentUnit.id, e.target.value)}
+                      className="min-h-[400px] font-mono text-sm"
+                      placeholder="Texto notarial de la unidad..."
+                    />
+                  </div>
                 </div>
               </Card>
             </div>
@@ -311,10 +516,27 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
       <ExportDialog
         open={showExportDialog}
         onOpenChange={setShowExportDialog}
-        units={units}
-        unitSegments={editedUnits}
+        units={availableUnits}
         onExport={handleExport}
       />
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar unidad?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción eliminará permanentemente esta unidad y todos sus datos. Esta acción no se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setUnitToDelete(null)}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDeleteUnit} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
