@@ -187,12 +187,13 @@ export class EnhancedOCRService {
    * Clean and analyze extracted text
    */
   private cleanAndAnalyzeExtractedText(text: string): string {
+    console.log('Original text preview:', text);
     const cleanedText = this.cleanDuplicatedText(text);
     
     console.log('========== OCR EXTRACTION ANALYSIS ==========');
     console.log('Original text length:', text.length);
     console.log('Cleaned text length:', cleanedText.length);
-    console.log('Cleaned text preview:', cleanedText.substring(0, Math.min(500, cleanedText.length)));
+    console.log('Cleaned text preview:', cleanedText);
     
     this.analyzeDirectionalWords(cleanedText);
     this.detectMisreadings(cleanedText);

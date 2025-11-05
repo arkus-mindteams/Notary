@@ -24,7 +24,6 @@ export default function DirectPDFViewer({
   const [error, setError] = useState<string | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
-  const [pdfScale, setPdfScale] = useState(1.0)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const handleDownload = async () => {
@@ -56,14 +55,6 @@ export default function DirectPDFViewer({
     setCurrentPage(prev => Math.min(totalPages, prev + 1))
   }
 
-  const handleZoomIn = () => {
-    setPdfScale(prev => Math.min(prev + 0.2, 3.0))
-  }
-
-  const handleZoomOut = () => {
-    setPdfScale(prev => Math.max(prev - 0.2, 0.5))
-  }
-
   useEffect(() => {
     // Simular carga del PDF
     const timer = setTimeout(() => {
@@ -86,97 +77,74 @@ export default function DirectPDFViewer({
 
   return (
     <div className="flex flex-col items-center justify-center min-h-full">
-      <div
-        style={{
-          transform: `scale(${zoom / 100}) rotate(${rotation}deg)`,
-          transition: "transform 0.2s ease-in-out",
-        }}
-        className="relative w-full h-full"
-      >
-        {/* Controles superiores */}
-        <div className="flex items-center justify-between mb-2 p-3 bg-white rounded-t-lg border border-gray-200 shadow-sm">
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={goToPrevPage}
-              disabled={currentPage === 1}
-              className="gap-1"
-            >
-              <ChevronLeft className="h-4 w-4" />
-              Anterior
-            </Button>
-            
-            <span className="text-sm text-muted-foreground min-w-[120px] text-center">
-              Página {currentPage} de {totalPages}
-            </span>
-            
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={goToNextPage}
-              disabled={currentPage === totalPages}
-              className="gap-1"
-            >
-              Siguiente
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 border rounded-md">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleZoomOut}
-                disabled={pdfScale <= 0.5}
-                className="h-8 w-8 p-0"
-              >
-                <ZoomOut className="h-4 w-4" />
-              </Button>
-              
-              <span className="text-xs text-muted-foreground min-w-[3rem] text-center">
-                {Math.round(pdfScale * 100)}%
-              </span>
-              
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleZoomIn}
-                disabled={pdfScale >= 3.0}
-                className="h-8 w-8 p-0"
-              >
-                <ZoomIn className="h-4 w-4" />
-              </Button>
-            </div>
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={openInNewTab}
-              className="gap-1"
-            >
-              <ExternalLink className="h-4 w-4" />
-              Abrir
-            </Button>
-            
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleDownload}
-              className="gap-1"
-            >
-              <Download className="h-4 w-4" />
-              Descargar
-            </Button>
-          </div>
+      {/* Controles superiores */}
+      <div className="flex items-center justify-between mb-2 p-3 bg-white rounded-t-lg border border-gray-200 shadow-sm w-full">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={goToPrevPage}
+            disabled={currentPage === 1}
+            className="gap-1"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Anterior
+          </Button>
+          
+          <span className="text-sm text-muted-foreground min-w-[120px] text-center">
+            Página {currentPage} de {totalPages}
+          </span>
+          
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={goToNextPage}
+            disabled={currentPage === totalPages}
+            className="gap-1"
+          >
+            Siguiente
+            <ChevronRight className="h-4 w-4" />
+          </Button>
         </div>
 
-        {/* Contenedor del PDF */}
-        <div 
-          ref={containerRef}
-          className="relative w-full h-[700px] bg-gray-100 rounded-b-lg border border-gray-200 border-t-0 shadow-sm overflow-hidden"
-        >
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 border rounded-md">
+            <span className="text-xs text-muted-foreground min-w-[3rem] text-center px-2">
+              {zoom}%
+            </span>
+          </div>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={openInNewTab}
+            className="gap-1"
+          >
+            <ExternalLink className="h-4 w-4" />
+            Abrir
+          </Button>
+          
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDownload}
+            className="gap-1"
+          >
+            <Download className="h-4 w-4" />
+            Descargar
+          </Button>
+        </div>
+      </div>
+
+      {/* Contenedor del PDF */}
+      <div 
+        ref={containerRef}
+        style={{
+          transform: "rotate(" + rotation + "deg)",
+          transition: "transform 0.2s ease-in-out",
+        }}
+        className="relative w-full h-[700px] bg-gray-100 rounded-b-lg border border-gray-200 border-t-0 shadow-sm overflow-hidden"
+      >
           {isLoading && (
             <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-90 z-10 rounded-b-lg">
               <div className="flex flex-col items-center gap-4">
@@ -189,10 +157,13 @@ export default function DirectPDFViewer({
           {/* Renderizado del PDF usando object tag */}
           <div className="w-full h-full">
             <object
-              data={`${fileUrl}#page=${currentPage}&toolbar=1&navpanes=1&scrollbar=1&view=FitH&zoom=${Math.round(pdfScale * 100)}`}
+              key={fileUrl + "-" + currentPage + "-" + zoom}
+              data={fileUrl + "#page=" + currentPage + "&toolbar=0&navpanes=0&scrollbar=1&view=FitH&zoom=" + zoom}
               type="application/pdf"
               className="w-full h-full"
-              onLoad={() => setIsLoading(false)}
+              onLoad={() => {
+                setIsLoading(false)
+              }}
               onError={() => {
                 setIsLoading(false)
                 setError("Error al cargar el PDF. El archivo puede estar corrupto o no ser un PDF válido.")
@@ -259,7 +230,6 @@ export default function DirectPDFViewer({
           </div>
         </div>
       </div>
-    </div>
   )
 }
 

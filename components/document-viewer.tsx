@@ -70,9 +70,6 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
           >
             <RotateCw className="h-3 w-3 sm:h-4 sm:w-4" />
           </Button>
-          <Button variant="ghost" size="sm" className="h-8 w-8 p-0 sm:h-9 sm:w-9 hidden sm:flex">
-            <Maximize2 className="h-3 w-3 sm:h-4 sm:w-4" />
-          </Button>
         </div>
       </div>
 
