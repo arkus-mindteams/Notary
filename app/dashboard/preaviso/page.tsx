@@ -16,7 +16,12 @@ import { DocumentWithVerification } from '@/components/document-with-verificatio
 import { SessionManager } from '@/lib/session-manager'
 import { ValidationInterface } from '@/components/validation-interface'
 import { FieldHighlighter } from '@/components/field-highlighter'
-import { PDFViewerWrapper } from '@/components/pdf-viewer-wrapper'
+import dynamic from 'next/dynamic'
+
+const PDFViewer = dynamic(
+  () => import('@/components/pdf-viewer').then(mod => ({ default: mod.PDFViewer })),
+  { ssr: false }
+)
 import { 
   FileText, 
   MapPin, 
@@ -115,9 +120,6 @@ export default function PreavisoPage() {
   const [showFilePreview, setShowFilePreview] = useState(false)
   const [selectedDocumentForVerification, setSelectedDocumentForVerification] = useState<DocumentStatus | null>(null)
   const [showDocumentVerification, setShowDocumentVerification] = useState(false)
-  const [zoomLevel, setZoomLevel] = useState(100)
-  const [pdfLoadError, setPdfLoadError] = useState(false)
-  const [pdfLoading, setPdfLoading] = useState(false)
   const { createFileInput } = useFileUpload()
 
   const handleFileUpload = (file: File, documentType: DocumentType) => {
@@ -423,35 +425,11 @@ export default function PreavisoPage() {
   const handleDocumentVerification = (document: DocumentStatus) => {
     setSelectedDocumentForVerification(document)
     setShowDocumentVerification(true)
-    setPdfLoadError(false)
-    setPdfLoading(true)
-    setZoomLevel(100)
-    
-    // Timeout para detectar si el PDF no se carga
-    if (document.file?.type === 'application/pdf') {
-      setTimeout(() => {
-        if (pdfLoading) {
-          handlePdfError()
-        }
-      }, 10000) // 10 segundos timeout
-    }
   }
 
   const handleCloseDocumentVerification = () => {
     setShowDocumentVerification(false)
     setSelectedDocumentForVerification(null)
-    setPdfLoadError(false)
-    setPdfLoading(false)
-  }
-
-  const handlePdfLoad = () => {
-    setPdfLoading(false)
-    setPdfLoadError(false)
-  }
-
-  const handlePdfError = () => {
-    setPdfLoading(false)
-    setPdfLoadError(true)
   }
 
   // Renderizar pantalla de procesamiento
@@ -1154,181 +1132,23 @@ export default function PreavisoPage() {
                   </div>
                 </div>
                 
-                <div className="flex items-center space-x-3">
-                  {/* Controles de zoom */}
-                  <div className="flex items-center space-x-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setZoomLevel(Math.max(50, zoomLevel - 25))}
-                    >
-                      -
-                    </Button>
-                    <span className="text-sm text-gray-600 min-w-[60px] text-center">
-                      {zoomLevel}%
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setZoomLevel(Math.min(200, zoomLevel + 25))}
-                    >
-                      +
-                    </Button>
-                  </div>
-                  
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCloseDocumentVerification}
-                  >
-                    Cerrar
-                  </Button>
-                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCloseDocumentVerification}
+                >
+                  Cerrar
+                </Button>
               </div>
               
               <div className="p-4 max-h-[calc(95vh-80px)] overflow-auto">
                 {selectedDocumentForVerification.file.type === 'application/pdf' ? (
-                  <div className="space-y-4">
-                    {/* Estado de carga */}
-                    {pdfLoading && (
-                      <div className="flex justify-center items-center py-8">
-                        <div className="text-center">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                          <p className="text-gray-600">Cargando documento PDF...</p>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Error de carga */}
-                    {pdfLoadError && (
-                      <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-                        <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-                        <h3 className="text-lg font-medium text-red-900 mb-2">
-                          Error al cargar el PDF
-                        </h3>
-                        <p className="text-red-700 mb-4">
-                          No se pudo mostrar el documento en el visor. Esto puede deberse a restricciones del navegador o formato del archivo.
-                        </p>
-                        <div className="flex justify-center space-x-4">
-                          <Button
-                            onClick={() => {
-                              const url = URL.createObjectURL(selectedDocumentForVerification.file)
-                              window.open(url, '_blank')
-                            }}
-                            variant="outline"
-                          >
-                            Abrir en nueva pestaña
-                          </Button>
-                          <Button
-                            onClick={() => {
-                              const url = URL.createObjectURL(selectedDocumentForVerification.file)
-                              const a = document.createElement('a')
-                              a.href = url
-                              a.download = selectedDocumentForVerification.file.name
-                              a.click()
-                            }}
-                            variant="outline"
-                          >
-                            Descargar PDF
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Visor de PDF principal */}
-                    {!pdfLoading && !pdfLoadError && (
-                      <div className="flex justify-center">
-                        <div className="w-full max-w-5xl">
-                          <div className="bg-white border border-gray-300 rounded-lg shadow-lg overflow-hidden">
-                            <div className="bg-gray-100 px-4 py-2 border-b border-gray-300 flex items-center justify-between">
-                              <div className="flex items-center space-x-2">
-                                <FileText className="h-4 w-4 text-red-600" />
-                                <span className="text-sm font-medium text-gray-700">
-                                  {selectedDocumentForVerification.file.name}
-                                </span>
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <span className="text-xs text-gray-500">
-                                  Zoom: {zoomLevel}%
-                                </span>
-                              </div>
-                            </div>
-                            <div className="relative">
-                              <iframe
-                                src={`${URL.createObjectURL(selectedDocumentForVerification.file)}#toolbar=1&navpanes=1&scrollbar=1&zoom=${zoomLevel}`}
-                                className="w-full h-[600px] border-0"
-                                title="PDF Document"
-                                onLoad={handlePdfLoad}
-                                onError={handlePdfError}
-                                style={{
-                                  transform: `scale(${zoomLevel / 100})`,
-                                  transformOrigin: 'top left',
-                                  width: `${100 / (zoomLevel / 100)}%`,
-                                  height: `${600 / (zoomLevel / 100)}px`
-                                }}
-                              />
-                              
-                              {/* Overlay para resaltado */}
-                              <div className="absolute inset-0 pointer-events-none">
-                                <div
-                                  className="absolute border-2 border-yellow-400 rounded-lg shadow-lg transition-all duration-200"
-                                  style={{
-                                    left: "10%",
-                                    top: "10%",
-                                    width: "30%",
-                                    height: "20%",
-                                    backgroundColor: "rgba(250, 204, 21, 0.25)",
-                                    boxShadow: "0 0 30px rgba(250, 204, 21, 0.5), inset 0 0 20px rgba(250, 204, 21, 0.2)",
-                                  }}
-                                >
-                                  <div className="absolute -top-6 left-0 bg-yellow-500 text-yellow-950 px-2 py-1 rounded-md text-xs font-medium shadow-lg">
-                                    Región resaltada
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Botones de acción */}
-                    {!pdfLoading && (
-                      <div className="flex justify-center space-x-4">
-                        <Button
-                          onClick={() => {
-                            const url = URL.createObjectURL(selectedDocumentForVerification.file)
-                            window.open(url, '_blank')
-                          }}
-                          variant="outline"
-                        >
-                          Abrir en nueva pestaña
-                        </Button>
-                        <Button
-                          onClick={() => {
-                            const url = URL.createObjectURL(selectedDocumentForVerification.file)
-                            const a = document.createElement('a')
-                            a.href = url
-                            a.download = selectedDocumentForVerification.file.name
-                            a.click()
-                          }}
-                          variant="outline"
-                        >
-                          Descargar PDF
-                        </Button>
-                        {pdfLoadError && (
-                          <Button
-                            onClick={() => {
-                              setPdfLoadError(false)
-                              setPdfLoading(true)
-                            }}
-                            variant="outline"
-                          >
-                            Reintentar
-                          </Button>
-                        )}
-                      </div>
-                    )}
+                  <div className="h-full">
+                    <PDFViewer
+                      fileUrl={URL.createObjectURL(selectedDocumentForVerification.file)}
+                      fileName={selectedDocumentForVerification.file.name}
+                      highlightedRegion={null}
+                    />
                   </div>
                 ) : selectedDocumentForVerification.file.type.startsWith('image/') ? (
                   <div className="text-center">
@@ -1337,10 +1157,6 @@ export default function PreavisoPage() {
                         src={URL.createObjectURL(selectedDocumentForVerification.file)} 
                         alt={selectedDocumentForVerification.file.name}
                         className="max-w-full max-h-[70vh] object-contain mx-auto rounded border shadow-lg"
-                        style={{
-                          transform: `scale(${zoomLevel / 100})`,
-                          transition: "transform 0.2s ease-in-out",
-                        }}
                       />
                       {/* Overlay para resaltado en imágenes */}
                       <div className="absolute inset-0 pointer-events-none">

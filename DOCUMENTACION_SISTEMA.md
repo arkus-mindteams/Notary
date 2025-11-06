@@ -65,14 +65,7 @@ components/
 ├── document-with-verification.tsx    # Documento con verificación de fuente
 ├── field-highlighter.tsx             # Resaltador de campos extraídos
 ├── source-verification-panel.tsx     # Panel de verificación de fuentes
-├── pdf-viewer.tsx                    # Visor específico para PDFs
-├── pdf-viewer-wrapper.tsx            # Wrapper para visores de PDF
-├── native-pdf-viewer.tsx             # Visor nativo de PDF
-├── iframe-pdf-viewer.tsx             # Visor de PDF con iframe
-├── enhanced-pdf-viewer.tsx           # Visor mejorado de PDF
-├── direct-pdf-viewer.tsx             # Visor directo de PDF
-├── simple-pdf-viewer.tsx             # Visor simple de PDF
-├── test-pdf-viewer.tsx               # Visor de prueba de PDF
+├── pdf-viewer.tsx                    # Visor de PDF con todas las funcionalidades
 ├── text-segment-panel.tsx            # Panel de texto notarial por direcciones
 ├── text-panel.tsx                    # Panel de texto general
 ├── editable-segment.tsx              # Componente editable individual
