@@ -148,7 +148,7 @@ function measurementToNotarialText(measurement: string, unit: string): string {
   return `${measurementInWords} ${unit.toLowerCase()}`
 }
 
-function convertUnitNameToNotarial(unitName: string): string {
+export function convertUnitNameToNotarial(unitName: string): string {
   // Convert "UNIDAD B-2" to "UNIDAD B guion dos"
   // Convert "JUNTA CONSTRUCTIVA 1" to "JUNTA CONSTRUCTIVA 1 (uno)"
   // Convert "CUBO DE ILUMINACION" to "CUBO DE ILUMINACIÓN"

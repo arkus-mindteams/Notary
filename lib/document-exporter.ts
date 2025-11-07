@@ -1,5 +1,7 @@
 import type { PropertyUnit } from "./ocr-simulator"
 import type { ExportMetadata } from "@/components/export-dialog"
+import { convertUnitNameToNotarial } from "./text-transformer"
+import { Document, HeadingLevel, Packer, Paragraph, TextRun } from "docx"
 
 export function generateNotarialDocument(
   metadata: ExportMetadata,
@@ -20,7 +22,7 @@ MEDIDAS Y COLINDANCIAS:
       // Use the unit-level notarialText that's already aggregated
       if (!unit.notarialText || unit.notarialText.length === 0) return ""
 
-      return unit.notarialText
+      return convertUnitNameToNotarial(unit.name) + ": " + unit.notarialText
     })
     .filter(Boolean)
     .join("\n\n")
@@ -39,19 +41,74 @@ El texto notarial ha sido validado y autorizado por el usuario.
   return header + unitsText + footer
 }
 
-export function downloadDocument(content: string, filename: string) {
-  // Create a Blob with proper formatting
-  const blob = new Blob([content], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" })
+function createDocParagraphs(content: string): Paragraph[] {
+  const sections = content.trim().split(/\n{2,}/)
+
+  if (sections.length === 0) {
+    return [new Paragraph("")]
+  }
+
+  return sections.flatMap((section) => {
+    const lines = section.split(/\n/)
+
+    // Treat headings specially if the line is fully uppercase and short
+    if (lines.length === 1 && /^[A-ZÁÉÍÓÚÜÑ0-9 ,.:;-]+$/.test(lines[0]) && lines[0].length <= 60) {
+      return [
+        new Paragraph({
+          heading: HeadingLevel.HEADING_2,
+          children: [
+            new TextRun({
+              text: lines[0],
+              color: "000000",
+            }),
+          ],
+        }),
+      ]
+    }
+
+    const textRuns = lines.map((line, index) =>
+      new TextRun({
+        text: line,
+        break: index === 0 ? undefined : 1,
+        color: "000000",
+      }),
+    )
+
+    return [
+      new Paragraph({
+        children: textRuns.length > 0 ? textRuns : [new TextRun({ text: "", color: "000000" })],
+        spacing: {
+          after: 200,
+        },
+      }),
+    ]
+  })
+}
+
+export async function downloadDocument(content: string, filename: string) {
+  const paragraphs = createDocParagraphs(content)
+
+  const doc = new Document({
+    sections: [
+      {
+        properties: {},
+        children: paragraphs,
+        // Ensure default text color is black
+        headers: undefined,
+        footers: undefined,
+      },
+    ],
+  })
+
+  const blob = await Packer.toBlob(doc)
   const url = URL.createObjectURL(blob)
 
-  // Create download link
   const a = document.createElement("a")
   a.href = url
   a.download = filename
   document.body.appendChild(a)
   a.click()
 
-  // Cleanup
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
 }

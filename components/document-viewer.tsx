@@ -75,7 +75,7 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setZoom(Math.min(200, zoom + 10))}
+              onClick={() => setZoom(Math.min(400, zoom + 10))}
               className="h-8 w-8 p-0 sm:h-9 sm:w-9"
             >
               <ZoomIn className="h-3 w-3 sm:h-4 sm:w-4" />
