@@ -33,7 +33,7 @@ export default function DeslindePage() {
     setAppState("processing")
   }
 
-  const handleProcessingComplete = async () => {
+  const handleProcessingComplete = async (update?: (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => void) => {
     if (!selectedFile) return
     if (processingStarted) {
       console.log("[deslinde] processing already started, skipping duplicate run")
@@ -45,7 +45,10 @@ export default function DeslindePage() {
     let text = ""
     try {
       const isPdf = selectedFile.type === "application/pdf" || selectedFile.name.toLowerCase().endsWith(".pdf")
-      const res = await extractTextWithTextract(selectedFile, { timeoutMs: isPdf ? 300000 : 60000 })
+      const res = await extractTextWithTextract(selectedFile, {
+        timeoutMs: isPdf ? 300000 : 60000,
+        onProgress: (key, status, detail) => update?.(key, status, detail),
+      })
       text = res.text || ""
     } catch (e) {
       const sim = await simulateOCR(selectedFile)
@@ -62,6 +65,7 @@ export default function DeslindePage() {
 
     // Paso 2: Pasar texto a la IA para estructurar (con fallback a OCR crudo)
     try {
+      update?.("ai", "in_progress")
       const resp = await fetch("/api/ai/structure", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -69,6 +73,7 @@ export default function DeslindePage() {
       })
       if (!resp.ok) throw new Error(await resp.text())
       const data = await resp.json() as { result: { unit: { name: string }, boundaries: any[] } }
+      update?.("ai", "done")
       try {
         const dirEs: Record<string, string> = {
           WEST: "OESTE",
@@ -177,6 +182,15 @@ export default function DeslindePage() {
   if (appState === "processing") {
     const isPdf = !!selectedFile && (selectedFile.type === "application/pdf" || selectedFile.name.toLowerCase().endsWith(".pdf"))
     const watchdogMs = isPdf ? 300000 : 60000
+    const processSteps = isPdf
+      ? [
+          { key: "ocr", label: "OCR (Textract PDF)" },
+          { key: "ai", label: "AI (Structure)" },
+        ]
+      : [
+          { key: "ocr", label: "OCR (Textract Imagen)" },
+          { key: "ai", label: "AI (Structure)" },
+        ]
     return (
       <ProtectedRoute>
         <DashboardLayout>
@@ -189,9 +203,20 @@ export default function DeslindePage() {
             </div>
             <ProcessingScreen
               fileName={selectedFile?.name || ""}
-              onRun={handleProcessingComplete}
+              onRun={async (update) => {
+                try {
+                  await handleProcessingComplete(update)
+                } catch {
+                  update("ocr", "error")
+                  update("ocr_upload", "error")
+                  update("ocr_start", "error")
+                  update("ocr_status", "error")
+                  update("ai", "error")
+                }
+              }}
               onComplete={() => setAppState("validation")}
               watchdogMs={watchdogMs}
+              steps={processSteps}
             />
           </div>
         </DashboardLayout>
