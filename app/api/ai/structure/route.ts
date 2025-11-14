@@ -32,8 +32,10 @@ function buildPrompt(): string {
     "Heurísticas de colindancias:",
     '- Cada colindancia inicia con cardinales en español: “NORTE”, “SUR”, “ESTE”, “OESTE” o intercardinales “NOROESTE”, “NORESTE”, “SUROESTE”, “SURESTE”, con o sin “AL ” (ej. “AL NORTE”).',
     '- También puede haber colindancias verticales “ARRIBA/ABAJO” y equivalentes “COLINDANCIA SUPERIOR/INFERIOR” o “SUPERIOR/INFERIOR”: mapéalas como direcciones "UP" y "DOWN" respectivamente.',
-    "- Puede haber N colindancias por dirección (incluso repetidas). Conserva todas y su orden.",
+    "- Puede haber N colindancias por dirección (incluso repetidas). Conserva TODAS por separado y su orden (no las mezcles en una sola).",
     '- Cada colindancia suele tener una longitud y un colindante (ej. “colinda con …” / “con …”). Si falta alguno, conserva lo disponible.',
+    '- Las longitudes pueden venir como “EN <n> M”, “<n> M” o “LC=<n> (M)”. Reconoce “LC=” como longitud.',
+    "- La línea puede contener todo: “NORESTE: EN 5.4610 m CON ÁREA COMÚN…”, o el detalle puede estar en líneas siguientes; extrae en ambos casos.",
     "- No mezcles superficies con boundaries; ignora totales de área (m2, m²) al construir boundaries.",
     "",
     "Superficies:",
@@ -45,27 +47,70 @@ function buildPrompt(): string {
   ].join("\n")
 }
 
-function preFilterOCRText(ocrText: string): string {
+function preFilterOCRText(ocrText: string, unitHint?: string): string {
   if (!ocrText) return ""
   const text = ocrText.replace(/\r/g, "")
   const lower = text.toLowerCase()
-  const startIdx =
-    lower.indexOf("medidas y colindancias") >= 0
-      ? lower.indexOf("medidas y colindancias")
-      : lower.indexOf("medidas") >= 0 && lower.indexOf("colindancias") >= 0
-      ? Math.min(lower.indexOf("medidas"), lower.indexOf("colindancias"))
-      : -1
-  let sliced = startIdx >= 0 ? text.slice(startIdx) : text
-  // Cortar al siguiente encabezado fuerte conocido
-  const endMatch = sliced.match(
-    /(^|\n)\s*(superficie|superficies|descripci[oó]n|caracter[ií]sticas|observaciones|datos)\b/gi,
-  )
-  if (endMatch && endMatch.index !== undefined && endMatch.index > 0) {
-    sliced = sliced.slice(0, endMatch.index)
+  // Encontrar TODAS las ocurrencias de "Medidas y Colindancias" para construir candidatos
+  const headings: number[] = []
+  const regex = /medidas\s*y\s*colindancias/gi
+  let m: RegExpExecArray | null
+  while ((m = regex.exec(lower)) !== null) {
+    headings.push(m.index)
   }
-  // Limitar longitud para evitar ruido excesivo
-  if (sliced.length > 8000) sliced = sliced.slice(0, 8000)
-  return sliced.trim()
+  // Si no hay encabezados claros, regresar texto original acotado
+  if (headings.length === 0) {
+    let sliced = text
+    const endMatch = sliced.match(/(^|\n)\s*(superficie|superficies|descripci[oó]n|caracter[ií]sticas|observaciones|datos)\b/gi)
+    if (endMatch && endMatch.index !== undefined && endMatch.index > 0) {
+      sliced = sliced.slice(0, endMatch.index)
+    }
+    if (sliced.length > 8000) sliced = sliced.slice(0, 8000)
+    return sliced.trim()
+  }
+  // Crear bloques candidatos entre cada encabezado y el siguiente encabezado fuerte
+  const strongHeaderRe = /(^|\n)\s*(superficie|superficies|descripci[oó]n|caracter[ií]sticas|observaciones|datos|medidas\s*y\s*colindancias)\b/gi
+  const candidates: string[] = []
+  for (let i = 0; i < headings.length; i++) {
+    const start = headings[i]
+    const slice = text.slice(start)
+    const endMatch = slice.match(strongHeaderRe)
+    let candidate = slice
+    if (endMatch && endMatch.index !== undefined && endMatch.index > 0) {
+      candidate = slice.slice(0, endMatch.index)
+    }
+    candidates.push(candidate.trim())
+  }
+  // Preparar pistas de unidad
+  const unitUpper = (unitHint || "").toUpperCase()
+  let unitToken = ""
+  const mUnit = unitUpper.match(/UNIDAD\s+([A-Z0-9\-]+)/)
+  if (mUnit && mUnit[1]) {
+    unitToken = mUnit[1]
+  }
+  // Puntuar candidatos
+  let bestIdx = 0
+  let bestScore = -1
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i]
+    const cu = c.toUpperCase()
+    let score = 0
+    // Presencia de la unidad sugerida
+    if (unitUpper && cu.includes(unitUpper)) score += 8
+    if (unitToken && cu.includes(unitToken)) score += 6
+    // Densidad de direcciones
+    const dirCount = (cu.match(/\b(NOROESTE|NORESTE|SURESTE|SUROESTE|NORTE|SUR|ESTE|OESTE)\b/g) || []).length
+    score += dirCount
+    // Penalizar bloques típicos de estacionamiento (pero no descartar)
+    if (/\bESTACIONAMIENTO|CAJ[ÓO]N\b/.test(cu)) score -= 3
+    if (score > bestScore) {
+      bestScore = score
+      bestIdx = i
+    }
+  }
+  let chosen = candidates[bestIdx] || candidates[0] || text
+  if (chosen.length > 8000) chosen = chosen.slice(0, 8000)
+  return chosen.trim()
 }
 
 function pickUnitNameFromText(ocrText: string, fallback: string = "UNIDAD"): string {
@@ -116,7 +161,9 @@ function heuristicBoundaries(ocrText: string): StructuredUnit["boundaries"] {
     const dir = dirMap[(dirMatch[2] || "").toUpperCase()]
     if (!dir) continue
     // Longitud: números con punto o coma, opcional m/mts/ml
-    const lenMatch = l.match(/(\d+(?:[.,]\d+)?)(?=\s*(MTS?|ML|M\.?)(\b|[^A-Z]))/)
+    const lenMatch =
+      l.match(/(\d+(?:[.,]\d+)?)(?=\s*(MTS?|ML|M\.?)(\b|[^A-Z]))/) ||
+      l.match(/\bLC\s*=\s*(\d+(?:[.,]\d+)?)/)
     const length_m =
       lenMatch ? parseFloat(lenMatch[1].replace(",", ".")) : NaN
     // Abutter: después de "CON" o "COLINDA CON"
@@ -159,7 +206,8 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
   const out: StructuredUnit["boundaries"] = []
   let order = 0
   for (let i = 0; i < upper.length; i++) {
-    const lm = upper[i].match(/^(AL\s+)?(NOROESTE|NORESTE|SURESTE|SUROESTE|NORTE|SUR|ESTE|OESTE|ARRIBA|ABAJO|SUPERIOR|INFERIOR)\s*:?\s*$/)
+    // Acepta encabezado solo o encabezado con contenido en la misma línea
+    const lm = upper[i].match(/^(AL\s+)?(NOROESTE|NORESTE|SURESTE|SUROESTE|NORTE|SUR|ESTE|OESTE|ARRIBA|ABAJO|SUPERIOR|INFERIOR)\s*:?\s*(.*)$/)
     if (!lm) continue
     const dirEs = (lm[2] || "").toUpperCase()
     const direction = dirMap[dirEs]
@@ -167,15 +215,35 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
     // Buscar en las próximas líneas un patrón de longitud y colindante.
     let length_m = 0
     let abutter = ""
-    for (let j = i + 1; j < Math.min(i + 6, upper.length); j++) {
-      const uj = upper[j]
+    // 1) Intentar extraer en la misma línea si hay contenido tras el encabezado
+    const sameLine = (lm[3] || "").trim()
+    if (sameLine) {
+      const uj = sameLine
+      const lenEn = uj.match(/\bEN\s+(\d+(?:[.,]\d+)?)\s*M(?:TS|ETROS|\.|\b)/)
+      const lenBare = uj.match(/(?:^|\s)(\d+(?:[.,]\d+)?)\s*M(?:TS|ETROS|\.|\b)/)
+      const lenLc = uj.match(/\bLC\s*=\s*(\d+(?:[.,]\d+)?)/)
+      const lenMatch = lenEn || lenBare || lenLc
+      if (lenMatch) {
+        length_m = parseFloat(lenMatch[1].replace(",", "."))
+        const conSame = uj.match(/\bCON\s+(.+?)\s*$/) || uj.match(/\bCOLINDA CON\s+(.+?)\s*$/)
+        if (conSame && conSame[1]) {
+          abutter = conSame[1].trim()
+        }
+      }
+    }
+    // 2) Si no se encontró en la misma línea, buscar en las siguientes
+    if (!length_m || !abutter) {
+      for (let j = i + 1; j < Math.min(i + 8, upper.length); j++) {
+        const uj = upper[j]
       // Formatos válidos:
       // 1) "EN <n> M" (con o sin punto) opcional "CON ...".
       // 2) "<n> M" (con o sin punto) opcional "CON ...".
       // 3) línea posterior que inicie con "CON " o "COLINDA CON ".
-      const lenEn = uj.match(/\bEN\s+(\d+(?:[.,]\d+)?)\s*M(?:\.|\b)/)
-      const lenBare = uj.match(/^\s*(\d+(?:[.,]\d+)?)\s*M(?:\.|\b)/)
-      const lenMatch = lenEn || lenBare
+      // 4) "LC=<n> M" o "LC=<n>" (longitud de arco común en planos)
+      const lenEn = uj.match(/\bEN\s+(\d+(?:[.,]\d+)?)\s*M(?:TS|ETROS|\.|\b)/)
+      const lenBare = uj.match(/(?:^|\s)(\d+(?:[.,]\d+)?)\s*M(?:TS|ETROS|\.|\b)/)
+      const lenLc = uj.match(/\bLC\s*=\s*(\d+(?:[.,]\d+)?)/)
+      const lenMatch = lenEn || lenBare || lenLc
       if (lenMatch) {
         length_m = parseFloat(lenMatch[1].replace(",", "."))
         // abutter mismo renglón si viene tras "CON ..."
@@ -194,6 +262,7 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
         if (onlyCon && onlyCon[2] && !abutter) {
           abutter = onlyCon[2].trim()
         }
+      }
       }
     }
     out.push({
@@ -246,8 +315,9 @@ export async function POST(req: Request) {
     if (!body?.ocrText || typeof body.ocrText !== "string") {
       return NextResponse.json({ error: "bad_request", message: "ocrText required" }, { status: 400 })
     }
-    // Pre-filtrar al bloque de "Medidas y Colindancias"
-    const filtered = preFilterOCRText(body.ocrText)
+    // Detectar unidad candidata y pre-filtrar al bloque de "Medidas y Colindancias" más relevante
+    const unitHint = pickUnitNameFromText(body.ocrText, "UNIDAD")
+    const filtered = preFilterOCRText(body.ocrText, unitHint)
     const payload = JSON.stringify({ ocrText: filtered || body.ocrText, hints: body.hints || {} })
     const key = hashPayload(payload)
     if (cache.has(key)) return NextResponse.json(cache.get(key)!)
@@ -268,7 +338,10 @@ export async function POST(req: Request) {
       !result.boundaries ||
       result.boundaries.length === 0 ||
       result.boundaries.some((b) => !b || b.length_m === 0 || !b.abutter)
-    if (needRepair && parsed.length > 0) {
+    // Si el parser encontró más tramos que la IA, preferir parsed completo para no perder duplicados
+    if ((parsed.length > (result.boundaries?.length || 0)) && parsed.length > 0) {
+      result.boundaries = parsed
+    } else if (needRepair && parsed.length > 0) {
       result.boundaries = parsed
     } else if (result.boundaries && result.boundaries.length > 0 && parsed.length > 0) {
       // Rellenar campos vacíos con parsed por orden

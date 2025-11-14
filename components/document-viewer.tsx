@@ -16,11 +16,17 @@ interface DocumentViewerProps {
   highlightedRegion?: string | null
   onRegionHover?: (regionId: string | null) => void
   fileName?: string
+  controlledRotation?: number
+  onRotationChange?: (deg: number) => void
 }
 
-export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, fileName }: DocumentViewerProps) {
+export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, fileName, controlledRotation, onRotationChange }: DocumentViewerProps) {
   const [zoom, setZoom] = useState(100)
-  const [rotation, setRotation] = useState(0)
+  const [rotation, setRotation] = useState(controlledRotation ?? 0)
+  if (typeof controlledRotation === "number" && controlledRotation !== rotation) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    setRotation(controlledRotation)
+  }
 
   // Detectar el tipo de archivo
   const fileTypeInfo: FileTypeInfo = detectFileType(documentUrl, fileName)
@@ -65,7 +71,10 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setRotation((rotation + 90) % 360)}
+            onClick={() => {
+              const next = (rotation + 90) % 360
+              onRotationChange ? onRotationChange(next) : setRotation(next)
+            }}
             className="h-8 w-8 p-0 sm:h-9 sm:w-9"
           >
             <RotateCw className="h-3 w-3 sm:h-4 sm:w-4" />

@@ -6,6 +6,7 @@ import { ProtectedRoute } from "@/components/protected-route"
 import { UploadZone } from "@/components/upload-zone"
 import { ProcessingScreen } from "@/components/processing-screen"
 import { ValidationWizard } from "@/components/validation-wizard"
+import { DocumentViewer } from "@/components/document-viewer"
 import { simulateOCR, type PropertyUnit } from "@/lib/ocr-simulator"
 import { createStructuredSegments, type TransformedSegment } from "@/lib/text-transformer"
 import { FileText, Scale, Shield, ArrowLeft } from "lucide-react"
@@ -23,16 +24,22 @@ export default function DeslindePage() {
   const [unitSegments, setUnitSegments] = useState<Map<string, TransformedSegment[]>>(new Map())
   const [processingStarted, setProcessingStarted] = useState(false)
   const [aiStructuredText, setAiStructuredText] = useState<string | null>(null)
-  const [preferredRotation, setPreferredRotation] = useState<number>(0)
 
   const handleFileSelect = async (file: File) => {
     setSelectedFile(file)
 
+    if (documentUrl && !documentUrl.startsWith("/")) {
+      URL.revokeObjectURL(documentUrl)
+    }
     const url = URL.createObjectURL(file)
     setDocumentUrl(url)
 
-    // Esperar confirmación (rotación) antes de procesar
-    setAppState("upload")
+    // Iniciar procesamiento inmediatamente al cargar
+    setProcessingStarted(false)
+    setAiStructuredText(null)
+    setUnits([])
+    setUnitSegments(new Map())
+    setAppState("processing")
   }
 
   const handleProcessingComplete = async (update?: (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => void) => {
@@ -50,7 +57,6 @@ export default function DeslindePage() {
       const res = await extractTextWithTextract(selectedFile, {
         timeoutMs: isPdf ? 300000 : 60000,
         onProgress: (key, status, detail) => update?.(key, status, detail),
-        preferredRotation,
       })
       text = res.text || ""
     } catch (e) {
@@ -95,7 +101,7 @@ export default function DeslindePage() {
         const lines = boundaries.map((b: any) => {
           const d = (b.direction || "").toUpperCase()
           const name = dirEs[d] || d
-          const len = typeof b.length_m === "number" ? b.length_m.toFixed(4) : String(b.length_m || "")
+          const len = typeof b.length_m === "number" ? b.length_m.toFixed(3) : String(b.length_m || "")
           const who = (b.abutter || "").toString().trim()
           return `${name}: EN ${len} m CON ${who}`
         })
@@ -292,29 +298,7 @@ export default function DeslindePage() {
         {/* Upload Zone */}
         <UploadZone onFileSelect={handleFileSelect} />
 
-        {/* Pre-proceso: rotación preferida */}
-        {selectedFile && (
-          <div className="border rounded-lg p-4 flex items-center justify-between bg-card">
-            <div className="text-sm">
-              <div className="font-medium">Archivo seleccionado</div>
-              <div className="text-muted-foreground">{selectedFile.name}</div>
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="text-sm">Rotación</label>
-              <select
-                className="h-9 border rounded px-2 text-sm"
-                value={preferredRotation}
-                onChange={(e) => setPreferredRotation(parseInt(e.target.value, 10))}
-              >
-                <option value={0}>0°</option>
-                <option value={90}>90°</option>
-                <option value={180}>180°</option>
-                <option value={270}>270°</option>
-              </select>
-              <Button onClick={() => setAppState("processing")}>Procesar</Button>
-            </div>
-          </div>
-        )}
+        {/* Ya no se muestra preview ni botón de Procesar; el flujo inicia automáticamente */}
 
         {/* Instructions */}
         <div className="bg-muted/30 rounded-lg p-6 space-y-4">

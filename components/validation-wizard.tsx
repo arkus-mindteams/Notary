@@ -29,6 +29,7 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
   const [lastSaved, setLastSaved] = useState<Date>(new Date())
   const [hasChanges, setHasChanges] = useState(false)
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null)
+  const [aiText, setAiText] = useState<string>(aiStructuredText || "")
 
   const currentUnit = units[currentUnitIndex]
   const progress = ((currentUnitIndex + 1) / units.length) * 100
@@ -51,6 +52,10 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
       return () => clearTimeout(timer)
     }
   }, [hasChanges])
+
+  useEffect(() => {
+    setAiText(aiStructuredText || "")
+  }, [aiStructuredText])
 
   const getUnitRegionId = (unitId: string): string => {
     const unitIdMap: Record<string, string> = {
@@ -228,14 +233,14 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
               <Card className="flex flex-col h-full">
                 <div className="p-4 sm:p-6 border-b bg-muted/30 shrink-0">
                   <div className="space-y-4">
-                    {/* IA Structured Output (read-only) */}
-                    {aiStructuredText && (
+                    {/* Colindancias (editable) */}
+                    {(aiText || aiStructuredText) && (
                       <div className="space-y-2">
-                        <div className="text-xs font-medium text-muted-foreground">IA (estructurado)</div>
+                        <div className="text-xs font-medium text-muted-foreground">Colindancias</div>
                         <textarea
-                          readOnly
-                          className="w-full h-32 resize-y border rounded bg-background p-2 font-mono text-xs"
-                          value={aiStructuredText}
+                          className="w-full h-32 resize-y border rounded bg-background p-2 text-sm"
+                          value={aiText}
+                          onChange={(e) => setAiText(e.target.value)}
                         />
                       </div>
                     )}
