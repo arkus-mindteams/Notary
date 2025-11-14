@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react"
 import { DocumentViewer } from "./document-viewer"
-import { TextSegmentPanel } from "./text-segment-panel"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -341,21 +340,6 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                       </div>
                     )}
                   </div>
-                </div>
-
-                <div className="flex-1 min-h-0 overflow-auto">
-                  <TextSegmentPanel
-                    title="Texto Notarial"
-                    subtitle="Revisa y edita si es necesario"
-                    segments={editedUnits.get(currentUnit.id) || []}
-                    highlightedRegion={selectedRegion}
-                    onSegmentHover={handleSegmentClick}
-                    showNotarial={true}
-                    editable={true}
-                    onSegmentsChange={(newSegments) => handleSegmentsChange(currentUnit.id, newSegments)}
-                    unitRegionId=""
-                    unitId={currentUnit.id}
-                  />
                 </div>
               </Card>
             </div>
