@@ -21,6 +21,20 @@ interface ParsedSegment {
 }
 
 const BASE_DIRECTIONS_ORDER: DirectionKey[] = ["OESTE", "NORTE", "ESTE", "SUR"]
+type BaseDirection = "OESTE" | "NORTE" | "ESTE" | "SUR"
+
+const DIAGONAL_TO_BASE: Record<DirectionKey, BaseDirection | "ARRIBA" | "ABAJO"> = {
+  OESTE: "OESTE",
+  NOROESTE: "OESTE",
+  SUROESTE: "OESTE",
+  NORTE: "NORTE",
+  NORESTE: "ESTE",
+  ESTE: "ESTE",
+  SURESTE: "ESTE",
+  SUR: "SUR",
+  ARRIBA: "ARRIBA",
+  ABAJO: "ABAJO",
+}
 
 // --- Number formatting (Spanish words) ---
 
@@ -314,6 +328,23 @@ function parseColindancias(colText: string): Map<DirectionKey, ParsedSegment[]> 
   return map
 }
 
+function collapseToBaseDirections(parsed: Map<DirectionKey, ParsedSegment[]>): Map<BaseDirection, ParsedSegment[]> {
+  const baseMap = new Map<BaseDirection, ParsedSegment[]>()
+  for (const dir of BASE_DIRECTIONS_ORDER) {
+    baseMap.set(dir as BaseDirection, [])
+  }
+  for (const [dir, segs] of parsed.entries()) {
+    const base = DIAGONAL_TO_BASE[dir]
+    if (base === "ARRIBA" || base === "ABAJO") {
+      continue
+    }
+    const bucket = baseMap.get(base as BaseDirection)
+    if (!bucket) continue
+    bucket.push(...segs)
+  }
+  return baseMap
+}
+
 function pluralizeTramos(n: number): string {
   const map: Record<number, string> = { 2: "dos", 3: "tres", 4: "cuatro", 5: "cinco" }
   return map[n] || numberToSpanishWordsInt(n)
@@ -340,11 +371,12 @@ function ordinalWord(n: number): string {
 export function notarialize(colindanciasText: string, unitName: string): string {
   const header = formatUnitHeader(unitName)
   const parsed = parseColindancias(colindanciasText)
+  const base = collapseToBaseDirections(parsed)
 
   const parts: string[] = []
   for (let i = 0; i < BASE_DIRECTIONS_ORDER.length; i++) {
     const dir = BASE_DIRECTIONS_ORDER[i]
-    const segs = parsed.get(dir)
+    const segs = base.get(dir as BaseDirection)
     if (!segs || segs.length === 0) continue
 
     const dirLower = dir.toLowerCase()
