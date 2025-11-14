@@ -236,6 +236,54 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
               <Card className="flex flex-col h-full">
                 <div className="p-4 sm:p-6 border-b bg-muted/30 shrink-0">
                   <div className="space-y-4">
+                    {/* Header con información de la unidad */}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <h2 className="text-base sm:text-lg font-semibold truncate">{currentUnit.name}</h2>
+                        <p className="text-xs sm:text-sm text-muted-foreground mt-1">Superficie: {currentUnit.surface}</p>
+                      </div>
+                      {isCurrentUnitAuthorized ? (
+                        <div className="flex items-center gap-2 text-success shrink-0">
+                          <CheckCircle2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                          <span className="text-xs sm:text-sm font-medium hidden sm:inline">Autorizada</span>
+                        </div>
+                      ) : (
+                        <Button onClick={handleAuthorizeUnit} size="sm" className="gap-2 shrink-0">
+                          <ShieldCheck className="h-4 w-4" />
+                          <span className="hidden sm:inline">Autorizar</span>
+                        </Button>
+                      )}
+                    </div>
+
+                    {/* Botones de navegación */}
+                    <div className="flex items-center justify-between gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handlePrevious}
+                        disabled={isFirstUnit}
+                        className="gap-2 flex-1"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        <span className="hidden sm:inline">Anterior</span>
+                      </Button>
+
+                      <div className="text-xs text-muted-foreground px-2 py-1 bg-muted rounded-md">
+                        {currentUnitIndex + 1} de {units.length}
+                      </div>
+
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={handleNext}
+                        disabled={isLastUnit}
+                        className="gap-2 flex-1"
+                      >
+                        <span className="hidden sm:inline">Siguiente</span>
+                        <ChevronRight className="h-4 w-4" />
+                      </Button>
+                    </div>
+
                     {/* Colindancias (editable) */}
                     {(aiText || aiStructuredText) && (
                       <div className="space-y-2">
@@ -292,53 +340,6 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                         )}
                       </div>
                     )}
-                    {/* Header con información de la unidad */}
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <h2 className="text-base sm:text-lg font-semibold truncate">{currentUnit.name}</h2>
-                        <p className="text-xs sm:text-sm text-muted-foreground mt-1">Superficie: {currentUnit.surface}</p>
-                      </div>
-                      {isCurrentUnitAuthorized ? (
-                        <div className="flex items-center gap-2 text-success shrink-0">
-                          <CheckCircle2 className="h-4 w-4 sm:h-5 sm:w-5" />
-                          <span className="text-xs sm:text-sm font-medium hidden sm:inline">Autorizada</span>
-                        </div>
-                      ) : (
-                        <Button onClick={handleAuthorizeUnit} size="sm" className="gap-2 shrink-0">
-                          <ShieldCheck className="h-4 w-4" />
-                          <span className="hidden sm:inline">Autorizar</span>
-                        </Button>
-                      )}
-                    </div>
-
-                    {/* Botones de navegación */}
-                    <div className="flex items-center justify-between gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handlePrevious}
-                        disabled={isFirstUnit}
-                        className="gap-2 flex-1"
-                      >
-                        <ChevronLeft className="h-4 w-4" />
-                        <span className="hidden sm:inline">Anterior</span>
-                      </Button>
-
-                      <div className="text-xs text-muted-foreground px-2 py-1 bg-muted rounded-md">
-                        {currentUnitIndex + 1} de {units.length}
-                      </div>
-
-                      <Button
-                        variant="default"
-                        size="sm"
-                        onClick={handleNext}
-                        disabled={isLastUnit}
-                        className="gap-2 flex-1"
-                      >
-                        <span className="hidden sm:inline">Siguiente</span>
-                        <ChevronRight className="h-4 w-4" />
-                      </Button>
-                    </div>
                   </div>
                 </div>
 
