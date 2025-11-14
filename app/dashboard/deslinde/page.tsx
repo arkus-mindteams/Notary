@@ -81,7 +81,7 @@ export default function DeslindePage() {
         body: JSON.stringify({ ocrText: text }),
       })
       if (!resp.ok) throw new Error(await resp.text())
-      const data = await resp.json() as { result: { unit: { name: string }, boundaries: any[] } }
+      const data = await resp.json() as { result: { unit: { name: string }, boundaries: any[], surfaces?: { name: string, value_m2: number }[] } }
       update?.("ai", "done")
       try {
         const dirEs: Record<string, string> = {
@@ -110,10 +110,16 @@ export default function DeslindePage() {
         setAiStructuredText(null)
       }
       const unitName = data?.result?.unit?.name || "UNIDAD"
+      // Superficie: sumar superficies detectadas (si existen) y formatear a 3 decimales
+      const surfaces = (data as any)?.result?.surfaces as { name: string; value_m2: number }[] | undefined
+      const totalSurface = Array.isArray(surfaces)
+        ? surfaces.reduce((sum, s) => sum + (typeof s.value_m2 === "number" ? s.value_m2 : 0), 0)
+        : 0
+      const surfaceLabel = totalSurface > 0 ? `${totalSurface.toFixed(3)} m²` : ""
       const newUnit: PropertyUnit = {
         id: unitName.toLowerCase().replace(/\s+/g, "-"),
         name: unitName,
-        surface: "",
+        surface: surfaceLabel,
         boundaries: { west: [], north: [], east: [], south: [] },
       }
       const dirMap: Record<string, keyof PropertyUnit["boundaries"]> = {
