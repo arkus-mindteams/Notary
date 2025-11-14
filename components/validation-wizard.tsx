@@ -282,17 +282,21 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                         <ChevronRight className="h-4 w-4" />
                       </Button>
                     </div>
-
+                  </div>
+                </div>
+                {/* Content area to expand inputs */}
+                <div className="flex-1 p-4 sm:p-6 overflow-hidden">
+                  <div className="flex flex-col gap-4 h-full">
                     {/* Colindancias (editable) */}
                     {(aiText || aiStructuredText) && (
-                      <div className="space-y-2">
+                      <div className="flex flex-col h-1/2">
                         <div className="text-xs font-medium text-muted-foreground">Colindancias</div>
                         <textarea
-                          className="w-full h-32 resize-y border rounded bg-background p-2 text-sm"
+                          className="mt-2 w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
                           value={aiText}
                           onChange={(e) => setAiText(e.target.value)}
                         />
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="mt-2 flex items-center justify-between gap-2">
                           <Button
                             size="sm"
                             variant="default"
@@ -327,16 +331,17 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                             {isGeneratingNotarial ? "Generando..." : "Generar redacción notarial"}
                           </Button>
                         </div>
-                        {notarialDraft && (
-                          <div className="space-y-2">
-                            <div className="text-xs font-medium text-muted-foreground">Redacción notarial</div>
-                            <textarea
-                              className="w-full h-28 resize-y border rounded bg-background p-2 text-sm"
-                              value={notarialDraft}
-                              onChange={(e) => setNotarialDraft(e.target.value)}
-                            />
-                          </div>
-                        )}
+                      </div>
+                    )}
+                    {/* Redacción notarial */}
+                    {notarialDraft && (
+                      <div className="flex flex-col h-1/2">
+                        <div className="text-xs font-medium text-muted-foreground">Redacción notarial</div>
+                        <textarea
+                          className="mt-2 w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
+                          value={notarialDraft}
+                          onChange={(e) => setNotarialDraft(e.target.value)}
+                        />
                       </div>
                     )}
                   </div>
