@@ -3,6 +3,9 @@ export const runtime = "nodejs"
 import { NextResponse } from "next/server"
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3"
 
+const USE_STUBS =
+  process.env.OCR_USE_STUBS === "1" || process.env.NEXT_PUBLIC_OCR_USE_STUBS === "1"
+
 const s3 = new S3Client({
   region: process.env.AWS_REGION,
   credentials: process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
@@ -19,8 +22,15 @@ export async function POST(req: Request) {
     const file = form.get("file") as File | null
     if (!file) return NextResponse.json({ error: "bad_request", message: "file is required" }, { status: 400 })
     const bucket = process.env.AWS_S3_BUCKET || process.env.OCR_S3_BUCKET
-    if (!bucket) return NextResponse.json({ error: "missing_bucket", message: "AWS_S3_BUCKET not set" }, { status: 500 })
+    if (USE_STUBS || !bucket) {
+      // Demo/stub mode (e.g., bolt.new) or missing bucket
+      const key =
+        (process.env.OCR_S3_PREFIX || "uploads/") +
+        `${Date.now()}-${(file.name || "document").replace(/\s+/g, "_").toLowerCase()}`
+      return NextResponse.json({ bucket: bucket || "demo-bucket", key })
+    }
     const arrayBuffer = await file.arrayBuffer()
+    const body = new Uint8Array(arrayBuffer)
     const key =
       (process.env.OCR_S3_PREFIX || "uploads/") +
       `${Date.now()}-${(file.name || "document").replace(/\s+/g, "_").toLowerCase()}`
@@ -28,8 +38,8 @@ export async function POST(req: Request) {
       new PutObjectCommand({
         Bucket: bucket,
         Key: key,
-        Body: Buffer.from(arrayBuffer),
-        ContentType: (file as any).type || "application/pdf",
+        Body: body,
+        ContentType: (file as any).type || "application/octet-stream",
       }),
     )
     return NextResponse.json({ bucket, key })
