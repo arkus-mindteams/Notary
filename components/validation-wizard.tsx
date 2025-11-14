@@ -30,6 +30,8 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
   const [hasChanges, setHasChanges] = useState(false)
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null)
   const [aiText, setAiText] = useState<string>(aiStructuredText || "")
+  const [notarialDraft, setNotarialDraft] = useState<string>("")
+  const [isGeneratingNotarial, setIsGeneratingNotarial] = useState<boolean>(false)
 
   const currentUnit = units[currentUnitIndex]
   const progress = ((currentUnitIndex + 1) / units.length) * 100
@@ -55,6 +57,7 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
 
   useEffect(() => {
     setAiText(aiStructuredText || "")
+    setNotarialDraft("")
   }, [aiStructuredText])
 
   const getUnitRegionId = (unitId: string): string => {
@@ -242,6 +245,51 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                           value={aiText}
                           onChange={(e) => setAiText(e.target.value)}
                         />
+                        <div className="flex items-center justify-between gap-2">
+                          <Button
+                            size="sm"
+                            variant="default"
+                            disabled={!aiText || isGeneratingNotarial}
+                            onClick={async () => {
+                              try {
+                                setIsGeneratingNotarial(true)
+                                setNotarialDraft("")
+                                const resp = await fetch("/api/ai/notarialize", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({
+                                    unitName: currentUnit.name,
+                                    colindanciasText: aiText,
+                                  }),
+                                })
+                                if (!resp.ok) {
+                                  const msg = await resp.text()
+                                  throw new Error(msg)
+                                }
+                                const data = await resp.json() as { notarialText: string }
+                                setNotarialDraft(data.notarialText || "")
+                              } catch (e) {
+                                console.error("[ui] notarialize failed", e)
+                                setNotarialDraft("")
+                              } finally {
+                                setIsGeneratingNotarial(false)
+                              }
+                            }}
+                            className="gap-2"
+                          >
+                            {isGeneratingNotarial ? "Generando..." : "Generar redacción notarial"}
+                          </Button>
+                        </div>
+                        {notarialDraft && (
+                          <div className="space-y-2">
+                            <div className="text-xs font-medium text-muted-foreground">Redacción notarial</div>
+                            <textarea
+                              className="w-full h-28 resize-y border rounded bg-background p-2 text-sm"
+                              value={notarialDraft}
+                              onChange={(e) => setNotarialDraft(e.target.value)}
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
                     {/* Header con información de la unidad */}
