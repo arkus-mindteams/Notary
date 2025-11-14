@@ -18,9 +18,10 @@ interface ValidationWizardProps {
   unitSegments: Map<string, TransformedSegment[]>
   onBack: () => void
   fileName?: string
+  aiStructuredText?: string
 }
 
-export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fileName }: ValidationWizardProps) {
+export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fileName, aiStructuredText }: ValidationWizardProps) {
   const [currentUnitIndex, setCurrentUnitIndex] = useState(0)
   const [editedUnits, setEditedUnits] = useState<Map<string, TransformedSegment[]>>(unitSegments)
   const [authorizedUnits, setAuthorizedUnits] = useState<Set<string>>(new Set())
@@ -227,6 +228,17 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
               <Card className="flex flex-col h-full">
                 <div className="p-4 sm:p-6 border-b bg-muted/30 shrink-0">
                   <div className="space-y-4">
+                    {/* IA Structured Output (read-only) */}
+                    {aiStructuredText && (
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground">IA (estructurado)</div>
+                        <textarea
+                          readOnly
+                          className="w-full h-32 resize-y border rounded bg-background p-2 font-mono text-xs"
+                          value={aiStructuredText}
+                        />
+                      </div>
+                    )}
                     {/* Header con información de la unidad */}
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">

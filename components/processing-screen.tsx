@@ -8,11 +8,14 @@ import { Progress } from "@/components/ui/progress"
 interface ProcessingScreenProps {
   fileName: string
   onComplete: () => void
+  onRun?: () => Promise<void>
+  watchdogMs?: number
 }
 
-export function ProcessingScreen({ fileName, onComplete }: ProcessingScreenProps) {
+export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs }: ProcessingScreenProps) {
   const [progress, setProgress] = useState(0)
   const [currentStep, setCurrentStep] = useState(0)
+  const [started, setStarted] = useState(false)
 
   const steps = [
     { label: "Analizando documento", icon: FileSearch },
@@ -22,19 +25,53 @@ export function ProcessingScreen({ fileName, onComplete }: ProcessingScreenProps
   ]
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    let interval: any
+    interval = setInterval(() => {
       setProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval)
-          setTimeout(onComplete, 500)
-          return 100
-        }
+        if (prev >= 90) return prev
         return prev + 2
       })
     }, 60)
 
     return () => clearInterval(interval)
   }, [onComplete])
+
+  useEffect(() => {
+    let cancelled = false
+    let watchdog: any
+    async function run() {
+      if (started) return
+      setStarted(true)
+      // Watchdog para evitar quedarse pegado
+      watchdog = setTimeout(() => {
+        if (!cancelled) {
+          setProgress(100)
+          onComplete()
+        }
+      }, typeof watchdogMs === "number" ? watchdogMs : 20000)
+      try {
+        if (onRun) {
+          await onRun()
+        }
+        if (!cancelled) {
+          setProgress(100)
+          setTimeout(onComplete, 150)
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setProgress(100)
+          setTimeout(onComplete, 150)
+        }
+      } finally {
+        if (watchdog) clearTimeout(watchdog)
+      }
+    }
+    run()
+    return () => {
+      cancelled = true
+      if (watchdog) clearTimeout(watchdog)
+    }
+  }, [onRun, onComplete, started])
 
   useEffect(() => {
     const stepInterval = setInterval(() => {
