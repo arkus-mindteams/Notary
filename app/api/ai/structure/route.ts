@@ -39,7 +39,10 @@ function buildPrompt(): string {
     "- No mezcles superficies con boundaries; ignora totales de área (m2, m²) al construir boundaries.",
     "",
     "Superficies:",
-    "- Extrae superficies si existe una sección separada (encabezado “SUPERFICIE(S)”), como pares nombre/valor_m2 (ej. “PLANTA BAJA”: 59.280).",
+    "- Extrae superficies presentes en el documento como pares nombre/valor_m2 (ej. “PLANTA BAJA”: 59.280).",
+    '- Reconoce encabezados y etiquetas como: “SUPERFICIE”, “SUPERFICIE(S)”, “SUPERFICIE LOTE”, “SUPERFICIE TOTAL”, “SUPERFICIE TOTAL PRIVATIVA”, “SUPERFICIE DE ÁREA EDIFICADA”, “SUPERFICIE DE PATIO POSTERIOR/FRONTAL”, “SUPERFICIE DE PASILLO”, “SUPERFICIE DE JUNTA CONSTRUCTIVA”, así como abreviaturas “SUP.” (p. ej., “SUP. LOTE”, “SUP. TOTAL”).',
+    "- Acepta formatos con coma o punto decimal: 145,600 m² => 145.600.",
+    '- Devuelve nombres claros y concisos (ej. “LOTE”, “TOTAL PRIVATIVA”, “ÁREA EDIFICADA”, “PATIO POSTERIOR”).',
     "",
     "Nombre de unidad (unit.name):",
     '- Prioriza patrones como “UNIDAD <n/ código>” (ej. “UNIDAD 64”), “CUBO DE ILUMINACIÓN/ILUMINACION”, “JUNTA CONSTRUCTIVA <n>”, “CAJON DE ESTACIONAMIENTO/ESTACIONAMIENTO”.',
@@ -309,6 +312,76 @@ function simpleFallback(ocrText: string): StructuredUnit {
   }
 }
 
+function extractSurfacesFromText(ocrText: string): { name: string; value_m2: number }[] {
+  if (!ocrText) return []
+  const text = ocrText.replace(/\r/g, "")
+  const lines = text.split(/\n+/)
+  const out: { name: string; value_m2: number }[] = []
+
+  // Helper to parse a number with comma or dot decimals
+  const parseNum = (s: string): number => {
+    const trimmed = s.trim()
+    // If both separators appear, assume the last occurrence is the decimal separator
+    const lastComma = trimmed.lastIndexOf(",")
+    const lastDot = trimmed.lastIndexOf(".")
+    let normalized = trimmed
+    if (lastComma > lastDot) {
+      normalized = trimmed.replace(/\./g, "").replace(",", ".")
+    } else if (lastDot > lastComma) {
+      normalized = trimmed.replace(/,/g, "")
+    } else {
+      normalized = trimmed.replace(",", ".")
+    }
+    const n = Number.parseFloat(normalized)
+    return isNaN(n) ? NaN : n
+  }
+
+  const pushSurface = (nameRaw: string, valueRaw: string) => {
+    const value = parseNum(valueRaw)
+    if (!isNaN(value)) {
+      // Normalize name to Title Case without leading "SUPERFICIE"/"SUP."
+      let name = nameRaw.trim()
+      name = name.replace(/^SUPERFICIE(S)?\s*/i, "")
+      name = name.replace(/^SUP\.\s*/i, "")
+      name = name.replace(/[:=\-]+$/g, "").trim()
+      // If empty, use generic "TOTAL"
+      if (!name) name = "TOTAL"
+      // Title case
+      name = name
+        .toLowerCase()
+        .replace(/(^|[\s_-])([a-záéíóúñ])/g, (_m, sep, c) => `${sep}${c.toUpperCase()}`)
+      out.push({ name, value_m2: value })
+    }
+  }
+
+  // Pattern 1: SUPERFICIE <LABEL>: <VALUE> m2|m²
+  const reSurface = /(SUPERFICIE(?:S)?(?:\s+DE)?\s+[A-ZÁÉÍÓÚÑ0-9\s._-]{0,40})[:=]\s*([0-9][0-9.,]*)\s*m(?:2|²)\b/i
+  // Pattern 2: SUP. <LABEL>[:=]? <VALUE> m2|m²
+  const reSup = /(SUP\.\s+[A-ZÁÉÍÓÚÑ0-9\s._-]{1,40})[:=]?\s*([0-9][0-9.,]*)\s*m(?:2|²)\b/i
+  // Pattern 3: Standalone SUPERFICIE LOTE <VALUE>
+  const reLot = /(SUPERFICIE\s+LOTE)\s*[:=]?\s*([0-9][0-9.,]*)\s*m(?:2|²)\b/i
+
+  for (const raw of lines) {
+    const l = raw.trim()
+    let m = l.match(reSurface)
+    if (m) {
+      pushSurface(m[1], m[2])
+      continue
+    }
+    m = l.match(reSup)
+    if (m) {
+      pushSurface(m[1], m[2])
+      continue
+    }
+    m = l.match(reLot)
+    if (m) {
+      pushSurface("LOTE", m[2])
+      continue
+    }
+  }
+  return out
+}
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as StructuringRequest
@@ -373,6 +446,17 @@ export async function POST(req: Request) {
       /PROMOTORA|DESARROLLADORA|S\.?A\.?/i.test(badName)
     if (!result.unit?.name || isHeading) {
       result.unit = { name: pickUnitNameFromText(body.ocrText, result.unit?.name || "UNIDAD") }
+    }
+    // Extraer superficies heurísticamente y fusionar con las devueltas por la IA
+    const heurSurfaces = extractSurfacesFromText(filtered || body.ocrText)
+    if (!Array.isArray(result.surfaces)) result.surfaces = []
+    const names = new Set(result.surfaces.map((s: any) => (s?.name || "").toUpperCase()))
+    for (const s of heurSurfaces) {
+      const key = (s.name || "").toUpperCase()
+      if (!names.has(key)) {
+        result.surfaces.push({ name: s.name, value_m2: s.value_m2 })
+        names.add(key)
+      }
     }
     const resp: StructuringResponse = { result }
     cache.set(key, resp)
