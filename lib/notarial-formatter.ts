@@ -374,33 +374,45 @@ export function notarialize(colindanciasText: string, unitName: string): string 
   const base = collapseToBaseDirections(parsed)
 
   const parts: string[] = []
+  function buildPhrase(prefix: string, label: string, segs: ParsedSegment[]): string {
+    const dirLower = label.toLowerCase()
+    if (segs.length === 1) {
+      const s = segs[0]
+      const measure = formatMetersToWords(s.lengthMeters)
+      const abutter = transformAbutter(s.abutterRaw)
+      return `${prefix} ${dirLower}, en ${measure}, con ${abutter}`
+    }
+    const tramoCountWord = pluralizeTramos(segs.length)
+    const tramoPhrases: string[] = []
+    segs.forEach((s, idx) => {
+      const measure = formatMetersToWords(s.lengthMeters)
+      const abutter = transformAbutter(s.abutterRaw)
+      const ord = ordinalWord(idx + 1)
+      tramoPhrases.push(`el ${ord} de ${measure}, con ${abutter}`)
+    })
+    const last = tramoPhrases.pop()
+    const joined = tramoPhrases.length > 0 ? `${tramoPhrases.join(", ")}, y ${last}` : (last || "")
+    return `${prefix} ${dirLower}, en ${tramoCountWord} tramos, ${joined}`
+  }
   for (let i = 0; i < BASE_DIRECTIONS_ORDER.length; i++) {
     const dir = BASE_DIRECTIONS_ORDER[i]
     const segs = base.get(dir as BaseDirection)
     if (!segs || segs.length === 0) continue
 
-    const dirLower = dir.toLowerCase()
     const prefix = i === BASE_DIRECTIONS_ORDER.length - 1 ? "y, al" : i === 0 ? "Al" : "al"
+    parts.push(buildPhrase(prefix, dir, segs))
+  }
 
-    if (segs.length === 1) {
-      const s = segs[0]
-      const measure = formatMetersToWords(s.lengthMeters)
-      const abutter = transformAbutter(s.abutterRaw)
-      parts.push(`${prefix} ${dirLower}, en ${measure}, con ${abutter}`)
-    } else {
-      const tramoCountWord = pluralizeTramos(segs.length)
-      const tramoPhrases: string[] = []
-      segs.forEach((s, idx) => {
-        const measure = formatMetersToWords(s.lengthMeters)
-        const abutter = transformAbutter(s.abutterRaw)
-        const ord = ordinalWord(idx + 1)
-        tramoPhrases.push(`el ${ord} de ${measure}, con ${abutter}`)
-      })
-      // Join with commas and final "y"
-      const last = tramoPhrases.pop()
-      const joined = tramoPhrases.length > 0 ? `${tramoPhrases.join(", ")}, y ${last}` : (last || "")
-      parts.push(`${prefix} ${dirLower}, en ${tramoCountWord} tramos, ${joined}`)
-    }
+  // Append vertical directions after cardinals
+  const arribaSegs = parsed.get("ARRIBA")
+  const abajoSegs = parsed.get("ABAJO")
+  if (arribaSegs && arribaSegs.length > 0 && abajoSegs && abajoSegs.length > 0) {
+    parts.push(buildPhrase("por", "arriba", arribaSegs))
+    parts.push(buildPhrase("y, por", "abajo", abajoSegs))
+  } else if (arribaSegs && arribaSegs.length > 0) {
+    parts.push(buildPhrase("y, por", "arriba", arribaSegs))
+  } else if (abajoSegs && abajoSegs.length > 0) {
+    parts.push(buildPhrase("y, por", "abajo", abajoSegs))
   }
 
   // Join parts with semicolons and end with period.
