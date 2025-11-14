@@ -40,7 +40,7 @@ export async function extractTextWithTextract(
     if (!isPdf) {
       // Imagen -> flujo síncrono
       console.log("[ocr-client] Posting to /api/ocr/extract", { type: uploadFile.type, name: uploadFile.name })
-      opts?.onProgress?.("ocr", "in_progress")
+      opts?.onProgress?.("ocr_image", "in_progress")
       const form = new FormData()
       form.append("file", uploadFile)
       const res = await fetch("/api/ocr/extract", {
@@ -51,7 +51,7 @@ export async function extractTextWithTextract(
       console.log("[ocr-client] /api/ocr/extract status", res.status)
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
-      opts?.onProgress?.("ocr", "done")
+      opts?.onProgress?.("ocr_image", "done")
       return { text: data?.text || "" }
     } else {
       // PDF -> intentar primero OCR síncrono rasterizando con rotaciones; si no hay buen resultado, usar asíncrono
@@ -59,7 +59,7 @@ export async function extractTextWithTextract(
         const rotations = [0, 90, 180, 270]
         let bestText = ""
         let bestScore = -1
-        opts?.onProgress?.("ocr", "in_progress", "raster")
+        opts?.onProgress?.("ocr_raster", "in_progress")
         for (const rot of rotations) {
           const png = await rasterizePdfPageToPng(file, opts?.page ?? 1, rot)
           const form = new FormData()
@@ -81,7 +81,7 @@ export async function extractTextWithTextract(
         }
         if (bestScore > 0 && bestText.trim().length > 0) {
           console.log("[ocr-client] Using rasterized rotated OCR", { bestScore })
-          opts?.onProgress?.("ocr", "done")
+          opts?.onProgress?.("ocr_raster", "done")
           return { text: bestText }
         }
       } catch (e) {

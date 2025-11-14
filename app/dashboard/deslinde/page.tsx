@@ -184,11 +184,14 @@ export default function DeslindePage() {
     const watchdogMs = isPdf ? 300000 : 60000
     const processSteps = isPdf
       ? [
-          { key: "ocr", label: "OCR (Textract PDF)" },
+          { key: "ocr_raster", label: "OCR (Raster + Rotación)" },
+          { key: "ocr_upload", label: "Textract Upload S3" },
+          { key: "ocr_start", label: "Textract Start" },
+          { key: "ocr_status", label: "Textract Status" },
           { key: "ai", label: "AI (Structure)" },
         ]
       : [
-          { key: "ocr", label: "OCR (Textract Imagen)" },
+          { key: "ocr_image", label: "OCR (Textract Imagen)" },
           { key: "ai", label: "AI (Structure)" },
         ]
     return (
