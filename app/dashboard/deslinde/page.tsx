@@ -110,12 +110,16 @@ export default function DeslindePage() {
         setAiStructuredText(null)
       }
       const unitName = data?.result?.unit?.name || "UNIDAD"
-      // Superficie: sumar superficies detectadas (si existen) y formatear a 3 decimales
+      // Superficie: usar SOLO la superficie del LOTE (si existe) y formatear a 3 decimales
       const surfaces = (data as any)?.result?.surfaces as { name: string; value_m2: number }[] | undefined
-      const totalSurface = Array.isArray(surfaces)
-        ? surfaces.reduce((sum, s) => sum + (typeof s.value_m2 === "number" ? s.value_m2 : 0), 0)
-        : 0
-      const surfaceLabel = totalSurface > 0 ? `${totalSurface.toFixed(3)} m²` : ""
+      let lotSurface = 0
+      if (Array.isArray(surfaces)) {
+        const lot = surfaces.find((s) => typeof s?.name === "string" && /\bLOTE\b/i.test(s.name))
+        if (lot && typeof lot.value_m2 === "number") {
+          lotSurface = lot.value_m2
+        }
+      }
+      const surfaceLabel = lotSurface > 0 ? `${lotSurface.toFixed(3)} m²` : ""
       const newUnit: PropertyUnit = {
         id: unitName.toLowerCase().replace(/\s+/g, "-"),
         name: unitName,
