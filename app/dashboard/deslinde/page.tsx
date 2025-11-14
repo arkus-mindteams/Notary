@@ -114,9 +114,21 @@ export default function DeslindePage() {
       const surfaces = (data as any)?.result?.surfaces as { name: string; value_m2: number }[] | undefined
       let lotSurface = 0
       if (Array.isArray(surfaces)) {
+        // 1) Prefer explicit "LOTE"
         const lot = surfaces.find((s) => typeof s?.name === "string" && /\bLOTE\b/i.test(s.name))
         if (lot && typeof lot.value_m2 === "number") {
           lotSurface = lot.value_m2
+        } else {
+          // 2) Fallback: a "TOTAL" surface that is not PRIVATIVA/EDIFICADA/CONSTRUIDA/PATIO/PASILLO/ESTACIONAMIENTO/JUNTA/BALCON/AZOTEA
+          const blacklist = /(PRIVATIVA|EDIFICAD|CONSTRUID|PATIO|PASILLO|ESTACIONAMIENTO|JUNTA|BALC[ÓO]N|AZOTEA)/i
+          const totalCandidate = surfaces.find((s) => {
+            if (typeof s?.name !== "string") return false
+            const name = s.name.toUpperCase()
+            return /TOTAL/.test(name) && !blacklist.test(name)
+          })
+          if (totalCandidate && typeof totalCandidate.value_m2 === "number") {
+            lotSurface = totalCandidate.value_m2
+          }
         }
       }
       const surfaceLabel = lotSurface > 0 ? `${lotSurface.toFixed(3)} m²` : ""
