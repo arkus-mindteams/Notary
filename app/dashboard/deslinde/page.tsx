@@ -6,11 +6,13 @@ import { ProtectedRoute } from "@/components/protected-route"
 import { UploadZone } from "@/components/upload-zone"
 import { ProcessingScreen } from "@/components/processing-screen"
 import { ValidationWizard } from "@/components/validation-wizard"
+import { DocumentViewer } from "@/components/document-viewer"
 import { simulateOCR, type PropertyUnit } from "@/lib/ocr-simulator"
 import { createStructuredSegments, type TransformedSegment } from "@/lib/text-transformer"
 import { FileText, Scale, Shield, ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
+import { extractTextWithTextract } from "@/lib/ocr-client"
 
 type AppState = "upload" | "processing" | "validation"
 
@@ -20,31 +22,168 @@ export default function DeslindePage() {
   const [documentUrl, setDocumentUrl] = useState<string>("")
   const [units, setUnits] = useState<PropertyUnit[]>([])
   const [unitSegments, setUnitSegments] = useState<Map<string, TransformedSegment[]>>(new Map())
+  const [processingStarted, setProcessingStarted] = useState(false)
+  const [aiStructuredText, setAiStructuredText] = useState<string | null>(null)
 
   const handleFileSelect = async (file: File) => {
     setSelectedFile(file)
 
+    if (documentUrl && !documentUrl.startsWith("/")) {
+      URL.revokeObjectURL(documentUrl)
+    }
     const url = URL.createObjectURL(file)
     setDocumentUrl(url)
 
+    // Iniciar procesamiento inmediatamente al cargar
+    setProcessingStarted(false)
+    setAiStructuredText(null)
+    setUnits([])
+    setUnitSegments(new Map())
     setAppState("processing")
   }
 
-  const handleProcessingComplete = async () => {
+  const handleProcessingComplete = async (update?: (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => void) => {
     if (!selectedFile) return
+    if (processingStarted) {
+      console.log("[deslinde] processing already started, skipping duplicate run")
+      return
+    }
+    setProcessingStarted(true)
 
-    const ocrResult = await simulateOCR(selectedFile)
+    // Paso 1: OCR real (con fallback a simulación si falla)
+    let text = ""
+    try {
+      const isPdf = selectedFile.type === "application/pdf" || selectedFile.name.toLowerCase().endsWith(".pdf")
+      const res = await extractTextWithTextract(selectedFile, {
+        timeoutMs: isPdf ? 300000 : 60000,
+        onProgress: (key, status, detail) => update?.(key, status, detail),
+      })
+      text = res.text || ""
+    } catch (e) {
+      const sim = await simulateOCR(selectedFile)
+      const segmentsMap = new Map<string, TransformedSegment[]>()
+      setUnits(sim.extractedData.units)
+      sim.extractedData.units.forEach((unit) => {
+        const segments = createStructuredSegments(unit)
+        segmentsMap.set(unit.id, segments)
+      })
+      setUnitSegments(segmentsMap)
+      setAppState("validation")
+      return
+    }
 
-    setUnits(ocrResult.extractedData.units)
-
-    const segmentsMap = new Map<string, TransformedSegment[]>()
-    ocrResult.extractedData.units.forEach((unit) => {
-      const segments = createStructuredSegments(unit)
-      segmentsMap.set(unit.id, segments)
-    })
-    setUnitSegments(segmentsMap)
+    // Paso 2: Pasar texto a la IA para estructurar (con fallback a OCR crudo)
+    try {
+      update?.("ai", "in_progress")
+      const resp = await fetch("/api/ai/structure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ocrText: text }),
+      })
+      if (!resp.ok) throw new Error(await resp.text())
+      const data = await resp.json() as { result: { unit: { name: string }, boundaries: any[], surfaces?: { name: string, value_m2: number }[] } }
+      update?.("ai", "done")
+      try {
+        const dirEs: Record<string, string> = {
+          WEST: "OESTE",
+          NORTHWEST: "NOROESTE",
+          NORTH: "NORTE",
+          NORTHEAST: "NORESTE",
+          EAST: "ESTE",
+          SOUTHEAST: "SURESTE",
+          SOUTH: "SUR",
+          SOUTHWEST: "SUROESTE",
+          UP: "ARRIBA",
+          DOWN: "ABAJO",
+        }
+        const boundaries = (data as any).result?.boundaries || []
+        boundaries.sort((a: any, b: any) => (a.order_index ?? 0) - (b.order_index ?? 0))
+        const lines = boundaries.map((b: any) => {
+          const d = (b.direction || "").toUpperCase()
+          const name = dirEs[d] || d
+          const len = typeof b.length_m === "number" ? b.length_m.toFixed(3) : String(b.length_m || "")
+          const who = (b.abutter || "").toString().trim()
+          return `${name}: EN ${len} m CON ${who}`
+        })
+        setAiStructuredText(lines.join("\n"))
+      } catch {
+        setAiStructuredText(null)
+      }
+      const unitName = data?.result?.unit?.name || "UNIDAD"
+      // Superficie: usar SOLO la superficie del LOTE (si existe) y formatear a 3 decimales
+      const surfaces = (data as any)?.result?.surfaces as { name: string; value_m2: number }[] | undefined
+      let lotSurface = 0
+      if (Array.isArray(surfaces)) {
+        // 1) Prefer explicit "LOTE"
+        const lot = surfaces.find((s) => typeof s?.name === "string" && /\bLOTE\b/i.test(s.name))
+        if (lot && typeof lot.value_m2 === "number") {
+          lotSurface = lot.value_m2
+        } else {
+          // 2) Fallback: a "TOTAL" surface that is not PRIVATIVA/EDIFICADA/CONSTRUIDA/PATIO/PASILLO/ESTACIONAMIENTO/JUNTA/BALCON/AZOTEA
+          const blacklist = /(PRIVATIVA|EDIFICAD|CONSTRUID|PATIO|PASILLO|ESTACIONAMIENTO|JUNTA|BALC[ÓO]N|AZOTEA)/i
+          const totalCandidate = surfaces.find((s) => {
+            if (typeof s?.name !== "string") return false
+            const name = s.name.toUpperCase()
+            return /TOTAL/.test(name) && !blacklist.test(name)
+          })
+          if (totalCandidate && typeof totalCandidate.value_m2 === "number") {
+            lotSurface = totalCandidate.value_m2
+          }
+        }
+      }
+      const surfaceLabel = lotSurface > 0 ? `${lotSurface.toFixed(3)} m²` : ""
+      const newUnit: PropertyUnit = {
+        id: unitName.toLowerCase().replace(/\s+/g, "-"),
+        name: unitName,
+        surface: surfaceLabel,
+        boundaries: { west: [], north: [], east: [], south: [] },
+      }
+      const dirMap: Record<string, keyof PropertyUnit["boundaries"]> = {
+        WEST: "west",
+        NORTH: "north",
+        EAST: "east",
+        SOUTH: "south",
+      }
+      for (const b of data?.result?.boundaries || []) {
+        const key = dirMap[(b.direction || "").toUpperCase()]
+        if (!key) continue
+        newUnit.boundaries[key].push({
+          id: `${newUnit.id}-${key}-${newUnit.boundaries[key].length}`,
+          measurement: String(b.length_m ?? ""),
+          unit: "M",
+          description: `CON ${b.abutter || ""}`.trim(),
+          regionId: "",
+        })
+      }
+      setUnits([newUnit])
+      const segmentsMap = new Map<string, TransformedSegment[]>()
+      const segments = createStructuredSegments(newUnit)
+      segmentsMap.set(newUnit.id, segments)
+      setUnitSegments(segmentsMap)
+    } catch {
+      setAiStructuredText(null)
+      const unit: PropertyUnit = {
+        id: "unit-ocr",
+        name: "UNIDAD",
+        surface: "",
+        boundaries: { west: [], north: [], east: [], south: [] },
+      }
+      setUnits([unit])
+      const segmentsMap = new Map<string, TransformedSegment[]>()
+      segmentsMap.set(unit.id, [
+        {
+          id: "unit-ocr-0",
+          originalText: text || "No se extrajo texto.",
+          notarialText: text || "No se extrajo texto.",
+          regionId: "",
+          direction: "OCR",
+        },
+      ])
+      setUnitSegments(segmentsMap)
+    }
 
     setAppState("validation")
+    setProcessingStarted(false)
   }
 
   const handleBack = () => {
@@ -72,6 +211,21 @@ export default function DeslindePage() {
   }
 
   if (appState === "processing") {
+    const isPdf = !!selectedFile && (selectedFile.type === "application/pdf" || selectedFile.name.toLowerCase().endsWith(".pdf"))
+    const watchdogMs = isPdf ? 300000 : 60000
+    const processSteps = isPdf
+      ? [
+          { key: "ocr_raster", label: "OCR (Raster + Rotación)" },
+          { key: "ocr_upload", label: "Textract Upload S3" },
+          { key: "ocr_start", label: "Textract Start" },
+          { key: "ocr_status", label: "Textract Status" },
+          { key: "ai", label: "AI (Structure)" },
+        ]
+      : [
+          { key: "ocr_image", label: "OCR (Textract Imagen)" },
+          { key: "ocr_image_rotate", label: "OCR (Rotación Imagen)" },
+          { key: "ai", label: "AI (Structure)" },
+        ]
     return (
       <ProtectedRoute>
         <DashboardLayout>
@@ -82,7 +236,23 @@ export default function DeslindePage() {
                 Volver
               </Button>
             </div>
-            <ProcessingScreen fileName={selectedFile?.name || ""} onComplete={handleProcessingComplete} />
+            <ProcessingScreen
+              fileName={selectedFile?.name || ""}
+              onRun={async (update) => {
+                try {
+                  await handleProcessingComplete(update)
+                } catch {
+                  update("ocr", "error")
+                  update("ocr_upload", "error")
+                  update("ocr_start", "error")
+                  update("ocr_status", "error")
+                  update("ai", "error")
+                }
+              }}
+              onComplete={() => setAppState("validation")}
+              watchdogMs={watchdogMs}
+              steps={processSteps}
+            />
           </div>
         </DashboardLayout>
       </ProtectedRoute>
@@ -99,6 +269,7 @@ export default function DeslindePage() {
             unitSegments={unitSegments} 
             onBack={handleBack} 
             fileName={selectedFile?.name}
+            aiStructuredText={aiStructuredText || undefined}
           />
         </DashboardLayout>
       </ProtectedRoute>
@@ -148,6 +319,8 @@ export default function DeslindePage() {
 
         {/* Upload Zone */}
         <UploadZone onFileSelect={handleFileSelect} />
+
+        {/* Ya no se muestra preview ni botón de Procesar; el flujo inicia automáticamente */}
 
         {/* Instructions */}
         <div className="bg-muted/30 rounded-lg p-6 space-y-4">

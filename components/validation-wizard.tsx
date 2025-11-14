@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react"
 import { DocumentViewer } from "./document-viewer"
-import { TextSegmentPanel } from "./text-segment-panel"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -18,9 +17,10 @@ interface ValidationWizardProps {
   unitSegments: Map<string, TransformedSegment[]>
   onBack: () => void
   fileName?: string
+  aiStructuredText?: string
 }
 
-export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fileName }: ValidationWizardProps) {
+export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fileName, aiStructuredText }: ValidationWizardProps) {
   const [currentUnitIndex, setCurrentUnitIndex] = useState(0)
   const [editedUnits, setEditedUnits] = useState<Map<string, TransformedSegment[]>>(unitSegments)
   const [authorizedUnits, setAuthorizedUnits] = useState<Set<string>>(new Set())
@@ -28,6 +28,9 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
   const [lastSaved, setLastSaved] = useState<Date>(new Date())
   const [hasChanges, setHasChanges] = useState(false)
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null)
+  const [aiText, setAiText] = useState<string>(aiStructuredText || "")
+  const [notarialDraft, setNotarialDraft] = useState<string>("")
+  const [isGeneratingNotarial, setIsGeneratingNotarial] = useState<boolean>(false)
 
   const currentUnit = units[currentUnitIndex]
   const progress = ((currentUnitIndex + 1) / units.length) * 100
@@ -50,6 +53,11 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
       return () => clearTimeout(timer)
     }
   }, [hasChanges])
+
+  useEffect(() => {
+    setAiText(aiStructuredText || "")
+    setNotarialDraft("")
+  }, [aiStructuredText])
 
   const getUnitRegionId = (unitId: string): string => {
     const unitIdMap: Record<string, string> = {
@@ -276,20 +284,67 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                     </div>
                   </div>
                 </div>
-
-                <div className="flex-1 min-h-0 overflow-auto">
-                  <TextSegmentPanel
-                    title="Texto Notarial"
-                    subtitle="Revisa y edita si es necesario"
-                    segments={editedUnits.get(currentUnit.id) || []}
-                    highlightedRegion={selectedRegion}
-                    onSegmentHover={handleSegmentClick}
-                    showNotarial={true}
-                    editable={true}
-                    onSegmentsChange={(newSegments) => handleSegmentsChange(currentUnit.id, newSegments)}
-                    unitRegionId=""
-                    unitId={currentUnit.id}
-                  />
+                {/* Content area to expand inputs */}
+                <div className="flex-1 p-4 sm:p-6 overflow-hidden">
+                  <div className="flex flex-col gap-4 h-full">
+                    {/* Colindancias (editable) */}
+                    {(aiText || aiStructuredText) && (
+                      <div className="flex flex-col h-1/2">
+                        <div className="text-xs font-medium text-muted-foreground">Colindancias</div>
+                        <textarea
+                          className="mt-2 w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
+                          value={aiText}
+                          onChange={(e) => setAiText(e.target.value)}
+                        />
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <Button
+                            size="sm"
+                            variant="default"
+                            disabled={!aiText || isGeneratingNotarial}
+                            onClick={async () => {
+                              try {
+                                setIsGeneratingNotarial(true)
+                                setNotarialDraft("")
+                                const resp = await fetch("/api/ai/notarialize", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({
+                                    unitName: currentUnit.name,
+                                    colindanciasText: aiText,
+                                  }),
+                                })
+                                if (!resp.ok) {
+                                  const msg = await resp.text()
+                                  throw new Error(msg)
+                                }
+                                const data = await resp.json() as { notarialText: string }
+                                setNotarialDraft(data.notarialText || "")
+                              } catch (e) {
+                                console.error("[ui] notarialize failed", e)
+                                setNotarialDraft("")
+                              } finally {
+                                setIsGeneratingNotarial(false)
+                              }
+                            }}
+                            className="gap-2"
+                          >
+                            {isGeneratingNotarial ? "Generando..." : "Generar redacción notarial"}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                    {/* Redacción notarial */}
+                    {notarialDraft && (
+                      <div className="flex flex-col h-1/2">
+                        <div className="text-xs font-medium text-muted-foreground">Redacción notarial</div>
+                        <textarea
+                          className="mt-2 w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
+                          value={notarialDraft}
+                          onChange={(e) => setNotarialDraft(e.target.value)}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               </Card>
             </div>
