@@ -141,7 +141,7 @@ function formatMetersToWords(lengthMeters: number): string {
 
 function capitalizeSentenceCase(input: string): string {
   const lower = input.toLowerCase()
-  return lower.replace(/(^|[\\.\\s_\\-])([a-záéíóúñ])/g, (m, sep, c) => `${sep}${c.toUpperCase()}`)
+  return lower.replace(/(^|[.\s_\-])([a-záéíóúñ])/g, (m, sep, c) => `${sep}${c.toUpperCase()}`)
 }
 
 function digitsToSpanish(nStr: string): string {
@@ -154,7 +154,7 @@ function replaceHyphenNumberWithGuion(text: string): string {
 }
 
 function appendTrailingNumberInWords(text: string): string {
-  return text.replace(/(\\d+)$/g, (_m, d) => `${d} (${digitsToSpanish(d)})`)
+  return text.replace(/(\d+)$/g, (_m, d) => `${d} (${digitsToSpanish(d)})`)
 }
 
 export function formatUnitHeader(unitName: string): string {
@@ -195,13 +195,13 @@ function translateKnownPrefixes(text: string): string {
 
 function transformCodeLikeSequence(seq: string): string {
   // Split letters/digits/other while preserving sequence
-  const parts = seq.match(/[A-Za-zÁÉÍÓÚÑ]+|\\d+|[._-]+/g)
+  const parts = seq.match(/[A-Za-zÁÉÍÓÚÑ]+|\d+|[._-]+/g)
   if (!parts) return seq.toLowerCase()
   const transformed: string[] = []
   for (const part of parts) {
     if (/^[A-Za-zÁÉÍÓÚÑ]+$/.test(part)) {
       transformed.push(normalizeAcronymToken(part.toUpperCase()))
-    } else if (/^\\d+$/.test(part)) {
+    } else if (/^\d+$/.test(part)) {
       transformed.push(numberTokenToWords(part))
     } else if (part === "-") {
       transformed.push("guion")
@@ -266,11 +266,11 @@ function transformAbutter(abutter: string): string {
 
 const DIRECTION_REGEX = /^(OESTE|NOROESTE|NORTE|NORESTE|ESTE|SURESTE|SUR|SUROESTE|ARRIBA|ABAJO)\s*[:\-]?\s*/i
 const LENGTH_PATTERNS = [
-  /(?:^|\\s)EN\\s*([0-9]+(?:[\\.,][0-9]{1,3})?)\\s*m\\b/i, // EN <n> m
-  /\\bLc\\s*=\\s*([0-9]+(?:[\\.,][0-9]{1,3})?)\\s*m?\\b/i, // Lc=<n> (optional m)
-  /\\b([0-9]+(?:[\\.,][0-9]{1,3})?)\\s*m\\b/i, // <n> m
+  /(?:^|\s)EN\s*([0-9]+(?:[\.,][0-9]{1,3})?)\s*m\b/i, // EN <n> m
+  /\bLc\s*=\s*([0-9]+(?:[\.,][0-9]{1,3})?)\s*m?\b/i, // Lc=<n> (optional m)
+  /\b([0-9]+(?:[\.,][0-9]{1,3})?)\s*m\b/i, // <n> m
 ]
-const AFTER_CON_REGEX = /\\bCON\\b\\s*(.+)$/i
+const AFTER_CON_REGEX = /\bCON\b\s*(.+)$/i
 
 function normalizeNumber(value: string): number {
   const v = value.replace(",", ".")
@@ -282,7 +282,7 @@ function parseColindancias(colText: string): Map<DirectionKey, ParsedSegment[]> 
   const lines = colText
     .split(/\r?\n/)
     .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !/^SUPERFICIE/i.test(l) && !/\\b(m2|m\\^2|metros cuadrados)\\b/i.test(l))
+    .filter((l) => l.length > 0 && !/^SUPERFICIE/i.test(l) && !/\b(m2|m\^2|metros cuadrados)\b/i.test(l))
 
   const map = new Map<DirectionKey, ParsedSegment[]>()
   let currentDir: DirectionKey | null = null
