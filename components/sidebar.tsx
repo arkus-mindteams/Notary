@@ -5,17 +5,13 @@ import { useRouter, usePathname } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { 
-  FileText, 
-  LogOut, 
-  Menu, 
-  X, 
+import {
+  FileText,
+  LogOut,
   Shield,
   ChevronLeft,
   ChevronRight,
-  Bell
 } from 'lucide-react'
-import Image from 'next/image'
 
 interface SidebarProps {
   isCollapsed: boolean
@@ -59,7 +55,7 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
               </div>
             </div>
           )}
-          
+
           <Button
             variant="ghost"
             size="sm"
@@ -74,33 +70,18 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
       {/* Navegación */}
       <div className="flex-1 p-4 space-y-2">
         <Button
-          variant={pathname === '/dashboard/deslinde' ? 'default' : 'ghost'}
+          variant={pathname === '/dashboard/deslinde?reset=1' ? 'default' : 'ghost'}
           className={`w-full justify-start ${
             isCollapsed ? 'px-2' : 'px-3'
           } ${
-            pathname === '/dashboard/deslinde' 
-              ? 'bg-blue-600 text-white hover:bg-blue-700' 
+            pathname === '/dashboard/deslinde?reset=1'
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
               : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
           }`}
-          onClick={() => handleNavigation('/dashboard/deslinde')}
+          onClick={() => handleNavigation('/dashboard/deslinde?reset=1')}
         >
           <FileText className="h-4 w-4" />
           {!isCollapsed && <span className="ml-3">Lectura de Deslinde</span>}
-        </Button>
-        
-        <Button
-          variant={pathname === '/dashboard/preaviso' ? 'default' : 'ghost'}
-          className={`w-full justify-start ${
-            isCollapsed ? 'px-2' : 'px-3'
-          } ${
-            pathname === '/dashboard/preaviso' 
-              ? 'bg-blue-600 text-white hover:bg-blue-700' 
-              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
-          }`}
-          onClick={() => handleNavigation('/dashboard/preaviso')}
-        >
-          <Bell className="h-4 w-4" />
-          {!isCollapsed && <span className="ml-3">Pre-aviso</span>}
         </Button>
       </div>
 

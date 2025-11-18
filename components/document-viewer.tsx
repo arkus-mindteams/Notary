@@ -1,7 +1,7 @@
-"use client"
+'use client'
 
-import { useState } from "react"
-import { ZoomIn, ZoomOut, RotateCw, Maximize2, FileText, AlertCircle } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { ZoomIn, ZoomOut, RotateCw, FileText, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -16,30 +16,36 @@ interface DocumentViewerProps {
   highlightedRegion?: string | null
   onRegionHover?: (regionId: string | null) => void
   fileName?: string
-  controlledRotation?: number
-  onRotationChange?: (deg: number) => void
 }
 
-export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, fileName, controlledRotation, onRotationChange }: DocumentViewerProps) {
+export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, fileName }: DocumentViewerProps) {
   const [zoom, setZoom] = useState(100)
-  const [rotation, setRotation] = useState(controlledRotation ?? 0)
-  if (typeof controlledRotation === "number" && controlledRotation !== rotation) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    setRotation(controlledRotation)
-  }
+  const [rotation, setRotation] = useState(0)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
 
-  // Detectar el tipo de archivo
   const fileTypeInfo: FileTypeInfo = detectFileType(documentUrl, fileName)
-  
+
   const activeRegion = highlightedRegion
     ? documentRegions.regions[highlightedRegion as keyof typeof documentRegions.regions]
     : null
 
-  console.log("[v0] File type detected:", fileTypeInfo)
-  console.log("[v0] Highlighted region:", highlightedRegion, activeRegion)
+  // Cada vez que cambian rotación o zoom, recentramos el scroll alrededor del documento
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+
+    const centerX = (el.scrollWidth - el.clientWidth) / 2
+    const centerY = (el.scrollHeight - el.clientHeight) / 2
+
+    el.scrollTo({
+      left: Math.max(0, centerX),
+      top: Math.max(0, centerY),
+    })
+  }, [rotation, zoom, documentUrl])
 
   return (
     <Card className="flex flex-col h-full">
+      {/* Barra de controles externa para todos los tipos */}
       <div className="flex items-center justify-between gap-2 p-2 sm:p-3 border-b bg-muted/30">
         <div className="flex items-center gap-2">
           <span className="text-xs sm:text-sm font-medium">Documento Original</span>
@@ -54,7 +60,7 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setZoom(Math.max(50, zoom - 10))}
+            onClick={() => setZoom((z) => Math.max(50, z - 10))}
             className="h-8 w-8 p-0 sm:h-9 sm:w-9"
           >
             <ZoomOut className="h-3 w-3 sm:h-4 sm:w-4" />
@@ -63,7 +69,7 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setZoom(Math.min(200, zoom + 10))}
+            onClick={() => setZoom((z) => Math.min(300, z + 10))}
             className="h-8 w-8 p-0 sm:h-9 sm:w-9"
           >
             <ZoomIn className="h-3 w-3 sm:h-4 sm:w-4" />
@@ -71,21 +77,18 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => {
-              const next = (rotation + 90) % 360
-              onRotationChange ? onRotationChange(next) : setRotation(next)
-            }}
+            onClick={() => setRotation((r) => (r + 90) % 360)}
             className="h-8 w-8 p-0 sm:h-9 sm:w-9"
           >
             <RotateCw className="h-3 w-3 sm:h-4 sm:w-4" />
           </Button>
-          <Button variant="ghost" size="sm" className="h-8 w-8 p-0 sm:h-9 sm:w-9 hidden sm:flex">
-            <Maximize2 className="h-3 w-3 sm:h-4 sm:w-4" />
-          </Button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto bg-muted/10 p-2 sm:p-4">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-auto bg-muted/10 p-2 sm:p-4"
+      >
         {!fileTypeInfo.isSupported ? (
           <div className="flex items-center justify-center min-h-full">
             <Alert variant="destructive" className="max-w-md">
@@ -95,7 +98,7 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
               </AlertDescription>
             </Alert>
           </div>
-        ) : fileTypeInfo.type === 'pdf' ? (
+        ) : fileTypeInfo.type === "pdf" ? (
           <DirectPDFViewer
             fileUrl={documentUrl}
             highlightedRegion={highlightedRegion}
@@ -103,7 +106,7 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
             zoom={zoom}
             rotation={rotation}
           />
-        ) : fileTypeInfo.type === 'docx' ? (
+        ) : fileTypeInfo.type === "docx" ? (
           <DOCXViewer
             fileUrl={documentUrl}
             fileName={fileName}
@@ -112,7 +115,7 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
             zoom={zoom}
             rotation={rotation}
           />
-        ) : fileTypeInfo.type === 'image' ? (
+        ) : fileTypeInfo.type === "image" ? (
           <div className="flex items-center justify-center min-h-full">
             <div
               style={{

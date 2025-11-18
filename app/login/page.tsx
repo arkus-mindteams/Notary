@@ -9,7 +9,6 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Shield, Mail, Lock, Eye, EyeOff } from 'lucide-react'
-import Image from 'next/image'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('abogado@notaria.com')
@@ -135,18 +134,8 @@ export default function LoginPage() {
               ¿Olvidó su contraseña?
             </a>
           </div>
-
-          {/* Credenciales de prueba */}
-          <div className="bg-gray-100 rounded-lg p-4 space-y-2">
-            <p className="text-sm font-medium text-gray-700">Credenciales de prueba:</p>
-            <div className="text-xs text-gray-600 space-y-1">
-              <p><span className="font-medium">Email:</span> abogado@notaria.com</p>
-              <p><span className="font-medium">Contraseña:</span> demo123</p>
-            </div>
-          </div>
         </CardContent>
       </Card>
     </div>
   )
 }
-
