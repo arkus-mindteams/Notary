@@ -107,7 +107,7 @@ export default function DashboardPage() {
             
             <div className="pt-4">
               <Button asChild size="lg" className="w-full md:w-auto">
-                <Link href="/dashboard/deslinde">
+                <Link href="/dashboard/deslinde?reset=1">
                   <Upload className="h-4 w-4 mr-2" />
                   Iniciar Lectura de Deslinde
                 </Link>

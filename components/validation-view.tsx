@@ -66,6 +66,8 @@ export function ValidationView({ documentUrl, units, unitSegments, onBack }: Val
       allSegments.push(...segments)
     })
 
+    // En esta vista aún exportamos todas las unidades;
+    // podemos filtrar aquí si en el futuro manejamos autorizaciones.
     const documentContent = generateNotarialDocument(allSegments, metadata, units, editedUnits)
     const filename = generateFilename(metadata.propertyName)
     downloadDocument(documentContent, filename)
