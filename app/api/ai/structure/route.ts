@@ -382,6 +382,56 @@ function extractSurfacesFromText(ocrText: string): { name: string; value_m2: num
   return out
 }
 
+// Detect labeled internal parts (cubo de iluminación, juntas, estacionamiento, áreas comunes, etc.)
+// even when they don't carry an explicit surface value.
+function extractLabeledPartsFromText(ocrText: string): { name: string }[] {
+  if (!ocrText) return []
+  const text = ocrText.replace(/\r/g, "")
+  const lines = text.split(/\n+/)
+  const names = new Set<string>()
+
+  for (const raw of lines) {
+    const original = raw.trim()
+    if (!original) continue
+    const upper = original.toUpperCase()
+
+    // Cubo de iluminación
+    if (/^CUBO DE ILUMINACI[ÓO]N\b/.test(upper)) {
+      names.add("CUBO DE ILUMINACIÓN")
+      continue
+    }
+
+    // Junta constructiva con número
+    if (/^JUNTA CONSTRUCTIVA\s+\d+/.test(upper)) {
+      // Normalizamos capitalización pero preservamos el número
+      const normalized = original
+        .toLowerCase()
+        .replace(/(^|\s)([a-záéíóúñ])/g, (_m, sep, c) => `${sep}${c.toUpperCase()}`)
+      names.add(normalized)
+      continue
+    }
+
+    // Cajón de estacionamiento / Estacionamiento
+    if (/^(CAJ[ÓO]N DE ESTACIONAMIENTO|CAJON DE ESTACIONAMIENTO|ESTACIONAMIENTO)\b/.test(upper)) {
+      names.add("CAJÓN DE ESTACIONAMIENTO")
+      continue
+    }
+
+    // Áreas comunes
+    if (/^ÁREAS COMUNES\b|^AREAS COMUNES\b/.test(upper)) {
+      // Diferenciar áreas comunes generales de servicio si es posible
+      if (/SERVICIO/.test(upper)) {
+        names.add("Áreas comunes de servicio")
+      } else {
+        names.add("Áreas comunes")
+      }
+      continue
+    }
+  }
+
+  return Array.from(names).map((name) => ({ name }))
+}
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as StructuringRequest
@@ -447,14 +497,29 @@ export async function POST(req: Request) {
     if (!result.unit?.name || isHeading) {
       result.unit = { name: pickUnitNameFromText(body.ocrText, result.unit?.name || "UNIDAD") }
     }
-    // Extraer superficies heurísticamente y fusionar con las devueltas por la IA
-    const heurSurfaces = extractSurfacesFromText(filtered || body.ocrText)
+    // Extraer superficies heurísticamente y fusionar con las devueltas por la IA.
+    // IMPORTANTE: usamos SIEMPRE el OCR COMPLETO para no perder superficies que
+    // suelen venir fuera del bloque de "Medidas y Colindancias".
+    const heurSurfaces = extractSurfacesFromText(body.ocrText)
     if (!Array.isArray(result.surfaces)) result.surfaces = []
     const names = new Set(result.surfaces.map((s: any) => (s?.name || "").toUpperCase()))
+
+    // 1) Superficies con valor numérico (m²)
     for (const s of heurSurfaces) {
       const key = (s.name || "").toUpperCase()
       if (!names.has(key)) {
         result.surfaces.push({ name: s.name, value_m2: s.value_m2 })
+        names.add(key)
+      }
+    }
+
+    // 2) Partes internas etiquetadas sin valor (cubo de iluminación, juntas, etc.)
+    const labeledParts = extractLabeledPartsFromText(body.ocrText)
+    for (const p of labeledParts) {
+      const key = (p.name || "").toUpperCase()
+      if (!names.has(key)) {
+        // Usamos value_m2 = 0 para indicar "sin valor específico conocido"
+        result.surfaces.push({ name: p.name, value_m2: 0 })
         names.add(key)
       }
     }

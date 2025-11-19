@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Download, ExternalLink, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -17,11 +17,13 @@ export default function DirectPDFViewer({
   fileUrl,
   highlightedRegion,
   onRegionHover,
-  zoom,
   rotation,
 }: DirectPDFViewerProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const wrapperRef = useRef<HTMLDivElement | null>(null)
+  const objectRef = useRef<HTMLObjectElement | null>(null)
+  const [baseSize, setBaseSize] = useState<{ width: number; height: number } | null>(null)
 
   useEffect(() => {
     setIsLoading(true)
@@ -49,6 +51,21 @@ export default function DirectPDFViewer({
     window.open(fileUrl, "_blank")
   }
 
+  // Medir tamaño base del visor PDF una vez cargado
+  const handleObjectLoad = () => {
+    setIsLoading(false)
+    setError(null)
+
+    // Medimos después de que el navegador haya layoutado el PDF
+    requestAnimationFrame(() => {
+      if (!objectRef.current || baseSize) return
+      const rect = objectRef.current.getBoundingClientRect()
+      if (rect.width && rect.height) {
+        setBaseSize({ width: rect.width, height: rect.height })
+      }
+    })
+  }
+
   if (error) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -59,13 +76,14 @@ export default function DirectPDFViewer({
     )
   }
 
-  // 100% = documento al ancho completo del contenedor
-  const clampedZoom = Math.min(300, Math.max(50, zoom))
-  const scale = clampedZoom / 100
   const normalizedRotation = ((rotation % 360) + 360) % 360
 
+  // Dimensiones objetivo del contenedor según el tamaño base
+  const targetWidth = baseSize ? baseSize.width : undefined
+  const targetHeight = baseSize ? baseSize.height : undefined
+
   return (
-    <div className="relative flex items-center justify-center min-h-[400px] w-full h-full">
+    <div className="relative min-h-[400px] w-full h-full">
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-90 z-10 rounded-lg">
           <div className="flex flex-col items-center gap-4">
@@ -76,21 +94,22 @@ export default function DirectPDFViewer({
       )}
 
       <div
-        className="relative w-full max-w-full"
+        ref={wrapperRef}
+        className="relative mx-auto"
         style={{
-          transform: `scale(${scale}) rotate(${normalizedRotation}deg)`,
+          width: targetWidth ?? "100%",
+          height: targetHeight ?? "80vh",
+          transform: `rotate(${normalizedRotation}deg)`,
           transformOrigin: "center center",
-          transition: "transform 0.2s ease-in-out",
+          transition: "transform 0.2s ease-in-out, width 0.2s ease-in-out, height 0.2s ease-in-out",
         }}
       >
-        {/* Capa transparente para que el drag del contenedor siga funcionando */}
-        <div className="pointer-events-none absolute inset-0 z-10" />
-
         <object
-          data={`${fileUrl}#toolbar=0&navpanes=0&scrollbar=1&view=FitH`}
+          ref={objectRef}
+          data={fileUrl}
           type="application/pdf"
-          className="block w-full h-[80vh]"
-          onLoad={() => setIsLoading(false)}
+          className="block w-full h-full"
+          onLoad={handleObjectLoad}
           onError={() => {
             setIsLoading(false)
             setError("Error al cargar el PDF. El archivo puede estar corrupto o no ser un PDF válido.")

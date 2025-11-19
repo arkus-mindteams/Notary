@@ -83,6 +83,15 @@ function DeslindePageInner() {
         segmentsMap.set(unit.id, segments)
       })
       setUnitSegments(segmentsMap)
+
+      // Usar texto notarial/original como base de "Colindancias" para el textarea
+      const allSegments = Array.from(segmentsMap.values()).flat()
+      const fallbackText = allSegments
+        .map((seg) => seg.notarialText || seg.originalText || "")
+        .filter(Boolean)
+        .join("\n\n")
+      setAiStructuredText(fallbackText || null)
+
       setAppState("validation")
       return
     }
@@ -125,16 +134,17 @@ function DeslindePageInner() {
         setAiStructuredText(null)
       }
       const unitName = data?.result?.unit?.name || "UNIDAD"
-      // Superficie: usar SOLO la superficie del LOTE (si existe) y formatear a 3 decimales
       const surfaces = (data as any)?.result?.surfaces as { name: string; value_m2: number }[] | undefined
+
+      // 1) Unidad principal (LOTE / TOTAL)
       let lotSurface = 0
+      let lotNameUpper: string | null = null
       if (Array.isArray(surfaces)) {
-        // 1) Prefer explicit "LOTE"
         const lot = surfaces.find((s) => typeof s?.name === "string" && /\bLOTE\b/i.test(s.name))
         if (lot && typeof lot.value_m2 === "number") {
           lotSurface = lot.value_m2
+          lotNameUpper = lot.name.toUpperCase()
         } else {
-          // 2) Fallback: a "TOTAL" surface that is not PRIVATIVA/EDIFICADA/CONSTRUIDA/PATIO/PASILLO/ESTACIONAMIENTO/JUNTA/BALCON/AZOTEA
           const blacklist = /(PRIVATIVA|EDIFICAD|CONSTRUID|PATIO|PASILLO|ESTACIONAMIENTO|JUNTA|BALC[ÓO]N|AZOTEA)/i
           const totalCandidate = surfaces.find((s) => {
             if (typeof s?.name !== "string") return false
@@ -143,16 +153,19 @@ function DeslindePageInner() {
           })
           if (totalCandidate && typeof totalCandidate.value_m2 === "number") {
             lotSurface = totalCandidate.value_m2
+            lotNameUpper = totalCandidate.name.toUpperCase()
           }
         }
       }
       const surfaceLabel = lotSurface > 0 ? `${lotSurface.toFixed(3)} m²` : ""
-      const newUnit: PropertyUnit = {
-        id: unitName.toLowerCase().replace(/\s+/g, "-"),
+      const mainUnitId = unitName.toLowerCase().replace(/\s+/g, "-")
+      const mainUnit: PropertyUnit = {
+        id: mainUnitId,
         name: unitName,
         surface: surfaceLabel,
         boundaries: { west: [], north: [], east: [], south: [] },
       }
+
       const dirMap: Record<string, keyof PropertyUnit["boundaries"]> = {
         WEST: "west",
         NORTH: "north",
@@ -162,21 +175,76 @@ function DeslindePageInner() {
       for (const b of data?.result?.boundaries || []) {
         const key = dirMap[(b.direction || "").toUpperCase()]
         if (!key) continue
-        newUnit.boundaries[key].push({
-          id: `${newUnit.id}-${key}-${newUnit.boundaries[key].length}`,
+        mainUnit.boundaries[key].push({
+          id: `${mainUnit.id}-${key}-${mainUnit.boundaries[key].length}`,
           measurement: String(b.length_m ?? ""),
           unit: "M",
           description: `CON ${b.abutter || ""}`.trim(),
           regionId: "",
         })
       }
-      setUnits([newUnit])
+
+      // 2) Partes internas: todas las superficies que no sean LOTE/TOTAL
+      const internalUnits: PropertyUnit[] = []
+      if (Array.isArray(surfaces)) {
+        const internalSurfaces = surfaces.filter((s) => {
+          if (!s?.name) return false
+          const upper = s.name.toUpperCase()
+          if (lotNameUpper && upper === lotNameUpper) return false
+          if (/\bLOTE\b/.test(upper)) return false
+          if (/\bTOTAL\b/.test(upper)) return false
+          return true
+        })
+
+        for (const surf of internalSurfaces) {
+          const partName = surf.name
+          const partIdBase = partName.toLowerCase().replace(/\s+/g, "-")
+          const partId = `${mainUnitId}-${partIdBase}`
+
+          const partBoundaries: PropertyUnit["boundaries"] = {
+            west: [],
+            north: [],
+            east: [],
+            south: [],
+          }
+
+          const search = partName.toUpperCase()
+
+          ;(["west", "north", "east", "south"] as const).forEach((side) => {
+            for (const seg of mainUnit.boundaries[side]) {
+              if (seg.description.toUpperCase().includes(search)) {
+                partBoundaries[side].push({
+                  ...seg,
+                  id: `${partId}-${side}-${partBoundaries[side].length}`,
+                })
+              }
+            }
+          })
+
+          const hasSurfaceValue =
+            typeof surf.value_m2 === "number" && surf.value_m2 > 0
+
+          internalUnits.push({
+            id: partId,
+            name: partName,
+            surface: hasSurfaceValue ? `${surf.value_m2.toFixed(3)} m²` : "",
+            boundaries: partBoundaries,
+          })
+        }
+      }
+
+      const allUnits: PropertyUnit[] = [mainUnit, ...internalUnits]
+      setUnits(allUnits)
+
       const segmentsMap = new Map<string, TransformedSegment[]>()
-      const segments = createStructuredSegments(newUnit)
-      segmentsMap.set(newUnit.id, segments)
+      for (const u of allUnits) {
+        const segs = createStructuredSegments(u)
+        segmentsMap.set(u.id, segs)
+      }
       setUnitSegments(segmentsMap)
     } catch {
-      setAiStructuredText(null)
+      // Fallback completo: usamos el texto OCR crudo como "Colindancias" editable
+      setAiStructuredText(text || null)
       const unit: PropertyUnit = {
         id: "unit-ocr",
         name: "UNIDAD",
