@@ -22,6 +22,10 @@ interface ExportDialogProps {
   units: PropertyUnit[]
   unitSegments: Map<string, TransformedSegment[]>
   onExport: (metadata: ExportMetadata) => void
+  /** Nombre del archivo original (para sugerir el nombre de la propiedad) */
+  fileName?: string
+  /** Ubicación sugerida (extraída por la IA). Si no viene, se deja vacío. */
+  locationHint?: string | null
 }
 
 export interface ExportMetadata {
@@ -31,16 +35,28 @@ export interface ExportMetadata {
   date: string
 }
 
-export function ExportDialog({ open, onOpenChange, units, unitSegments, onExport }: ExportDialogProps) {
+export function ExportDialog({
+  open,
+  onOpenChange,
+  units,
+  unitSegments,
+  onExport,
+  fileName,
+  locationHint,
+}: ExportDialogProps) {
   const totalSurface = units.reduce((sum, unit) => {
     const numericSurface = Number.parseFloat(unit.surface.replace(/[^\d.]/g, ""))
     return sum + (isNaN(numericSurface) ? 0 : numericSurface)
   }, 0)
 
+  const baseNameFromFile = fileName ? fileName.replace(/\.[^.]+$/, "") : ""
+  const defaultPropertyName =
+    baseNameFromFile || (units.length > 1 ? "Propiedad" : units[0]?.name || "Propiedad")
+
   const [metadata, setMetadata] = useState<ExportMetadata>({
-    propertyName: units.length > 1 ? "Condominio Maguey" : units[0]?.name || "Propiedad",
-    surface: `${totalSurface.toFixed(3)} m²`,
-    location: "Manzana 114, Lote 5-A",
+    propertyName: defaultPropertyName,
+    surface: totalSurface > 0 ? `${totalSurface.toFixed(3)} m²` : "",
+    location: locationHint?.trim() || "",
     date: new Date().toLocaleDateString("es-MX", {
       year: "numeric",
       month: "long",
@@ -49,6 +65,11 @@ export function ExportDialog({ open, onOpenChange, units, unitSegments, onExport
   })
 
   const handleExport = () => {
+    // Requerimos que los campos clave estén llenos; si no, no cerramos el modal.
+    if (!metadata.propertyName.trim() || !metadata.surface.trim() || !metadata.location.trim()) {
+      // En el futuro podemos mostrar un toast; por ahora solo evitamos exportar.
+      return
+    }
     onExport(metadata)
     onOpenChange(false)
   }

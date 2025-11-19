@@ -104,14 +104,23 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
   }
 
   const handleExport = (metadata: ExportMetadata) => {
+    // Usar solo las unidades autorizadas para la exportación
+    const authorizedUnitsArray = units.filter((unit) => authorizedUnits.has(unit.id));
+
+    const authorizedSegmentsMap = new Map<string, TransformedSegment[]>(
+      Array.from(editedUnits.entries()).filter(([unitId]) => authorizedUnits.has(unitId)),
+    );
+
+    const allSegments = Array.from(authorizedSegmentsMap.values()).flat();
+
     const documentContent = generateNotarialDocument(
-      Array.from(editedUnits.values()).flat(),
+      allSegments,
       metadata,
-      units,
-      editedUnits,
-    )
-    const filename = generateFilename(metadata.propertyName)
-    downloadDocument(documentContent, filename)
+      authorizedUnitsArray,
+      authorizedSegmentsMap,
+    );
+    const filename = generateFilename(metadata.propertyName);
+    downloadDocument(documentContent, filename);
   }
 
   const getTimeSinceLastSave = () => {

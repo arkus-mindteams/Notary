@@ -1,5 +1,13 @@
 export type StructuredUnit = {
-  unit: { name: string; model?: string }
+  unit: {
+    name: string
+    model?: string
+    /**
+     * Ubicación principal del inmueble, por ejemplo:
+     * "FRACCIONAMIENTO BURDEOS, MANZANA 114, LOTE 5-A, TIJUANA, B.C."
+     */
+    location?: string
+  }
   boundaries: Array<{
     direction: "WEST" | "NORTHWEST" | "NORTH" | "NORTHEAST" | "EAST" | "SOUTHEAST" | "SOUTH" | "SOUTHWEST" | string
     length_m: number
@@ -16,5 +24,4 @@ export type StructuringRequest = {
 }
 
 export type StructuringResponse = { result: StructuredUnit }
-
 
