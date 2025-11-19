@@ -1,4 +1,4 @@
-'use client'
+"use client"
 
 import { useEffect, useRef, useState } from "react"
 import { ZoomIn, ZoomOut, RotateCw, FileText, AlertCircle } from "lucide-react"
@@ -23,6 +23,7 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
   const [rotation, setRotation] = useState(0)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
+  // Detectar el tipo de archivo
   const fileTypeInfo: FileTypeInfo = detectFileType(documentUrl, fileName)
 
   const activeRegion = highlightedRegion
@@ -45,45 +46,49 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
 
   return (
     <Card className="flex flex-col h-full">
-      {/* Barra de controles externa para todos los tipos */}
-      <div className="flex items-center justify-between gap-2 p-2 sm:p-3 border-b bg-muted/30">
-        <div className="flex items-center gap-2">
-          <span className="text-xs sm:text-sm font-medium">Documento Original</span>
-          {fileTypeInfo.isSupported && (
-            <div className="flex items-center gap-1 px-2 py-1 bg-primary/10 text-primary text-xs rounded-full">
-              <FileText className="h-3 w-3" />
-              {fileTypeInfo.extension.toUpperCase()}
-            </div>
-          )}
+      {/* Para PDFs usamos los controles nativos del visor, para otros tipos usamos esta barra */}
+      {fileTypeInfo.type !== "pdf" && (
+        <div className="flex items-center justify-between gap-2 p-2 sm:p-3 border-b bg-muted/30">
+          <div className="flex items-center gap-2">
+            <span className="text-xs sm:text-sm font-medium">Documento Original</span>
+            {fileTypeInfo.isSupported && (
+              <div className="flex items-center gap-1 px-2 py-1 bg-primary/10 text-primary text-xs rounded-full">
+                <FileText className="h-3 w-3" />
+                {fileTypeInfo.extension.toUpperCase()}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-0.5 sm:gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setZoom((z) => Math.max(50, z - 10))}
+              className="h-8 w-8 p-0 sm:h-9 sm:w-9"
+            >
+              <ZoomOut className="h-3 w-3 sm:h-4 sm:w-4" />
+            </Button>
+            <span className="text-xs text-muted-foreground min-w-[2.5rem] sm:min-w-[3rem] text-center">
+              {zoom}%
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setZoom((z) => Math.min(300, z + 10))}
+              className="h-8 w-8 p-0 sm:h-9 sm:w-9"
+            >
+              <ZoomIn className="h-3 w-3 sm:h-4 sm:w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setRotation((r) => (r + 90) % 360)}
+              className="h-8 w-8 p-0 sm:h-9 sm:w-9"
+            >
+              <RotateCw className="h-3 w-3 sm:h-4 sm:w-4" />
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-0.5 sm:gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setZoom((z) => Math.max(50, z - 10))}
-            className="h-8 w-8 p-0 sm:h-9 sm:w-9"
-          >
-            <ZoomOut className="h-3 w-3 sm:h-4 sm:w-4" />
-          </Button>
-          <span className="text-xs text-muted-foreground min-w-[2.5rem] sm:min-w-[3rem] text-center">{zoom}%</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setZoom((z) => Math.min(300, z + 10))}
-            className="h-8 w-8 p-0 sm:h-9 sm:w-9"
-          >
-            <ZoomIn className="h-3 w-3 sm:h-4 sm:w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setRotation((r) => (r + 90) % 360)}
-            className="h-8 w-8 p-0 sm:h-9 sm:w-9"
-          >
-            <RotateCw className="h-3 w-3 sm:h-4 sm:w-4" />
-          </Button>
-        </div>
-      </div>
+      )}
 
       <div
         ref={scrollRef}
@@ -103,6 +108,7 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
             fileUrl={documentUrl}
             highlightedRegion={highlightedRegion}
             onRegionHover={onRegionHover}
+            // El zoom se gestiona con los controles nativos del visor PDF; solo aplicamos rotación
             zoom={zoom}
             rotation={rotation}
           />
