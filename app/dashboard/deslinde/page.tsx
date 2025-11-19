@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { Suspense, useEffect, useState } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { ProtectedRoute } from "@/components/protected-route"
@@ -17,7 +17,7 @@ import { extractTextWithTextract } from "@/lib/ocr-client"
 
 type AppState = "upload" | "processing" | "validation"
 
-export default function DeslindePage() {
+function DeslindePageInner() {
   const [appState, setAppState] = useState<AppState>("upload")
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [documentUrl, setDocumentUrl] = useState<string>("")
@@ -373,5 +373,13 @@ export default function DeslindePage() {
         </div>
       </DashboardLayout>
     </ProtectedRoute>
+  )
+}
+
+export default function DeslindePage() {
+  return (
+    <Suspense fallback={null}>
+      <DeslindePageInner />
+    </Suspense>
   )
 }
