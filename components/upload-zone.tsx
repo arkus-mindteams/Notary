@@ -8,11 +8,20 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 
 interface UploadZoneProps {
-  onFileSelect: (file: File) => void
+  onFilesSelect: (files: File[]) => void
 }
 
-export function UploadZone({ onFileSelect }: UploadZoneProps) {
+export function UploadZone({ onFilesSelect }: UploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false)
+
+  const isValidImage = (file: File): boolean => {
+    const validTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp"]
+    const validExtensions = [".png", ".jpg", ".jpeg", ".webp"]
+    return (
+      validTypes.includes(file.type) ||
+      validExtensions.some((ext) => file.name.toLowerCase().endsWith(ext))
+    )
+  }
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -30,22 +39,25 @@ export function UploadZone({ onFileSelect }: UploadZoneProps) {
       e.stopPropagation()
       setIsDragging(false)
 
-      const files = Array.from(e.dataTransfer.files)
+      const files = Array.from(e.dataTransfer.files).filter(isValidImage)
       if (files.length > 0) {
-        onFileSelect(files[0])
+        onFilesSelect(files)
       }
     },
-    [onFileSelect],
+    [onFilesSelect],
   )
 
   const handleFileInput = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files
       if (files && files.length > 0) {
-        onFileSelect(files[0])
+        const imageFiles = Array.from(files).filter(isValidImage)
+        if (imageFiles.length > 0) {
+          onFilesSelect(imageFiles)
+        }
       }
     },
-    [onFileSelect],
+    [onFilesSelect],
   )
 
   return (
@@ -66,24 +78,16 @@ export function UploadZone({ onFileSelect }: UploadZoneProps) {
         </div>
 
         <div className="space-y-2">
-          <h3 className="text-xl font-semibold text-foreground">Arrastra tu documento aquí</h3>
+          <h3 className="text-xl font-semibold text-foreground">Arrastra tus imágenes aquí</h3>
           <p className="text-sm text-muted-foreground max-w-md">
-            Sube planos arquitectónicos, documentos PDF o imágenes con información de deslindes
+            Sube una o más imágenes del plano arquitectónico con información de deslindes. Puedes subir múltiples imágenes si el plano tiene varias páginas.
           </p>
         </div>
 
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
-            <FileText className="h-4 w-4" />
-            <span>PDF</span>
-          </div>
-          <div className="flex items-center gap-2">
             <ImageIcon className="h-4 w-4" />
-            <span>PNG, JPG</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <FileText className="h-4 w-4" />
-            <span>DOCX</span>
+            <span>PNG, JPG, JPEG, WEBP</span>
           </div>
         </div>
 
@@ -92,11 +96,12 @@ export function UploadZone({ onFileSelect }: UploadZoneProps) {
             type="file"
             id="file-upload"
             className="sr-only"
-            accept=".pdf,.png,.jpg,.jpeg,.docx"
+            accept="image/png,image/jpeg,image/jpg,image/webp"
+            multiple
             onChange={handleFileInput}
           />
           <Button asChild size="lg" className="cursor-pointer">
-            <label htmlFor="file-upload">Seleccionar archivo</label>
+            <label htmlFor="file-upload">Seleccionar imagen(es)</label>
           </Button>
         </div>
       </div>

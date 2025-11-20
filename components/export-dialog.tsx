@@ -26,6 +26,8 @@ interface ExportDialogProps {
   fileName?: string
   /** Ubicación sugerida (extraída por la IA). Si no viene, se deja vacío. */
   locationHint?: string | null
+  /** Superficie total del lote en m² (extraída por la IA, no la suma de unidades) */
+  totalLotSurface?: number | null
 }
 
 export interface ExportMetadata {
@@ -43,11 +45,15 @@ export function ExportDialog({
   onExport,
   fileName,
   locationHint,
+  totalLotSurface,
 }: ExportDialogProps) {
-  const totalSurface = units.reduce((sum, unit) => {
-    const numericSurface = Number.parseFloat(unit.surface.replace(/[^\d.]/g, ""))
-    return sum + (isNaN(numericSurface) ? 0 : numericSurface)
-  }, 0)
+  // Use totalLotSurface from AI if available, otherwise calculate from units
+  const totalSurface = totalLotSurface 
+    ? totalLotSurface 
+    : units.reduce((sum, unit) => {
+        const numericSurface = Number.parseFloat(unit.surface.replace(/[^\d.]/g, ""))
+        return sum + (isNaN(numericSurface) ? 0 : numericSurface)
+      }, 0)
 
   const baseNameFromFile = fileName ? fileName.replace(/\.[^.]+$/, "") : ""
   const defaultPropertyName =

@@ -23,5 +23,17 @@ export type StructuringRequest = {
   hints?: { language?: "es" | "en"; unitNameHint?: string }
 }
 
-export type StructuringResponse = { result: StructuredUnit }
+export type StructuringResponse = {
+  results: StructuredUnit[]
+  /**
+   * Ubicación del lote extraída del documento (manzana, lote, dirección, etc.)
+   * Ejemplo: "MANZANA 114, LOTE 5-A, TIJUANA, B.C."
+   */
+  lotLocation?: string
+  /**
+   * Superficie total del lote en m² (no la suma de unidades, sino la superficie total del lote)
+   * Ejemplo: 145.600
+   */
+  totalLotSurface?: number
+}
 

@@ -1,26 +1,63 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { DocumentViewer } from "./document-viewer"
+import { ImageViewer } from "./image-viewer"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck } from "lucide-react"
+import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText } from "lucide-react"
 import type { TransformedSegment } from "@/lib/text-transformer"
 import type { PropertyUnit } from "@/lib/ocr-simulator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { generateNotarialDocument, downloadDocument, generateFilename } from "@/lib/document-exporter"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 interface ValidationWizardProps {
   documentUrl: string
+  images?: File[] // Array of image files for ImageViewer
   units: PropertyUnit[]
   unitSegments: Map<string, TransformedSegment[]>
   onBack: () => void
   fileName?: string
   aiStructuredText?: string
+  ocrConfidence?: number
+  ocrRotationHint?: number
+  /**
+   * Texto de colindancias sugerido por unidad (id -> texto),
+   * generado a partir de la IA para cada bloque/unidad.
+   */
+  unitBoundariesText?: Record<string, string>
+  /**
+   * Ubicación del lote extraída por la IA (manzana, lote, dirección, etc.)
+   */
+  lotLocation?: string | null
+  /**
+   * Superficie total del lote en m² extraída por la IA (no la suma de unidades)
+   */
+  totalLotSurface?: number | null
 }
 
-export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fileName, aiStructuredText }: ValidationWizardProps) {
+export function ValidationWizard({
+  documentUrl,
+  images,
+  units,
+  unitSegments,
+  onBack,
+  fileName,
+  aiStructuredText,
+  ocrConfidence,
+  ocrRotationHint,
+  unitBoundariesText,
+  lotLocation,
+  totalLotSurface,
+}: ValidationWizardProps) {
   const [currentUnitIndex, setCurrentUnitIndex] = useState(0)
   const [editedUnits, setEditedUnits] = useState<Map<string, TransformedSegment[]>>(unitSegments)
   const [authorizedUnits, setAuthorizedUnits] = useState<Set<string>>(new Set())
@@ -28,9 +65,12 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
   const [lastSaved, setLastSaved] = useState<Date>(new Date())
   const [hasChanges, setHasChanges] = useState(false)
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null)
-  const [aiText, setAiText] = useState<string>(aiStructuredText || "")
-  const [notarialDraft, setNotarialDraft] = useState<string>("")
+  const [aiTextByUnit, setAiTextByUnit] = useState<Map<string, string>>(new Map())
+  const [notarialTextByUnit, setNotarialTextByUnit] = useState<Map<string, string>>(new Map())
   const [isGeneratingNotarial, setIsGeneratingNotarial] = useState<boolean>(false)
+  const [showCompleteTextModal, setShowCompleteTextModal] = useState(false)
+  const [completeNotarialText, setCompleteNotarialText] = useState<string>("")
+  const [isGeneratingCompleteText, setIsGeneratingCompleteText] = useState(false)
 
   const currentUnit = units[currentUnitIndex]
   const progress = ((currentUnitIndex + 1) / units.length) * 100
@@ -54,10 +94,24 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
     }
   }, [hasChanges])
 
+  // Inicializar texto de colindancias por unidad cuando cambia la data estructurada
   useEffect(() => {
-    setAiText(aiStructuredText || "")
-    setNotarialDraft("")
-  }, [aiStructuredText])
+    const map = new Map<string, string>()
+
+    if (unitBoundariesText && Object.keys(unitBoundariesText).length > 0) {
+      units.forEach((u) => {
+        const txt = unitBoundariesText[u.id]
+        if (typeof txt === "string" && txt.trim()) {
+          map.set(u.id, txt)
+        }
+      })
+    } else if (aiStructuredText && units[0]) {
+      map.set(units[0].id, aiStructuredText)
+    }
+
+    setAiTextByUnit(map)
+    setNotarialTextByUnit(new Map())
+  }, [unitBoundariesText, aiStructuredText, units])
 
   const getUnitRegionId = (unitId: string): string => {
     const unitIdMap: Record<string, string> = {
@@ -133,6 +187,115 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
   if (!currentUnit) return null
 
   const displayRegion = selectedRegion || getUnitRegionId(currentUnit.id)
+  const currentAiText = aiTextByUnit.get(currentUnit.id) || ""
+  const currentNotarialText = notarialTextByUnit.get(currentUnit.id) || ""
+
+  // Generate notarial text when colindancias change
+  const generateNotarialText = useCallback(async (colindanciasText: string, unitId: string, unitName: string) => {
+    if (!colindanciasText.trim()) {
+      setNotarialTextByUnit((prev) => {
+        const next = new Map(prev)
+        next.delete(unitId)
+        return next
+      })
+      return
+    }
+
+    try {
+      setIsGeneratingNotarial(true)
+      const resp = await fetch("/api/ai/notarialize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          unitName,
+          colindanciasText,
+        }),
+      })
+      if (!resp.ok) {
+        const msg = await resp.text()
+        throw new Error(msg)
+      }
+      const data = await resp.json() as { notarialText: string }
+      setNotarialTextByUnit((prev) => {
+        const next = new Map(prev)
+        next.set(unitId, data.notarialText || "")
+        return next
+      })
+    } catch (e) {
+      console.error("[ui] notarialize failed", e)
+      setNotarialTextByUnit((prev) => {
+        const next = new Map(prev)
+        next.delete(unitId)
+        return next
+      })
+    } finally {
+      setIsGeneratingNotarial(false)
+    }
+  }, [])
+
+  // Auto-generate notarial text when colindancias change (debounced)
+  useEffect(() => {
+    if (currentAiText && currentUnit) {
+      const timer = setTimeout(() => {
+        generateNotarialText(currentAiText, currentUnit.id, currentUnit.name)
+      }, 500)
+      return () => clearTimeout(timer)
+    }
+  }, [currentAiText, currentUnit?.id, generateNotarialText])
+
+  // Generate complete notarial text when modal opens
+  const handleOpenCompleteTextModal = async () => {
+    setShowCompleteTextModal(true)
+    setIsGeneratingCompleteText(true)
+    setCompleteNotarialText("")
+
+    try {
+      // Get all authorized units with their notarial texts
+      const authorizedUnitsWithTexts = units
+        .filter((unit) => authorizedUnits.has(unit.id))
+        .map((unit) => ({
+          unitName: unit.name,
+          notarialText: notarialTextByUnit.get(unit.id) || "",
+          colindanciasText: aiTextByUnit.get(unit.id) || "",
+        }))
+
+      if (authorizedUnitsWithTexts.length === 0) {
+        setCompleteNotarialText("No hay unidades autorizadas.")
+        return
+      }
+
+      // Call API to combine all texts into a complete notarial document
+      const resp = await fetch("/api/ai/combine-notarial", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          units: authorizedUnitsWithTexts,
+        }),
+      })
+
+      if (!resp.ok) {
+        const msg = await resp.text()
+        throw new Error(msg)
+      }
+
+      const data = await resp.json() as { completeText: string }
+      setCompleteNotarialText(data.completeText || "")
+    } catch (e) {
+      console.error("[ui] combine notarial failed", e)
+      // Fallback: combine manually
+      const combined = units
+        .filter((unit) => authorizedUnits.has(unit.id))
+        .map((unit) => {
+          const text = notarialTextByUnit.get(unit.id) || ""
+          return text ? `${unit.name}: ${text}` : ""
+        })
+        .filter(Boolean)
+        .join("\n\n")
+      setCompleteNotarialText(combined || "No se pudo generar el texto completo.")
+    } finally {
+      setIsGeneratingCompleteText(false)
+    }
+  }
 
   return (
     <div className="flex flex-col h-full bg-background">
@@ -152,16 +315,29 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                 </p>
               </div>
             </div>
-            <Button
-              onClick={() => setShowExportDialog(true)}
-              size="lg"
-              className="gap-2 w-full sm:w-auto"
-              disabled={!allUnitsAuthorized}
-              variant={allUnitsAuthorized ? "default" : "secondary"}
-            >
-              <Download className="h-4 w-4" />
-              <span className="sm:inline">Exportar</span>
-            </Button>
+            <div className="flex gap-2 w-full sm:w-auto">
+              {allUnitsAuthorized && (
+                <Button
+                  onClick={handleOpenCompleteTextModal}
+                  size="lg"
+                  variant="outline"
+                  className="gap-2"
+                >
+                  <FileText className="h-4 w-4" />
+                  <span className="sm:inline">Ver Texto Notarial Completo</span>
+                </Button>
+              )}
+              <Button
+                onClick={() => setShowExportDialog(true)}
+                size="lg"
+                className="gap-2 flex-1 sm:flex-initial"
+                disabled={!allUnitsAuthorized}
+                variant={allUnitsAuthorized ? "default" : "secondary"}
+              >
+                <Download className="h-4 w-4" />
+                <span className="sm:inline">Exportar</span>
+              </Button>
+            </div>
           </div>
 
           {/* Progress Bar */}
@@ -193,7 +369,7 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
 
                 return (
                   <button
-                    key={unit.id}
+                    key={`${unit.id}-${index}`}
                     onClick={() => setCurrentUnitIndex(index)}
                     className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
                       isCurrent && isAuthorized
@@ -216,6 +392,18 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
       </header>
 
       {/* Status Alert */}
+      {typeof ocrConfidence === "number" && ocrConfidence < 0.7 && (
+        <Alert className="mx-4 sm:mx-6 mt-3 sm:mt-4 bg-amber-50 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800">
+          <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <AlertDescription className="text-xs sm:text-sm text-amber-800 dark:text-amber-300">
+            El texto extraído del documento tiene una confiabilidad aproximada de{" "}
+            {Math.round(ocrConfidence * 100)}%. Te recomendamos revisar la legibilidad del PDF
+            {typeof ocrRotationHint === "number" && ocrRotationHint !== 0
+              ? ` y considerar rotarlo aproximadamente ${ocrRotationHint}° para mejorar la lectura.`
+              : " y considerar ajustar su orientación para una mejor interpretación."}
+          </AlertDescription>
+        </Alert>
+      )}
       {isCurrentUnitAuthorized && (
         <Alert className="mx-4 sm:mx-6 mt-3 sm:mt-4 bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800">
           <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
@@ -229,14 +417,21 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
       <div className="flex-1 overflow-hidden">
         <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6 h-full">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 h-full">
-            {/* Document Viewer - Left Side with persistent highlight */}
+            {/* Document/Image Viewer - Left Side with persistent highlight */}
             <div className="h-[300px] sm:h-[400px] lg:h-full overflow-auto">
-              <DocumentViewer 
-                documentUrl={documentUrl} 
-                highlightedRegion={displayRegion} 
-                onRegionHover={() => {}} 
-                fileName={fileName}
-              />
+              {images && images.length > 0 ? (
+                <ImageViewer 
+                  images={images}
+                  initialIndex={0}
+                />
+              ) : (
+                <DocumentViewer 
+                  documentUrl={documentUrl} 
+                  highlightedRegion={displayRegion} 
+                  onRegionHover={() => {}} 
+                  fileName={fileName}
+                />
+              )}
             </div>
 
             {/* Text Panel - Right Side */}
@@ -296,63 +491,51 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                 {/* Content area to expand inputs */}
                 <div className="flex-1 p-4 sm:p-6 overflow-hidden">
                   <div className="flex flex-col gap-4 h-full">
-                    {/* Colindancias (editable) */}
-                    {(aiText || aiStructuredText) && (
-                      <div className="flex flex-col h-1/2">
-                        <div className="text-xs font-medium text-muted-foreground">Colindancias</div>
-                        <textarea
-                          className="mt-2 w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
-                          value={aiText}
-                          onChange={(e) => setAiText(e.target.value)}
-                        />
-                        <div className="mt-2 flex items-center justify-between gap-2">
-                          <Button
-                            size="sm"
-                            variant="default"
-                            disabled={!aiText || isGeneratingNotarial}
-                            onClick={async () => {
-                              try {
-                                setIsGeneratingNotarial(true)
-                                setNotarialDraft("")
-                                const resp = await fetch("/api/ai/notarialize", {
-                                  method: "POST",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({
-                                    unitName: currentUnit.name,
-                                    colindanciasText: aiText,
-                                  }),
-                                })
-                                if (!resp.ok) {
-                                  const msg = await resp.text()
-                                  throw new Error(msg)
-                                }
-                                const data = await resp.json() as { notarialText: string }
-                                setNotarialDraft(data.notarialText || "")
-                              } catch (e) {
-                                console.error("[ui] notarialize failed", e)
-                                setNotarialDraft("")
-                              } finally {
-                                setIsGeneratingNotarial(false)
-                              }
-                            }}
-                            className="gap-2"
-                          >
-                            {isGeneratingNotarial ? "Generando..." : "Generar redacción notarial"}
-                          </Button>
+                    {/* Colindancias (editable) - Always shown when unit is selected */}
+                    <div className="flex flex-col h-1/2 min-h-[200px]">
+                      <div className="text-xs font-medium text-muted-foreground mb-2">Colindancias</div>
+                      <textarea
+                        className="w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
+                        value={currentAiText}
+                        placeholder="Ingresa o edita las colindancias de esta unidad..."
+                        onChange={(e) => {
+                          const value = e.target.value
+                          setAiTextByUnit((prev) => {
+                            const next = new Map(prev)
+                            next.set(currentUnit.id, value)
+                            return next
+                          })
+                          setHasChanges(true)
+                        }}
+                      />
+                      {isGeneratingNotarial && (
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Generando texto notarial...
                         </div>
+                      )}
+                    </div>
+                    
+                    {/* Redacción notarial - Always shown below colindancias */}
+                    <div className="flex flex-col h-1/2 min-h-[200px]">
+                      <div className="text-xs font-medium text-muted-foreground mb-2">
+                        Redacción notarial
+                        {isGeneratingNotarial && <span className="ml-2 text-muted-foreground">(Generando...)</span>}
                       </div>
-                    )}
-                    {/* Redacción notarial */}
-                    {notarialDraft && (
-                      <div className="flex flex-col h-1/2">
-                        <div className="text-xs font-medium text-muted-foreground">Redacción notarial</div>
-                        <textarea
-                          className="mt-2 w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
-                          value={notarialDraft}
-                          onChange={(e) => setNotarialDraft(e.target.value)}
-                        />
-                      </div>
-                    )}
+                      <textarea
+                        className="w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
+                        value={currentNotarialText}
+                        placeholder={isGeneratingNotarial ? "Generando texto notarial..." : "El texto notarial aparecerá aquí automáticamente cuando ingreses las colindancias..."}
+                        onChange={(e) => {
+                          const value = e.target.value
+                          setNotarialTextByUnit((prev) => {
+                            const next = new Map(prev)
+                            next.set(currentUnit.id, value)
+                            return next
+                          })
+                          setHasChanges(true)
+                        }}
+                      />
+                    </div>
                   </div>
                 </div>
               </Card>
@@ -378,7 +561,68 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
         units={units}
         unitSegments={editedUnits}
         onExport={handleExport}
+        fileName={fileName}
+        locationHint={lotLocation || undefined}
+        totalLotSurface={totalLotSurface || undefined}
       />
+
+      {/* Modal for Complete Notarial Text */}
+      <Dialog open={showCompleteTextModal} onOpenChange={setShowCompleteTextModal}>
+        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Texto Notarial Completo
+            </DialogTitle>
+            <DialogDescription>
+              Texto notarial combinado de todas las unidades autorizadas, formateado según estándares notariales.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-hidden flex flex-col">
+            {isGeneratingCompleteText ? (
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center">
+                  <div className="text-sm text-muted-foreground">Generando texto notarial completo...</div>
+                </div>
+              </div>
+            ) : (
+              <textarea
+                className="w-full flex-1 min-h-[400px] resize-none border rounded bg-background p-4 text-sm overflow-auto font-mono"
+                value={completeNotarialText}
+                onChange={(e) => setCompleteNotarialText(e.target.value)}
+                placeholder="El texto notarial completo aparecerá aquí..."
+              />
+            )}
+          </div>
+          <div className="flex justify-end gap-2 pt-4 border-t">
+            <Button
+              variant="outline"
+              onClick={() => setShowCompleteTextModal(false)}
+            >
+              Cerrar
+            </Button>
+            <Button
+              onClick={() => {
+                if (completeNotarialText) {
+                  const blob = new Blob([completeNotarialText], { type: "text/plain" })
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement("a")
+                  a.href = url
+                  a.download = "texto-notarial-completo.txt"
+                  document.body.appendChild(a)
+                  a.click()
+                  document.body.removeChild(a)
+                  URL.revokeObjectURL(url)
+                }
+              }}
+              disabled={!completeNotarialText || isGeneratingCompleteText}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Descargar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
