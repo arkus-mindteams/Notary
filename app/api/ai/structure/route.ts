@@ -12,108 +12,227 @@ function hashPayload(s: string): string {
 
 function buildPrompt(): string {
   return [
-    "Eres un asistente experto en documentos notariales (deslindes). Analizas planos arquitectónicos para extraer información de unidades, colindancias y superficies.",
+    "Eres un extractor experto de medidas y colindancias de planos arquitectónicos. Tu tarea es analizar un bloque de texto (producido por OCR o lectura visual de un plano) y devolver únicamente las colindancias, organizadas en JSON, siguiendo reglas estrictas.",
+    "",
+    "Debes aplicar TODAS las siguientes reglas sin excepción.",
+    "",
+    "=== IDENTIFICACIÓN DE UNIDADES ===",
+    "",
+    "1. Una nueva unidad inicia cuando aparece un encabezado como:",
+    '   - "UNIDAD X"',
+    '   - "COCHERA X"',
+    '   - "ESTACIONAMIENTO"',
+    '   - "ÁREA CONSTRUIDA"',
+    '   - "CAJÓN DE ESTACIONAMIENTO"',
+    '   - "MEDIDAS Y COLINDANCIAS"',
+    "",
+    "2. Cada unidad genera un JSON independiente.",
+    '3. El bloque de colindancias comienza después del encabezado "MEDIDAS Y COLINDANCIAS".',
+    "",
+    "=== DIRECCIONES PERMITIDAS ===",
+    "",
+    "Cardinales:",
+    '  - NORTE → "N"',
+    '  - SUR → "S"',
+    '  - ESTE → "E"',
+    '  - OESTE → "W"',
+    "",
+    "Intercardinales:",
+    '  - NORESTE → "NE"',
+    '  - NOROESTE → "NW"',
+    '  - SURESTE → "SE"',
+    '  - SUROESTE → "SW"',
+    "",
+    "Verticales:",
+    '  - ARRIBA / SUPERIOR → "UP"',
+    '  - ABAJO / INFERIOR → "DOWN"',
+    "",
+    "Regla:",
+    "No inventes direcciones. Normaliza variantes incorrectas usando distancia Levenshtein. Por ejemplo:",
+    '  "SUREST" → SURESTE',
+    '  "SUROESTE:" → SUROESTE',
+    '  "NROESTE" → NOROESTE',
+    '  "ARIBA" → ARRIBA',
+    "",
+    "=== ORDEN DEL DOCUMENTO ===",
+    "",
+    "1. Conserva el orden EXACTO en que aparecen las líneas.",
+    "2. No reordenes según cardinalidad ni sentido del perímetro.",
+    "3. No uses orden geométrico. El orden textual es el orden maestro.",
+    "",
+    "=== MEDIDAS ===",
+    "",
+    "Formatos aceptados:",
+    "  EN 7.500 M",
+    "  7.50 M",
+    "  7.500",
+    "  1.200 MTS",
+    "  LC=2.736",
+    "  0.500 m",
+    "  15.000 m",
+    "",
+    "Reglas:",
+    '  - Convertir coma decimal a punto: "7,500" → "7.500"',
+    "  - Convertir a número float",
+    "  - Mantener 3 decimales máximo",
+    '  - Si no hay medida → "length_m": null',
+    "",
+    "=== COLINDANTES ===",
+    "",
+    "Detectar con:",
+    '  - CON <texto>',
+    '  - COLINDA CON <texto>',
+    '  - LIMITA CON <texto>',
+    '  - HACIA <texto>',
+    "",
+    "Reglas:",
+    "1. El colindante puede estar en la misma línea o en las 2 siguientes.",
+    '2. El colindante puede contener números: "L3 Manzana 424".',
+    '3. Números después de "CON" NO son medidas.',
+    "",
+    "=== DIRECCIONES REPETIDAS ===",
+    "",
+    "Si una dirección aparece repetida:",
+    "  SURESTE 1",
+    "  SURESTE 2",
+    "  SURESTE 3",
+    "",
+    "→ No fusionar.",
+    "→ No colapsar.",
+    "→ Cada una es una colindancia independiente.",
+    "",
+    "=== ERRORES OCR (DEBES CORREGIRLOS) ===",
+    "",
+    "1. Valores sospechosamente repetidos:",
+    "   - Si dos medidas iguales aparecen en direcciones repetidas (ej. 0.500 y 0.500), verificar si en el plano había valores grandes (ej. 9.200, 5.800, 15.000).",
+    "   - Priorizar la interpretación numérica más lógica.",
+    "",
+    "2. Corrección de confusiones comunes:",
+    "   - SURESTE ↔ SUROESTE",
+    "   - NORESTE ↔ NOROESTE",
+    "   - NORTE ↔ NOROESTE",
+    "",
+    "3. Anti-distorsión:",
+    "   Si el texto está ruidoso o pixelado, usar corrección fonética y el patrón más consistente.",
+    "",
+    "=== BLOQUES RUIDOSOS ===",
+    "",
+    "1. Si la imagen tiene ruido o sombra, nunca confiar en OCR global.",
+    '2. Preferir CROP local del bloque "MEDIDAS Y COLINDANCIAS".',
+    "3. Las longitudes pequeñas (<1m) SON válidas.",
+    "4. Las longitudes grandes (≥5m, ≥10m, ≥15m) son válidas aunque OCR las deforme.",
+    "",
+    "=== COLINDANTES QUE CONTIENEN NÚMEROS ===",
+    "",
+    "Regla:",
+    'Si un número aparece después de "CON", forma parte del nombre.',
+    "",
+    "Ej:",
+    '"Con L3 Manzana 424" → colindante válido.',
+    '"Con Unidad 4" → colindante válido.',
+    "",
+    "=== BLOQUES SIN MEDIDAS ===",
+    "",
+    "Si aparece:",
+    "  ARRIBA: CON UNIDAD C604",
+    "",
+    "Entonces:",
+    "  length_m = null",
+    "",
+    "=== BLOQUES MÚLTIPLES ===",
+    "",
+    "Ejemplos:",
+    "  UNIDAD C504",
+    "  COCHERA 1",
+    "  COCHERA 2",
+    "",
+    "Cada bloque produce un JSON independiente.",
+    "",
+    "=== VALIDACIÓN DE UNIDADES ===",
+    "",
+    "Una colindancia es válida si tiene:",
+    "  - Dirección (obligatoria)",
+    "  - Medida (opcional)",
+    "  - Colindante (opcional)",
+    "",
+    "Una unidad es válida si tiene ≥ 1 colindancia válida.",
+    "",
+    "=== FORMATO FINAL JSON ===",
     "",
     "Devuelve EXCLUSIVAMENTE JSON válido con este esquema:",
+    "",
     "{",
     '  "results": [',
-    '    {',
-    '      "unit": { "name": string, "location"?: string },',
-    '      "boundaries": [ { "direction": "WEST"|"NORTHWEST"|"NORTH"|"NORTHEAST"|"EAST"|"SOUTHEAST"|"SOUTH"|"SOUTHWEST"|"UP"|"DOWN", "length_m": number, "abutter": string, "order_index": number } ],',
-    '      "surfaces": [ { "name": string, "value_m2": number } ],',
+    "    {",
+    '      "unit_name": "UNIDAD X",',
+    '      "boundaries": [',
+    "        {",
+    '          "raw_direction": "SURESTE",',
+    '          "normalized_direction": "SE",',
+    '          "length_m": 1.850,',
+    '          "abutter": "AREA COMUN 20",',
+    '          "order_index": 0',
+    "        }",
+    "      ],",
+    '      "surfaces"?: [ { "name": string, "value_m2": number } ],',
     '      "anomalies"?: string[]',
-    '    }',
+    "    }",
     "  ],",
     '  "lotLocation"?: string,  // Ubicación del lote (manzana, lote, dirección, ciudad, estado)',
     '  "totalLotSurface"?: number  // Superficie total del lote en m² (no la suma de unidades)',
     "}",
-    "Reglas:",
-    "- Mantén el orden de aparición (order_index desde 0).",
-    "- Normaliza a metros y m2, usa punto decimal (ej. 6.750).",
-    "- No inventes datos; si faltan, deja listas vacías.",
-    "- Responde SOLO JSON válido.",
     "",
-    "Acotación del texto fuente:",
-    '- El bloque de colindancias aparece bajo “MEDIDAS Y COLINDANCIAS” (variantes: "Medidas y Colindancias", "MEDIDAS Y COLINDANCIAS.").',
-    "- Extrae colindancias solo desde ese encabezado hacia abajo y DETENTE al iniciar otra sección (ej: “SUPERFICIE(S)”, “DESCRIPCIÓN”, “CARACTERÍSTICAS”, “OBSERVACIONES”, “DATOS”).",
+    "Reglas del JSON:",
+    "  - JSON válido siempre.",
+    "  - unit_name según aparece en el plano.",
+    "  - raw_direction = dirección original del texto (ej: \"SURESTE\", \"NORTE\", \"ARRIBA\").",
+    "  - normalized_direction = código corto: N/S/E/W/NE/NW/SE/SW/UP/DOWN.",
+    "  - order_index inicia en 0 y se incrementa por cada colindancia en el orden exacto del documento.",
+    "  - length_m puede ser null si no hay medida.",
+    "  - Conserva el orden EXACTO de aparición en el texto (order_index secuencial).",
     "",
-    "Heurísticas de colindancias:",
-    '- Cada colindancia inicia con cardinales en español: “NORTE”, “SUR”, “ESTE”, “OESTE” o intercardinales “NOROESTE”, “NORESTE”, “SUROESTE”, “SURESTE”, con o sin “AL ” (ej. “AL NORTE”).',
-    '- También puede haber colindancias verticales “ARRIBA/ABAJO” y equivalentes “COLINDANCIA SUPERIOR/INFERIOR” o “SUPERIOR/INFERIOR”: mapéalas como direcciones "UP" y "DOWN" respectivamente.',
-    "- Puede haber N colindancias por dirección (incluso repetidas). Conserva TODAS por separado y su orden (no las mezcles en una sola) y NO omitas ninguna aunque parezcan iguales.",
-    '- Cada colindancia suele tener una longitud y un colindante (ej. “colinda con …” / “con …”). Si falta alguno, conserva lo disponible.',
-    '- Las longitudes pueden venir como “EN <n> M”, “<n> M” o “LC=<n> (M)”. Reconoce “LC=” como longitud.',
-    "- La línea puede contener todo: “NORESTE: EN 5.4610 m CON ÁREA COMÚN…”, o el detalle puede estar en líneas siguientes; extrae en ambos casos.",
-    "- No mezcles superficies con boundaries; ignora totales de área (m2, m²) al construir boundaries.",
+    "EJEMPLO COMPLETO:",
     "",
-    "Superficies:",
-    "- Extrae superficies presentes en el documento como pares nombre/valor_m2 (ej. “PLANTA BAJA”: 59.280).",
-    '- Reconoce encabezados y etiquetas como: “SUPERFICIE”, “SUPERFICIE(S)”, “SUPERFICIE LOTE”, “SUPERFICIE TOTAL”, “SUPERFICIE TOTAL PRIVATIVA”, “SUPERFICIE DE ÁREA EDIFICADA”, “SUPERFICIE DE PATIO POSTERIOR/FRONTAL”, “SUPERFICIE DE PASILLO”, “SUPERFICIE DE JUNTA CONSTRUCTIVA”, así como abreviaturas “SUP.” (p. ej., “SUP. LOTE”, “SUP. TOTAL”).',
-    "- Acepta formatos con coma o punto decimal: 145,600 m² => 145.600.",
-    '- Devuelve nombres claros y concisos (ej. “LOTE”, “TOTAL PRIVATIVA”, “ÁREA EDIFICADA”, “PATIO POSTERIOR").',
+    "Texto de entrada:",
+    '"UNIDAD B-2\\n',
+    'OESTE:\\n',
+    '6.750 MTS. CON UNIDAD B-4\\n',
+    '1.750 MTS. CON CUBO DE ILUMINACION\\n',
+    'NORTE:\\n',
+    '2.550 MTS CON CUBO DE ILUMINACION\\n',
+    '4.720 MTS. CON JUNTA CONSTRUCTIVA 1\\n',
+    'ESTE:\\n',
+    '0.520 MTS CON AREA COMUN DE SERVICIO 7\\n',
+    'SUR:\\n',
+    '5.370 MTS CON AREA COMUN 1\\n',
+    'ARRIBA: CON UNIDAD C504\\n',
+    'ABAJO: CON UNIDAD C506"',
     "",
-    "Ubicación del lote (lotLocation):",
-    '- Busca información de ubicación en el documento, especialmente al inicio o en encabezados.',
-    '- Extrae datos como: manzana, lote, fraccionamiento, dirección, ciudad, estado.',
-    '- Ejemplos: "MANZANA 114, LOTE 5-A", "FRACCIONAMIENTO BURDEOS, MANZANA 114, LOTE 5-A, TIJUANA, B.C.", "LOTE 5-82 MANZANA 174".',
-    '- Si no encuentras ubicación específica, deja este campo vacío (undefined).',
-    "",
-    "Superficie total del lote (totalLotSurface):",
-    '- Busca la superficie TOTAL del lote (no la suma de unidades individuales).',
-    '- Busca términos como: "SUPERFICIE LOTE", "SUPERFICIE TOTAL", "SUPERFICIE TOTAL DEL LOTE", "SUP. LOTE", "SUP. TOTAL".',
-    '- Esta es la superficie del terreno completo, no la suma de las superficies de las unidades.',
-    '- Si no encuentras una superficie total del lote específica, deja este campo vacío (undefined).',
-    "",
-    "Nombre de unidad (unit.name):",
-    '- Prioriza patrones como “UNIDAD <n/ código>” (ej. “UNIDAD 64”), “CUBO DE ILUMINACIÓN/ILUMINACION”, “JUNTA CONSTRUCTIVA <n>”, “CAJON DE ESTACIONAMIENTO/ESTACIONAMIENTO”.',
-    '- NO uses encabezados o secciones como nombre de unidad: “MEDIDAS Y COLINDANCIAS”, “SUPERFICIE(S)”, “CONDOMINIO”, “FRACCIONAMIENTO”, nombres de empresa (“PROMOTORA”, “DESARROLLADORA”), sellos o marcas.',
-    "",
-    "Regla crítica de validez de unidad:",
-    "- Solo consideres una unidad/área como válida si, DESPUÉS de su nombre, puedes identificar al menos una colindancia (boundary) con dirección + longitud + colindante.",
-    "- Si no hay ninguna colindancia confiable para esa unidad, devuelve boundaries: [] y, si es posible, anota una explicación en anomalies.",
-    "",
-    "EJEMPLO COMPLETO (referencia, NO lo inventes, solo sigue el mismo patrón de salida):",
-    "",
-    "Texto OCR de entrada simplificado:",
-    "\"UNIDAD B-2\\n",
-    "OESTE:\\n",
-    "6.750 MTS. CON UNIDAD B-4\\n",
-    "1.750 MTS. CON CUBO DE ILUMINACION\\n",
-    "NORTE:\\n",
-    "2.550 MTS CON CUBO DE ILUMINACION\\n",
-    "4.720 MTS. CON JUNTA CONSTRUCTIVA 1\\n",
-    "ESTE:\\n",
-    "0.520 MTS CON AREA COMUN DE SERVICIO 7 DE EDIFICIO B (ACS-7 DE E-B)\\n",
-    "3.480 MTS CON AREA COMUN (AC-12)\\n",
-    "4.500 MTS. CON AREA COMUN (AC-12)\\n",
-    "SUR:\\n",
-    "0.300 MTS CON AREA COMUN (AC-12)\\n",
-    "5.370 MTS CON AREA COMUN 1 DE EDIFICIO B EN PLANTA BAJA (AC1.1EB-PB)\\n",
-    "SUPERFICIE: 55.980 m2\"",
-    "",
-    "Salida JSON esperada para ese bloque:",
+    "Salida JSON esperada:",
     "{",
-    '  \"unit\": { \"name\": \"UNIDAD B-2\" },',
-    '  \"boundaries\": [',
-    '    { \"direction\": \"WEST\", \"length_m\": 6.75, \"abutter\": \"UNIDAD B-4\", \"order_index\": 0 },',
-    '    { \"direction\": \"WEST\", \"length_m\": 1.75, \"abutter\": \"CUBO DE ILUMINACION\", \"order_index\": 1 },',
-    '    { \"direction\": \"NORTH\", \"length_m\": 2.55, \"abutter\": \"CUBO DE ILUMINACION\", \"order_index\": 2 },',
-    '    { \"direction\": \"NORTH\", \"length_m\": 4.72, \"abutter\": \"JUNTA CONSTRUCTIVA 1\", \"order_index\": 3 },',
-    '    { \"direction\": \"EAST\", \"length_m\": 0.52, \"abutter\": \"AREA COMUN DE SERVICIO 7 DE EDIFICIO B (ACS-7 DE E-B)\", \"order_index\": 4 },',
-    '    { \"direction\": \"EAST\", \"length_m\": 3.48, \"abutter\": \"AREA COMUN (AC-12)\", \"order_index\": 5 },',
-    '    { \"direction\": \"EAST\", \"length_m\": 4.5, \"abutter\": \"AREA COMUN (AC-12)\", \"order_index\": 6 },',
-    '    { \"direction\": \"SOUTH\", \"length_m\": 0.3, \"abutter\": \"AREA COMUN (AC-12)\", \"order_index\": 7 },',
-    '    { \"direction\": \"SOUTH\", \"length_m\": 5.37, \"abutter\": \"AREA COMUN 1 DE EDIFICIO B EN PLANTA BAJA (AC1.1EB-PB)\", \"order_index\": 8 }',
-    "  ],",
-    '  \"surfaces\": [',
-    '    { \"name\": \"PRIVATIVA\", \"value_m2\": 55.98 }',
+    '  "results": [',
+    "    {",
+    '      "unit_name": "UNIDAD B-2",',
+    '      "boundaries": [',
+    '        { "raw_direction": "OESTE", "normalized_direction": "W", "length_m": 6.75, "abutter": "UNIDAD B-4", "order_index": 0 },',
+    '        { "raw_direction": "OESTE", "normalized_direction": "W", "length_m": 1.75, "abutter": "CUBO DE ILUMINACION", "order_index": 1 },',
+    '        { "raw_direction": "NORTE", "normalized_direction": "N", "length_m": 2.55, "abutter": "CUBO DE ILUMINACION", "order_index": 2 },',
+    '        { "raw_direction": "NORTE", "normalized_direction": "N", "length_m": 4.72, "abutter": "JUNTA CONSTRUCTIVA 1", "order_index": 3 },',
+    '        { "raw_direction": "ESTE", "normalized_direction": "E", "length_m": 0.52, "abutter": "AREA COMUN DE SERVICIO 7", "order_index": 4 },',
+    '        { "raw_direction": "SUR", "normalized_direction": "S", "length_m": 5.37, "abutter": "AREA COMUN 1", "order_index": 5 },',
+    '        { "raw_direction": "ARRIBA", "normalized_direction": "UP", "length_m": null, "abutter": "UNIDAD C504", "order_index": 6 },',
+    '        { "raw_direction": "ABAJO", "normalized_direction": "DOWN", "length_m": null, "abutter": "UNIDAD C506", "order_index": 7 }',
+    "      ]",
+    "    }",
     "  ]",
     "}",
     "",
-    "Repite este mismo criterio para otras unidades como \"CUBO DE ILUMINACION\", \"JUNTA CONSTRUCTIVA 1\", \"JUNTA CONSTRUCTIVA 2\", \"CAJON DE ESTACIONAMIENTO\", \"AREA COMUN (AC-12)\", etc.:",
-    "- Usa el encabezado como unit.name (normalizado).",
-    "- Toma SOLO las colindancias que pertenecen a ese bloque/unidad.",
-    "- Extrae la superficie si está presente (SUPERFICIE: ... m2), sin inventar valores.",
+    "=== REGLA FINAL ===",
+    "",
+    "Nunca inventes datos.",
+    "Si existe ambigüedad, elige la interpretación más lógica basada en las reglas y ejemplos reales, pero NO generes información que no esté en el texto.",
+    "",
+    "Ahora analiza las imágenes y extrae las colindancias según estas reglas.",
   ].join("\n")
 }
 
@@ -288,11 +407,12 @@ function isHeadingLikeName(name: string): boolean {
 }
 
 // Fusionar unidades con el mismo nombre lógico (ignorando mayúsculas/acentos)
-function mergeUnitsByName(units: StructuredUnit[]): StructuredUnit[] {
+// Updated for new format (unit_name)
+function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
   const byName = new Map<string, StructuredUnit>()
 
   for (const u of units) {
-    const rawName = u.unit?.name || ""
+    const rawName = u.unit_name || u.unit?.name || ""
     const norm = normalizeUnitName(rawName)
     if (!norm || isHeadingLikeName(rawName)) {
       continue
@@ -300,7 +420,14 @@ function mergeUnitsByName(units: StructuredUnit[]): StructuredUnit[] {
 
     const existing = byName.get(norm)
     if (!existing) {
-      byName.set(norm, u)
+      // Ensure unit is in new format
+      const normalizedUnit: StructuredUnit = {
+        unit_name: u.unit_name || u.unit?.name || "UNIDAD",
+        boundaries: u.boundaries || [],
+        surfaces: u.surfaces || [],
+        anomalies: u.anomalies,
+      }
+      byName.set(norm, normalizedUnit)
       continue
     }
 
@@ -338,6 +465,11 @@ function mergeUnitsByName(units: StructuredUnit[]): StructuredUnit[] {
   }
 
   return Array.from(byName.values())
+}
+
+// Legacy function for backward compatibility
+function mergeUnitsByName(units: StructuredUnit[]): StructuredUnit[] {
+  return mergeUnitsByNameNew(units)
 }
 
 function heuristicBoundaries(ocrText: string): StructuredUnit["boundaries"] {
@@ -580,14 +712,20 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
   return JSON.parse(jsonText)
 }
 
-function simpleFallback(source: string): StructuredUnit {
+// Updated for new format
+function simpleFallbackNew(source: string): StructuredUnit {
   const name = source?.replace(/\.(png|jpg|jpeg|pdf)$/i, "").slice(0, 60) || "UNIDAD"
   return {
-    unit: { name },
+    unit_name: name,
     boundaries: [],
     surfaces: [],
     anomalies: [],
   }
+}
+
+// Legacy function for backward compatibility
+function simpleFallback(source: string): StructuredUnit {
+  return simpleFallbackNew(source)
 }
 
 function extractSurfacesFromText(ocrText: string): { name: string; value_m2: number }[] {
@@ -695,29 +833,73 @@ export async function POST(req: Request) {
         }
         
         // OpenAI might return a single unit or multiple units
-        // Handle both cases
+        // Handle both cases and normalize to new format
         let units: StructuredUnit[] = []
         
+        // Normalize response to new format
+        function normalizeUnit(unitRaw: any): StructuredUnit | null {
+          if (!unitRaw || typeof unitRaw !== "object") return null
+          
+          // Extract unit_name (new format) or unit.name (legacy)
+          const unitName = unitRaw.unit_name || unitRaw.unit?.name || "UNIDAD"
+          if (!unitName) return null
+          
+          // Normalize boundaries
+          const boundaries = (unitRaw.boundaries || []).map((b: any, idx: number) => {
+            // Handle new format
+            if (b.raw_direction && b.normalized_direction) {
+              return {
+                raw_direction: b.raw_direction,
+                normalized_direction: b.normalized_direction as any,
+                length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
+                abutter: String(b.abutter || "").trim(),
+                order_index: typeof b.order_index === "number" ? b.order_index : idx,
+              }
+            }
+            
+            // Handle legacy format (convert to new format)
+            const rawDir = String(b.direction || "").trim()
+            const normalizedDir = normalizeDirectionCode(rawDir)
+            
+            return {
+              raw_direction: rawDir,
+              normalized_direction: normalizedDir,
+              length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
+              abutter: String(b.abutter || "").trim(),
+              order_index: typeof b.order_index === "number" ? b.order_index : idx,
+            }
+          }).filter((b: any) => b.raw_direction && b.normalized_direction) // Filter out invalid boundaries
+          
+          // Only return unit if it has at least one valid boundary
+          if (boundaries.length === 0) return null
+          
+          return {
+            unit_name: unitName,
+            boundaries,
+            surfaces: Array.isArray(unitRaw.surfaces) ? unitRaw.surfaces : [],
+            anomalies: Array.isArray(unitRaw.anomalies) ? unitRaw.anomalies : undefined,
+          }
+        }
+        
         if (Array.isArray(aiResponse.results)) {
-          units = aiResponse.results
+          units = aiResponse.results.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
         } else if (aiResponse.result) {
-          units = [aiResponse.result]
-        } else if (aiResponse.unit) {
-          // Single unit object - wrap in array
-          units = [aiResponse as StructuredUnit]
+          const normalized = normalizeUnit(aiResponse.result)
+          if (normalized) units = [normalized]
+        } else if (aiResponse.unit_name || aiResponse.unit) {
+          const normalized = normalizeUnit(aiResponse)
+          if (normalized) units = [normalized]
         } else {
           throw new Error("invalid_ai_shape")
         }
-
-        // Validate structure
-        for (const unit of units) {
-          if (!unit || typeof unit !== "object" || !unit.unit || !Array.isArray(unit.boundaries) || !Array.isArray(unit.surfaces)) {
-            throw new Error("invalid_ai_shape")
-          }
+        
+        if (units.length === 0) {
+          throw new Error("No valid units found in AI response")
         }
 
-        // Merge units with the same name
-        const merged = mergeUnitsByName(units)
+        // Merge units with the same name (if needed for legacy compatibility)
+        // For new format, units are already normalized
+        const merged = mergeUnitsByNameNew(units)
         
         // Filter out units without boundaries
         const validUnits = merged.filter((u) => u.boundaries && u.boundaries.length > 0)
@@ -728,7 +910,7 @@ export async function POST(req: Request) {
           console.log(`[api/ai/structure] Processed ${validUnits.length} valid units from AI response`)
         } else {
           console.warn(`[api/ai/structure] No valid units found in AI response, using fallback`)
-          processedUnits = [simpleFallback(images[0]?.name || "UNIDAD")]
+          processedUnits = [simpleFallbackNew(images[0]?.name || "UNIDAD")]
         }
         
         // Store metadata
@@ -739,24 +921,48 @@ export async function POST(req: Request) {
     } catch (e: any) {
       console.error("[api/ai/structure] OpenAI Vision error:", e)
       // Fallback: create a simple unit from the first image name
-      processedUnits = [simpleFallback(images[0]?.name || "UNIDAD")]
+      processedUnits = [simpleFallbackNew(images[0]?.name || "UNIDAD")]
       console.log(`[api/ai/structure] Using fallback unit`)
     }
 
     // Ensure all units have valid structure
     if (!processedUnits) {
-      processedUnits = [simpleFallback(images[0]?.name || "UNIDAD")]
+      processedUnits = [simpleFallbackNew(images[0]?.name || "UNIDAD")]
     }
     
+    // Ensure all units are in new format
     const results = processedUnits.map((result) => {
       const unit = JSON.parse(JSON.stringify(result)) as StructuredUnit
       
-      if (!unit.unit?.name) {
-        unit.unit = { ...(unit.unit || {}), name: "UNIDAD" }
+      // Ensure unit_name exists
+      if (!unit.unit_name) {
+        unit.unit_name = "UNIDAD"
       }
+      
+      // Ensure boundaries array exists and is valid
       if (!Array.isArray(unit.boundaries)) {
         unit.boundaries = []
       }
+      
+      // Normalize each boundary to ensure it has required fields
+      unit.boundaries = unit.boundaries.map((b, idx) => {
+        if (!b.raw_direction) {
+          // Legacy format: try to derive from normalized_direction or direction
+          const rawDir = b.direction || b.normalized_direction || ""
+          b.raw_direction = rawDir
+        }
+        if (!b.normalized_direction) {
+          // Derive from raw_direction
+          const normalizedDir = normalizeDirectionCode(b.raw_direction || b.direction || "")
+          b.normalized_direction = normalizedDir
+        }
+        if (b.order_index === undefined || b.order_index === null) {
+          b.order_index = idx
+        }
+        return b
+      }).filter((b) => b.raw_direction && b.normalized_direction)
+      
+      // Ensure surfaces array exists (optional)
       if (!Array.isArray(unit.surfaces)) {
         unit.surfaces = []
       }
