@@ -1,9 +1,10 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { ZoomIn, ZoomOut, RotateCw, ChevronLeft, ChevronRight, X } from "lucide-react"
+import { RotateCw, ChevronLeft, ChevronRight, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { Slider } from "@/components/ui/slider"
 
 interface ImageViewerProps {
   images: File[]
@@ -56,12 +57,8 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
     }
   }
 
-  const handleZoomIn = () => {
-    setZoom((z) => Math.min(300, z + 10))
-  }
-
-  const handleZoomOut = () => {
-    setZoom((z) => Math.max(50, z - 10))
+  const handleZoomChange = (value: number[]) => {
+    setZoom(value[0])
   }
 
   const handleRotate = () => {
@@ -108,26 +105,20 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
 
           <div className="w-px h-6 bg-border mx-1" />
 
-          {/* Zoom controls */}
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleZoomOut}
-            className="h-8 w-8 p-0"
-          >
-            <ZoomOut className="h-4 w-4" />
-          </Button>
-          <span className="text-xs text-muted-foreground min-w-[3rem] text-center">
-            {zoom}%
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleZoomIn}
-            className="h-8 w-8 p-0"
-          >
-            <ZoomIn className="h-4 w-4" />
-          </Button>
+          {/* Zoom controls with slider */}
+          <div className="flex items-center gap-2 min-w-[120px] max-w-[200px]">
+            <span className="text-xs text-muted-foreground min-w-[3rem] text-center">
+              {zoom}%
+            </span>
+            <Slider
+              value={[zoom]}
+              onValueChange={handleZoomChange}
+              min={50}
+              max={300}
+              step={5}
+              className="flex-1"
+            />
+          </div>
 
           <div className="w-px h-6 bg-border mx-1" />
 
@@ -202,19 +193,25 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
       >
         {currentImageUrl && (
           <div 
-            className="flex items-center justify-center"
             style={{
-              // Ensure container is large enough for scaled content
-              // Use padding that increases with zoom to ensure scrollability
-              // At 300% zoom, we need at least 6rem padding (300/50 = 6)
-              padding: `${Math.max(2, Math.ceil(zoom / 50))}rem`,
+              // Use large uniform padding to ensure scrollability in all directions
+              // This ensures we can scroll to see all edges of the image at any zoom level
+              padding: imageSize 
+                ? `${Math.max(200, imageSize.width * (zoom / 100) * 0.5, imageSize.height * (zoom / 100) * 0.5)}px`
+                : `${Math.max(2, Math.ceil(zoom / 50))}rem`,
               boxSizing: "border-box",
-              // Ensure minimum size to accommodate scaled image
-              // The container needs to be at least as large as the scaled image
-              minHeight: "100%",
-              minWidth: "100%",
-              // Use a wrapper that expands to fit the scaled content
+              // Ensure container is large enough for scaled content
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
               position: "relative",
+              // Minimum size to accommodate scaled image with extra space for scrolling
+              minHeight: imageSize 
+                ? `${imageSize.height * (zoom / 100) + 400}px`
+                : "200%",
+              minWidth: imageSize 
+                ? `${imageSize.width * (zoom / 100) + 400}px`
+                : "200%",
             }}
           >
             <div
@@ -222,14 +219,11 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
                 transform: `scale(${zoom / 100}) rotate(${rotation}deg)`,
                 transformOrigin: "center center",
                 transition: "transform 0.2s ease-in-out",
-                // Use inline-block to allow proper sizing
-                display: "inline-block",
+                // Use block to allow proper sizing
+                display: "block",
                 // Ensure the wrapper maintains the natural image size
-                // For high zoom, we need to account for the scaled size in the layout
                 width: imageSize ? `${imageSize.width}px` : "fit-content",
                 height: imageSize ? `${imageSize.height}px` : "fit-content",
-                // Add margin to ensure scrollable area accounts for scaled overflow
-                margin: imageSize && zoom > 200 ? `${(zoom / 100 - 1) * 50}px` : "0",
               }}
               className="relative"
             >

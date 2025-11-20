@@ -9,7 +9,7 @@ import { ProcessingScreen } from "@/components/processing-screen"
 import { ValidationWizard } from "@/components/validation-wizard"
 import { DocumentViewer } from "@/components/document-viewer"
 import { simulateOCR, type PropertyUnit } from "@/lib/ocr-simulator"
-import type { StructuredUnit } from "@/lib/ai-structuring-types"
+import type { StructuredUnit, StructuringResponse } from "@/lib/ai-structuring-types"
 import { createStructuredSegments, type TransformedSegment } from "@/lib/text-transformer"
 import { FileText, Scale, Shield, ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -27,6 +27,8 @@ function DeslindePageInner() {
   const [ocrConfidence, setOcrConfidence] = useState<number | null>(null)
   const [ocrRotationHint, setOcrRotationHint] = useState<number | null>(null)
   const [unitBoundariesText, setUnitBoundariesText] = useState<Map<string, string>>(new Map())
+  const [lotLocation, setLotLocation] = useState<string | null>(null)
+  const [totalLotSurface, setTotalLotSurface] = useState<number | null>(null)
 
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -95,15 +97,20 @@ function DeslindePageInner() {
         const errorText = await resp.text()
         throw new Error(errorText || `HTTP ${resp.status}`)
       }
-      const data = (await resp.json()) as { results?: StructuredUnit[]; result?: StructuredUnit }
+      const data = (await resp.json()) as StructuringResponse
       update?.("ai", "done")
+      
+      // Extract lot-level metadata
+      if (data.lotLocation) {
+        setLotLocation(data.lotLocation)
+      }
+      if (data.totalLotSurface) {
+        setTotalLotSurface(data.totalLotSurface)
+      }
 
-      const structuredUnits: StructuredUnit[] =
-        Array.isArray(data.results) && data.results.length
-          ? data.results
-          : data.result
-            ? [data.result]
-            : []
+      const structuredUnits: StructuredUnit[] = Array.isArray(data.results) && data.results.length
+        ? data.results
+        : []
 
       if (!structuredUnits.length) {
         throw new Error("No se detectaron unidades en el texto proporcionado.")
@@ -327,6 +334,8 @@ function DeslindePageInner() {
             ocrConfidence={ocrConfidence ?? undefined}
             ocrRotationHint={ocrRotationHint ?? undefined}
             unitBoundariesText={Object.fromEntries(unitBoundariesText)}
+            lotLocation={lotLocation}
+            totalLotSurface={totalLotSurface}
           />
         </DashboardLayout>
       </ProtectedRoute>

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import type { StructuringRequest, StructuringResponse, StructuredUnit } from "@/lib/ai-structuring-types"
 
 const cache = new Map<string, StructuredUnit[]>()
+const metadataCache = new Map<string, { lotLocation?: string; totalLotSurface?: number }>()
 
 function hashPayload(s: string): string {
   let h = 0
@@ -22,7 +23,9 @@ function buildPrompt(): string {
     '      "surfaces": [ { "name": string, "value_m2": number } ],',
     '      "anomalies"?: string[]',
     '    }',
-    "  ]",
+    "  ],",
+    '  "lotLocation"?: string,  // Ubicación del lote (manzana, lote, dirección, ciudad, estado)',
+    '  "totalLotSurface"?: number  // Superficie total del lote en m² (no la suma de unidades)',
     "}",
     "Reglas:",
     "- Mantén el orden de aparición (order_index desde 0).",
@@ -47,7 +50,19 @@ function buildPrompt(): string {
     "- Extrae superficies presentes en el documento como pares nombre/valor_m2 (ej. “PLANTA BAJA”: 59.280).",
     '- Reconoce encabezados y etiquetas como: “SUPERFICIE”, “SUPERFICIE(S)”, “SUPERFICIE LOTE”, “SUPERFICIE TOTAL”, “SUPERFICIE TOTAL PRIVATIVA”, “SUPERFICIE DE ÁREA EDIFICADA”, “SUPERFICIE DE PATIO POSTERIOR/FRONTAL”, “SUPERFICIE DE PASILLO”, “SUPERFICIE DE JUNTA CONSTRUCTIVA”, así como abreviaturas “SUP.” (p. ej., “SUP. LOTE”, “SUP. TOTAL”).',
     "- Acepta formatos con coma o punto decimal: 145,600 m² => 145.600.",
-    '- Devuelve nombres claros y concisos (ej. “LOTE”, “TOTAL PRIVATIVA”, “ÁREA EDIFICADA”, “PATIO POSTERIOR”).',
+    '- Devuelve nombres claros y concisos (ej. “LOTE”, “TOTAL PRIVATIVA”, “ÁREA EDIFICADA”, “PATIO POSTERIOR").',
+    "",
+    "Ubicación del lote (lotLocation):",
+    '- Busca información de ubicación en el documento, especialmente al inicio o en encabezados.',
+    '- Extrae datos como: manzana, lote, fraccionamiento, dirección, ciudad, estado.',
+    '- Ejemplos: "MANZANA 114, LOTE 5-A", "FRACCIONAMIENTO BURDEOS, MANZANA 114, LOTE 5-A, TIJUANA, B.C.", "LOTE 5-82 MANZANA 174".',
+    '- Si no encuentras ubicación específica, deja este campo vacío (undefined).',
+    "",
+    "Superficie total del lote (totalLotSurface):",
+    '- Busca la superficie TOTAL del lote (no la suma de unidades individuales).',
+    '- Busca términos como: "SUPERFICIE LOTE", "SUPERFICIE TOTAL", "SUPERFICIE TOTAL DEL LOTE", "SUP. LOTE", "SUP. TOTAL".',
+    '- Esta es la superficie del terreno completo, no la suma de las superficies de las unidades.',
+    '- Si no encuentras una superficie total del lote específica, deja este campo vacío (undefined).',
     "",
     "Nombre de unidad (unit.name):",
     '- Prioriza patrones como “UNIDAD <n/ código>” (ej. “UNIDAD 64”), “CUBO DE ILUMINACIÓN/ILUMINACION”, “JUNTA CONSTRUCTIVA <n>”, “CAJON DE ESTACIONAMIENTO/ESTACIONAMIENTO”.',
@@ -660,11 +675,24 @@ export async function POST(req: Request) {
     const key = hashPayload(imageKeys)
 
     let cached = cache.get(key)
+    let cachedMetadata = metadataCache.get(key)
+    
     if (!cached) {
       try {
         const prompt = buildPrompt()
         // Call OpenAI Vision with all images
         const aiResponse = await callOpenAIVision(prompt, images)
+        
+        // Extract lot-level metadata if present
+        let lotLocation: string | undefined = undefined
+        let totalLotSurface: number | undefined = undefined
+        
+        if (typeof aiResponse.lotLocation === "string" && aiResponse.lotLocation.trim()) {
+          lotLocation = aiResponse.lotLocation.trim()
+        }
+        if (typeof aiResponse.totalLotSurface === "number" && aiResponse.totalLotSurface > 0) {
+          totalLotSurface = aiResponse.totalLotSurface
+        }
         
         // OpenAI might return a single unit or multiple units
         // Handle both cases
@@ -698,6 +726,12 @@ export async function POST(req: Request) {
         cached = validUnits.length > 0 ? validUnits : [simpleFallback(images[0]?.name || "UNIDAD")]
         
         cache.set(key, cached)
+        
+        // Store metadata separately
+        if (lotLocation || totalLotSurface) {
+          cachedMetadata = { lotLocation, totalLotSurface }
+          metadataCache.set(key, cachedMetadata)
+        }
       } catch (e: any) {
         console.error("[api/ai/structure] OpenAI Vision error:", e)
         // Fallback: create a simple unit from the first image name
@@ -722,7 +756,11 @@ export async function POST(req: Request) {
       return unit
     })
 
-    const resp: StructuringResponse = { results }
+    const resp: StructuringResponse = {
+      results,
+      ...(cachedMetadata?.lotLocation ? { lotLocation: cachedMetadata.lotLocation } : {}),
+      ...(cachedMetadata?.totalLotSurface ? { totalLotSurface: cachedMetadata.totalLotSurface } : {}),
+    }
     return NextResponse.json(resp)
   } catch (e: any) {
     console.error("[api/ai/structure] Error:", e)
