@@ -143,9 +143,21 @@ function DeslindePageInner() {
           .map((b) => {
             const d = (b.direction || "").toUpperCase()
             const name = dirEs[d] || d
-            const len = typeof b.length_m === "number" ? b.length_m.toFixed(3) : String(b.length_m || "")
+            const isVertical = d === "UP" || d === "DOWN"
+            const lengthNum = typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m || "0"))
+            const hasNoMeasure = isNaN(lengthNum) || Math.abs(lengthNum) < 0.001
             const who = (b.abutter || "").toString().trim()
-            return `${name}: EN ${len} m CON ${who}`
+            // Remove leading "CON " if present (prevents "CON CON" duplication)
+            const cleanedWho = who.replace(/^\s*CON\s+/i, "").trim()
+            
+            // Para direcciones verticales sin medida (0.000), omitir "EN 0.000 m"
+            if (isVertical && hasNoMeasure) {
+              return `${name}: CON ${cleanedWho}`
+            }
+            
+            // Para direcciones con medida, incluir la medida
+            const len = typeof b.length_m === "number" ? b.length_m.toFixed(3) : String(b.length_m || "0.000")
+            return `${name}: EN ${len} m CON ${cleanedWho}`
           })
           .join("\n")
       }

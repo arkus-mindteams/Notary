@@ -256,6 +256,8 @@ function isVoidAbutter(text: string): boolean {
 
 function transformAbutter(abutter: string): string {
   let t = abutter.trim()
+  // Remove leading "CON " if present (prevents "CON CON" duplication)
+  t = t.replace(/^\s*CON\s+/i, "").trim()
   t = t.replace(/\s+/g, " ")
   t = translateKnownPrefixes(t)
 
@@ -356,10 +358,16 @@ function parseColindancias(colText: string): DirectionGroup[] {
     const mCon = line.match(AFTER_CON_REGEX)
     if (mCon) {
       abutter = mCon[1].trim()
+      // Remove leading "CON " if somehow duplicated
+      abutter = abutter.replace(/^\s*CON\s+/i, "").trim()
     } else {
       // Try sentences like "... CON <who>" across lines: keep remainder of line if not found
       const parts = line.split(/\bCON\b/i)
-      if (parts.length > 1) abutter = parts.slice(1).join(" ").trim()
+      if (parts.length > 1) {
+        abutter = parts.slice(1).join(" ").trim()
+        // Remove leading "CON " if somehow duplicated
+        abutter = abutter.replace(/^\s*CON\s+/i, "").trim()
+      }
     }
 
     // Add segment to the appropriate group
@@ -431,12 +439,22 @@ export function notarialize(colindanciasText: string, unitName: string): string 
   function buildPhrase(group: DirectionGroup, isFirst: boolean, isLast: boolean): string {
     const directionLabel = getDirectionLabel(group.direction)
     const segs = group.segments
+    const isVertical = group.direction === "ARRIBA" || group.direction === "ABAJO" || group.direction === "SUPERIOR" || group.direction === "INFERIOR"
 
     if (segs.length === 1) {
       const s = segs[0]
-      const measure = formatMetersToWords(s.lengthMeters)
       const abutter = transformAbutter(s.abutterRaw)
       const prefix = isLast ? "y, " : isFirst ? "" : ""
+      
+      // Para direcciones verticales sin medida (0.000 o NaN), omitir la parte "en [medida]"
+      // Usar comparación con tolerancia para detectar 0.000
+      const hasNoMeasure = isNaN(s.lengthMeters) || Math.abs(s.lengthMeters) < 0.001
+      if (isVertical && hasNoMeasure) {
+        return `${prefix}${directionLabel}, con ${abutter}`
+      }
+      
+      // Para direcciones normales o verticales con medida, incluir la medida
+      const measure = formatMetersToWords(s.lengthMeters)
       return `${prefix}${directionLabel}, en ${measure}, con ${abutter}`
     }
 
@@ -445,10 +463,18 @@ export function notarialize(colindanciasText: string, unitName: string): string 
     const tramoPhrases: string[] = []
     
     segs.forEach((s, idx) => {
-      const measure = formatMetersToWords(s.lengthMeters)
       const abutter = transformAbutter(s.abutterRaw)
       const ord = ordinalWord(idx + 1)
-      tramoPhrases.push(`el ${ord} de ${measure}, con ${abutter}`)
+      
+      // Para direcciones verticales sin medida (0.000 o NaN), omitir la medida
+      // Usar comparación con tolerancia para 0.000
+      const hasNoMeasure = isNaN(s.lengthMeters) || Math.abs(s.lengthMeters) < 0.001
+      if (isVertical && hasNoMeasure) {
+        tramoPhrases.push(`el ${ord}, con ${abutter}`)
+      } else {
+        const measure = formatMetersToWords(s.lengthMeters)
+        tramoPhrases.push(`el ${ord} de ${measure}, con ${abutter}`)
+      }
     })
 
     const last = tramoPhrases.pop()
