@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { DocumentViewer } from "./document-viewer"
+import { ImageViewer } from "./image-viewer"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -13,6 +14,7 @@ import { generateNotarialDocument, downloadDocument, generateFilename } from "@/
 
 interface ValidationWizardProps {
   documentUrl: string
+  images?: File[] // Array of image files for ImageViewer
   units: PropertyUnit[]
   unitSegments: Map<string, TransformedSegment[]>
   onBack: () => void
@@ -29,6 +31,7 @@ interface ValidationWizardProps {
 
 export function ValidationWizard({
   documentUrl,
+  images,
   units,
   unitSegments,
   onBack,
@@ -273,14 +276,21 @@ export function ValidationWizard({
       <div className="flex-1 overflow-hidden">
         <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6 h-full">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 h-full">
-            {/* Document Viewer - Left Side with persistent highlight */}
+            {/* Document/Image Viewer - Left Side with persistent highlight */}
             <div className="h-[300px] sm:h-[400px] lg:h-full overflow-auto">
-              <DocumentViewer 
-                documentUrl={documentUrl} 
-                highlightedRegion={displayRegion} 
-                onRegionHover={() => {}} 
-                fileName={fileName}
-              />
+              {images && images.length > 0 ? (
+                <ImageViewer 
+                  images={images}
+                  initialIndex={0}
+                />
+              ) : (
+                <DocumentViewer 
+                  documentUrl={documentUrl} 
+                  highlightedRegion={displayRegion} 
+                  onRegionHover={() => {}} 
+                  fileName={fileName}
+                />
+              )}
             </div>
 
             {/* Text Panel - Right Side */}

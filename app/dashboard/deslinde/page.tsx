@@ -318,6 +318,7 @@ function DeslindePageInner() {
         <DashboardLayout>
           <ValidationWizard
             documentUrl={documentUrl}
+            images={selectedFiles}
             units={units}
             unitSegments={unitSegments}
             onBack={handleBack}
