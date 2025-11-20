@@ -12,28 +12,22 @@
 //   - 6.750 m => "seis metros setecientos cincuenta milímetros"
 //   - 0.520 m => "quinientos veinte milímetros"
 //   - 0.025 m => "veinticinco milímetros"
+// - CRITICAL: We respect the EXACT order of directions as they appear in the input text.
+//   NO reordering by cardinality is performed.
 
-type DirectionKey = "OESTE" | "NORTE" | "ESTE" | "SUR" | "NOROESTE" | "NORESTE" | "SURESTE" | "SUROESTE" | "ARRIBA" | "ABAJO"
+type DirectionKey = "OESTE" | "NORTE" | "ESTE" | "SUR" | "NOROESTE" | "NORESTE" | "SURESTE" | "SUROESTE" | "ARRIBA" | "ABAJO" | "SUPERIOR" | "INFERIOR"
 
 interface ParsedSegment {
   lengthMeters: number
   abutterRaw: string
+  originalDirection: DirectionKey // Keep track of original direction
+  originalOrder: number // Keep track of original order
 }
 
-const BASE_DIRECTIONS_ORDER: DirectionKey[] = ["OESTE", "NORTE", "ESTE", "SUR"]
-type BaseDirection = "OESTE" | "NORTE" | "ESTE" | "SUR"
-
-const DIAGONAL_TO_BASE: Record<DirectionKey, BaseDirection | "ARRIBA" | "ABAJO"> = {
-  OESTE: "OESTE",
-  NOROESTE: "OESTE",
-  SUROESTE: "OESTE",
-  NORTE: "NORTE",
-  NORESTE: "ESTE",
-  ESTE: "ESTE",
-  SURESTE: "ESTE",
-  SUR: "SUR",
-  ARRIBA: "ARRIBA",
-  ABAJO: "ABAJO",
+interface DirectionGroup {
+  direction: DirectionKey
+  segments: ParsedSegment[]
+  order: number // Original order of appearance
 }
 
 // --- Number formatting (Spanish words) ---
@@ -120,8 +114,13 @@ function formatMetersToWords(lengthMeters: number): string {
   const meters = Math.floor(totalMillimeters / 1000)
   const millimeters = totalMillimeters % 1000
 
+  // Special case: if decimal is exactly 000, return only meters
+  if (millimeters === 0 && meters > 0) {
+    return meters === 1 ? "un metro" : `${numberToSpanishWordsInt(meters)} metros`
+  }
+
   const metersPart =
-    meters > 0 ? `${numberToSpanishWordsInt(meters)} ${meters === 1 ? "metro" : "metros"}` : ""
+    meters > 0 ? (meters === 1 ? "un metro" : `${numberToSpanishWordsInt(meters)} metros`) : ""
   const mmPart =
     millimeters > 0
       ? `${numberToSpanishWordsInt(millimeters)} ${millimeters === 1 ? "milímetro" : "milímetros"}`
@@ -154,7 +153,17 @@ function replaceHyphenNumberWithGuion(text: string): string {
 }
 
 function appendTrailingNumberInWords(text: string): string {
-  return text.replace(/(\d+)$/g, (_m, d) => `${d} (${digitsToSpanish(d)})`)
+  // Only append if the number is standalone (not part of a code)
+  // Check if text ends with a number that should be converted
+  return text.replace(/(\d+)$/g, (_m, d) => {
+    // Check if preceding character suggests it's part of a code (e.g., "-1", "_1")
+    const beforeNumber = text.substring(0, text.length - d.length)
+    const lastChar = beforeNumber.slice(-1)
+    if (lastChar === "-" || lastChar === "_" || lastChar === ".") {
+      return d // Don't append words if it's part of a code
+    }
+    return `${d} (${digitsToSpanish(d)})`
+  })
 }
 
 export function formatUnitHeader(unitName: string): string {
@@ -166,7 +175,9 @@ export function formatUnitHeader(unitName: string): string {
   name = capitalizeSentenceCase(name)
   // Convert hyphen-number to "guion <palabra>"
   name = replaceHyphenNumberWithGuion(name)
-  // If ends with a number, append its word in parentheses
+  // Convert dots in numbers (e.g., "1.1" in codes) to "punto"
+  name = name.replace(/(\d+)\.(\d+)/g, (m, d1, d2) => `${digitsToSpanish(d1)} punto ${digitsToSpanish(d2)}`)
+  // If ends with a number (not in a code), append its word in parentheses
   name = appendTrailingNumberInWords(name)
   // Ensure colon at the end
   if (!name.endsWith(":")) name = `${name}:`
@@ -195,17 +206,26 @@ function translateKnownPrefixes(text: string): string {
 
 function transformCodeLikeSequence(seq: string): string {
   // Split letters/digits/other while preserving sequence
-  const parts = seq.match(/[A-Za-zÁÉÍÓÚÑ]+|\d+|[._-]+/g)
+  // Improved to handle numbers with dots (e.g., "1.1", "AC1.1EB")
+  const parts = seq.match(/[A-Za-zÁÉÍÓÚÑ]+|\d+(?:\.\d+)?|[._-]+/g)
   if (!parts) return seq.toLowerCase()
   const transformed: string[] = []
   for (const part of parts) {
     if (/^[A-Za-zÁÉÍÓÚÑ]+$/.test(part)) {
       transformed.push(normalizeAcronymToken(part.toUpperCase()))
-    } else if (/^\d+$/.test(part)) {
-      transformed.push(numberTokenToWords(part))
+    } else if (/^\d+(?:\.\d+)?$/.test(part)) {
+      // Handle numbers with dots (e.g., "1.1" -> "uno punto uno")
+      if (part.includes(".")) {
+        const [intPart, decPart] = part.split(".")
+        transformed.push(numberTokenToWords(intPart))
+        transformed.push("punto")
+        transformed.push(numberTokenToWords(decPart))
+      } else {
+        transformed.push(numberTokenToWords(part))
+      }
     } else if (part === "-") {
       transformed.push("guion")
-    } else if (part === "." ) {
+    } else if (part === ".") {
       transformed.push("punto")
     } else if (/^[-_.]+$/.test(part)) {
       // For sequences like "-_", replace hyphens with "guion", dots with "punto", ignore underscores
@@ -264,7 +284,8 @@ function transformAbutter(abutter: string): string {
 
 // --- Parsing colindancias text ---
 
-const DIRECTION_REGEX = /^(OESTE|NOROESTE|NORTE|NORESTE|ESTE|SURESTE|SUR|SUROESTE|ARRIBA|ABAJO)\s*[:\-]?\s*/i
+// Updated regex to include SUPERIOR/INFERIOR and handle "AL " prefix
+const DIRECTION_REGEX = /^(?:AL\s+)?(OESTE|NOROESTE|NORTE|NORESTE|ESTE|SURESTE|SUR|SUROESTE|ARRIBA|ABAJO|SUPERIOR|INFERIOR|COLINDANCIA\s+SUPERIOR|COLINDANCIA\s+INFERIOR)\s*[:\-]?\s*/i
 const LENGTH_PATTERNS = [
   /(?:^|\s)EN\s*([0-9]+(?:[\.,][0-9]{1,3})?)\s*m\b/i, // EN <n> m
   /\bLc\s*=\s*([0-9]+(?:[\.,][0-9]{1,3})?)\s*m?\b/i, // Lc=<n> (optional m)
@@ -278,21 +299,43 @@ function normalizeNumber(value: string): number {
   return isNaN(n) ? 0 : n
 }
 
-function parseColindancias(colText: string): Map<DirectionKey, ParsedSegment[]> {
+function normalizeDirection(dir: string): DirectionKey {
+  const upper = dir.toUpperCase().trim()
+  if (upper === "COLINDANCIA SUPERIOR" || upper === "SUPERIOR") return "ARRIBA"
+  if (upper === "COLINDANCIA INFERIOR" || upper === "INFERIOR") return "ABAJO"
+  return upper as DirectionKey
+}
+
+// Parse colindancias maintaining ORIGINAL ORDER
+function parseColindancias(colText: string): DirectionGroup[] {
   const lines = colText
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0 && !/^SUPERFICIE/i.test(l) && !/\b(m2|m\^2|metros cuadrados)\b/i.test(l))
 
-  const map = new Map<DirectionKey, ParsedSegment[]>()
+  const groups: DirectionGroup[] = []
+  const groupMap = new Map<DirectionKey, number>() // direction -> index in groups array
   let currentDir: DirectionKey | null = null
+  let globalOrder = 0
 
   for (const rawLine of lines) {
     let line = rawLine
     const mDir = line.match(DIRECTION_REGEX)
     if (mDir) {
-      currentDir = mDir[1].toUpperCase() as DirectionKey
+      const rawDir = mDir[1].toUpperCase().trim()
+      currentDir = normalizeDirection(rawDir)
       line = line.replace(DIRECTION_REGEX, "")
+      
+      // Create new group if this direction hasn't been seen yet
+      if (!groupMap.has(currentDir)) {
+        const newGroup: DirectionGroup = {
+          direction: currentDir,
+          segments: [],
+          order: globalOrder++,
+        }
+        groups.push(newGroup)
+        groupMap.set(currentDir, groups.length - 1)
+      }
     }
     if (!currentDir) {
       // skip lines before any direction header
@@ -315,39 +358,46 @@ function parseColindancias(colText: string): Map<DirectionKey, ParsedSegment[]> 
       abutter = mCon[1].trim()
     } else {
       // Try sentences like "... CON <who>" across lines: keep remainder of line if not found
-      const parts = line.split(/\\bCON\\b/i)
+      const parts = line.split(/\bCON\b/i)
       if (parts.length > 1) abutter = parts.slice(1).join(" ").trim()
     }
 
-    if (!map.has(currentDir)) map.set(currentDir, [])
-    map.get(currentDir)!.push({
+    // Add segment to the appropriate group
+    const groupIndex = groupMap.get(currentDir)!
+    const segment: ParsedSegment = {
       lengthMeters,
       abutterRaw: abutter,
-    })
-  }
-  return map
-}
-
-function collapseToBaseDirections(parsed: Map<DirectionKey, ParsedSegment[]>): Map<BaseDirection, ParsedSegment[]> {
-  const baseMap = new Map<BaseDirection, ParsedSegment[]>()
-  for (const dir of BASE_DIRECTIONS_ORDER) {
-    baseMap.set(dir as BaseDirection, [])
-  }
-  for (const [dir, segs] of parsed.entries()) {
-    const base = DIAGONAL_TO_BASE[dir]
-    if (base === "ARRIBA" || base === "ABAJO") {
-      continue
+      originalDirection: currentDir,
+      originalOrder: groups[groupIndex].segments.length,
     }
-    const bucket = baseMap.get(base as BaseDirection)
-    if (!bucket) continue
-    bucket.push(...segs)
+    groups[groupIndex].segments.push(segment)
   }
-  return baseMap
+
+  // Sort groups by original order
+  return groups.sort((a, b) => a.order - b.order)
 }
 
 function pluralizeTramos(n: number): string {
   const map: Record<number, string> = { 2: "dos", 3: "tres", 4: "cuatro", 5: "cinco" }
   return map[n] || numberToSpanishWordsInt(n)
+}
+
+function getDirectionLabel(direction: DirectionKey): string {
+  const labels: Record<DirectionKey, string> = {
+    OESTE: "al oeste",
+    NORTE: "al norte",
+    ESTE: "al este",
+    SUR: "al sur",
+    NOROESTE: "al noroeste",
+    NORESTE: "al noreste",
+    SURESTE: "al sureste",
+    SUROESTE: "al suroeste",
+    ARRIBA: "en su colindancia superior",
+    ABAJO: "en su colindancia inferior",
+    SUPERIOR: "en su colindancia superior",
+    INFERIOR: "en su colindancia inferior",
+  }
+  return labels[direction] || direction.toLowerCase()
 }
 
 function ordinalWord(n: number): string {
@@ -370,49 +420,64 @@ function ordinalWord(n: number): string {
 
 export function notarialize(colindanciasText: string, unitName: string): string {
   const header = formatUnitHeader(unitName)
-  const parsed = parseColindancias(colindanciasText)
-  const base = collapseToBaseDirections(parsed)
+  const groups = parseColindancias(colindanciasText) // Returns groups in ORIGINAL ORDER
+
+  if (groups.length === 0) {
+    return `${header} .`
+  }
 
   const parts: string[] = []
-  function buildPhrase(prefix: string, label: string, segs: ParsedSegment[]): string {
-    const dirLower = label.toLowerCase()
+  
+  function buildPhrase(group: DirectionGroup, isFirst: boolean, isLast: boolean): string {
+    const directionLabel = getDirectionLabel(group.direction)
+    const segs = group.segments
+
     if (segs.length === 1) {
       const s = segs[0]
       const measure = formatMetersToWords(s.lengthMeters)
       const abutter = transformAbutter(s.abutterRaw)
-      return `${prefix} ${dirLower}, en ${measure}, con ${abutter}`
+      const prefix = isLast ? "y, " : isFirst ? "" : ""
+      return `${prefix}${directionLabel}, en ${measure}, con ${abutter}`
     }
+
+    // Multiple segments
     const tramoCountWord = pluralizeTramos(segs.length)
     const tramoPhrases: string[] = []
+    
     segs.forEach((s, idx) => {
       const measure = formatMetersToWords(s.lengthMeters)
       const abutter = transformAbutter(s.abutterRaw)
       const ord = ordinalWord(idx + 1)
       tramoPhrases.push(`el ${ord} de ${measure}, con ${abutter}`)
     })
+
     const last = tramoPhrases.pop()
-    const joined = tramoPhrases.length > 0 ? `${tramoPhrases.join(", ")}, y ${last}` : (last || "")
-    return `${prefix} ${dirLower}, en ${tramoCountWord} tramos, ${joined}`
-  }
-  for (let i = 0; i < BASE_DIRECTIONS_ORDER.length; i++) {
-    const dir = BASE_DIRECTIONS_ORDER[i]
-    const segs = base.get(dir as BaseDirection)
-    if (!segs || segs.length === 0) continue
+    const joined = tramoPhrases.length > 0 
+      ? `${tramoPhrases.join(", ")}, y ${last}` 
+      : (last || "")
 
-    const prefix = i === BASE_DIRECTIONS_ORDER.length - 1 ? "y, al" : i === 0 ? "Al" : "al"
-    parts.push(buildPhrase(prefix, dir, segs))
+    const prefix = isLast ? "y, " : isFirst ? "" : ""
+    return `${prefix}${directionLabel}, en ${tramoCountWord} tramos, ${joined}`
   }
 
-  // Append vertical directions after cardinals
-  const arribaSegs = parsed.get("ARRIBA")
-  const abajoSegs = parsed.get("ABAJO")
-  if (arribaSegs && arribaSegs.length > 0 && abajoSegs && abajoSegs.length > 0) {
-    parts.push(buildPhrase("por", "arriba", arribaSegs))
-    parts.push(buildPhrase("y, por", "abajo", abajoSegs))
-  } else if (arribaSegs && arribaSegs.length > 0) {
-    parts.push(buildPhrase("y, por", "arriba", arribaSegs))
-  } else if (abajoSegs && abajoSegs.length > 0) {
-    parts.push(buildPhrase("y, por", "abajo", abajoSegs))
+  // Build phrases respecting ORIGINAL ORDER
+  // Find the last group with segments
+  let lastGroupIndex = -1
+  for (let i = groups.length - 1; i >= 0; i--) {
+    if (groups[i].segments.length > 0) {
+      lastGroupIndex = i
+      break
+    }
+  }
+
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i]
+    if (group.segments.length === 0) continue
+
+    const isFirst = parts.length === 0
+    const isLast = i === lastGroupIndex
+
+    parts.push(buildPhrase(group, isFirst, isLast))
   }
 
   // Join parts with semicolons and end with period.
