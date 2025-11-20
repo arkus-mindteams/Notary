@@ -1,11 +1,52 @@
 export type StructuredUnit = {
+  /**
+   * Nombre de la unidad según aparece en el plano
+   * Ejemplos: "UNIDAD X", "COCHERA 1", "ESTACIONAMIENTO"
+   */
+  unit_name: string
+  boundaries: Array<{
+    /**
+     * Dirección original tal como aparece en el texto (ej: "SURESTE", "NORTE", "ARRIBA")
+     */
+    raw_direction: string
+    /**
+     * Dirección normalizada a código corto:
+     * Cardinales: "N", "S", "E", "W"
+     * Intercardinales: "NE", "NW", "SE", "SW"
+     * Verticales: "UP", "DOWN"
+     */
+    normalized_direction: "N" | "S" | "E" | "W" | "NE" | "NW" | "SE" | "SW" | "UP" | "DOWN"
+    /**
+     * Longitud en metros. Puede ser null si no hay medida disponible
+     */
+    length_m: number | null
+    /**
+     * Nombre del colindante
+     */
+    abutter: string
+    /**
+     * Orden de aparición en el documento (inicia en 0)
+     */
+    order_index: number
+  }>
+  /**
+   * Superficies de la unidad (opcional)
+   */
+  surfaces?: Array<{ name: string; value_m2: number }>
+  /**
+   * Anomalías detectadas (opcional)
+   */
+  anomalies?: string[]
+}
+
+/**
+ * Tipo legacy para compatibilidad hacia atrás
+ * @deprecated Usar StructuredUnit con unit_name directamente
+ */
+export type StructuredUnitLegacy = {
   unit: {
     name: string
     model?: string
-    /**
-     * Ubicación principal del inmueble, por ejemplo:
-     * "FRACCIONAMIENTO BURDEOS, MANZANA 114, LOTE 5-A, TIJUANA, B.C."
-     */
     location?: string
   }
   boundaries: Array<{

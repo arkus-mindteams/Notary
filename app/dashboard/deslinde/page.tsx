@@ -126,7 +126,22 @@ function DeslindePageInner() {
       }
 
       const formatBoundaries = (unit: StructuredUnit) => {
+        // Mapping for normalized directions to Spanish
         const dirEs: Record<string, string> = {
+          "N": "NORTE",
+          "S": "SUR",
+          "E": "ESTE",
+          "W": "OESTE",
+          "NE": "NORESTE",
+          "NW": "NOROESTE",
+          "SE": "SURESTE",
+          "SW": "SUROESTE",
+          "UP": "ARRIBA",
+          "DOWN": "ABAJO",
+        }
+        
+        // Legacy mapping for backward compatibility
+        const dirEsLegacy: Record<string, string> = {
           WEST: "OESTE",
           NORTHWEST: "NOROESTE",
           NORTH: "NORTE",
@@ -138,25 +153,53 @@ function DeslindePageInner() {
           UP: "ARRIBA",
           DOWN: "ABAJO",
         }
+        
         const ordered = [...(unit.boundaries || [])].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
         return ordered
           .map((b) => {
-            const d = (b.direction || "").toUpperCase()
-            const name = dirEs[d] || d
-            const isVertical = d === "UP" || d === "DOWN"
-            const lengthNum = typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m || "0"))
-            const hasNoMeasure = isNaN(lengthNum) || Math.abs(lengthNum) < 0.001
+            // Use raw_direction if available (new format), fallback to normalized_direction
+            const rawDir = b.raw_direction || ""
+            const normalizedDir = b.normalized_direction || ""
+            
+            // Map to Spanish name: prefer raw_direction, then use normalized_direction mapping
+            let name = rawDir.toUpperCase()
+            if (normalizedDir && dirEs[normalizedDir]) {
+              name = dirEs[normalizedDir]
+            } else if (dirEsLegacy[rawDir.toUpperCase()]) {
+              name = dirEsLegacy[rawDir.toUpperCase()]
+            } else if (rawDir && (rawDir === "NORTE" || rawDir === "SUR" || rawDir === "ESTE" || rawDir === "OESTE" || 
+                     rawDir === "NORESTE" || rawDir === "NOROESTE" || rawDir === "SURESTE" || rawDir === "SUROESTE" ||
+                     rawDir === "ARRIBA" || rawDir === "ABAJO")) {
+              name = rawDir.toUpperCase()
+            }
+            
+            const isVertical = normalizedDir === "UP" || normalizedDir === "DOWN" || 
+                             rawDir.toUpperCase() === "UP" || rawDir.toUpperCase() === "DOWN" ||
+                             rawDir.toUpperCase() === "ARRIBA" || rawDir.toUpperCase() === "ABAJO" ||
+                             rawDir.toUpperCase() === "SUPERIOR" || rawDir.toUpperCase() === "INFERIOR"
+            
+            // Handle length_m: can be null, number, or string
+            const lengthNum = b.length_m === null || b.length_m === undefined 
+              ? null 
+              : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m)))
+            const hasNoMeasure = lengthNum === null || isNaN(lengthNum) || Math.abs(lengthNum) < 0.001
+            
             const who = (b.abutter || "").toString().trim()
             // Remove leading "CON " if present (prevents "CON CON" duplication)
             const cleanedWho = who.replace(/^\s*CON\s+/i, "").trim()
             
-            // Para direcciones verticales sin medida (0.000), omitir "EN 0.000 m"
+            // Para direcciones verticales sin medida (null o 0.000), omitir "EN 0.000 m"
             if (isVertical && hasNoMeasure) {
               return `${name}: CON ${cleanedWho}`
             }
             
+            // Si no hay medida en absoluto (null)
+            if (hasNoMeasure && lengthNum === null) {
+              return `${name}: CON ${cleanedWho}`
+            }
+            
             // Para direcciones con medida, incluir la medida
-            const len = typeof b.length_m === "number" ? b.length_m.toFixed(3) : String(b.length_m || "0.000")
+            const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
             return `${name}: EN ${len} m CON ${cleanedWho}`
           })
           .join("\n")
@@ -175,7 +218,8 @@ function DeslindePageInner() {
       const boundariesTextMap = new Map<string, string>()
 
       structuredUnits.forEach((unit, index) => {
-        const unitName = unit.unit?.name?.trim() || `UNIDAD ${index + 1}`
+        // Handle new format (unit_name)
+        const unitName = unit.unit_name?.trim() || `UNIDAD ${index + 1}`
         const unitIdBase =
           unitName
             .toLowerCase()
@@ -193,21 +237,35 @@ function DeslindePageInner() {
           south: [],
         }
 
-        const mapDirection = (dir: string): keyof PropertyUnit["boundaries"] | null => {
-          const normalized = dir.toUpperCase()
-          if (normalized.includes("WEST")) return "west"
-          if (normalized.includes("EAST")) return "east"
-          if (normalized.includes("NORTH")) return "north"
-          if (normalized.includes("SOUTH")) return "south"
+        const mapDirection = (normalizedDir: string, rawDir?: string): keyof PropertyUnit["boundaries"] | null => {
+          // Use normalized_direction (short code) if available, else derive from raw_direction or direction
+          const dir = normalizedDir || rawDir || ""
+          const upper = dir.toUpperCase()
+          
+          // Handle new format (short codes)
+          if (upper === "W" || upper === "WEST" || upper === "OESTE" || upper === "NW" || upper === "SW") return "west"
+          if (upper === "E" || upper === "EAST" || upper === "ESTE" || upper === "NE" || upper === "SE") return "east"
+          if (upper === "N" || upper === "NORTH" || upper === "NORTE" || upper === "NE" || upper === "NW") return "north"
+          if (upper === "S" || upper === "SOUTH" || upper === "SUR" || upper === "SE" || upper === "SW") return "south"
+          
+          // Legacy format fallback
+          if (upper.includes("WEST") || upper.includes("OESTE")) return "west"
+          if (upper.includes("EAST") || upper.includes("ESTE")) return "east"
+          if (upper.includes("NORTH") || upper.includes("NORTE")) return "north"
+          if (upper.includes("SOUTH") || upper.includes("SUR")) return "south"
+          
           return null
         }
 
         for (const b of unit.boundaries || []) {
-          const key = mapDirection(b.direction || "")
+          // Use normalized_direction first, fallback to raw_direction
+          const normalizedDir = b.normalized_direction || ""
+          const rawDir = b.raw_direction || ""
+          const key = mapDirection(normalizedDir, rawDir)
           if (!key) continue
           boundaries[key].push({
             id: `${unitId}-${key}-${boundaries[key].length}`,
-            measurement: String(b.length_m ?? ""),
+            measurement: b.length_m === null || b.length_m === undefined ? "" : String(b.length_m),
             unit: "M",
             description: `CON ${b.abutter || ""}`.trim(),
             regionId: "",
@@ -227,7 +285,8 @@ function DeslindePageInner() {
 
       // Construir texto de colindancias por unidad
       structuredUnits.forEach((unit, index) => {
-        const unitName = unit.unit?.name?.trim() || `UNIDAD ${index + 1}`
+        // Handle new format (unit_name)
+        const unitName = unit.unit_name?.trim() || `UNIDAD ${index + 1}`
         const unitIdBase =
           unitName
             .toLowerCase()
