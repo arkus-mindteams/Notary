@@ -670,16 +670,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "bad_request", message: "images required" }, { status: 400 })
     }
 
-    // Build cache key from image file names and sizes
-    const imageKeys = images.map((img) => `${img.name}-${img.size}`).join(",")
-    const key = hashPayload(imageKeys)
-
-    let cached = cache.get(key)
-    let cachedMetadata = metadataCache.get(key)
+    // Cache is disabled - always process images with AI
+    // This ensures fresh results every time, avoiding stale cache issues
+    console.log(`[api/ai/structure] Processing ${images.length} image(s) with AI (cache disabled)...`)
     
-    if (!cached) {
-      try {
-        const prompt = buildPrompt()
+    let processedUnits: StructuredUnit[] | null = null
+    let processedMetadata: { lotLocation?: string; totalLotSurface?: number } | undefined = undefined
+    
+    // Always process (cache disabled)
+    try {
+      const prompt = buildPrompt()
         // Call OpenAI Vision with all images
         const aiResponse = await callOpenAIVision(prompt, images)
         
@@ -723,24 +723,32 @@ export async function POST(req: Request) {
         const validUnits = merged.filter((u) => u.boundaries && u.boundaries.length > 0)
         
         // If no valid units, create a fallback
-        cached = validUnits.length > 0 ? validUnits : [simpleFallback(images[0]?.name || "UNIDAD")]
-        
-        cache.set(key, cached)
-        
-        // Store metadata separately
-        if (lotLocation || totalLotSurface) {
-          cachedMetadata = { lotLocation, totalLotSurface }
-          metadataCache.set(key, cachedMetadata)
+        if (validUnits.length > 0) {
+          processedUnits = validUnits
+          console.log(`[api/ai/structure] Processed ${validUnits.length} valid units from AI response`)
+        } else {
+          console.warn(`[api/ai/structure] No valid units found in AI response, using fallback`)
+          processedUnits = [simpleFallback(images[0]?.name || "UNIDAD")]
         }
-      } catch (e: any) {
-        console.error("[api/ai/structure] OpenAI Vision error:", e)
-        // Fallback: create a simple unit from the first image name
-        cached = [simpleFallback(images[0]?.name || "UNIDAD")]
-      }
+        
+        // Store metadata
+        if (lotLocation || totalLotSurface) {
+          processedMetadata = { lotLocation, totalLotSurface }
+          console.log(`[api/ai/structure] Extracted metadata: location=${lotLocation}, surface=${totalLotSurface}`)
+        }
+    } catch (e: any) {
+      console.error("[api/ai/structure] OpenAI Vision error:", e)
+      // Fallback: create a simple unit from the first image name
+      processedUnits = [simpleFallback(images[0]?.name || "UNIDAD")]
+      console.log(`[api/ai/structure] Using fallback unit`)
     }
 
     // Ensure all units have valid structure
-    const results = cached.map((result) => {
+    if (!processedUnits) {
+      processedUnits = [simpleFallback(images[0]?.name || "UNIDAD")]
+    }
+    
+    const results = processedUnits.map((result) => {
       const unit = JSON.parse(JSON.stringify(result)) as StructuredUnit
       
       if (!unit.unit?.name) {
@@ -758,9 +766,11 @@ export async function POST(req: Request) {
 
     const resp: StructuringResponse = {
       results,
-      ...(cachedMetadata?.lotLocation ? { lotLocation: cachedMetadata.lotLocation } : {}),
-      ...(cachedMetadata?.totalLotSurface ? { totalLotSurface: cachedMetadata.totalLotSurface } : {}),
+      ...(processedMetadata?.lotLocation ? { lotLocation: processedMetadata.lotLocation } : {}),
+      ...(processedMetadata?.totalLotSurface ? { totalLotSurface: processedMetadata.totalLotSurface } : {}),
     }
+    
+    console.log(`[api/ai/structure] Returning ${results.length} units (fresh processing, cache disabled)`)
     return NextResponse.json(resp)
   } catch (e: any) {
     console.error("[api/ai/structure] Error:", e)

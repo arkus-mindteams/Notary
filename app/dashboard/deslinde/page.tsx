@@ -84,10 +84,14 @@ function DeslindePageInner() {
       update?.("ai", "in_progress", `Analizando ${selectedFiles.length} imagen(es)...`)
       
       // Send images as FormData
+      // Add forceRefresh parameter to bypass cache if needed
+      // You can add a UI toggle to control this
       const formData = new FormData()
       selectedFiles.forEach((image) => {
         formData.append("images", image)
       })
+      // Optionally force refresh to bypass cache (useful for debugging)
+      // formData.append("forceRefresh", "true")
       
       const resp = await fetch("/api/ai/structure", {
         method: "POST",
@@ -98,6 +102,11 @@ function DeslindePageInner() {
         throw new Error(errorText || `HTTP ${resp.status}`)
       }
       const data = (await resp.json()) as StructuringResponse
+      console.log("[deslinde] AI response received:", {
+        unitsCount: data.results?.length || 0,
+        hasLocation: !!data.lotLocation,
+        hasSurface: !!data.totalLotSurface,
+      })
       update?.("ai", "done")
       
       // Extract lot-level metadata

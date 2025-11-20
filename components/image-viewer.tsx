@@ -194,24 +194,24 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
         {currentImageUrl && (
           <div 
             style={{
-              // Use large uniform padding to ensure scrollability in all directions
-              // This ensures we can scroll to see all edges of the image at any zoom level
+              // Use reasonable padding to ensure scrollability in all directions
+              // Reduced padding to minimize excessive scrolling
               padding: imageSize 
-                ? `${Math.max(200, imageSize.width * (zoom / 100) * 0.5, imageSize.height * (zoom / 100) * 0.5)}px`
-                : `${Math.max(2, Math.ceil(zoom / 50))}rem`,
+                ? `${Math.max(50, Math.min(100, imageSize.width * (zoom / 100) * 0.1, imageSize.height * (zoom / 100) * 0.1))}px`
+                : "1rem",
               boxSizing: "border-box",
               // Ensure container is large enough for scaled content
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               position: "relative",
-              // Minimum size to accommodate scaled image with extra space for scrolling
+              // Minimum size to accommodate scaled image with minimal extra space for scrolling
               minHeight: imageSize 
-                ? `${imageSize.height * (zoom / 100) + 400}px`
-                : "200%",
+                ? `${imageSize.height * (zoom / 100) + 100}px`
+                : "100%",
               minWidth: imageSize 
-                ? `${imageSize.width * (zoom / 100) + 400}px`
-                : "200%",
+                ? `${imageSize.width * (zoom / 100) + 100}px`
+                : "100%",
             }}
           >
             <div
