@@ -5,7 +5,7 @@ import { DocumentViewer } from "./document-viewer"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck } from "lucide-react"
+import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle } from "lucide-react"
 import type { TransformedSegment } from "@/lib/text-transformer"
 import type { PropertyUnit } from "@/lib/ocr-simulator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -18,9 +18,26 @@ interface ValidationWizardProps {
   onBack: () => void
   fileName?: string
   aiStructuredText?: string
+  ocrConfidence?: number
+  ocrRotationHint?: number
+  /**
+   * Texto de colindancias sugerido por unidad (id -> texto),
+   * generado a partir de la IA para cada bloque/unidad.
+   */
+  unitBoundariesText?: Record<string, string>
 }
 
-export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fileName, aiStructuredText }: ValidationWizardProps) {
+export function ValidationWizard({
+  documentUrl,
+  units,
+  unitSegments,
+  onBack,
+  fileName,
+  aiStructuredText,
+  ocrConfidence,
+  ocrRotationHint,
+  unitBoundariesText,
+}: ValidationWizardProps) {
   const [currentUnitIndex, setCurrentUnitIndex] = useState(0)
   const [editedUnits, setEditedUnits] = useState<Map<string, TransformedSegment[]>>(unitSegments)
   const [authorizedUnits, setAuthorizedUnits] = useState<Set<string>>(new Set())
@@ -28,7 +45,7 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
   const [lastSaved, setLastSaved] = useState<Date>(new Date())
   const [hasChanges, setHasChanges] = useState(false)
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null)
-  const [aiText, setAiText] = useState<string>(aiStructuredText || "")
+  const [aiTextByUnit, setAiTextByUnit] = useState<Map<string, string>>(new Map())
   const [notarialDraft, setNotarialDraft] = useState<string>("")
   const [isGeneratingNotarial, setIsGeneratingNotarial] = useState<boolean>(false)
 
@@ -54,10 +71,24 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
     }
   }, [hasChanges])
 
+  // Inicializar texto de colindancias por unidad cuando cambia la data estructurada
   useEffect(() => {
-    setAiText(aiStructuredText || "")
+    const map = new Map<string, string>()
+
+    if (unitBoundariesText && Object.keys(unitBoundariesText).length > 0) {
+      units.forEach((u) => {
+        const txt = unitBoundariesText[u.id]
+        if (typeof txt === "string" && txt.trim()) {
+          map.set(u.id, txt)
+        }
+      })
+    } else if (aiStructuredText && units[0]) {
+      map.set(units[0].id, aiStructuredText)
+    }
+
+    setAiTextByUnit(map)
     setNotarialDraft("")
-  }, [aiStructuredText])
+  }, [unitBoundariesText, aiStructuredText, units])
 
   const getUnitRegionId = (unitId: string): string => {
     const unitIdMap: Record<string, string> = {
@@ -133,6 +164,7 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
   if (!currentUnit) return null
 
   const displayRegion = selectedRegion || getUnitRegionId(currentUnit.id)
+  const currentAiText = aiTextByUnit.get(currentUnit.id) || ""
 
   return (
     <div className="flex flex-col h-full bg-background">
@@ -193,7 +225,7 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
 
                 return (
                   <button
-                    key={unit.id}
+                    key={`${unit.id}-${index}`}
                     onClick={() => setCurrentUnitIndex(index)}
                     className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
                       isCurrent && isAuthorized
@@ -216,6 +248,18 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
       </header>
 
       {/* Status Alert */}
+      {typeof ocrConfidence === "number" && ocrConfidence < 0.7 && (
+        <Alert className="mx-4 sm:mx-6 mt-3 sm:mt-4 bg-amber-50 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800">
+          <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <AlertDescription className="text-xs sm:text-sm text-amber-800 dark:text-amber-300">
+            El texto extraído del documento tiene una confiabilidad aproximada de{" "}
+            {Math.round(ocrConfidence * 100)}%. Te recomendamos revisar la legibilidad del PDF
+            {typeof ocrRotationHint === "number" && ocrRotationHint !== 0
+              ? ` y considerar rotarlo aproximadamente ${ocrRotationHint}° para mejorar la lectura.`
+              : " y considerar ajustar su orientación para una mejor interpretación."}
+          </AlertDescription>
+        </Alert>
+      )}
       {isCurrentUnitAuthorized && (
         <Alert className="mx-4 sm:mx-6 mt-3 sm:mt-4 bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800">
           <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
@@ -297,19 +341,26 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                 <div className="flex-1 p-4 sm:p-6 overflow-hidden">
                   <div className="flex flex-col gap-4 h-full">
                     {/* Colindancias (editable) */}
-                    {(aiText || aiStructuredText) && (
+                    {(currentAiText || aiStructuredText) && (
                       <div className="flex flex-col h-1/2">
-                        <div className="text-xs font-medium text-muted-foreground">Colindancias</div>
+                    <div className="text-xs font-medium text-muted-foreground">Colindancias</div>
                         <textarea
                           className="mt-2 w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
-                          value={aiText}
-                          onChange={(e) => setAiText(e.target.value)}
+                      value={currentAiText}
+                      onChange={(e) => {
+                        const value = e.target.value
+                        setAiTextByUnit((prev) => {
+                          const next = new Map(prev)
+                          next.set(currentUnit.id, value)
+                          return next
+                        })
+                      }}
                         />
                         <div className="mt-2 flex items-center justify-between gap-2">
                           <Button
                             size="sm"
                             variant="default"
-                            disabled={!aiText || isGeneratingNotarial}
+                            disabled={!currentAiText || isGeneratingNotarial}
                             onClick={async () => {
                               try {
                                 setIsGeneratingNotarial(true)
@@ -319,7 +370,7 @@ export function ValidationWizard({ documentUrl, units, unitSegments, onBack, fil
                                   headers: { "Content-Type": "application/json" },
                                   body: JSON.stringify({
                                     unitName: currentUnit.name,
-                                    colindanciasText: aiText,
+                                    colindanciasText: currentAiText,
                                   }),
                                 })
                                 if (!resp.ok) {

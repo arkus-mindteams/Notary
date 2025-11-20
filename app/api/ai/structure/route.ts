@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import type { StructuringRequest, StructuringResponse, StructuredUnit } from "@/lib/ai-structuring-types"
 
-const cache = new Map<string, StructuringResponse>()
+const cache = new Map<string, StructuredUnit[]>()
 
 function hashPayload(s: string): string {
   let h = 0
@@ -11,13 +11,18 @@ function hashPayload(s: string): string {
 
 function buildPrompt(): string {
   return [
-    "Eres un asistente experto en documentos notariales (deslindes).",
-    "Devuelve EXCLUSIVAMENTE JSON con este esquema:",
+    "Eres un asistente experto en documentos notariales (deslindes). Analizas planos arquitectónicos para extraer información de unidades, colindancias y superficies.",
+    "",
+    "Devuelve EXCLUSIVAMENTE JSON válido con este esquema:",
     "{",
-    '  "unit": { "name": string, "model"?: string },',
-    '  "boundaries": [ { "direction": "WEST" | "NORTHWEST" | "NORTH" | "NORTHEAST" | "EAST" | "SOUTHEAST" | "SOUTH" | "SOUTHWEST", "length_m": number, "abutter": string, "order_index": number } ],',
-    '  "surfaces": [ { "name": string, "value_m2": number } ],',
-    '  "anomalies"?: string[]',
+    '  "results": [',
+    '    {',
+    '      "unit": { "name": string, "location"?: string },',
+    '      "boundaries": [ { "direction": "WEST"|"NORTHWEST"|"NORTH"|"NORTHEAST"|"EAST"|"SOUTHEAST"|"SOUTH"|"SOUTHWEST"|"UP"|"DOWN", "length_m": number, "abutter": string, "order_index": number } ],',
+    '      "surfaces": [ { "name": string, "value_m2": number } ],',
+    '      "anomalies"?: string[]',
+    '    }',
+    "  ]",
     "}",
     "Reglas:",
     "- Mantén el orden de aparición (order_index desde 0).",
@@ -32,7 +37,7 @@ function buildPrompt(): string {
     "Heurísticas de colindancias:",
     '- Cada colindancia inicia con cardinales en español: “NORTE”, “SUR”, “ESTE”, “OESTE” o intercardinales “NOROESTE”, “NORESTE”, “SUROESTE”, “SURESTE”, con o sin “AL ” (ej. “AL NORTE”).',
     '- También puede haber colindancias verticales “ARRIBA/ABAJO” y equivalentes “COLINDANCIA SUPERIOR/INFERIOR” o “SUPERIOR/INFERIOR”: mapéalas como direcciones "UP" y "DOWN" respectivamente.',
-    "- Puede haber N colindancias por dirección (incluso repetidas). Conserva TODAS por separado y su orden (no las mezcles en una sola).",
+    "- Puede haber N colindancias por dirección (incluso repetidas). Conserva TODAS por separado y su orden (no las mezcles en una sola) y NO omitas ninguna aunque parezcan iguales.",
     '- Cada colindancia suele tener una longitud y un colindante (ej. “colinda con …” / “con …”). Si falta alguno, conserva lo disponible.',
     '- Las longitudes pueden venir como “EN <n> M”, “<n> M” o “LC=<n> (M)”. Reconoce “LC=” como longitud.',
     "- La línea puede contener todo: “NORESTE: EN 5.4610 m CON ÁREA COMÚN…”, o el detalle puede estar en líneas siguientes; extrae en ambos casos.",
@@ -47,6 +52,53 @@ function buildPrompt(): string {
     "Nombre de unidad (unit.name):",
     '- Prioriza patrones como “UNIDAD <n/ código>” (ej. “UNIDAD 64”), “CUBO DE ILUMINACIÓN/ILUMINACION”, “JUNTA CONSTRUCTIVA <n>”, “CAJON DE ESTACIONAMIENTO/ESTACIONAMIENTO”.',
     '- NO uses encabezados o secciones como nombre de unidad: “MEDIDAS Y COLINDANCIAS”, “SUPERFICIE(S)”, “CONDOMINIO”, “FRACCIONAMIENTO”, nombres de empresa (“PROMOTORA”, “DESARROLLADORA”), sellos o marcas.',
+    "",
+    "Regla crítica de validez de unidad:",
+    "- Solo consideres una unidad/área como válida si, DESPUÉS de su nombre, puedes identificar al menos una colindancia (boundary) con dirección + longitud + colindante.",
+    "- Si no hay ninguna colindancia confiable para esa unidad, devuelve boundaries: [] y, si es posible, anota una explicación en anomalies.",
+    "",
+    "EJEMPLO COMPLETO (referencia, NO lo inventes, solo sigue el mismo patrón de salida):",
+    "",
+    "Texto OCR de entrada simplificado:",
+    "\"UNIDAD B-2\\n",
+    "OESTE:\\n",
+    "6.750 MTS. CON UNIDAD B-4\\n",
+    "1.750 MTS. CON CUBO DE ILUMINACION\\n",
+    "NORTE:\\n",
+    "2.550 MTS CON CUBO DE ILUMINACION\\n",
+    "4.720 MTS. CON JUNTA CONSTRUCTIVA 1\\n",
+    "ESTE:\\n",
+    "0.520 MTS CON AREA COMUN DE SERVICIO 7 DE EDIFICIO B (ACS-7 DE E-B)\\n",
+    "3.480 MTS CON AREA COMUN (AC-12)\\n",
+    "4.500 MTS. CON AREA COMUN (AC-12)\\n",
+    "SUR:\\n",
+    "0.300 MTS CON AREA COMUN (AC-12)\\n",
+    "5.370 MTS CON AREA COMUN 1 DE EDIFICIO B EN PLANTA BAJA (AC1.1EB-PB)\\n",
+    "SUPERFICIE: 55.980 m2\"",
+    "",
+    "Salida JSON esperada para ese bloque:",
+    "{",
+    '  \"unit\": { \"name\": \"UNIDAD B-2\" },',
+    '  \"boundaries\": [',
+    '    { \"direction\": \"WEST\", \"length_m\": 6.75, \"abutter\": \"UNIDAD B-4\", \"order_index\": 0 },',
+    '    { \"direction\": \"WEST\", \"length_m\": 1.75, \"abutter\": \"CUBO DE ILUMINACION\", \"order_index\": 1 },',
+    '    { \"direction\": \"NORTH\", \"length_m\": 2.55, \"abutter\": \"CUBO DE ILUMINACION\", \"order_index\": 2 },',
+    '    { \"direction\": \"NORTH\", \"length_m\": 4.72, \"abutter\": \"JUNTA CONSTRUCTIVA 1\", \"order_index\": 3 },',
+    '    { \"direction\": \"EAST\", \"length_m\": 0.52, \"abutter\": \"AREA COMUN DE SERVICIO 7 DE EDIFICIO B (ACS-7 DE E-B)\", \"order_index\": 4 },',
+    '    { \"direction\": \"EAST\", \"length_m\": 3.48, \"abutter\": \"AREA COMUN (AC-12)\", \"order_index\": 5 },',
+    '    { \"direction\": \"EAST\", \"length_m\": 4.5, \"abutter\": \"AREA COMUN (AC-12)\", \"order_index\": 6 },',
+    '    { \"direction\": \"SOUTH\", \"length_m\": 0.3, \"abutter\": \"AREA COMUN (AC-12)\", \"order_index\": 7 },',
+    '    { \"direction\": \"SOUTH\", \"length_m\": 5.37, \"abutter\": \"AREA COMUN 1 DE EDIFICIO B EN PLANTA BAJA (AC1.1EB-PB)\", \"order_index\": 8 }',
+    "  ],",
+    '  \"surfaces\": [',
+    '    { \"name\": \"PRIVATIVA\", \"value_m2\": 55.98 }',
+    "  ]",
+    "}",
+    "",
+    "Repite este mismo criterio para otras unidades como \"CUBO DE ILUMINACION\", \"JUNTA CONSTRUCTIVA 1\", \"JUNTA CONSTRUCTIVA 2\", \"CAJON DE ESTACIONAMIENTO\", \"AREA COMUN (AC-12)\", etc.:",
+    "- Usa el encabezado como unit.name (normalizado).",
+    "- Toma SOLO las colindancias que pertenecen a ese bloque/unidad.",
+    "- Extrae la superficie si está presente (SUPERFICIE: ... m2), sin inventar valores.",
   ].join("\n")
 }
 
@@ -116,6 +168,61 @@ function preFilterOCRText(ocrText: string, unitHint?: string): string {
   return chosen.trim()
 }
 
+type UnitBlock = {
+  heading: string
+  text: string
+}
+
+function splitTextIntoUnitBlocks(ocrText: string): UnitBlock[] {
+  if (!ocrText) return []
+  const text = ocrText.replace(/\r/g, "")
+  const lines = text.split(/\n+/)
+
+  const headingPattern = new RegExp(
+    [
+      "^UNIDAD\\s+[A-Z0-9\\-]+",
+      "^CUBO\\s+DE\\s+ILUMINACI[ÓO]N",
+      "^JUNTA\\s+CONSTRUCTIVA\\s+\\d+",
+      "^CAJ[ÓO]N\\s+DE\\s+ESTACIONAMIENTO(?:\\s+[A-Z0-9\\-]+)?",
+      "^ESTACIONAMIENTO(?:\\s+[A-Z0-9\\-]+)?",
+      "^ÁREAS?\\s+COMUN(?:ES)?(?:\\s+DE\\s+SERVICIO)?(?:\\s+[A-Z0-9\\-]+)?",
+      "^AREAS?\\s+COMUN(?:ES)?(?:\\s+DE\\s+SERVICIO)?(?:\\s+[A-Z0-9\\-]+)?",
+    ].join("|"),
+    "i"
+  )
+
+  const blocks: UnitBlock[] = []
+  let currentHeading = "UNIDAD"
+  let currentLines: string[] = []
+
+  const pushCurrent = () => {
+    const chunk = currentLines.join("\n").trim()
+    if (!chunk) return
+    blocks.push({
+      heading: currentHeading,
+      text: chunk,
+    })
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed && headingPattern.test(trimmed)) {
+      if (currentLines.length) pushCurrent()
+      currentHeading = trimmed
+      currentLines = [trimmed]
+    } else {
+      currentLines.push(line)
+    }
+  }
+  pushCurrent()
+
+  if (!blocks.length) {
+    blocks.push({ heading: "UNIDAD", text })
+  }
+
+  return blocks
+}
+
 function pickUnitNameFromText(ocrText: string, fallback: string = "UNIDAD"): string {
   const upper = ocrText.toUpperCase()
   const patterns = [
@@ -124,6 +231,9 @@ function pickUnitNameFromText(ocrText: string, fallback: string = "UNIDAD"): str
     /CUBO DE ILUMINACI[ÓO]N/g,
     /JUNTA CONSTRUCTIVA\s+\d+/g,
     /CAJ[ÓO]N DE ESTACIONAMIENTO|ESTACIONAMIENTO/g,
+    /LOTE\s+[0-9A-Z\-]+(?:\s*,\s*MANZANA\s+[0-9A-Z\-]+)?/g,
+    /ÁREAS?\s+COMUN(?:ES)?(?:\s*\([^)]*\))?/g,
+    /AREAS?\s+COMUN(?:ES)?(?:\s*\([^)]*\))?/g,
   ]
   for (const p of patterns) {
     const m = upper.match(p)
@@ -137,6 +247,82 @@ function pickUnitNameFromText(ocrText: string, fallback: string = "UNIDAD"): str
     }
   }
   return fallback
+}
+
+function normalizeUnitName(name: string | undefined | null): string {
+  return (name || "")
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[.:]+$/g, "")
+    .trim()
+}
+
+function isHeadingLikeName(name: string): boolean {
+  const bad = normalizeUnitName(name)
+  if (!bad) return true
+  if (bad === "MEDIDAS Y COLINDANCIAS") return true
+  if (bad === "MEDIDAS") return true
+  if (bad === "COLINDANCIAS") return true
+  if (bad.startsWith("SUPERFICIE")) return true
+  if (bad === "CONDOMINIO" || bad === "FRACCIONAMIENTO") return true
+  if (/PROMOTORA|DESARROLLADORA|S\.?A\.?/i.test(bad)) return true
+  // Descartar nombres demasiado largos (descripciones completas)
+  if (bad.length > 80) return true
+  return false
+}
+
+// Fusionar unidades con el mismo nombre lógico (ignorando mayúsculas/acentos)
+function mergeUnitsByName(units: StructuredUnit[]): StructuredUnit[] {
+  const byName = new Map<string, StructuredUnit>()
+
+  for (const u of units) {
+    const rawName = u.unit?.name || ""
+    const norm = normalizeUnitName(rawName)
+    if (!norm || isHeadingLikeName(rawName)) {
+      continue
+    }
+
+    const existing = byName.get(norm)
+    if (!existing) {
+      byName.set(norm, u)
+      continue
+    }
+
+    // Fusionar boundaries
+    const mergedBoundaries: StructuredUnit["boundaries"] = [
+      ...(existing.boundaries || []),
+      ...(u.boundaries || []),
+    ]
+    mergedBoundaries.sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+    mergedBoundaries.forEach((b, idx) => {
+      b.order_index = idx
+    })
+
+    // Fusionar surfaces (por nombre)
+    const mergedSurfaces: { name: string; value_m2: number }[] = []
+    const seen = new Map<string, { name: string; value_m2: number }>()
+    const pushSurface = (s: { name: string; value_m2: number }) => {
+      const key = normalizeUnitName(s.name)
+      const prev = seen.get(key)
+      if (!prev) {
+        seen.set(key, { name: s.name, value_m2: s.value_m2 })
+      } else {
+        // Si hay conflicto, conservar el valor mayor como heurística
+        if (typeof s.value_m2 === "number" && s.value_m2 > (prev.value_m2 || 0)) {
+          seen.set(key, { name: s.name, value_m2: s.value_m2 })
+        }
+      }
+    }
+    ;(existing.surfaces || []).forEach(pushSurface)
+    ;(u.surfaces || []).forEach(pushSurface)
+    seen.forEach((v) => mergedSurfaces.push(v))
+
+    existing.boundaries = mergedBoundaries
+    existing.surfaces = mergedSurfaces
+  }
+
+  return Array.from(byName.values())
 }
 
 function heuristicBoundaries(ocrText: string): StructuredUnit["boundaries"] {
@@ -278,34 +464,111 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
   return out
 }
 
-async function callGeminiJSON(prompt: string, ocrText: string) {
-  const apiKey = process.env.GEMINI_API_KEY
-  const model = process.env.GEMINI_MODEL || "gemini-1.5-pro"
-  if (!apiKey) throw new Error("GEMINI_API_KEY missing")
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`
+/**
+ * Call OpenAI Vision API with images
+ * Supports any OpenAI model with vision capabilities:
+ * - gpt-4o (default, recommended)
+ * - gpt-4o-mini
+ * - gpt-4-turbo
+ * - gpt-5.1 (if available - use OPENAI_MODEL=gpt-5.1)
+ * 
+ * To verify available models, check: https://platform.openai.com/docs/models
+ * or call: GET https://api.openai.com/v1/models
+ * 
+ * To use GPT-5.1, set OPENAI_MODEL=gpt-5.1 in your environment variables
+ * 
+ * @param prompt System prompt for the model
+ * @param images Array of image files to analyze
+ * @returns Parsed JSON response
+ */
+async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
+  const apiKey = process.env.OPENAI_API_KEY
+  // Default to gpt-4o, but can be overridden with OPENAI_MODEL env var
+  // For GPT-5.1, set OPENAI_MODEL=gpt-5.1
+  // Note: Model names may vary (e.g., gpt-5.1, gpt-5.1-preview, gpt-5.1-2024-12-01)
+  // Check OpenAI documentation for the exact model identifier
+  const model = process.env.OPENAI_MODEL || "gpt-4o"
+  
+  // Log the model being used for debugging
+  if (process.env.NODE_ENV === "development") {
+    console.log(`[OpenAI Vision] Using model: ${model}`)
+  }
+  
+  if (!apiKey) throw new Error("OPENAI_API_KEY missing")
+  
+  // Convert images to base64
+  const imageParts = await Promise.all(
+    images.map(async (image) => {
+      const arrayBuffer = await image.arrayBuffer()
+      const base64 = Buffer.from(arrayBuffer).toString("base64")
+      return {
+        type: "image_url",
+        image_url: {
+          url: `data:${image.type};base64,${base64}`,
+        },
+      }
+    })
+  )
+
+  const url = `https://api.openai.com/v1/chat/completions`
   const resp = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
     body: JSON.stringify({
-      systemInstruction: { role: "system", parts: [{ text: prompt }] },
-      contents: [{ role: "user", parts: [{ text: ocrText }]}],
-      generationConfig: { temperature: 0.1, responseMimeType: "application/json" },
+      model,
+      messages: [
+        {
+          role: "system",
+          content: prompt,
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Analiza estas imágenes de planos arquitectónicos y extrae la información de unidades, colindancias y superficies según las instrucciones del sistema. Devuelve SOLO JSON válido sin markdown ni explicaciones.",
+            },
+            ...imageParts,
+          ],
+        },
+      ],
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+      // GPT-5.1 and newer models require max_completion_tokens instead of max_tokens
+      // We use max_completion_tokens for newer models (gpt-5.x, o1) and max_tokens for older ones
+      ...(model.includes("gpt-5") || model.includes("o1") 
+        ? { max_completion_tokens: 4000 }
+        : { max_tokens: 4000 }
+      ),
     }),
   })
-  if (!resp.ok) throw new Error(await resp.text())
+
+  if (!resp.ok) {
+    const errorText = await resp.text()
+    throw new Error(`OpenAI API error: ${resp.status} - ${errorText}`)
+  }
+
   const data = await resp.json()
-  const text =
-    data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-    data?.candidates?.[0]?.content?.parts?.[0]?.rawText ||
-    data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data
+  const text = data?.choices?.[0]?.message?.content
   if (!text) throw new Error("empty_response")
-  return JSON.parse(text)
+  
+  // Try to parse JSON, handle markdown code blocks if present
+  let jsonText = text.trim()
+  if (jsonText.startsWith("```")) {
+    const match = jsonText.match(/```(?:json)?\n([\s\S]*?)\n```/)
+    if (match) jsonText = match[1]
+  }
+  
+  return JSON.parse(jsonText)
 }
 
-function simpleFallback(ocrText: string): StructuredUnit {
-  const firstLine = (ocrText || "").split("\n").find((l) => l.trim().length > 0) || "UNIDAD"
+function simpleFallback(source: string): StructuredUnit {
+  const name = source?.replace(/\.(png|jpg|jpeg|pdf)$/i, "").slice(0, 60) || "UNIDAD"
   return {
-    unit: { name: firstLine.slice(0, 60) },
+    unit: { name },
     boundaries: [],
     surfaces: [],
     anomalies: [],
@@ -382,153 +645,87 @@ function extractSurfacesFromText(ocrText: string): { name: string; value_m2: num
   return out
 }
 
-// Detect labeled internal parts (cubo de iluminación, juntas, estacionamiento, áreas comunes, etc.)
-// even when they don't carry an explicit surface value.
-function extractLabeledPartsFromText(ocrText: string): { name: string }[] {
-  if (!ocrText) return []
-  const text = ocrText.replace(/\r/g, "")
-  const lines = text.split(/\n+/)
-  const names = new Set<string>()
-
-  for (const raw of lines) {
-    const original = raw.trim()
-    if (!original) continue
-    const upper = original.toUpperCase()
-
-    // Cubo de iluminación
-    if (/^CUBO DE ILUMINACI[ÓO]N\b/.test(upper)) {
-      names.add("CUBO DE ILUMINACIÓN")
-      continue
-    }
-
-    // Junta constructiva con número
-    if (/^JUNTA CONSTRUCTIVA\s+\d+/.test(upper)) {
-      // Normalizamos capitalización pero preservamos el número
-      const normalized = original
-        .toLowerCase()
-        .replace(/(^|\s)([a-záéíóúñ])/g, (_m, sep, c) => `${sep}${c.toUpperCase()}`)
-      names.add(normalized)
-      continue
-    }
-
-    // Cajón de estacionamiento / Estacionamiento
-    if (/^(CAJ[ÓO]N DE ESTACIONAMIENTO|CAJON DE ESTACIONAMIENTO|ESTACIONAMIENTO)\b/.test(upper)) {
-      names.add("CAJÓN DE ESTACIONAMIENTO")
-      continue
-    }
-
-    // Áreas comunes
-    if (/^ÁREAS COMUNES\b|^AREAS COMUNES\b/.test(upper)) {
-      // Diferenciar áreas comunes generales de servicio si es posible
-      if (/SERVICIO/.test(upper)) {
-        names.add("Áreas comunes de servicio")
-      } else {
-        names.add("Áreas comunes")
-      }
-      continue
-    }
-  }
-
-  return Array.from(names).map((name) => ({ name }))
-}
-
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as StructuringRequest
-    if (!body?.ocrText || typeof body.ocrText !== "string") {
-      return NextResponse.json({ error: "bad_request", message: "ocrText required" }, { status: 400 })
+    // Accept FormData with images
+    const formData = await req.formData()
+    const images = formData.getAll("images") as File[]
+    
+    if (!images || images.length === 0) {
+      return NextResponse.json({ error: "bad_request", message: "images required" }, { status: 400 })
     }
-    // Detectar unidad candidata y pre-filtrar al bloque de "Medidas y Colindancias" más relevante
-    const unitHint = pickUnitNameFromText(body.ocrText, "UNIDAD")
-    const filtered = preFilterOCRText(body.ocrText, unitHint)
-    const payload = JSON.stringify({ ocrText: filtered || body.ocrText, hints: body.hints || {} })
-    const key = hashPayload(payload)
-    if (cache.has(key)) return NextResponse.json(cache.get(key)!)
-    let result: StructuredUnit
-    try {
-      const prompt = buildPrompt()
-      const ai = await callGeminiJSON(prompt, filtered || body.ocrText)
-      if (!ai || typeof ai !== "object" || !ai.unit || !Array.isArray(ai.boundaries) || !Array.isArray(ai.surfaces)) {
-        throw new Error("invalid_ai_shape")
-      }
-      result = ai as StructuredUnit
-    } catch {
-      result = simpleFallback(filtered || body.ocrText)
-    }
-    // Reconstrucción: si faltan longitudes/abutters, hacer parse más estricto del texto
-    const parsed = parseBoundariesFromText(filtered || body.ocrText)
-    const needRepair =
-      !result.boundaries ||
-      result.boundaries.length === 0 ||
-      result.boundaries.some((b) => !b || b.length_m === 0 || !b.abutter)
-    // Si el parser encontró más tramos que la IA, preferir parsed completo para no perder duplicados
-    if ((parsed.length > (result.boundaries?.length || 0)) && parsed.length > 0) {
-      result.boundaries = parsed
-    } else if (needRepair && parsed.length > 0) {
-      result.boundaries = parsed
-    } else if (result.boundaries && result.boundaries.length > 0 && parsed.length > 0) {
-      // Rellenar campos vacíos con parsed por orden
-      const repaired = result.boundaries.map((b, idx) => {
-        const p = parsed[idx]
-        if (!p) return b
-        return {
-          direction: b.direction || p.direction,
-          length_m: b.length_m || p.length_m,
-          abutter: b.abutter || p.abutter,
-          order_index: typeof b.order_index === "number" ? b.order_index : p.order_index,
+
+    // Build cache key from image file names and sizes
+    const imageKeys = images.map((img) => `${img.name}-${img.size}`).join(",")
+    const key = hashPayload(imageKeys)
+
+    let cached = cache.get(key)
+    if (!cached) {
+      try {
+        const prompt = buildPrompt()
+        // Call OpenAI Vision with all images
+        const aiResponse = await callOpenAIVision(prompt, images)
+        
+        // OpenAI might return a single unit or multiple units
+        // Handle both cases
+        let units: StructuredUnit[] = []
+        
+        if (Array.isArray(aiResponse.results)) {
+          units = aiResponse.results
+        } else if (aiResponse.result) {
+          units = [aiResponse.result]
+        } else if (aiResponse.unit) {
+          // Single unit object - wrap in array
+          units = [aiResponse as StructuredUnit]
+        } else {
+          throw new Error("invalid_ai_shape")
         }
-      })
-      result.boundaries = repaired
-    } else if (!result.boundaries || result.boundaries.length === 0) {
-      // Último fallback
-      const hb = heuristicBoundaries(filtered || body.ocrText)
-      if (hb.length > 0) result.boundaries = hb
-    }
-    // Si el nombre de unidad parece genérico/encabezado, intentar detectarlo del texto
-    const badName = (result.unit?.name || "").toUpperCase().trim()
-    const isHeading =
-      badName === "MEDIDAS Y COLINDANCIAS" ||
-      badName === "MEDIDAS" ||
-      badName === "COLINDANCIAS" ||
-      badName.startsWith("SUPERFICIE") ||
-      badName === "CONDOMINIO" ||
-      badName === "FRACCIONAMIENTO" ||
-      /PROMOTORA|DESARROLLADORA|S\.?A\.?/i.test(badName)
-    if (!result.unit?.name || isHeading) {
-      result.unit = { name: pickUnitNameFromText(body.ocrText, result.unit?.name || "UNIDAD") }
-    }
-    // Extraer superficies heurísticamente y fusionar con las devueltas por la IA.
-    // IMPORTANTE: usamos SIEMPRE el OCR COMPLETO para no perder superficies que
-    // suelen venir fuera del bloque de "Medidas y Colindancias".
-    const heurSurfaces = extractSurfacesFromText(body.ocrText)
-    if (!Array.isArray(result.surfaces)) result.surfaces = []
-    const names = new Set(result.surfaces.map((s: any) => (s?.name || "").toUpperCase()))
 
-    // 1) Superficies con valor numérico (m²)
-    for (const s of heurSurfaces) {
-      const key = (s.name || "").toUpperCase()
-      if (!names.has(key)) {
-        result.surfaces.push({ name: s.name, value_m2: s.value_m2 })
-        names.add(key)
+        // Validate structure
+        for (const unit of units) {
+          if (!unit || typeof unit !== "object" || !unit.unit || !Array.isArray(unit.boundaries) || !Array.isArray(unit.surfaces)) {
+            throw new Error("invalid_ai_shape")
+          }
+        }
+
+        // Merge units with the same name
+        const merged = mergeUnitsByName(units)
+        
+        // Filter out units without boundaries
+        const validUnits = merged.filter((u) => u.boundaries && u.boundaries.length > 0)
+        
+        // If no valid units, create a fallback
+        cached = validUnits.length > 0 ? validUnits : [simpleFallback(images[0]?.name || "UNIDAD")]
+        
+        cache.set(key, cached)
+      } catch (e: any) {
+        console.error("[api/ai/structure] OpenAI Vision error:", e)
+        // Fallback: create a simple unit from the first image name
+        cached = [simpleFallback(images[0]?.name || "UNIDAD")]
       }
     }
 
-    // 2) Partes internas etiquetadas sin valor (cubo de iluminación, juntas, etc.)
-    const labeledParts = extractLabeledPartsFromText(body.ocrText)
-    for (const p of labeledParts) {
-      const key = (p.name || "").toUpperCase()
-      if (!names.has(key)) {
-        // Usamos value_m2 = 0 para indicar "sin valor específico conocido"
-        result.surfaces.push({ name: p.name, value_m2: 0 })
-        names.add(key)
+    // Ensure all units have valid structure
+    const results = cached.map((result) => {
+      const unit = JSON.parse(JSON.stringify(result)) as StructuredUnit
+      
+      if (!unit.unit?.name) {
+        unit.unit = { ...(unit.unit || {}), name: "UNIDAD" }
       }
-    }
-    const resp: StructuringResponse = { result }
-    cache.set(key, resp)
+      if (!Array.isArray(unit.boundaries)) {
+        unit.boundaries = []
+      }
+      if (!Array.isArray(unit.surfaces)) {
+        unit.surfaces = []
+      }
+      
+      return unit
+    })
+
+    const resp: StructuringResponse = { results }
     return NextResponse.json(resp)
   } catch (e: any) {
+    console.error("[api/ai/structure] Error:", e)
     return NextResponse.json({ error: "structure_failed", message: String(e?.message || e) }, { status: 400 })
   }
 }
-
-

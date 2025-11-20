@@ -23,5 +23,5 @@ export type StructuringRequest = {
   hints?: { language?: "es" | "en"; unitNameHint?: string }
 }
 
-export type StructuringResponse = { result: StructuredUnit }
+export type StructuringResponse = { results: StructuredUnit[] }
 

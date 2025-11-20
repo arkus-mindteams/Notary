@@ -26,12 +26,84 @@ async function rasterizePdfPageToPng(file: File, pageNumber: number = 1, rotatio
   return new File([blob], `${file.name.replace(/\\.[^.]+$/, "")}-p${pageNumber}-r${rotationDeg}.png`, { type: "image/png" })
 }
 
+/**
+ * Convert all pages of a PDF file to PNG images (one image per page)
+ * Uses server-side API endpoint to avoid pdfjs-dist issues in the browser
+ * @param file PDF file to convert
+ * @param rotationDeg Rotation in degrees (0, 90, 180, 270) - currently not used, conversion happens server-side
+ * @param onProgress Progress callback
+ * @returns Array of File objects, one per page
+ */
+export async function convertPdfToImages(
+  file: File,
+  rotationDeg: number = 0,
+  onProgress?: (current: number, total: number) => void
+): Promise<File[]> {
+  console.log("[ocr-client] Converting PDF to images via server API", { name: file.name })
+  
+  // Send PDF to server for conversion
+  const formData = new FormData()
+  formData.append("file", file)
+  
+  const response = await fetch("/api/pdf/to-images", {
+    method: "POST",
+    body: formData,
+  })
+  
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.message || "Failed to convert PDF to images")
+  }
+  
+  const data = await response.json() as {
+    images: Array<{ data: string; mimeType: string; pageNumber: number; fileName: string }>
+    totalPages: number
+  }
+  
+  // Convert base64 images to File objects
+  const files: File[] = []
+  for (let i = 0; i < data.images.length; i++) {
+    const img = data.images[i]
+    onProgress?.(i + 1, data.totalPages)
+    
+    // Convert base64 to blob
+    const binaryString = atob(img.data)
+    const bytes = new Uint8Array(binaryString.length)
+    for (let j = 0; j < binaryString.length; j++) {
+      bytes[j] = binaryString.charCodeAt(j)
+    }
+    
+    const blob = new Blob([bytes], { type: img.mimeType })
+    const file = new File([blob], img.fileName || `page-${img.pageNumber}.png`, { type: img.mimeType })
+    files.push(file)
+  }
+  
+  return files
+}
+
 type ProgressFn = (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => void
+
+export interface TextractResult {
+  text: string
+  /**
+   * Heurística 0–1 de qué tan “rico”/legible es el texto extraído
+   * (líneas, longitud, presencia de patrones de colindancias, etc.).
+   */
+  confidence: number
+  /**
+   * Rotación (en grados) que produjo el mejor resultado, si aplica.
+   */
+  bestRotation?: number
+  /**
+   * Origen principal del OCR (útil para mensajes al usuario).
+   */
+  source: "image_direct" | "image_rotated" | "pdf_raster" | "pdf_async"
+}
 
 export async function extractTextWithTextract(
   file: File,
   opts?: { page?: number; timeoutMs?: number; onProgress?: ProgressFn; preferredRotation?: number }
-): Promise<{ text: string }> {
+): Promise<TextractResult> {
   const controller = new AbortController()
   const t = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 60000)
   try {
@@ -77,8 +149,20 @@ export async function extractTextWithTextract(
         }
         opts?.onProgress?.("ocr_image_rotate", "done", `rotation=${bestRot}`)
       }
-      opts?.onProgress?.("ocr_image", "done")
-      return { text: best.text || "" }
+      // Calcular confianza heurística para imagen
+      const rawScore = best.linesCount * 10 + Math.min(best.text.length, 5000)
+      const confidence = Math.max(0, Math.min(1, rawScore / 8000))
+      opts?.onProgress?.(
+        "ocr_image",
+        "done",
+        `confidence=${Math.round(confidence * 100)};rotation=${bestRot}`
+      )
+      return {
+        text: best.text || "",
+        confidence,
+        bestRotation: bestRot || undefined,
+        source: bestRot ? "image_rotated" : "image_direct",
+      }
     } else {
       // PDF -> intentar primero OCR síncrono rasterizando con rotaciones; si no hay buen resultado, usar asíncrono
       try {
@@ -88,6 +172,7 @@ export async function extractTextWithTextract(
         const ordered = pref && rotations.includes(pref) ? [pref, ...rotations.filter(r => r !== pref)] : rotations
         let bestText = ""
         let bestScore = -1
+        let bestRot = 0
         opts?.onProgress?.("ocr_raster", "in_progress")
         for (const rot of ordered) {
           const png = await rasterizePdfPageToPng(file, opts?.page ?? 1, rot)
@@ -103,19 +188,36 @@ export async function extractTextWithTextract(
           const text: string = data?.text || ""
           const linesCount: number = data?.linesCount ?? 0
           // Scoring: líneas + longitud + patrones de colindancias
-          const dirMatches = (text.match(/\b(AL\s+)?(NOROESTE|NORESTE|SURESTE|SUROESTE|NORTE|SUR|ESTE|OESTE|ARRIBA|ABAJO|SUPERIOR|INFERIOR)\b/gi) || []).length
+          const dirMatches =
+            (text.match(
+              /\b(AL\s+)?(NOROESTE|NORESTE|SURESTE|SUROESTE|NORTE|SUR|ESTE|OESTE|ARRIBA|ABAJO|SUPERIOR|INFERIOR)\b/gi
+            ) || []).length
           const enMatches = (text.match(/\bEN\s+\d+(?:[.,]\d+)?\s*M\b/gi) || []).length
           const conMatches = (text.match(/\b(CON|COLINDA CON)\b/gi) || []).length
-          const score = linesCount * 5 + Math.min(text.length, 4000) * 0.5 + (dirMatches + enMatches + conMatches) * 50
+          const score =
+            linesCount * 5 +
+            Math.min(text.length, 4000) * 0.5 +
+            (dirMatches + enMatches + conMatches) * 50
           if (score > bestScore) {
             bestScore = score
             bestText = text
+            bestRot = rot
           }
         }
         if (bestScore > 100 && bestText.trim().length > 0) {
-          console.log("[ocr-client] Using rasterized rotated OCR", { bestScore })
-          opts?.onProgress?.("ocr_raster", "done")
-          return { text: bestText }
+          const confidence = Math.max(0, Math.min(1, bestScore / 8000))
+          console.log("[ocr-client] Using rasterized rotated OCR", { bestScore, bestRot, confidence })
+          opts?.onProgress?.(
+            "ocr_raster",
+            "done",
+            `confidence=${Math.round(confidence * 100)};rotation=${bestRot}`
+          )
+          return {
+            text: bestText,
+            confidence,
+            bestRotation: bestRot || undefined,
+            source: "pdf_raster",
+          }
         }
       } catch (e) {
         console.warn("[ocr-client] Rotated raster attempt failed, fallback to async", e)
@@ -154,8 +256,27 @@ export async function extractTextWithTextract(
         const data = await resp.json()
         if (data.status === "SUCCEEDED") {
           console.log("[ocr-client] Async OCR done", { pages: data.pages })
-          opts?.onProgress?.("ocr_status", "done")
-          return { text: data.text || "" }
+          const text: string = data.text || ""
+          const dirMatches =
+            (text.match(
+              /\b(AL\s+)?(NOROESTE|NORESTE|SURESTE|SUROESTE|NORTE|SUR|ESTE|OESTE|ARRIBA|ABAJO|SUPERIOR|INFERIOR)\b/gi
+            ) || []).length
+          const enMatches = (text.match(/\bEN\s+\d+(?:[.,]\d+)?\s*M\b/gi) || []).length
+          const conMatches = (text.match(/\b(CON|COLINDA CON)\b/gi) || []).length
+          const rawScore =
+            Math.min(text.length, 8000) * 0.5 + (dirMatches + enMatches + conMatches) * 50
+          const confidence = Math.max(0, Math.min(1, rawScore / 8000))
+          opts?.onProgress?.(
+            "ocr_status",
+            "done",
+            `confidence=${Math.round(confidence * 100)}`
+          )
+          return {
+            text,
+            confidence,
+            bestRotation: undefined,
+            source: "pdf_async",
+          }
         }
         if (data.status === "FAILED") throw new Error("textract_async_failed")
         if (Date.now() - started > (opts?.timeoutMs ?? 60000)) throw new Error("textract_async_timeout")

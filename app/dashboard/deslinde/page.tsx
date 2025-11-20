@@ -9,22 +9,24 @@ import { ProcessingScreen } from "@/components/processing-screen"
 import { ValidationWizard } from "@/components/validation-wizard"
 import { DocumentViewer } from "@/components/document-viewer"
 import { simulateOCR, type PropertyUnit } from "@/lib/ocr-simulator"
+import type { StructuredUnit } from "@/lib/ai-structuring-types"
 import { createStructuredSegments, type TransformedSegment } from "@/lib/text-transformer"
 import { FileText, Scale, Shield, ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
-import { extractTextWithTextract } from "@/lib/ocr-client"
-
 type AppState = "upload" | "processing" | "validation"
 
 function DeslindePageInner() {
   const [appState, setAppState] = useState<AppState>("upload")
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [documentUrl, setDocumentUrl] = useState<string>("")
   const [units, setUnits] = useState<PropertyUnit[]>([])
   const [unitSegments, setUnitSegments] = useState<Map<string, TransformedSegment[]>>(new Map())
   const [processingStarted, setProcessingStarted] = useState(false)
   const [aiStructuredText, setAiStructuredText] = useState<string | null>(null)
+  const [ocrConfidence, setOcrConfidence] = useState<number | null>(null)
+  const [ocrRotationHint, setOcrRotationHint] = useState<number | null>(null)
+  const [unitBoundariesText, setUnitBoundariesText] = useState<Map<string, string>>(new Map())
 
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -32,7 +34,7 @@ function DeslindePageInner() {
   useEffect(() => {
     if (searchParams?.get("reset") === "1") {
       setAppState("upload")
-      setSelectedFile(null)
+      setSelectedFiles([])
       if (documentUrl && !documentUrl.startsWith("/")) {
         URL.revokeObjectURL(documentUrl)
       }
@@ -40,13 +42,18 @@ function DeslindePageInner() {
     }
   }, [searchParams, documentUrl, router])
 
-  const handleFileSelect = async (file: File) => {
-    setSelectedFile(file)
+  const handleFilesSelect = async (files: File[]) => {
+    if (files.length === 0) return
+    
+    setSelectedFiles(files)
 
+    // Revoke old URL
     if (documentUrl && !documentUrl.startsWith("/")) {
       URL.revokeObjectURL(documentUrl)
     }
-    const url = URL.createObjectURL(file)
+    
+    // Use first image for preview
+    const url = URL.createObjectURL(files[0])
     setDocumentUrl(url)
 
     // Iniciar procesamiento inmediatamente al cargar
@@ -54,60 +61,55 @@ function DeslindePageInner() {
     setAiStructuredText(null)
     setUnits([])
     setUnitSegments(new Map())
+    setUnitBoundariesText(new Map())
     setAppState("processing")
   }
 
   const handleProcessingComplete = async (update?: (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => void) => {
-    if (!selectedFile) return
+    if (!selectedFiles || selectedFiles.length === 0) return
     if (processingStarted) {
       console.log("[deslinde] processing already started, skipping duplicate run")
       return
     }
     setProcessingStarted(true)
 
-    // Paso 1: OCR real (con fallback a simulación si falla)
-    let text = ""
+    // Reset confidence/rotation hints since we're not using OCR anymore
+    setOcrConfidence(null)
+    setOcrRotationHint(null)
+
+    // Send images directly to OpenAI Vision API
     try {
-      const isPdf = selectedFile.type === "application/pdf" || selectedFile.name.toLowerCase().endsWith(".pdf")
-      const res = await extractTextWithTextract(selectedFile, {
-        timeoutMs: isPdf ? 300000 : 60000,
-        onProgress: (key, status, detail) => update?.(key, status, detail),
+      update?.("ai", "in_progress", `Analizando ${selectedFiles.length} imagen(es)...`)
+      
+      // Send images as FormData
+      const formData = new FormData()
+      selectedFiles.forEach((image) => {
+        formData.append("images", image)
       })
-      text = res.text || ""
-    } catch (e) {
-      const sim = await simulateOCR(selectedFile)
-      const segmentsMap = new Map<string, TransformedSegment[]>()
-      setUnits(sim.extractedData.units)
-      sim.extractedData.units.forEach((unit) => {
-        const segments = createStructuredSegments(unit)
-        segmentsMap.set(unit.id, segments)
-      })
-      setUnitSegments(segmentsMap)
-
-      // Usar texto notarial/original como base de "Colindancias" para el textarea
-      const allSegments = Array.from(segmentsMap.values()).flat()
-      const fallbackText = allSegments
-        .map((seg) => seg.notarialText || seg.originalText || "")
-        .filter(Boolean)
-        .join("\n\n")
-      setAiStructuredText(fallbackText || null)
-
-      setAppState("validation")
-      return
-    }
-
-    // Paso 2: Pasar texto a la IA para estructurar (con fallback a OCR crudo)
-    try {
-      update?.("ai", "in_progress")
+      
       const resp = await fetch("/api/ai/structure", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ocrText: text }),
+        body: formData,
       })
-      if (!resp.ok) throw new Error(await resp.text())
-      const data = (await resp.json()) as { result: { unit: { name: string }; boundaries: any[]; surfaces?: { name: string; value_m2: number }[] } }
+      if (!resp.ok) {
+        const errorText = await resp.text()
+        throw new Error(errorText || `HTTP ${resp.status}`)
+      }
+      const data = (await resp.json()) as { results?: StructuredUnit[]; result?: StructuredUnit }
       update?.("ai", "done")
-      try {
+
+      const structuredUnits: StructuredUnit[] =
+        Array.isArray(data.results) && data.results.length
+          ? data.results
+          : data.result
+            ? [data.result]
+            : []
+
+      if (!structuredUnits.length) {
+        throw new Error("No se detectaron unidades en el texto proporcionado.")
+      }
+
+      const formatBoundaries = (unit: StructuredUnit) => {
         const dirEs: Record<string, string> = {
           WEST: "OESTE",
           NORTHWEST: "NOROESTE",
@@ -120,133 +122,110 @@ function DeslindePageInner() {
           UP: "ARRIBA",
           DOWN: "ABAJO",
         }
-        const boundaries = (data as any).result?.boundaries || []
-        boundaries.sort((a: any, b: any) => (a.order_index ?? 0) - (b.order_index ?? 0))
-        const lines = boundaries.map((b: any) => {
-          const d = (b.direction || "").toUpperCase()
-          const name = dirEs[d] || d
-          const len = typeof b.length_m === "number" ? b.length_m.toFixed(3) : String(b.length_m || "")
-          const who = (b.abutter || "").toString().trim()
-          return `${name}: EN ${len} m CON ${who}`
-        })
-        setAiStructuredText(lines.join("\n"))
-      } catch {
-        setAiStructuredText(null)
-      }
-      const unitName = data?.result?.unit?.name || "UNIDAD"
-      const surfaces = (data as any)?.result?.surfaces as { name: string; value_m2: number }[] | undefined
-
-      // 1) Unidad principal (LOTE / TOTAL)
-      let lotSurface = 0
-      let lotNameUpper: string | null = null
-      if (Array.isArray(surfaces)) {
-        const lot = surfaces.find((s) => typeof s?.name === "string" && /\bLOTE\b/i.test(s.name))
-        if (lot && typeof lot.value_m2 === "number") {
-          lotSurface = lot.value_m2
-          lotNameUpper = lot.name.toUpperCase()
-        } else {
-          const blacklist = /(PRIVATIVA|EDIFICAD|CONSTRUID|PATIO|PASILLO|ESTACIONAMIENTO|JUNTA|BALC[ÓO]N|AZOTEA)/i
-          const totalCandidate = surfaces.find((s) => {
-            if (typeof s?.name !== "string") return false
-            const name = s.name.toUpperCase()
-            return /TOTAL/.test(name) && !blacklist.test(name)
+        const ordered = [...(unit.boundaries || [])].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+        return ordered
+          .map((b) => {
+            const d = (b.direction || "").toUpperCase()
+            const name = dirEs[d] || d
+            const len = typeof b.length_m === "number" ? b.length_m.toFixed(3) : String(b.length_m || "")
+            const who = (b.abutter || "").toString().trim()
+            return `${name}: EN ${len} m CON ${who}`
           })
-          if (totalCandidate && typeof totalCandidate.value_m2 === "number") {
-            lotSurface = totalCandidate.value_m2
-            lotNameUpper = totalCandidate.name.toUpperCase()
-          }
-        }
-      }
-      const surfaceLabel = lotSurface > 0 ? `${lotSurface.toFixed(3)} m²` : ""
-      const mainUnitId = unitName.toLowerCase().replace(/\s+/g, "-")
-      const mainUnit: PropertyUnit = {
-        id: mainUnitId,
-        name: unitName,
-        surface: surfaceLabel,
-        boundaries: { west: [], north: [], east: [], south: [] },
+          .join("\n")
       }
 
-      const dirMap: Record<string, keyof PropertyUnit["boundaries"]> = {
-        WEST: "west",
-        NORTH: "north",
-        EAST: "east",
-        SOUTH: "south",
-      }
-      for (const b of data?.result?.boundaries || []) {
-        const key = dirMap[(b.direction || "").toUpperCase()]
-        if (!key) continue
-        mainUnit.boundaries[key].push({
-          id: `${mainUnit.id}-${key}-${mainUnit.boundaries[key].length}`,
-          measurement: String(b.length_m ?? ""),
-          unit: "M",
-          description: `CON ${b.abutter || ""}`.trim(),
-          regionId: "",
-        })
+      const formatSurfaceValue = (surfaces?: { name: string; value_m2: number }[]) => {
+        if (!Array.isArray(surfaces) || !surfaces.length) return 0
+        const preferred =
+          surfaces.find((s) => /\b(LOTE|TOTAL)\b/i.test(s.name || "")) ||
+          surfaces.find((s) => typeof s.value_m2 === "number" && s.value_m2 > 0)
+        return preferred && typeof preferred.value_m2 === "number" ? preferred.value_m2 : 0
       }
 
-      // 2) Partes internas: todas las superficies que no sean LOTE/TOTAL
-      const internalUnits: PropertyUnit[] = []
-      if (Array.isArray(surfaces)) {
-        const internalSurfaces = surfaces.filter((s) => {
-          if (!s?.name) return false
-          const upper = s.name.toUpperCase()
-          if (lotNameUpper && upper === lotNameUpper) return false
-          if (/\bLOTE\b/.test(upper)) return false
-          if (/\bTOTAL\b/.test(upper)) return false
-          return true
-        })
-
-        for (const surf of internalSurfaces) {
-          const partName = surf.name
-          const partIdBase = partName.toLowerCase().replace(/\s+/g, "-")
-          const partId = `${mainUnitId}-${partIdBase}`
-
-          const partBoundaries: PropertyUnit["boundaries"] = {
-            west: [],
-            north: [],
-            east: [],
-            south: [],
-          }
-
-          const search = partName.toUpperCase()
-
-          ;(["west", "north", "east", "south"] as const).forEach((side) => {
-            for (const seg of mainUnit.boundaries[side]) {
-              if (seg.description.toUpperCase().includes(search)) {
-                partBoundaries[side].push({
-                  ...seg,
-                  id: `${partId}-${side}-${partBoundaries[side].length}`,
-                })
-              }
-            }
-          })
-
-          const hasSurfaceValue =
-            typeof surf.value_m2 === "number" && surf.value_m2 > 0
-
-          internalUnits.push({
-            id: partId,
-            name: partName,
-            surface: hasSurfaceValue ? `${surf.value_m2.toFixed(3)} m²` : "",
-            boundaries: partBoundaries,
-          })
-        }
-      }
-
-      const allUnits: PropertyUnit[] = [mainUnit, ...internalUnits]
-      setUnits(allUnits)
-
+      const propertyUnits: PropertyUnit[] = []
       const segmentsMap = new Map<string, TransformedSegment[]>()
-      for (const u of allUnits) {
-        const segs = createStructuredSegments(u)
-        segmentsMap.set(u.id, segs)
-      }
+      const boundariesTextMap = new Map<string, string>()
+
+      structuredUnits.forEach((unit, index) => {
+        const unitName = unit.unit?.name?.trim() || `UNIDAD ${index + 1}`
+        const unitIdBase =
+          unitName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "") || "unidad"
+        // Aseguramos unicidad usando también el índice
+        const unitId = `${unitIdBase}-${index + 1}`
+        const surfaceValue = formatSurfaceValue(unit.surfaces)
+        const surfaceLabel = surfaceValue > 0 ? `${surfaceValue.toFixed(3)} m²` : ""
+
+        const boundaries: PropertyUnit["boundaries"] = {
+          west: [],
+          north: [],
+          east: [],
+          south: [],
+        }
+
+        const mapDirection = (dir: string): keyof PropertyUnit["boundaries"] | null => {
+          const normalized = dir.toUpperCase()
+          if (normalized.includes("WEST")) return "west"
+          if (normalized.includes("EAST")) return "east"
+          if (normalized.includes("NORTH")) return "north"
+          if (normalized.includes("SOUTH")) return "south"
+          return null
+        }
+
+        for (const b of unit.boundaries || []) {
+          const key = mapDirection(b.direction || "")
+          if (!key) continue
+          boundaries[key].push({
+            id: `${unitId}-${key}-${boundaries[key].length}`,
+            measurement: String(b.length_m ?? ""),
+            unit: "M",
+            description: `CON ${b.abutter || ""}`.trim(),
+            regionId: "",
+          })
+        }
+
+        const propertyUnit: PropertyUnit = {
+          id: unitId,
+          name: unitName,
+          surface: surfaceLabel,
+          boundaries,
+        }
+
+        propertyUnits.push(propertyUnit)
+        segmentsMap.set(unitId, createStructuredSegments(propertyUnit))
+      })
+
+      // Construir texto de colindancias por unidad
+      structuredUnits.forEach((unit, index) => {
+        const unitName = unit.unit?.name?.trim() || `UNIDAD ${index + 1}`
+        const unitIdBase =
+          unitName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "") || "unidad"
+        const unitId = `${unitIdBase}-${index + 1}`
+        const formatted = formatBoundaries(unit)
+        if (formatted.trim()) {
+          boundariesTextMap.set(unitId, formatted)
+        }
+      })
+
+      setUnitBoundariesText(boundariesTextMap)
+
+      const firstUnitId = propertyUnits[0]?.id
+      const formattedMainBoundaries =
+        (firstUnitId && boundariesTextMap.get(firstUnitId)) || ""
+      setAiStructuredText(formattedMainBoundaries || null)
+      setUnits(propertyUnits)
       setUnitSegments(segmentsMap)
-    } catch {
-      // Fallback completo: usamos el texto OCR crudo como "Colindancias" editable
-      setAiStructuredText(text || null)
+    } catch (e) {
+      console.error("[deslinde] Error processing with AI:", e)
+      // Fallback: create empty unit
+      setAiStructuredText(null)
       const unit: PropertyUnit = {
-        id: "unit-ocr",
+        id: "unit-fallback",
         name: "UNIDAD",
         surface: "",
         boundaries: { west: [], north: [], east: [], south: [] },
@@ -255,14 +234,15 @@ function DeslindePageInner() {
       const segmentsMap = new Map<string, TransformedSegment[]>()
       segmentsMap.set(unit.id, [
         {
-          id: "unit-ocr-0",
-          originalText: text || "No se extrajo texto.",
-          notarialText: text || "No se extrajo texto.",
+          id: "unit-fallback-0",
+          originalText: "No se pudo procesar el documento.",
+          notarialText: "No se pudo procesar el documento.",
           regionId: "",
-          direction: "OCR",
+          direction: "FALLBACK",
         },
       ])
       setUnitSegments(segmentsMap)
+      setUnitBoundariesText(new Map())
     }
 
     setAppState("validation")
@@ -271,7 +251,7 @@ function DeslindePageInner() {
 
   const handleBack = () => {
     setAppState("upload")
-    setSelectedFile(null)
+    setSelectedFiles([])
     if (documentUrl && !documentUrl.startsWith("/")) {
       URL.revokeObjectURL(documentUrl)
     }
@@ -294,21 +274,10 @@ function DeslindePageInner() {
   }
 
   if (appState === "processing") {
-    const isPdf = !!selectedFile && (selectedFile.type === "application/pdf" || selectedFile.name.toLowerCase().endsWith(".pdf"))
-    const watchdogMs = isPdf ? 300000 : 60000
-    const processSteps = isPdf
-      ? [
-          { key: "ocr_raster", label: "OCR (Raster + Rotación)" },
-          { key: "ocr_upload", label: "Textract Upload S3" },
-          { key: "ocr_start", label: "Textract Start" },
-          { key: "ocr_status", label: "Textract Status" },
-          { key: "ai", label: "AI (Structure)" },
-        ]
-      : [
-          { key: "ocr_image", label: "OCR (Textract Imagen)" },
-          { key: "ocr_image_rotate", label: "OCR (Rotación Imagen)" },
-          { key: "ai", label: "AI (Structure)" },
-        ]
+    const watchdogMs = 120000 // 2 minutes for image processing
+    const processSteps = [
+      { key: "ai", label: "Análisis con IA (OpenAI Vision)" },
+    ]
     return (
       <ProtectedRoute>
         <DashboardLayout>
@@ -318,22 +287,18 @@ function DeslindePageInner() {
                 <ArrowLeft className="h-4 w-4 mr-2" />
                 Volver
               </Button>
-              {selectedFile && (
+              {selectedFiles.length > 0 && (
                 <div className="text-xs text-muted-foreground">
-                  Procesando: <span className="font-medium">{selectedFile.name}</span>
+                  Procesando: <span className="font-medium">{selectedFiles.length} imagen(es)</span>
                 </div>
               )}
             </div>
             <ProcessingScreen
-              fileName={selectedFile?.name || ""}
+              fileName={selectedFiles.length > 0 ? selectedFiles.map(f => f.name).join(", ") : ""}
               onRun={async (update) => {
                 try {
                   await handleProcessingComplete(update)
                 } catch {
-                  update("ocr", "error")
-                  update("ocr_upload", "error")
-                  update("ocr_start", "error")
-                  update("ocr_status", "error")
                   update("ai", "error")
                 }
               }}
@@ -356,8 +321,11 @@ function DeslindePageInner() {
             units={units}
             unitSegments={unitSegments}
             onBack={handleBack}
-            fileName={selectedFile?.name}
+            fileName={selectedFiles.length > 0 ? selectedFiles.map(f => f.name).join(", ") : undefined}
             aiStructuredText={aiStructuredText || undefined}
+            ocrConfidence={ocrConfidence ?? undefined}
+            ocrRotationHint={ocrRotationHint ?? undefined}
+            unitBoundariesText={Object.fromEntries(unitBoundariesText)}
           />
         </DashboardLayout>
       </ProtectedRoute>
@@ -406,7 +374,7 @@ function DeslindePageInner() {
           </div>
 
           {/* Upload Zone */}
-          <UploadZone onFileSelect={handleFileSelect} />
+          <UploadZone onFilesSelect={handleFilesSelect} />
 
           {/* Instructions */}
           <div className="bg-muted/30 rounded-lg p-6 space-y-4">
@@ -416,7 +384,7 @@ function DeslindePageInner() {
                 <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-semibold">
                   1
                 </span>
-                <span>Sube tu documento con información de deslindes (planos, PDF, imágenes)</span>
+                <span>Sube una o más imágenes del plano arquitectónico con información de deslindes</span>
               </li>
               <li className="flex gap-3">
                 <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-semibold">
