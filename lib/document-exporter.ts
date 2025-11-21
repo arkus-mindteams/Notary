@@ -1,12 +1,15 @@
 import type { TransformedSegment } from "./text-transformer"
 import type { PropertyUnit } from "./ocr-simulator"
 import type { ExportMetadata } from "@/components/export-dialog"
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from "docx"
+import { saveAs } from "file-saver"
 
 export function generateNotarialDocument(
   allSegments: TransformedSegment[],
   metadata: ExportMetadata,
   units: PropertyUnit[],
   unitSegments: Map<string, TransformedSegment[]>,
+  notarialTextsByUnit?: Map<string, string>,
 ): string {
   const header = `ESCRITURA DE DESLINDE
 
@@ -18,6 +21,54 @@ MEDIDAS Y COLINDANCIAS:
 
 `
 
+  const footer = `
+
+
+_______________________________________________
+
+Fecha de elaboración: ${metadata.date}
+
+Este documento ha sido generado mediante el Sistema de Interpretación Notarial de Deslindes.
+El texto notarial ha sido validado y autorizado por el usuario.
+`
+
+  // Si tenemos textos notariales directos por unidad, usarlos
+  if (notarialTextsByUnit && notarialTextsByUnit.size > 0) {
+    const unitsText = units
+      .map((unit) => {
+        const notarialText = notarialTextsByUnit.get(unit.id)
+        if (!notarialText || !notarialText.trim()) return ""
+
+        // El texto notarial ya viene formateado, solo agregamos el nombre de la unidad si no está incluido
+        let unitText = notarialText.trim()
+        
+        // Verificar si el texto ya incluye el nombre de la unidad
+        const unitNamePattern = new RegExp(`^${unit.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:`, 'i')
+        if (!unitNamePattern.test(unitText)) {
+          // Convert unit name to notarial format
+          let unitName = unit.name
+          unitName = unitName.replace(/-(\d+)/g, (match, num) => {
+            const numMap: { [key: string]: string } = {
+              "1": "uno",
+              "2": "dos",
+              "3": "tres",
+              "4": "cuatro",
+              "5": "cinco",
+            }
+            return ` guion ${numMap[num] || num}`
+          })
+          unitText = `${unitName}: ${unitText}`
+        }
+
+        return unitText
+      })
+      .filter(Boolean)
+      .join("\n\n")
+
+    return header + unitsText + footer
+  }
+
+  // Fallback al método anterior usando segmentos
   const unitsText = units
     .map((unit) => {
       const segments = unitSegments.get(unit.id) || []
@@ -90,35 +141,116 @@ MEDIDAS Y COLINDANCIAS:
     .filter(Boolean)
     .join("\n\n")
 
-  const footer = `
-
-
-_______________________________________________
-
-Fecha de elaboración: ${metadata.date}
-
-Este documento ha sido generado mediante el Sistema de Interpretación Notarial de Deslindes.
-El texto notarial ha sido validado y autorizado por el usuario.
-`
-
   return header + unitsText + footer
 }
 
-export function downloadDocument(content: string, filename: string) {
-  // Create a Blob with proper formatting
-  const blob = new Blob([content], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" })
-  const url = URL.createObjectURL(blob)
+export async function downloadDocument(content: string, filename: string) {
+  try {
+    // Split content into lines for proper paragraph handling
+    const lines = content.split("\n").filter((line) => line.trim() !== "")
 
-  // Create download link
-  const a = document.createElement("a")
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
+    // Create paragraphs from content
+    const paragraphs: Paragraph[] = []
 
-  // Cleanup
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+    lines.forEach((line) => {
+      const trimmedLine = line.trim()
+
+      // Check if it's a header (all caps or title-like)
+      const isHeader =
+        trimmedLine === trimmedLine.toUpperCase() &&
+        (trimmedLine.includes("ESCRITURA") ||
+          trimmedLine.includes("PROPIEDAD") ||
+          trimmedLine.includes("UBICACIÓN") ||
+          trimmedLine.includes("SUPERFICIE") ||
+          trimmedLine.includes("MEDIDAS") ||
+          trimmedLine.includes("COLINDANCIAS") ||
+          trimmedLine.includes("Fecha") ||
+          trimmedLine.includes("Este documento"))
+
+      // Check if it's a separator line
+      const isSeparator = /^_+$/.test(trimmedLine)
+
+      if (isSeparator) {
+        // Add empty paragraph for separator
+        paragraphs.push(
+          new Paragraph({
+            children: [new TextRun({ text: "" })],
+            spacing: { after: 200 },
+          })
+        )
+      } else if (isHeader) {
+        // Header paragraph
+        paragraphs.push(
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: trimmedLine,
+                bold: true,
+                size: 24, // 12pt
+                font: "Times New Roman",
+              }),
+            ],
+            spacing: { after: 200 },
+            alignment: trimmedLine.includes("ESCRITURA") ? AlignmentType.CENTER : AlignmentType.LEFT,
+          })
+        )
+      } else {
+        // Regular paragraph
+        paragraphs.push(
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: trimmedLine,
+                size: 22, // 11pt
+                font: "Times New Roman",
+              }),
+            ],
+            spacing: { after: 120, line: 360 }, // 1.5 line spacing
+            alignment: AlignmentType.JUSTIFIED,
+          })
+        )
+      }
+    })
+
+    // Create Word document with proper UTF-8 encoding
+    const doc = new Document({
+      sections: [
+        {
+          properties: {
+            page: {
+              margin: {
+                top: 1440, // 1 inch
+                bottom: 1440,
+                left: 1440,
+                right: 1440,
+              },
+            },
+          },
+          children: paragraphs,
+        },
+      ],
+    })
+
+    // Generate blob with proper encoding
+    const blob = await Packer.toBlob(doc)
+
+    // Download using file-saver (handles UTF-8 correctly)
+    saveAs(blob, filename)
+  } catch (error) {
+    console.error("Error generating DOCX:", error)
+    // Fallback to simple text download if docx library fails
+    const blob = new Blob(["\ufeff" + content], {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document;charset=utf-8",
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
 }
 
 export function generateFilename(propertyName: string): string {

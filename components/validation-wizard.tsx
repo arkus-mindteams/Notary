@@ -6,7 +6,7 @@ import { ImageViewer } from "./image-viewer"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText, Save, X, Eye, EyeOff } from "lucide-react"
+import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText, Save, X, Eye, EyeOff, Copy } from "lucide-react"
 import type { TransformedSegment } from "@/lib/text-transformer"
 import type { PropertyUnit } from "@/lib/ocr-simulator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -267,24 +267,35 @@ export function ValidationWizard({
     }
   }
 
-  const handleExport = (metadata: ExportMetadata) => {
+  const handleExport = async (metadata: ExportMetadata) => {
     // Usar solo las unidades autorizadas para la exportación
     const authorizedUnitsArray = units.filter((unit) => authorizedUnits.has(unit.id));
 
+    // Crear un mapa con los textos notariales de las unidades autorizadas
+    const authorizedNotarialTexts = new Map<string, string>()
+    authorizedUnitsArray.forEach((unit) => {
+      const notarialText = notarialTextByUnit.get(unit.id) || ""
+      if (notarialText.trim()) {
+        authorizedNotarialTexts.set(unit.id, notarialText)
+      }
+    })
+
+    // Si no hay textos notariales, usar el método anterior con segmentos
     const authorizedSegmentsMap = new Map<string, TransformedSegment[]>(
       Array.from(editedUnits.entries()).filter(([unitId]) => authorizedUnits.has(unitId)),
-    );
+    )
 
-    const allSegments = Array.from(authorizedSegmentsMap.values()).flat();
+    const allSegments = Array.from(authorizedSegmentsMap.values()).flat()
 
     const documentContent = generateNotarialDocument(
       allSegments,
       metadata,
       authorizedUnitsArray,
       authorizedSegmentsMap,
-    );
-    const filename = generateFilename(metadata.propertyName);
-    downloadDocument(documentContent, filename);
+      authorizedNotarialTexts.size > 0 ? authorizedNotarialTexts : undefined,
+    )
+    const filename = generateFilename(metadata.propertyName)
+    await downloadDocument(documentContent, filename)
   }
 
   const getTimeSinceLastSave = () => {
@@ -532,24 +543,6 @@ export function ValidationWizard({
               size="sm"
               className="h-6 w-6 p-0 shrink-0"
               onClick={() => setDismissedAlerts((prev) => new Set(prev).add("ocr-confidence"))}
-            >
-              <X className="h-3 w-3" />
-            </Button>
-          </div>
-        </Alert>
-      )}
-      {isCurrentUnitAuthorized && !dismissedAlerts.has("unit-authorized") && (
-        <Alert className="mx-3 sm:mx-4 mt-2 bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800">
-          <div className="flex items-start gap-2">
-            <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400 mt-0.5 shrink-0" />
-            <AlertDescription className="text-xs text-green-800 dark:text-green-300 flex-1">
-              Unidad autorizada • Campos bloqueados
-            </AlertDescription>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 w-6 p-0 shrink-0"
-              onClick={() => setDismissedAlerts((prev) => new Set(prev).add("unit-authorized"))}
             >
               <X className="h-3 w-3" />
             </Button>
@@ -837,7 +830,7 @@ export function ValidationWizard({
 
       {/* Modal for Complete Notarial Text */}
       <Dialog open={showCompleteTextModal} onOpenChange={setShowCompleteTextModal}>
-        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+        <DialogContent className="max-w-6xl w-[95vw] max-h-[95vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileText className="h-5 w-5" />
@@ -847,7 +840,7 @@ export function ValidationWizard({
               Texto notarial combinado de todas las unidades autorizadas, formateado según estándares notariales.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex-1 overflow-hidden flex flex-col">
+          <div className="flex-1 overflow-hidden flex flex-col min-h-[500px]">
             {isGeneratingCompleteText ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center">
@@ -856,39 +849,66 @@ export function ValidationWizard({
               </div>
             ) : (
               <textarea
-                className="w-full flex-1 min-h-[400px] resize-none border rounded bg-background p-4 text-sm overflow-auto font-mono"
+                className="w-full flex-1 min-h-[500px] resize-none border rounded bg-background p-4 text-base leading-relaxed overflow-auto font-mono"
                 value={completeNotarialText}
                 onChange={(e) => setCompleteNotarialText(e.target.value)}
                 placeholder="El texto notarial completo aparecerá aquí..."
               />
             )}
           </div>
-          <div className="flex justify-end gap-2 pt-4 border-t">
+          <div className="flex justify-between items-center gap-2 pt-4 border-t">
             <Button
               variant="outline"
-              onClick={() => setShowCompleteTextModal(false)}
-            >
-              Cerrar
-            </Button>
-            <Button
-              onClick={() => {
+              onClick={async () => {
                 if (completeNotarialText) {
-                  const blob = new Blob([completeNotarialText], { type: "text/plain" })
-                  const url = URL.createObjectURL(blob)
-                  const a = document.createElement("a")
-                  a.href = url
-                  a.download = "texto-notarial-completo.txt"
-                  document.body.appendChild(a)
-                  a.click()
-                  document.body.removeChild(a)
-                  URL.revokeObjectURL(url)
+                  try {
+                    await navigator.clipboard.writeText(completeNotarialText)
+                    // Show a brief success message (you could use a toast here)
+                    const button = document.activeElement as HTMLElement
+                    const originalText = button.textContent
+                    if (button) {
+                      button.textContent = "✓ Copiado"
+                      setTimeout(() => {
+                        if (button) button.textContent = originalText
+                      }, 2000)
+                    }
+                  } catch (err) {
+                    console.error("Error copying to clipboard:", err)
+                  }
                 }
               }}
               disabled={!completeNotarialText || isGeneratingCompleteText}
             >
-              <Download className="h-4 w-4 mr-2" />
-              Descargar
+              <Copy className="h-4 w-4 mr-2" />
+              Copiar texto
             </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setShowCompleteTextModal(false)}
+              >
+                Cerrar
+              </Button>
+              <Button
+                onClick={() => {
+                  if (completeNotarialText) {
+                    const blob = new Blob([completeNotarialText], { type: "text/plain" })
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement("a")
+                    a.href = url
+                    a.download = "texto-notarial-completo.txt"
+                    document.body.appendChild(a)
+                    a.click()
+                    document.body.removeChild(a)
+                    URL.revokeObjectURL(url)
+                  }
+                }}
+                disabled={!completeNotarialText || isGeneratingCompleteText}
+              >
+                <Download className="h-4 w-4 mr-2" />
+                Descargar
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
