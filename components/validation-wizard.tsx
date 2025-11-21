@@ -6,7 +6,7 @@ import { ImageViewer } from "./image-viewer"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText } from "lucide-react"
+import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText, Save } from "lucide-react"
 import type { TransformedSegment } from "@/lib/text-transformer"
 import type { PropertyUnit } from "@/lib/ocr-simulator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -71,6 +71,12 @@ export function ValidationWizard({
   const [showCompleteTextModal, setShowCompleteTextModal] = useState(false)
   const [completeNotarialText, setCompleteNotarialText] = useState<string>("")
   const [isGeneratingCompleteText, setIsGeneratingCompleteText] = useState(false)
+  
+  // Estados para rastrear valores guardados y cambios no guardados
+  const [savedColindanciasByUnit, setSavedColindanciasByUnit] = useState<Map<string, string>>(new Map())
+  const [savedNotarialTextByUnit, setSavedNotarialTextByUnit] = useState<Map<string, string>>(new Map())
+  const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false)
+  const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null)
 
   const currentUnit = units[currentUnitIndex]
   const progress = ((currentUnitIndex + 1) / units.length) * 100
@@ -111,7 +117,95 @@ export function ValidationWizard({
 
     setAiTextByUnit(map)
     setNotarialTextByUnit(new Map())
+    // Inicializar valores guardados con los valores iniciales
+    setSavedColindanciasByUnit(new Map(map))
+    setSavedNotarialTextByUnit(new Map())
   }, [unitBoundariesText, aiStructuredText, units])
+
+  // Detectar si hay cambios sin guardar en la unidad actual
+  const hasUnsavedChanges = (): boolean => {
+    if (!currentUnit) return false
+    const currentColindancias = aiTextByUnit.get(currentUnit.id) || ""
+    const savedColindancias = savedColindanciasByUnit.get(currentUnit.id) || ""
+    const currentNotarial = notarialTextByUnit.get(currentUnit.id) || ""
+    const savedNotarial = savedNotarialTextByUnit.get(currentUnit.id) || ""
+    
+    return currentColindancias !== savedColindancias || currentNotarial !== savedNotarial
+  }
+
+  // Guardar cambios de la unidad actual
+  const handleSaveChanges = () => {
+    if (!currentUnit) return
+    const currentColindancias = aiTextByUnit.get(currentUnit.id) || ""
+    const currentNotarial = notarialTextByUnit.get(currentUnit.id) || ""
+    
+    setSavedColindanciasByUnit((prev) => {
+      const next = new Map(prev)
+      next.set(currentUnit.id, currentColindancias)
+      return next
+    })
+    
+    setSavedNotarialTextByUnit((prev) => {
+      const next = new Map(prev)
+      next.set(currentUnit.id, currentNotarial)
+      return next
+    })
+    
+    setHasChanges(true)
+    setLastSaved(new Date())
+  }
+
+  // Confirmar navegación si hay cambios sin guardar
+  const confirmNavigation = (navigationFn: () => void) => {
+    if (hasUnsavedChanges()) {
+      setPendingNavigation(() => navigationFn)
+      setShowUnsavedChangesDialog(true)
+    } else {
+      navigationFn()
+    }
+  }
+
+  // Aceptar navegación descartando cambios
+  const handleDiscardAndNavigate = () => {
+    if (pendingNavigation) {
+      setShowUnsavedChangesDialog(false)
+      // Restaurar valores guardados
+      if (currentUnit) {
+        const savedColindancias = savedColindanciasByUnit.get(currentUnit.id) || ""
+        const savedNotarial = savedNotarialTextByUnit.get(currentUnit.id) || ""
+        
+        setAiTextByUnit((prev) => {
+          const next = new Map(prev)
+          next.set(currentUnit.id, savedColindancias)
+          return next
+        })
+        
+        setNotarialTextByUnit((prev) => {
+          const next = new Map(prev)
+          next.set(currentUnit.id, savedNotarial)
+          return next
+        })
+      }
+      pendingNavigation()
+      setPendingNavigation(null)
+    }
+  }
+
+  // Cancelar navegación
+  const handleCancelNavigation = () => {
+    setShowUnsavedChangesDialog(false)
+    setPendingNavigation(null)
+  }
+
+  // Guardar y navegar
+  const handleSaveAndNavigate = () => {
+    handleSaveChanges()
+    if (pendingNavigation) {
+      setShowUnsavedChangesDialog(false)
+      pendingNavigation()
+      setPendingNavigation(null)
+    }
+  }
 
   const getUnitRegionId = (unitId: string): string => {
     const unitIdMap: Record<string, string> = {
@@ -140,20 +234,34 @@ export function ValidationWizard({
   }
 
   const handleAuthorizeUnit = () => {
+    // Guardar cambios antes de autorizar
+    if (hasUnsavedChanges()) {
+      handleSaveChanges()
+    }
     const newAuthorizedUnits = new Set(authorizedUnits)
     newAuthorizedUnits.add(currentUnit.id)
     setAuthorizedUnits(newAuthorizedUnits)
   }
 
+  const handleUnauthorizeUnit = () => {
+    const newAuthorizedUnits = new Set(authorizedUnits)
+    newAuthorizedUnits.delete(currentUnit.id)
+    setAuthorizedUnits(newAuthorizedUnits)
+  }
+
   const handleNext = () => {
     if (!isLastUnit) {
-      setCurrentUnitIndex(currentUnitIndex + 1)
+      confirmNavigation(() => {
+        setCurrentUnitIndex(currentUnitIndex + 1)
+      })
     }
   }
 
   const handlePrevious = () => {
     if (!isFirstUnit) {
-      setCurrentUnitIndex(currentUnitIndex - 1)
+      confirmNavigation(() => {
+        setCurrentUnitIndex(currentUnitIndex - 1)
+      })
     }
   }
 
@@ -221,6 +329,21 @@ export function ValidationWizard({
         next.set(unitId, data.notarialText || "")
         return next
       })
+      // Actualizar también el valor guardado automáticamente si las colindancias no han sido editadas
+      // Esto permite que el texto generado automáticamente no se marque como "sin guardar"
+      setSavedColindanciasByUnit((savedColMap) => {
+        const savedColindancias = savedColMap.get(unitId) || ""
+        // Si las colindancias que se usaron para generar coinciden con las guardadas,
+        // también guardar el texto notarial generado automáticamente
+        if (colindanciasText === savedColindancias && colindanciasText) {
+          setSavedNotarialTextByUnit((prev) => {
+            const next = new Map(prev)
+            next.set(unitId, data.notarialText || "")
+            return next
+          })
+        }
+        return savedColMap
+      })
     } catch (e) {
       console.error("[ui] notarialize failed", e)
       setNotarialTextByUnit((prev) => {
@@ -231,7 +354,7 @@ export function ValidationWizard({
     } finally {
       setIsGeneratingNotarial(false)
     }
-  }, [])
+  }, [savedColindanciasByUnit])
 
   // Auto-generate notarial text when colindancias change (debounced)
   useEffect(() => {
@@ -408,7 +531,7 @@ export function ValidationWizard({
         <Alert className="mx-4 sm:mx-6 mt-3 sm:mt-4 bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800">
           <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
           <AlertDescription className="text-xs sm:text-sm text-green-800 dark:text-green-300">
-            Esta unidad ha sido autorizada. Puedes continuar a la siguiente.
+            Esta unidad ha sido autorizada y los campos están bloqueados. Puedes continuar a la siguiente unidad o desautorizar para editar.
           </AlertDescription>
         </Alert>
       )}
@@ -446,10 +569,15 @@ export function ValidationWizard({
                         <p className="text-xs sm:text-sm text-muted-foreground mt-1">Superficie: {currentUnit.surface}</p>
                       </div>
                       {isCurrentUnitAuthorized ? (
-                        <div className="flex items-center gap-2 text-success shrink-0">
-                          <CheckCircle2 className="h-4 w-4 sm:h-5 sm:w-5" />
-                          <span className="text-xs sm:text-sm font-medium hidden sm:inline">Autorizada</span>
-                        </div>
+                        <Button 
+                          onClick={handleUnauthorizeUnit} 
+                          size="sm" 
+                          variant="outline"
+                          className="gap-2 shrink-0 border-orange-200 bg-orange-50 hover:bg-orange-100 dark:border-orange-800 dark:bg-orange-900/20 dark:hover:bg-orange-900/30"
+                        >
+                          <AlertCircle className="h-4 w-4 text-orange-600 dark:text-orange-400" />
+                          <span className="hidden sm:inline text-orange-700 dark:text-orange-300">Desautorizar</span>
+                        </Button>
                       ) : (
                         <Button onClick={handleAuthorizeUnit} size="sm" className="gap-2 shrink-0">
                           <ShieldCheck className="h-4 w-4" />
@@ -458,7 +586,7 @@ export function ValidationWizard({
                       )}
                     </div>
 
-                    {/* Botones de navegación */}
+                    {/* Botones de navegación y guardar */}
                     <div className="flex items-center justify-between gap-2">
                       <Button
                         variant="outline"
@@ -486,6 +614,23 @@ export function ValidationWizard({
                         <ChevronRight className="h-4 w-4" />
                       </Button>
                     </div>
+
+                    {/* Botón Guardar - aparece cuando hay cambios sin guardar y la unidad NO está autorizada */}
+                    {hasUnsavedChanges() && !isCurrentUnitAuthorized && (
+                      <div className="mt-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleSaveChanges}
+                          className="w-full gap-2 border-green-200 bg-green-50 hover:bg-green-100 dark:border-green-800 dark:bg-green-900/20 dark:hover:bg-green-900/30"
+                        >
+                          <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
+                          <span className="text-sm font-medium text-green-700 dark:text-green-300">
+                            Guardar cambios
+                          </span>
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
                 {/* Content area to expand inputs */}
@@ -493,12 +638,26 @@ export function ValidationWizard({
                   <div className="flex flex-col gap-4 h-full">
                     {/* Colindancias (editable) - Always shown when unit is selected */}
                     <div className="flex flex-col h-1/2 min-h-[200px]">
-                      <div className="text-xs font-medium text-muted-foreground mb-2">Colindancias</div>
+                      <div className="text-xs font-medium text-muted-foreground mb-2">
+                        Colindancias
+                        {isCurrentUnitAuthorized && (
+                          <span className="ml-2 text-xs text-muted-foreground italic">
+                            (Solo lectura - Unidad autorizada)
+                          </span>
+                        )}
+                      </div>
                       <textarea
-                        className="w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
+                        className={`w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto ${
+                          isCurrentUnitAuthorized 
+                            ? "cursor-not-allowed opacity-75 bg-muted/50" 
+                            : ""
+                        }`}
                         value={currentAiText}
-                        placeholder="Ingresa o edita las colindancias de esta unidad..."
+                        placeholder={isCurrentUnitAuthorized ? "Unidad autorizada - Desautoriza para editar" : "Ingresa o edita las colindancias de esta unidad..."}
+                        readOnly={isCurrentUnitAuthorized}
+                        disabled={isCurrentUnitAuthorized}
                         onChange={(e) => {
+                          if (isCurrentUnitAuthorized) return
                           const value = e.target.value
                           setAiTextByUnit((prev) => {
                             const next = new Map(prev)
@@ -520,12 +679,30 @@ export function ValidationWizard({
                       <div className="text-xs font-medium text-muted-foreground mb-2">
                         Redacción notarial
                         {isGeneratingNotarial && <span className="ml-2 text-muted-foreground">(Generando...)</span>}
+                        {isCurrentUnitAuthorized && (
+                          <span className="ml-2 text-xs text-muted-foreground italic">
+                            (Solo lectura - Unidad autorizada)
+                          </span>
+                        )}
                       </div>
                       <textarea
-                        className="w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
+                        className={`w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto ${
+                          isCurrentUnitAuthorized 
+                            ? "cursor-not-allowed opacity-75 bg-muted/50" 
+                            : ""
+                        }`}
                         value={currentNotarialText}
-                        placeholder={isGeneratingNotarial ? "Generando texto notarial..." : "El texto notarial aparecerá aquí automáticamente cuando ingreses las colindancias..."}
+                        placeholder={
+                          isCurrentUnitAuthorized 
+                            ? "Unidad autorizada - Desautoriza para editar" 
+                            : isGeneratingNotarial 
+                              ? "Generando texto notarial..." 
+                              : "El texto notarial aparecerá aquí automáticamente cuando ingreses las colindancias..."
+                        }
+                        readOnly={isCurrentUnitAuthorized}
+                        disabled={isCurrentUnitAuthorized}
                         onChange={(e) => {
+                          if (isCurrentUnitAuthorized) return
                           const value = e.target.value
                           setNotarialTextByUnit((prev) => {
                             const next = new Map(prev)
@@ -565,6 +742,45 @@ export function ValidationWizard({
         locationHint={lotLocation || undefined}
         totalLotSurface={totalLotSurface || undefined}
       />
+
+      {/* Dialog de confirmación de cambios sin guardar */}
+      <Dialog open={showUnsavedChangesDialog} onOpenChange={setShowUnsavedChangesDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-warning" />
+              Cambios sin guardar
+            </DialogTitle>
+            <DialogDescription>
+              Tienes cambios sin guardar en esta unidad. ¿Qué deseas hacer?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2 pt-4">
+            <Button
+              onClick={handleSaveAndNavigate}
+              className="w-full gap-2"
+              variant="default"
+            >
+              <Save className="h-4 w-4" />
+              Guardar y continuar
+            </Button>
+            <Button
+              onClick={handleDiscardAndNavigate}
+              className="w-full gap-2"
+              variant="destructive"
+            >
+              Descartar cambios y continuar
+            </Button>
+            <Button
+              onClick={handleCancelNavigation}
+              className="w-full"
+              variant="outline"
+            >
+              Cancelar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Modal for Complete Notarial Text */}
       <Dialog open={showCompleteTextModal} onOpenChange={setShowCompleteTextModal}>
