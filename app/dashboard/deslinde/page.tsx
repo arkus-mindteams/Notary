@@ -155,23 +155,89 @@ function DeslindePageInner() {
         }
         
         const ordered = [...(unit.boundaries || [])].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
-        return ordered
-          .map((b) => {
-            // Use raw_direction if available (new format), fallback to normalized_direction
-            const rawDir = b.raw_direction || ""
-            const normalizedDir = b.normalized_direction || ""
-            
-            // Map to Spanish name: prefer raw_direction, then use normalized_direction mapping
-            let name = rawDir.toUpperCase()
-            if (normalizedDir && dirEs[normalizedDir]) {
-              name = dirEs[normalizedDir]
-            } else if (dirEsLegacy[rawDir.toUpperCase()]) {
-              name = dirEsLegacy[rawDir.toUpperCase()]
-            } else if (rawDir && (rawDir === "NORTE" || rawDir === "SUR" || rawDir === "ESTE" || rawDir === "OESTE" || 
-                     rawDir === "NORESTE" || rawDir === "NOROESTE" || rawDir === "SURESTE" || rawDir === "SUROESTE" ||
-                     rawDir === "ARRIBA" || rawDir === "ABAJO")) {
-              name = rawDir.toUpperCase()
+        
+        // Helper function to get direction key for grouping
+        const getDirectionKey = (b: typeof ordered[0]): string => {
+          const normalizedDir = b.normalized_direction || ""
+          const rawDir = b.raw_direction || ""
+          
+          // Use normalized_direction first, fallback to raw_direction
+          if (normalizedDir) {
+            return normalizedDir.toUpperCase()
+          }
+          
+          // Map raw_direction to normalized key
+          const upperRaw = rawDir.toUpperCase()
+          if (upperRaw === "NORTE" || upperRaw === "NORTH") return "N"
+          if (upperRaw === "SUR" || upperRaw === "SOUTH") return "S"
+          if (upperRaw === "ESTE" || upperRaw === "EAST") return "E"
+          if (upperRaw === "OESTE" || upperRaw === "WEST") return "W"
+          if (upperRaw === "NORESTE" || upperRaw === "NORTHEAST") return "NE"
+          if (upperRaw === "NOROESTE" || upperRaw === "NORTHWEST") return "NW"
+          if (upperRaw === "SURESTE" || upperRaw === "SOUTHEAST") return "SE"
+          if (upperRaw === "SUROESTE" || upperRaw === "SOUTHWEST") return "SW"
+          if (upperRaw === "ARRIBA" || upperRaw === "UP" || upperRaw === "SUPERIOR") return "UP"
+          if (upperRaw === "ABAJO" || upperRaw === "DOWN" || upperRaw === "INFERIOR") return "DOWN"
+          
+          return upperRaw
+        }
+        
+        // Helper function to get Spanish direction name
+        const getSpanishDirectionName = (b: typeof ordered[0]): string => {
+          const rawDir = b.raw_direction || ""
+          const normalizedDir = b.normalized_direction || ""
+          
+          let name = rawDir.toUpperCase()
+          if (normalizedDir && dirEs[normalizedDir]) {
+            name = dirEs[normalizedDir]
+          } else if (dirEsLegacy[rawDir.toUpperCase()]) {
+            name = dirEsLegacy[rawDir.toUpperCase()]
+          } else if (rawDir && (rawDir === "NORTE" || rawDir === "SUR" || rawDir === "ESTE" || rawDir === "OESTE" || 
+                   rawDir === "NORESTE" || rawDir === "NOROESTE" || rawDir === "SURESTE" || rawDir === "SUROESTE" ||
+                   rawDir === "ARRIBA" || rawDir === "ABAJO")) {
+            name = rawDir.toUpperCase()
+          }
+          
+          return name
+        }
+        
+        // Group consecutive boundaries with the same direction
+        const groups: Array<Array<typeof ordered[0]>> = []
+        let currentGroup: Array<typeof ordered[0]> = []
+        let currentDirectionKey: string | null = null
+        
+        for (const b of ordered) {
+          const dirKey = getDirectionKey(b)
+          
+          if (currentDirectionKey === null || currentDirectionKey !== dirKey) {
+            // Start a new group
+            if (currentGroup.length > 0) {
+              groups.push(currentGroup)
             }
+            currentGroup = [b]
+            currentDirectionKey = dirKey
+          } else {
+            // Add to current group (same direction)
+            currentGroup.push(b)
+          }
+        }
+        
+        // Add last group
+        if (currentGroup.length > 0) {
+          groups.push(currentGroup)
+        }
+        
+        // Format each group
+        const lines: string[] = []
+        
+        for (const group of groups) {
+          const firstBoundary = group[0]
+          const directionName = getSpanishDirectionName(firstBoundary)
+          
+          for (let i = 0; i < group.length; i++) {
+            const b = group[i]
+            const normalizedDir = b.normalized_direction || ""
+            const rawDir = b.raw_direction || ""
             
             const isVertical = normalizedDir === "UP" || normalizedDir === "DOWN" || 
                              rawDir.toUpperCase() === "UP" || rawDir.toUpperCase() === "DOWN" ||
@@ -188,21 +254,31 @@ function DeslindePageInner() {
             // Remove leading "CON " if present (prevents "CON CON" duplication)
             const cleanedWho = who.replace(/^\s*CON\s+/i, "").trim()
             
-            // Para direcciones verticales sin medida (null o 0.000), omitir "EN 0.000 m"
-            if (isVertical && hasNoMeasure) {
-              return `${name}: CON ${cleanedWho}`
+            if (i === 0) {
+              // First boundary in group: show full direction
+              if (isVertical && hasNoMeasure) {
+                lines.push(`${directionName}: CON ${cleanedWho}`)
+              } else if (hasNoMeasure && lengthNum === null) {
+                lines.push(`${directionName}: CON ${cleanedWho}`)
+              } else {
+                const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
+                lines.push(`${directionName}: EN ${len} m CON ${cleanedWho}`)
+              }
+            } else {
+              // Subsequent boundaries in same group: show only measure and abutter (no direction)
+              if (isVertical && hasNoMeasure) {
+                lines.push(`         CON ${cleanedWho}`)
+              } else if (hasNoMeasure && lengthNum === null) {
+                lines.push(`         CON ${cleanedWho}`)
+              } else {
+                const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
+                lines.push(`         EN ${len} m CON ${cleanedWho}`)
+              }
             }
-            
-            // Si no hay medida en absoluto (null)
-            if (hasNoMeasure && lengthNum === null) {
-              return `${name}: CON ${cleanedWho}`
-            }
-            
-            // Para direcciones con medida, incluir la medida
-            const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
-            return `${name}: EN ${len} m CON ${cleanedWho}`
-          })
-          .join("\n")
+          }
+        }
+        
+        return lines.join("\n")
       }
 
       const formatSurfaceValue = (surfaces?: { name: string; value_m2: number }[]) => {
