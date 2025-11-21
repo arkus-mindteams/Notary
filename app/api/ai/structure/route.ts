@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
 import type { StructuringRequest, StructuringResponse, StructuredUnit } from "@/lib/ai-structuring-types"
+import { readFileSync } from "fs"
+import { join } from "path"
 
 const cache = new Map<string, StructuredUnit[]>()
 const metadataCache = new Map<string, { lotLocation?: string; totalLotSurface?: number }>()
@@ -10,7 +12,19 @@ function hashPayload(s: string): string {
   return `${h}-${s.length}`
 }
 
-function buildPrompt(): string {
+function getColindanciasRules(): string {
+  try {
+    const rulesPath = join(process.cwd(), "data", "rules.json")
+    const fileContent = readFileSync(rulesPath, "utf-8")
+    const rules = JSON.parse(fileContent)
+    return rules.colindancias?.rules || buildDefaultPrompt()
+  } catch (error) {
+    console.error("[api/ai/structure] Error loading rules, using default:", error)
+    return buildDefaultPrompt()
+  }
+}
+
+function buildDefaultPrompt(): string {
   return [
     "Eres un extractor experto de medidas y colindancias de planos arquitectónicos. Tu tarea es analizar un bloque de texto (producido por OCR o lectura visual de un plano) y devolver únicamente las colindancias, organizadas en JSON, siguiendo reglas estrictas.",
     "",
@@ -817,7 +831,7 @@ export async function POST(req: Request) {
     
     // Always process (cache disabled)
     try {
-      const prompt = buildPrompt()
+      const prompt = getColindanciasRules()
         // Call OpenAI Vision with all images
         const aiResponse = await callOpenAIVision(prompt, images)
         
