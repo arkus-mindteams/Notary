@@ -11,11 +11,6 @@ import { Save, Settings, FileText, AlertCircle, CheckCircle2, Loader2 } from "lu
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
 interface RulesData {
-  colindancias: {
-    version: string
-    lastUpdated: string
-    rules: string
-  }
   notarial: {
     version: string
     lastUpdated: string
@@ -25,7 +20,6 @@ interface RulesData {
 
 export default function SettingsPage() {
   const [rules, setRules] = useState<RulesData | null>(null)
-  const [colindanciasRules, setColindanciasRules] = useState("")
   const [notarialRules, setNotarialRules] = useState("")
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
@@ -43,8 +37,7 @@ export default function SettingsPage() {
       if (!response.ok) throw new Error("Failed to load rules")
       const data: RulesData = await response.json()
       setRules(data)
-      setColindanciasRules(data.colindancias.rules)
-      setNotarialRules(data.notarial.rules)
+      setNotarialRules(data.notarial?.rules || "")
     } catch (error) {
       console.error("Error loading rules:", error)
       setSaveStatus("error")
@@ -65,10 +58,6 @@ export default function SettingsPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          colindancias: {
-            version: rules?.colindancias.version || "1.0.0",
-            rules: colindanciasRules,
-          },
           notarial: {
             version: rules?.notarial.version || "1.0.0",
             rules: notarialRules,
@@ -123,7 +112,7 @@ export default function SettingsPage() {
               <h1 className="text-3xl font-bold text-gray-900">Configuración</h1>
             </div>
             <p className="text-gray-600">
-              Gestiona las reglas utilizadas por la IA para la generación de colindancias y texto notarial.
+              Gestiona las reglas utilizadas por la IA para la generación de texto notarial. Las reglas de colindancias son internas y no son modificables.
             </p>
           </div>
 
@@ -166,28 +155,19 @@ export default function SettingsPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {/* Colindancias Rules */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="colindancias-rules" className="text-base font-semibold">
-                      Reglas para Generación de Colindancias
-                    </Label>
-                    {rules?.colindancias.lastUpdated && (
-                      <span className="text-xs text-muted-foreground">
-                        Última actualización: {new Date(rules.colindancias.lastUpdated).toLocaleString("es-MX")}
-                      </span>
-                    )}
+                {/* Nota informativa sobre reglas de colindancias */}
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                        Reglas de Colindancias
+                      </p>
+                      <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+                        Las reglas para la extracción de colindancias son internas del sistema y no son modificables. Estas reglas están optimizadas para garantizar la precisión en la extracción de datos.
+                      </p>
+                    </div>
                   </div>
-                  <Textarea
-                    id="colindancias-rules"
-                    value={colindanciasRules}
-                    onChange={(e) => setColindanciasRules(e.target.value)}
-                    placeholder="Ingresa las reglas para la generación de colindancias..."
-                    className="min-h-[400px] font-mono text-sm"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Estas reglas definen cómo la IA extrae y estructura las colindancias desde los documentos.
-                  </p>
                 </div>
 
                 {/* Notarial Rules */}

@@ -80,6 +80,51 @@ export function ValidationWizard({
   const [isViewerCollapsed, setIsViewerCollapsed] = useState(false)
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
 
+  // Auto-format colindancias text with proper indentation
+  const autoFormatColindancias = (text: string): string => {
+    const lines = text.split('\n')
+    const formattedLines: string[] = []
+    let currentDirection = ''
+    let indentWidth = 0
+    
+    for (const line of lines) {
+      const trimmedLine = line.trim()
+      if (!trimmedLine) {
+        formattedLines.push('')
+        continue
+      }
+      
+      // Check if line starts with a direction (e.g., "NORTE:", "OESTE:", etc.)
+      const directionMatch = trimmedLine.match(/^([A-ZÁÉÍÓÚÑ]+(?:ESTE|OESTE)?)\s*:\s*(.*)$/i)
+      
+      if (directionMatch) {
+        // This is a direction line
+        const direction = directionMatch[1].toUpperCase()
+        const content = directionMatch[2].trim()
+        currentDirection = direction
+        indentWidth = direction.length + 2 // direction + ": "
+        
+        if (content) {
+          formattedLines.push(`${direction}: ${content}`)
+        } else {
+          formattedLines.push(`${direction}:`)
+        }
+      } else {
+        // This is a continuation line (segment of the current direction)
+        if (currentDirection && indentWidth > 0) {
+          // Apply indentation to align with content after direction name
+          const indent = ' '.repeat(indentWidth)
+          formattedLines.push(`${indent}${trimmedLine}`)
+        } else {
+          // No current direction, keep line as is
+          formattedLines.push(trimmedLine)
+        }
+      }
+    }
+    
+    return formattedLines.join('\n')
+  }
+
   const currentUnit = units[currentUnitIndex]
   const progress = ((currentUnitIndex + 1) / units.length) * 100
   const isLastUnit = currentUnitIndex === units.length - 1
@@ -711,6 +756,20 @@ export function ValidationWizard({
                             return next
                           })
                           setHasChanges(true)
+                        }}
+                        onBlur={(e) => {
+                          // Apply automatic formatting when user leaves the field
+                          if (isCurrentUnitAuthorized) return
+                          const value = e.target.value
+                          const formatted = autoFormatColindancias(value)
+                          if (formatted !== value) {
+                            setAiTextByUnit((prev) => {
+                              const next = new Map(prev)
+                              next.set(currentUnit.id, formatted)
+                              return next
+                            })
+                            setHasChanges(true)
+                          }
                         }}
                       />
                       {isGeneratingNotarial && (

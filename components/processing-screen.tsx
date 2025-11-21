@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import { Loader2, FileSearch, CheckCircle2 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
@@ -18,6 +18,15 @@ export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs, step
   const [currentStep, setCurrentStep] = useState(0)
   const [started, setStarted] = useState(false)
   const [stepStatus, setStepStatus] = useState<Record<string, { status: "pending" | "in_progress" | "done" | "error"; detail?: string }>>({})
+  const hasRunRef = useRef(false)
+  const onRunRef = useRef(onRun)
+  const onCompleteRef = useRef(onComplete)
+
+  // Mantener referencias actualizadas sin causar re-renders
+  useEffect(() => {
+    onRunRef.current = onRun
+    onCompleteRef.current = onComplete
+  }, [onRun, onComplete])
 
   const defaultSteps = [
     { key: "ocr", label: "OCR (Textract)" },
@@ -36,41 +45,49 @@ export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs, step
     }, 60)
 
     return () => clearInterval(interval)
-  }, [onComplete])
+  }, [])
 
   useEffect(() => {
+    // Protección contra ejecuciones duplicadas (React Strict Mode)
+    if (hasRunRef.current) {
+      console.log("[ProcessingScreen] Ya se ejecutó, evitando ejecución duplicada")
+      return
+    }
+    
     let cancelled = false
     let watchdog: any
     async function run() {
-      if (started) return
+      if (started || hasRunRef.current) return
+      hasRunRef.current = true
       setStarted(true)
       setStepStatus(Object.fromEntries(stepsToUse.map(s => [s.key, { status: "pending" as const }])))
       // Watchdog para evitar quedarse pegado
       watchdog = setTimeout(() => {
         if (!cancelled) {
           setProgress(100)
-          onComplete()
+          onCompleteRef.current()
         }
       }, typeof watchdogMs === "number" ? watchdogMs : 20000)
       try {
-        if (onRun) {
+        const currentOnRun = onRunRef.current
+        if (currentOnRun) {
           const update = (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => {
             setStepStatus((prev) => ({ ...prev, [key]: { status, detail } }))
             const idx = stepsToUse.findIndex(s => s.key === key)
             if (idx >= 0) setCurrentStep(idx)
           }
-          await onRun(update)
+          await currentOnRun(update)
         } else {
           setStepStatus(Object.fromEntries(stepsToUse.map(s => [s.key, { status: "done" as const }])))
         }
         if (!cancelled) {
           setProgress(100)
-          setTimeout(onComplete, 150)
+          setTimeout(() => onCompleteRef.current(), 150)
         }
       } catch (e) {
         if (!cancelled) {
           setProgress(100)
-          setTimeout(onComplete, 150)
+          setTimeout(() => onCompleteRef.current(), 150)
         }
       } finally {
         if (watchdog) clearTimeout(watchdog)
@@ -81,7 +98,7 @@ export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs, step
       cancelled = true
       if (watchdog) clearTimeout(watchdog)
     }
-  }, [onRun, onComplete, started])
+  }, []) // Ejecutar solo una vez al montar, usando refs para las funciones actuales
 
   useEffect(() => {
     const stepInterval = setInterval(() => {
