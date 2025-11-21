@@ -11,6 +11,7 @@ import {
   Shield,
   ChevronLeft,
   ChevronRight,
+  Settings,
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -41,40 +42,63 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
     <Card className={`h-full flex flex-col transition-all duration-300 ${
       isCollapsed ? 'w-16' : 'w-64'
     }`}>
-      {/* Header con Logo */}
-      <div className="p-4 border-b">
-        <div className="flex items-center justify-between">
-          {!isCollapsed && (
+      {/* Header con Usuario y Notaría */}
+      <div className="border-b">
+        {/* Sección Usuario */}
+        {!isCollapsed && user && (
+          <div className="p-4 pb-3 border-b">
             <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-                <Shield className="h-5 w-5 text-white" />
+              <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+                <span className="text-sm font-medium text-blue-600">
+                  {user.name.split(' ').map(n => n[0]).join('')}
+                </span>
               </div>
-              <div>
-                <h2 className="font-bold text-sm text-gray-900">Notaría #3</h2>
-                <p className="text-xs text-gray-600">Xavier Ibañez</p>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-900 truncate">
+                  {user.name}
+                </p>
+                <p className="text-xs text-gray-500 capitalize">
+                  {user.role}
+                </p>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onToggle}
-            className="h-8 w-8 p-0"
-          >
-            {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-          </Button>
+        {/* Sección Notaría */}
+        <div className="p-4">
+          <div className="flex items-center justify-between">
+            {!isCollapsed && (
+              <div className="flex items-center space-x-3">
+                <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                  <Shield className="h-5 w-5 text-white" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-sm text-gray-900">Notaría #3</h2>
+                </div>
+              </div>
+            )}
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onToggle}
+              className="h-8 w-8 p-0"
+            >
+              {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            </Button>
+          </div>
         </div>
       </div>
 
       {/* Navegación */}
       <div className="flex-1 p-4 space-y-2">
         <Button
-          variant={pathname === '/dashboard/deslinde?reset=1' ? 'default' : 'ghost'}
+          variant={pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde' ? 'default' : 'ghost'}
           className={`w-full justify-start ${
             isCollapsed ? 'px-2' : 'px-3'
           } ${
-            pathname === '/dashboard/deslinde?reset=1'
+            pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde'
               ? 'bg-blue-600 text-white hover:bg-blue-700'
               : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
           }`}
@@ -85,25 +109,22 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
         </Button>
       </div>
 
-      {/* Información del Usuario y Logout */}
+      {/* Configuración y Logout */}
       <div className="p-4 border-t space-y-3">
-        {!isCollapsed && user && (
-          <div className="flex items-center space-x-3 p-2 bg-gray-50 rounded-lg">
-            <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-              <span className="text-xs font-medium text-blue-600">
-                {user.name.split(' ').map(n => n[0]).join('')}
-              </span>
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-900 truncate">
-                {user.name}
-              </p>
-              <p className="text-xs text-gray-500 capitalize">
-                {user.role}
-              </p>
-            </div>
-          </div>
-        )}
+        <Button
+          variant={pathname === '/dashboard/settings' ? 'default' : 'ghost'}
+          className={`w-full justify-start ${
+            isCollapsed ? 'px-2' : 'px-3'
+          } ${
+            pathname === '/dashboard/settings'
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+          }`}
+          onClick={() => handleNavigation('/dashboard/settings')}
+        >
+          <Settings className="h-4 w-4" />
+          {!isCollapsed && <span className="ml-3">Configuración</span>}
+        </Button>
 
         <Button
           variant="ghost"
