@@ -4,53 +4,7 @@ export type StructuredUnit = {
    * Ejemplos: "UNIDAD X", "COCHERA 1", "ESTACIONAMIENTO"
    */
   unit_name: string
-  /**
-   * Nuevo formato: direcciones agrupadas con sus segmentos
-   * Cada dirección contiene sus colindancias (segments)
-   */
-  directions?: Array<{
-    /**
-     * Dirección original tal como aparece en el texto (ej: "NORTE", "SUROESTE")
-     */
-    raw_direction: string
-    /**
-     * Dirección normalizada a código corto:
-     * Cardinales: "N", "S", "E", "W"
-     * Intercardinales: "NE", "NW", "SE", "SW"
-     * Verticales: "UP", "DOWN"
-     */
-    normalized_direction: "N" | "S" | "E" | "W" | "NE" | "NW" | "SE" | "SW" | "UP" | "DOWN"
-    /**
-     * Orden de aparición de esta dirección en el documento (inicia en 0)
-     */
-    direction_order_index: number
-    /**
-     * Segmentos (colindancias) que pertenecen a esta dirección
-     */
-    segments: Array<{
-      /**
-       * Prefijo de la medida ("", "EN", "LC=", etc.) o null si no hay medida
-       */
-      length_prefix: string | null
-      /**
-       * Longitud en metros. Puede ser null si no hay medida disponible
-       */
-      length_m: number | null
-      /**
-       * Nombre del colindante
-       */
-      abutter: string
-      /**
-       * Orden global secuencial de este segmento en el documento (inicia en 0)
-       */
-      order_index: number
-    }>
-  }>
-  /**
-   * Formato legacy: boundaries plano (mantenido para compatibilidad)
-   * Se genera automáticamente desde directions si está disponible
-   */
-  boundaries?: Array<{
+  boundaries: Array<{
     /**
      * Dirección original tal como aparece en el texto (ej: "SURESTE", "NORTE", "ARRIBA")
      */

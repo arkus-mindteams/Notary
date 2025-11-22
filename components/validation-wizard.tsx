@@ -6,7 +6,7 @@ import { ImageViewer } from "./image-viewer"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText, Save, X, Eye, EyeOff, Copy } from "lucide-react"
+import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText } from "lucide-react"
 import type { TransformedSegment } from "@/lib/text-transformer"
 import type { PropertyUnit } from "@/lib/ocr-simulator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -71,59 +71,6 @@ export function ValidationWizard({
   const [showCompleteTextModal, setShowCompleteTextModal] = useState(false)
   const [completeNotarialText, setCompleteNotarialText] = useState<string>("")
   const [isGeneratingCompleteText, setIsGeneratingCompleteText] = useState(false)
-  
-  // Estados para rastrear valores guardados y cambios no guardados
-  const [savedColindanciasByUnit, setSavedColindanciasByUnit] = useState<Map<string, string>>(new Map())
-  const [savedNotarialTextByUnit, setSavedNotarialTextByUnit] = useState<Map<string, string>>(new Map())
-  const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false)
-  const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null)
-  const [isViewerCollapsed, setIsViewerCollapsed] = useState(false)
-  const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
-
-  // Auto-format colindancias text with proper indentation
-  const autoFormatColindancias = (text: string): string => {
-    const lines = text.split('\n')
-    const formattedLines: string[] = []
-    let currentDirection = ''
-    let indentWidth = 0
-    
-    for (const line of lines) {
-      const trimmedLine = line.trim()
-      if (!trimmedLine) {
-        formattedLines.push('')
-        continue
-      }
-      
-      // Check if line starts with a direction (e.g., "NORTE:", "OESTE:", etc.)
-      const directionMatch = trimmedLine.match(/^([A-ZÁÉÍÓÚÑ]+(?:ESTE|OESTE)?)\s*:\s*(.*)$/i)
-      
-      if (directionMatch) {
-        // This is a direction line
-        const direction = directionMatch[1].toUpperCase()
-        const content = directionMatch[2].trim()
-        currentDirection = direction
-        indentWidth = direction.length + 2 // direction + ": "
-        
-        if (content) {
-          formattedLines.push(`${direction}: ${content}`)
-        } else {
-          formattedLines.push(`${direction}:`)
-        }
-      } else {
-        // This is a continuation line (segment of the current direction)
-        if (currentDirection && indentWidth > 0) {
-          // Apply indentation to align with content after direction name
-          const indent = ' '.repeat(indentWidth)
-          formattedLines.push(`${indent}${trimmedLine}`)
-        } else {
-          // No current direction, keep line as is
-          formattedLines.push(trimmedLine)
-        }
-      }
-    }
-    
-    return formattedLines.join('\n')
-  }
 
   const currentUnit = units[currentUnitIndex]
   const progress = ((currentUnitIndex + 1) / units.length) * 100
@@ -164,95 +111,7 @@ export function ValidationWizard({
 
     setAiTextByUnit(map)
     setNotarialTextByUnit(new Map())
-    // Inicializar valores guardados con los valores iniciales
-    setSavedColindanciasByUnit(new Map(map))
-    setSavedNotarialTextByUnit(new Map())
   }, [unitBoundariesText, aiStructuredText, units])
-
-  // Detectar si hay cambios sin guardar en la unidad actual
-  const hasUnsavedChanges = (): boolean => {
-    if (!currentUnit) return false
-    const currentColindancias = aiTextByUnit.get(currentUnit.id) || ""
-    const savedColindancias = savedColindanciasByUnit.get(currentUnit.id) || ""
-    const currentNotarial = notarialTextByUnit.get(currentUnit.id) || ""
-    const savedNotarial = savedNotarialTextByUnit.get(currentUnit.id) || ""
-    
-    return currentColindancias !== savedColindancias || currentNotarial !== savedNotarial
-  }
-
-  // Guardar cambios de la unidad actual
-  const handleSaveChanges = () => {
-    if (!currentUnit) return
-    const currentColindancias = aiTextByUnit.get(currentUnit.id) || ""
-    const currentNotarial = notarialTextByUnit.get(currentUnit.id) || ""
-    
-    setSavedColindanciasByUnit((prev) => {
-      const next = new Map(prev)
-      next.set(currentUnit.id, currentColindancias)
-      return next
-    })
-    
-    setSavedNotarialTextByUnit((prev) => {
-      const next = new Map(prev)
-      next.set(currentUnit.id, currentNotarial)
-      return next
-    })
-    
-    setHasChanges(true)
-    setLastSaved(new Date())
-  }
-
-  // Confirmar navegación si hay cambios sin guardar
-  const confirmNavigation = (navigationFn: () => void) => {
-    if (hasUnsavedChanges()) {
-      setPendingNavigation(() => navigationFn)
-      setShowUnsavedChangesDialog(true)
-    } else {
-      navigationFn()
-    }
-  }
-
-  // Aceptar navegación descartando cambios
-  const handleDiscardAndNavigate = () => {
-    if (pendingNavigation) {
-      setShowUnsavedChangesDialog(false)
-      // Restaurar valores guardados
-      if (currentUnit) {
-        const savedColindancias = savedColindanciasByUnit.get(currentUnit.id) || ""
-        const savedNotarial = savedNotarialTextByUnit.get(currentUnit.id) || ""
-        
-        setAiTextByUnit((prev) => {
-          const next = new Map(prev)
-          next.set(currentUnit.id, savedColindancias)
-          return next
-        })
-        
-        setNotarialTextByUnit((prev) => {
-          const next = new Map(prev)
-          next.set(currentUnit.id, savedNotarial)
-          return next
-        })
-      }
-      pendingNavigation()
-      setPendingNavigation(null)
-    }
-  }
-
-  // Cancelar navegación
-  const handleCancelNavigation = () => {
-    setShowUnsavedChangesDialog(false)
-    setPendingNavigation(null)
-  }
-
-  // Guardar y navegar
-  const handleSaveAndNavigate = () => {
-    handleSaveChanges()
-    if (pendingNavigation) {
-      setShowUnsavedChangesDialog(false)
-      pendingNavigation()
-      setPendingNavigation(null)
-    }
-  }
 
   const getUnitRegionId = (unitId: string): string => {
     const unitIdMap: Record<string, string> = {
@@ -312,35 +171,24 @@ export function ValidationWizard({
     }
   }
 
-  const handleExport = async (metadata: ExportMetadata) => {
+  const handleExport = (metadata: ExportMetadata) => {
     // Usar solo las unidades autorizadas para la exportación
     const authorizedUnitsArray = units.filter((unit) => authorizedUnits.has(unit.id));
 
-    // Crear un mapa con los textos notariales de las unidades autorizadas
-    const authorizedNotarialTexts = new Map<string, string>()
-    authorizedUnitsArray.forEach((unit) => {
-      const notarialText = notarialTextByUnit.get(unit.id) || ""
-      if (notarialText.trim()) {
-        authorizedNotarialTexts.set(unit.id, notarialText)
-      }
-    })
-
-    // Si no hay textos notariales, usar el método anterior con segmentos
     const authorizedSegmentsMap = new Map<string, TransformedSegment[]>(
       Array.from(editedUnits.entries()).filter(([unitId]) => authorizedUnits.has(unitId)),
-    )
+    );
 
-    const allSegments = Array.from(authorizedSegmentsMap.values()).flat()
+    const allSegments = Array.from(authorizedSegmentsMap.values()).flat();
 
     const documentContent = generateNotarialDocument(
       allSegments,
       metadata,
       authorizedUnitsArray,
       authorizedSegmentsMap,
-      authorizedNotarialTexts.size > 0 ? authorizedNotarialTexts : undefined,
-    )
-    const filename = generateFilename(metadata.propertyName)
-    await downloadDocument(documentContent, filename)
+    );
+    const filename = generateFilename(metadata.propertyName);
+    downloadDocument(documentContent, filename);
   }
 
   const getTimeSinceLastSave = () => {
@@ -387,21 +235,6 @@ export function ValidationWizard({
         next.set(unitId, data.notarialText || "")
         return next
       })
-      // Actualizar también el valor guardado automáticamente si las colindancias no han sido editadas
-      // Esto permite que el texto generado automáticamente no se marque como "sin guardar"
-      setSavedColindanciasByUnit((savedColMap) => {
-        const savedColindancias = savedColMap.get(unitId) || ""
-        // Si las colindancias que se usaron para generar coinciden con las guardadas,
-        // también guardar el texto notarial generado automáticamente
-        if (colindanciasText === savedColindancias && colindanciasText) {
-          setSavedNotarialTextByUnit((prev) => {
-            const next = new Map(prev)
-            next.set(unitId, data.notarialText || "")
-            return next
-          })
-        }
-        return savedColMap
-      })
     } catch (e) {
       console.error("[ui] notarialize failed", e)
       setNotarialTextByUnit((prev) => {
@@ -412,7 +245,7 @@ export function ValidationWizard({
     } finally {
       setIsGeneratingNotarial(false)
     }
-  }, [savedColindanciasByUnit])
+  }, [])
 
   // Auto-generate notarial text when colindancias change (debounced)
   useEffect(() => {
@@ -500,23 +333,23 @@ export function ValidationWizard({
               {allUnitsAuthorized && (
                 <Button
                   onClick={handleOpenCompleteTextModal}
-                  size="sm"
+                  size="lg"
                   variant="outline"
-                  className="gap-1.5 h-8 px-3"
+                  className="gap-2"
                 >
-                  <FileText className="h-3.5 w-3.5" />
-                  <span className="text-xs sm:text-sm">Texto Completo</span>
+                  <FileText className="h-4 w-4" />
+                  <span className="sm:inline">Ver Texto Notarial Completo</span>
                 </Button>
               )}
               <Button
                 onClick={() => setShowExportDialog(true)}
-                size="sm"
-                className="gap-1.5 h-8 px-3 flex-1 sm:flex-initial"
+                size="lg"
+                className="gap-2 flex-1 sm:flex-initial"
                 disabled={!allUnitsAuthorized}
                 variant={allUnitsAuthorized ? "default" : "secondary"}
               >
-                <Download className="h-3.5 w-3.5" />
-                <span className="text-xs sm:text-sm">Exportar</span>
+                <Download className="h-4 w-4" />
+                <span className="sm:inline">Exportar</span>
               </Button>
             </div>
           </div>
@@ -551,8 +384,8 @@ export function ValidationWizard({
                 return (
                   <button
                     key={`${unit.id}-${index}`}
-                    onClick={() => confirmNavigation(() => setCurrentUnitIndex(index))}
-                    className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all whitespace-nowrap shrink-0 flex items-center gap-1 ${
+                    onClick={() => setCurrentUnitIndex(index)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
                       isCurrent && isAuthorized
                         ? "bg-green-600 text-white ring-1 ring-green-400"
                         : isCurrent
@@ -572,65 +405,48 @@ export function ValidationWizard({
         </div>
       </header>
 
-      {/* Status Alert - Compact and dismissible */}
-      {typeof ocrConfidence === "number" && ocrConfidence < 0.7 && !dismissedAlerts.has("ocr-confidence") && (
-        <Alert className="mx-3 sm:mx-4 mt-2 bg-amber-50 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800">
-          <div className="flex items-start gap-2">
-            <AlertCircle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-            <AlertDescription className="text-xs text-amber-800 dark:text-amber-300 flex-1">
-              Confiabilidad: {Math.round(ocrConfidence * 100)}%
-              {typeof ocrRotationHint === "number" && ocrRotationHint !== 0
-                ? ` • Rotar ~${ocrRotationHint}°`
-                : ""}
-            </AlertDescription>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 w-6 p-0 shrink-0"
-              onClick={() => setDismissedAlerts((prev) => new Set(prev).add("ocr-confidence"))}
-            >
-              <X className="h-3 w-3" />
-            </Button>
-          </div>
+      {/* Status Alert */}
+      {typeof ocrConfidence === "number" && ocrConfidence < 0.7 && (
+        <Alert className="mx-4 sm:mx-6 mt-3 sm:mt-4 bg-amber-50 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800">
+          <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <AlertDescription className="text-xs sm:text-sm text-amber-800 dark:text-amber-300">
+            El texto extraído del documento tiene una confiabilidad aproximada de{" "}
+            {Math.round(ocrConfidence * 100)}%. Te recomendamos revisar la legibilidad del PDF
+            {typeof ocrRotationHint === "number" && ocrRotationHint !== 0
+              ? ` y considerar rotarlo aproximadamente ${ocrRotationHint}° para mejorar la lectura.`
+              : " y considerar ajustar su orientación para una mejor interpretación."}
+          </AlertDescription>
+        </Alert>
+      )}
+      {isCurrentUnitAuthorized && (
+        <Alert className="mx-4 sm:mx-6 mt-3 sm:mt-4 bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800">
+          <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
+          <AlertDescription className="text-xs sm:text-sm text-green-800 dark:text-green-300">
+            Esta unidad ha sido autorizada. Puedes continuar a la siguiente.
+          </AlertDescription>
         </Alert>
       )}
 
       {/* Main Content - Split View with Collapsible Viewer */}
       <div className="flex-1 overflow-hidden">
-        <div className="container mx-auto px-3 sm:px-4 py-2 h-full">
-          <div className={`grid gap-3 h-full transition-all duration-300 ${
-            isViewerCollapsed 
-              ? "grid-cols-1" 
-              : "grid-cols-1 lg:grid-cols-[minmax(300px,40%)_minmax(400px,60%)]"
-          }`}>
-            {/* Document/Image Viewer - Left Side with Toggle */}
-            {!isViewerCollapsed && (
-              <div className="h-[300px] sm:h-[400px] lg:h-full overflow-auto relative group">
-                {/* Toggle Button */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="absolute top-2 right-2 z-10 h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity bg-background/90 shadow-sm"
-                  onClick={() => setIsViewerCollapsed(true)}
-                  title="Ocultar documento"
-                >
-                  <EyeOff className="h-3.5 w-3.5" />
-                </Button>
-                {images && images.length > 0 ? (
-                  <ImageViewer 
-                    images={images}
-                    initialIndex={0}
-                  />
-                ) : (
-                  <DocumentViewer 
-                    documentUrl={documentUrl} 
-                    highlightedRegion={displayRegion} 
-                    onRegionHover={() => {}} 
-                    fileName={fileName}
-                  />
-                )}
-              </div>
-            )}
+        <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6 h-full">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 h-full">
+            {/* Document/Image Viewer - Left Side with persistent highlight */}
+            <div className="h-[300px] sm:h-[400px] lg:h-full overflow-auto">
+              {images && images.length > 0 ? (
+                <ImageViewer 
+                  images={images}
+                  initialIndex={0}
+                />
+              ) : (
+                <DocumentViewer 
+                  documentUrl={documentUrl} 
+                  highlightedRegion={displayRegion} 
+                  onRegionHover={() => {}} 
+                  fileName={fileName}
+                />
+              )}
+            </div>
 
             {/* Text Panel - Right Side / Full width when viewer collapsed */}
             <div className={`h-[400px] sm:h-[500px] lg:h-full overflow-hidden ${isViewerCollapsed ? "" : ""}`}>
@@ -725,30 +541,16 @@ export function ValidationWizard({
                   </div>
                 </div>
                 {/* Content area to expand inputs */}
-                <div className="flex-1 px-3 pt-1 pb-2 overflow-hidden">
-                  <div className="flex flex-col gap-2 h-full">
+                <div className="flex-1 p-4 sm:p-6 overflow-hidden">
+                  <div className="flex flex-col gap-4 h-full">
                     {/* Colindancias (editable) - Always shown when unit is selected */}
-                    <div className="flex flex-col h-1/2 min-h-[150px]">
-                      <div className="text-sm font-semibold text-foreground mb-1 flex items-center gap-1">
-                        <span>Colindancias</span>
-                        {isCurrentUnitAuthorized && (
-                          <span className="text-xs font-normal text-muted-foreground italic">
-                            (Solo lectura)
-                          </span>
-                        )}
-                      </div>
+                    <div className="flex flex-col h-1/2 min-h-[200px]">
+                      <div className="text-xs font-medium text-muted-foreground mb-2">Colindancias</div>
                       <textarea
-                        className={`w-full flex-1 min-h-[120px] resize-none border rounded bg-background p-2 text-sm overflow-auto font-mono ${
-                          isCurrentUnitAuthorized 
-                            ? "cursor-not-allowed opacity-75 bg-muted/50" 
-                            : ""
-                        }`}
+                        className="w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
                         value={currentAiText}
-                        placeholder={isCurrentUnitAuthorized ? "Unidad autorizada - Desautoriza para editar" : "Ingresa o edita las colindancias..."}
-                        readOnly={isCurrentUnitAuthorized}
-                        disabled={isCurrentUnitAuthorized}
+                        placeholder="Ingresa o edita las colindancias de esta unidad..."
                         onChange={(e) => {
-                          if (isCurrentUnitAuthorized) return
                           const value = e.target.value
                           setAiTextByUnit((prev) => {
                             const next = new Map(prev)
@@ -757,57 +559,25 @@ export function ValidationWizard({
                           })
                           setHasChanges(true)
                         }}
-                        onBlur={(e) => {
-                          // Apply automatic formatting when user leaves the field
-                          if (isCurrentUnitAuthorized) return
-                          const value = e.target.value
-                          const formatted = autoFormatColindancias(value)
-                          if (formatted !== value) {
-                            setAiTextByUnit((prev) => {
-                              const next = new Map(prev)
-                              next.set(currentUnit.id, formatted)
-                              return next
-                            })
-                            setHasChanges(true)
-                          }
-                        }}
                       />
                       {isGeneratingNotarial && (
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          Generando...
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Generando texto notarial...
                         </div>
                       )}
                     </div>
                     
                     {/* Redacción notarial - Always shown below colindancias */}
-                    <div className="flex flex-col h-1/2 min-h-[150px]">
-                      <div className="text-sm font-semibold text-foreground mb-1 flex items-center gap-1">
-                        <span>Redacción notarial</span>
-                        {isGeneratingNotarial && <span className="text-muted-foreground text-xs font-normal">(Generando...)</span>}
-                        {isCurrentUnitAuthorized && (
-                          <span className="text-xs font-normal text-muted-foreground italic">
-                            (Solo lectura)
-                          </span>
-                        )}
+                    <div className="flex flex-col h-1/2 min-h-[200px]">
+                      <div className="text-xs font-medium text-muted-foreground mb-2">
+                        Redacción notarial
+                        {isGeneratingNotarial && <span className="ml-2 text-muted-foreground">(Generando...)</span>}
                       </div>
                       <textarea
-                        className={`w-full flex-1 min-h-[120px] resize-none border rounded bg-background p-2 text-sm overflow-auto leading-relaxed ${
-                          isCurrentUnitAuthorized 
-                            ? "cursor-not-allowed opacity-75 bg-muted/50" 
-                            : ""
-                        }`}
+                        className="w-full flex-1 min-h-[140px] resize-none border rounded bg-background p-2 text-sm overflow-auto"
                         value={currentNotarialText}
-                        placeholder={
-                          isCurrentUnitAuthorized 
-                            ? "Unidad autorizada - Desautoriza para editar" 
-                            : isGeneratingNotarial 
-                              ? "Generando..." 
-                              : "El texto notarial aparecerá aquí automáticamente..."
-                        }
-                        readOnly={isCurrentUnitAuthorized}
-                        disabled={isCurrentUnitAuthorized}
+                        placeholder={isGeneratingNotarial ? "Generando texto notarial..." : "El texto notarial aparecerá aquí automáticamente cuando ingreses las colindancias..."}
                         onChange={(e) => {
-                          if (isCurrentUnitAuthorized) return
                           const value = e.target.value
                           setNotarialTextByUnit((prev) => {
                             const next = new Map(prev)
@@ -848,48 +618,9 @@ export function ValidationWizard({
         totalLotSurface={totalLotSurface || undefined}
       />
 
-      {/* Dialog de confirmación de cambios sin guardar */}
-      <Dialog open={showUnsavedChangesDialog} onOpenChange={setShowUnsavedChangesDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertCircle className="h-5 w-5 text-warning" />
-              Cambios sin guardar
-            </DialogTitle>
-            <DialogDescription>
-              Tienes cambios sin guardar en esta unidad. ¿Qué deseas hacer?
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-2 pt-4">
-            <Button
-              onClick={handleSaveAndNavigate}
-              className="w-full gap-2"
-              variant="default"
-            >
-              <Save className="h-4 w-4" />
-              Guardar y continuar
-            </Button>
-            <Button
-              onClick={handleDiscardAndNavigate}
-              className="w-full gap-2"
-              variant="destructive"
-            >
-              Descartar cambios y continuar
-            </Button>
-            <Button
-              onClick={handleCancelNavigation}
-              className="w-full"
-              variant="outline"
-            >
-              Cancelar
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       {/* Modal for Complete Notarial Text */}
       <Dialog open={showCompleteTextModal} onOpenChange={setShowCompleteTextModal}>
-        <DialogContent className="max-w-6xl w-[95vw] max-h-[95vh] flex flex-col">
+        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileText className="h-5 w-5" />
@@ -899,7 +630,7 @@ export function ValidationWizard({
               Texto notarial combinado de todas las unidades autorizadas, formateado según estándares notariales.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex-1 overflow-hidden flex flex-col min-h-[500px]">
+          <div className="flex-1 overflow-hidden flex flex-col">
             {isGeneratingCompleteText ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center">
@@ -908,66 +639,39 @@ export function ValidationWizard({
               </div>
             ) : (
               <textarea
-                className="w-full flex-1 min-h-[500px] resize-none border rounded bg-background p-4 text-base leading-relaxed overflow-auto font-mono"
+                className="w-full flex-1 min-h-[400px] resize-none border rounded bg-background p-4 text-sm overflow-auto font-mono"
                 value={completeNotarialText}
                 onChange={(e) => setCompleteNotarialText(e.target.value)}
                 placeholder="El texto notarial completo aparecerá aquí..."
               />
             )}
           </div>
-          <div className="flex justify-between items-center gap-2 pt-4 border-t">
+          <div className="flex justify-end gap-2 pt-4 border-t">
             <Button
               variant="outline"
-              onClick={async () => {
+              onClick={() => setShowCompleteTextModal(false)}
+            >
+              Cerrar
+            </Button>
+            <Button
+              onClick={() => {
                 if (completeNotarialText) {
-                  try {
-                    await navigator.clipboard.writeText(completeNotarialText)
-                    // Show a brief success message (you could use a toast here)
-                    const button = document.activeElement as HTMLElement
-                    const originalText = button.textContent
-                    if (button) {
-                      button.textContent = "✓ Copiado"
-                      setTimeout(() => {
-                        if (button) button.textContent = originalText
-                      }, 2000)
-                    }
-                  } catch (err) {
-                    console.error("Error copying to clipboard:", err)
-                  }
+                  const blob = new Blob([completeNotarialText], { type: "text/plain" })
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement("a")
+                  a.href = url
+                  a.download = "texto-notarial-completo.txt"
+                  document.body.appendChild(a)
+                  a.click()
+                  document.body.removeChild(a)
+                  URL.revokeObjectURL(url)
                 }
               }}
               disabled={!completeNotarialText || isGeneratingCompleteText}
             >
-              <Copy className="h-4 w-4 mr-2" />
-              Copiar texto
+              <Download className="h-4 w-4 mr-2" />
+              Descargar
             </Button>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                onClick={() => setShowCompleteTextModal(false)}
-              >
-                Cerrar
-              </Button>
-              <Button
-                onClick={() => {
-                  if (completeNotarialText) {
-                    const blob = new Blob([completeNotarialText], { type: "text/plain" })
-                    const url = URL.createObjectURL(blob)
-                    const a = document.createElement("a")
-                    a.href = url
-                    a.download = "texto-notarial-completo.txt"
-                    document.body.appendChild(a)
-                    a.click()
-                    document.body.removeChild(a)
-                    URL.revokeObjectURL(url)
-                  }
-                }}
-                disabled={!completeNotarialText || isGeneratingCompleteText}
-              >
-                <Download className="h-4 w-4 mr-2" />
-                Descargar
-              </Button>
-            </div>
           </div>
         </DialogContent>
       </Dialog>

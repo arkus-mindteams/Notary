@@ -126,225 +126,83 @@ function DeslindePageInner() {
       }
 
       const formatBoundaries = (unit: StructuredUnit) => {
-        const lines: string[] = []
+        // Mapping for normalized directions to Spanish
+        const dirEs: Record<string, string> = {
+          "N": "NORTE",
+          "S": "SUR",
+          "E": "ESTE",
+          "W": "OESTE",
+          "NE": "NORESTE",
+          "NW": "NOROESTE",
+          "SE": "SURESTE",
+          "SW": "SUROESTE",
+          "UP": "ARRIBA",
+          "DOWN": "ABAJO",
+        }
         
-        // Use new format with directions if available
-        if (unit.directions && Array.isArray(unit.directions) && unit.directions.length > 0) {
-          for (const direction of unit.directions) {
-            if (!direction.raw_direction || !Array.isArray(direction.segments) || direction.segments.length === 0) {
-              continue
-            }
-            
-            const directionName = direction.raw_direction.toUpperCase()
-            const normalizedDir = direction.normalized_direction || ""
-            const isVertical = normalizedDir === "UP" || normalizedDir === "DOWN" ||
-                             directionName === "ARRIBA" || directionName === "ABAJO" ||
-                             directionName === "SUPERIOR" || directionName === "INFERIOR"
-            
-            // Format first segment to calculate indentation
-            let firstLine = ""
-            let indentWidth = 0
-            
-            // Format each segment in this direction
-            for (let i = 0; i < direction.segments.length; i++) {
-              const segment = direction.segments[i]
-              const lengthNum = segment.length_m === null || segment.length_m === undefined 
-                ? null 
-                : (typeof segment.length_m === "number" ? segment.length_m : parseFloat(String(segment.length_m)))
-              const hasNoMeasure = lengthNum === null || isNaN(lengthNum) || Math.abs(lengthNum) < 0.001
-              
-              const who = (segment.abutter || "").toString().trim()
-              // Remove leading "CON " if present (prevents "CON CON" duplication)
-              const cleanedWho = who.replace(/^\s*CON\s+/i, "").trim()
-              
-              // Get length prefix from segment, default to "EN" if empty
-              const lengthPrefix = segment.length_prefix && segment.length_prefix.trim() !== "" 
-                ? segment.length_prefix.trim().toUpperCase() 
-                : (hasNoMeasure ? null : "EN")
-              
-              if (i === 0) {
-                // First segment in direction: show full direction
-                if (isVertical && hasNoMeasure) {
-                  firstLine = `${directionName}: CON ${cleanedWho}`
-                } else if (hasNoMeasure && lengthNum === null) {
-                  firstLine = `${directionName}: CON ${cleanedWho}`
-                } else if (lengthPrefix && lengthNum !== null) {
-                  const len = lengthNum.toFixed(3)
-                  if (lengthPrefix === "LC=") {
-                    firstLine = `${directionName}: LC=${len} CON ${cleanedWho}`
-                  } else if (lengthPrefix === "EN" || lengthPrefix === "") {
-                    firstLine = `${directionName}: EN ${len} m CON ${cleanedWho}`
-                  } else {
-                    firstLine = `${directionName}: ${lengthPrefix} ${len} m CON ${cleanedWho}`
-                  }
-                } else {
-                  const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
-                  firstLine = `${directionName}: EN ${len} m CON ${cleanedWho}`
-                }
-                
-                // Calculate indentation: position after "DIRECTION: "
-                indentWidth = directionName.length + 2 // direction name + ": "
-                lines.push(firstLine)
-              } else {
-                // Subsequent segments in same direction: align with content after direction name
-                const indent = " ".repeat(indentWidth)
-                
-                if (isVertical && hasNoMeasure) {
-                  lines.push(`${indent}CON ${cleanedWho}`)
-                } else if (hasNoMeasure && lengthNum === null) {
-                  lines.push(`${indent}CON ${cleanedWho}`)
-                } else if (lengthPrefix && lengthNum !== null) {
-                  const len = lengthNum.toFixed(3)
-                  if (lengthPrefix === "LC=") {
-                    lines.push(`${indent}LC=${len} CON ${cleanedWho}`)
-                  } else if (lengthPrefix === "EN" || lengthPrefix === "") {
-                    lines.push(`${indent}EN ${len} m CON ${cleanedWho}`)
-                  } else {
-                    lines.push(`${indent}${lengthPrefix} ${len} m CON ${cleanedWho}`)
-                  }
-                } else {
-                  const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
-                  lines.push(`${indent}EN ${len} m CON ${cleanedWho}`)
-                }
-              }
-            }
-          }
-        } else if (unit.boundaries && Array.isArray(unit.boundaries) && unit.boundaries.length > 0) {
-          // Fallback to boundaries format for backward compatibility
-          // Mapping for normalized directions to Spanish
-          const dirEs: Record<string, string> = {
-            "N": "NORTE",
-            "S": "SUR",
-            "E": "ESTE",
-            "W": "OESTE",
-            "NE": "NORESTE",
-            "NW": "NOROESTE",
-            "SE": "SURESTE",
-            "SW": "SUROESTE",
-            "UP": "ARRIBA",
-            "DOWN": "ABAJO",
-          }
-          
-          const ordered = [...unit.boundaries].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
-          
-          // Helper function to get direction key for grouping
-          const getDirectionKey = (b: typeof ordered[0]): string => {
-            const normalizedDir = b.normalized_direction || ""
-            const rawDir = b.raw_direction || ""
-            
-            if (normalizedDir) {
-              return normalizedDir.toUpperCase()
-            }
-            
-            const upperRaw = rawDir.toUpperCase()
-            if (upperRaw === "NORTE" || upperRaw === "NORTH") return "N"
-            if (upperRaw === "SUR" || upperRaw === "SOUTH") return "S"
-            if (upperRaw === "ESTE" || upperRaw === "EAST") return "E"
-            if (upperRaw === "OESTE" || upperRaw === "WEST") return "W"
-            if (upperRaw === "NORESTE" || upperRaw === "NORTHEAST") return "NE"
-            if (upperRaw === "NOROESTE" || upperRaw === "NORTHWEST") return "NW"
-            if (upperRaw === "SURESTE" || upperRaw === "SOUTHEAST") return "SE"
-            if (upperRaw === "SUROESTE" || upperRaw === "SOUTHWEST") return "SW"
-            if (upperRaw === "ARRIBA" || upperRaw === "UP" || upperRaw === "SUPERIOR") return "UP"
-            if (upperRaw === "ABAJO" || upperRaw === "DOWN" || upperRaw === "INFERIOR") return "DOWN"
-            
-            return upperRaw
-          }
-          
-          // Helper function to get Spanish direction name
-          const getSpanishDirectionName = (b: typeof ordered[0]): string => {
+        // Legacy mapping for backward compatibility
+        const dirEsLegacy: Record<string, string> = {
+          WEST: "OESTE",
+          NORTHWEST: "NOROESTE",
+          NORTH: "NORTE",
+          NORTHEAST: "NORESTE",
+          EAST: "ESTE",
+          SOUTHEAST: "SURESTE",
+          SOUTH: "SUR",
+          SOUTHWEST: "SUROESTE",
+          UP: "ARRIBA",
+          DOWN: "ABAJO",
+        }
+        
+        const ordered = [...(unit.boundaries || [])].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+        return ordered
+          .map((b) => {
+            // Use raw_direction if available (new format), fallback to normalized_direction
             const rawDir = b.raw_direction || ""
             const normalizedDir = b.normalized_direction || ""
             
+            // Map to Spanish name: prefer raw_direction, then use normalized_direction mapping
             let name = rawDir.toUpperCase()
             if (normalizedDir && dirEs[normalizedDir]) {
               name = dirEs[normalizedDir]
+            } else if (dirEsLegacy[rawDir.toUpperCase()]) {
+              name = dirEsLegacy[rawDir.toUpperCase()]
             } else if (rawDir && (rawDir === "NORTE" || rawDir === "SUR" || rawDir === "ESTE" || rawDir === "OESTE" || 
                      rawDir === "NORESTE" || rawDir === "NOROESTE" || rawDir === "SURESTE" || rawDir === "SUROESTE" ||
                      rawDir === "ARRIBA" || rawDir === "ABAJO")) {
               name = rawDir.toUpperCase()
             }
             
-            return name
-          }
-          
-          // Group consecutive boundaries with the same direction
-          const groups: Array<Array<typeof ordered[0]>> = []
-          let currentGroup: Array<typeof ordered[0]> = []
-          let currentDirectionKey: string | null = null
-          
-          for (const b of ordered) {
-            const dirKey = getDirectionKey(b)
+            const isVertical = normalizedDir === "UP" || normalizedDir === "DOWN" || 
+                             rawDir.toUpperCase() === "UP" || rawDir.toUpperCase() === "DOWN" ||
+                             rawDir.toUpperCase() === "ARRIBA" || rawDir.toUpperCase() === "ABAJO" ||
+                             rawDir.toUpperCase() === "SUPERIOR" || rawDir.toUpperCase() === "INFERIOR"
             
-            if (currentDirectionKey === null || currentDirectionKey !== dirKey) {
-              // Start a new group
-              if (currentGroup.length > 0) {
-                groups.push(currentGroup)
-              }
-              currentGroup = [b]
-              currentDirectionKey = dirKey
-            } else {
-              // Add to current group (same direction)
-              currentGroup.push(b)
-            }
-          }
-          
-          // Add last group
-          if (currentGroup.length > 0) {
-            groups.push(currentGroup)
-          }
-          
-          // Format each group
-          for (const group of groups) {
-            const firstBoundary = group[0]
-            const directionName = getSpanishDirectionName(firstBoundary)
+            // Handle length_m: can be null, number, or string
+            const lengthNum = b.length_m === null || b.length_m === undefined 
+              ? null 
+              : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m)))
+            const hasNoMeasure = lengthNum === null || isNaN(lengthNum) || Math.abs(lengthNum) < 0.001
             
-            for (let i = 0; i < group.length; i++) {
-              const b = group[i]
-              const normalizedDir = b.normalized_direction || ""
-              const rawDir = b.raw_direction || ""
-              
-              const isVertical = normalizedDir === "UP" || normalizedDir === "DOWN" || 
-                               rawDir.toUpperCase() === "UP" || rawDir.toUpperCase() === "DOWN" ||
-                               rawDir.toUpperCase() === "ARRIBA" || rawDir.toUpperCase() === "ABAJO" ||
-                               rawDir.toUpperCase() === "SUPERIOR" || rawDir.toUpperCase() === "INFERIOR"
-              
-              // Handle length_m: can be null, number, or string
-              const lengthNum = b.length_m === null || b.length_m === undefined 
-                ? null 
-                : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m)))
-              const hasNoMeasure = lengthNum === null || isNaN(lengthNum) || Math.abs(lengthNum) < 0.001
-              
-              const who = (b.abutter || "").toString().trim()
-              // Remove leading "CON " if present (prevents "CON CON" duplication)
-              const cleanedWho = who.replace(/^\s*CON\s+/i, "").trim()
-              
-              if (i === 0) {
-                // First boundary in group: show full direction
-                if (isVertical && hasNoMeasure) {
-                  lines.push(`${directionName}: CON ${cleanedWho}`)
-                } else if (hasNoMeasure && lengthNum === null) {
-                  lines.push(`${directionName}: CON ${cleanedWho}`)
-                } else {
-                  const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
-                  lines.push(`${directionName}: EN ${len} m CON ${cleanedWho}`)
-                }
-              } else {
-                // Subsequent boundaries in same group: show only measure and abutter (no direction)
-                if (isVertical && hasNoMeasure) {
-                  lines.push(`         CON ${cleanedWho}`)
-                } else if (hasNoMeasure && lengthNum === null) {
-                  lines.push(`         CON ${cleanedWho}`)
-                } else {
-                  const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
-                  lines.push(`         EN ${len} m CON ${cleanedWho}`)
-                }
-              }
+            const who = (b.abutter || "").toString().trim()
+            // Remove leading "CON " if present (prevents "CON CON" duplication)
+            const cleanedWho = who.replace(/^\s*CON\s+/i, "").trim()
+            
+            // Para direcciones verticales sin medida (null o 0.000), omitir "EN 0.000 m"
+            if (isVertical && hasNoMeasure) {
+              return `${name}: CON ${cleanedWho}`
             }
-          }
-        }
-        
-        return lines.join("\n")
+            
+            // Si no hay medida en absoluto (null)
+            if (hasNoMeasure && lengthNum === null) {
+              return `${name}: CON ${cleanedWho}`
+            }
+            
+            // Para direcciones con medida, incluir la medida
+            const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
+            return `${name}: EN ${len} m CON ${cleanedWho}`
+          })
+          .join("\n")
       }
 
       const formatSurfaceValue = (surfaces?: { name: string; value_m2: number }[]) => {
@@ -399,43 +257,19 @@ function DeslindePageInner() {
           return null
         }
 
-        // Generate boundaries from directions if available, otherwise use boundaries array
-        if (unit.directions && Array.isArray(unit.directions) && unit.directions.length > 0) {
-          // Use new format: generate boundaries from directions
-          for (const direction of unit.directions) {
-            if (!direction.raw_direction || !Array.isArray(direction.segments)) continue
-            
-            const normalizedDir = direction.normalized_direction || ""
-            const rawDir = direction.raw_direction || ""
-            const key = mapDirection(normalizedDir, rawDir)
-            if (!key) continue
-            
-            for (const segment of direction.segments) {
-              boundaries[key].push({
-                id: `${unitId}-${key}-${boundaries[key].length}`,
-                measurement: segment.length_m === null || segment.length_m === undefined ? "" : String(segment.length_m),
-                unit: "M",
-                description: `CON ${segment.abutter || ""}`.trim(),
-                regionId: "",
-              })
-            }
-          }
-        } else {
-          // Fallback to boundaries array for backward compatibility
-          for (const b of unit.boundaries || []) {
-            // Use normalized_direction first, fallback to raw_direction
-            const normalizedDir = b.normalized_direction || ""
-            const rawDir = b.raw_direction || ""
-            const key = mapDirection(normalizedDir, rawDir)
-            if (!key) continue
-            boundaries[key].push({
-              id: `${unitId}-${key}-${boundaries[key].length}`,
-              measurement: b.length_m === null || b.length_m === undefined ? "" : String(b.length_m),
-              unit: "M",
-              description: `CON ${b.abutter || ""}`.trim(),
-              regionId: "",
-            })
-          }
+        for (const b of unit.boundaries || []) {
+          // Use normalized_direction first, fallback to raw_direction
+          const normalizedDir = b.normalized_direction || ""
+          const rawDir = b.raw_direction || ""
+          const key = mapDirection(normalizedDir, rawDir)
+          if (!key) continue
+          boundaries[key].push({
+            id: `${unitId}-${key}-${boundaries[key].length}`,
+            measurement: b.length_m === null || b.length_m === undefined ? "" : String(b.length_m),
+            unit: "M",
+            description: `CON ${b.abutter || ""}`.trim(),
+            regionId: "",
+          })
         }
 
         const propertyUnit: PropertyUnit = {
