@@ -426,60 +426,36 @@ export function ValidationWizard({
   }, [currentAiText, currentUnit?.id, generateNotarialText, savedNotarialTextByUnit])
 
   // Generate complete notarial text when modal opens
-  // Usa la última versión autorizada guardada (savedNotarialTextByUnit y savedColindanciasByUnit)
-  const handleOpenCompleteTextModal = async () => {
+  // Simplemente combina los textos notariales de cada unidad autorizada sin procesarlos
+  const handleOpenCompleteTextModal = () => {
     setShowCompleteTextModal(true)
     setIsGeneratingCompleteText(true)
     setCompleteNotarialText("")
 
-    try {
-      // Get all authorized units with their SAVED notarial texts (última versión autorizada)
-      const authorizedUnitsWithTexts = units
-        .filter((unit) => authorizedUnits.has(unit.id))
-        .map((unit) => ({
-          unitName: unit.name,
-          // Usar la versión guardada (última autorizada) en lugar de la actual
-          notarialText: savedNotarialTextByUnit.get(unit.id) || notarialTextByUnit.get(unit.id) || "",
-          colindanciasText: savedColindanciasByUnit.get(unit.id) || aiTextByUnit.get(unit.id) || "",
-        }))
+    // Obtener todas las unidades autorizadas con sus textos notariales
+    // Priorizar el texto actual (que es lo que el usuario está viendo/editando)
+    // sobre el texto guardado, para mostrar siempre la versión más reciente
+    const authorizedUnitsList = units.filter((unit) => authorizedUnits.has(unit.id))
 
-      if (authorizedUnitsWithTexts.length === 0) {
-        setCompleteNotarialText("No hay unidades autorizadas.")
-        return
-      }
-
-      // Call API to combine all texts into a complete notarial document
-      const resp = await fetch("/api/ai/combine-notarial", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          units: authorizedUnitsWithTexts,
-        }),
-      })
-
-      if (!resp.ok) {
-        const msg = await resp.text()
-        throw new Error(msg)
-      }
-
-      const data = await resp.json() as { completeText: string }
-      setCompleteNotarialText(data.completeText || "")
-    } catch (e) {
-      console.error("[ui] combine notarial failed", e)
-      // Fallback: combine manually usando la versión guardada
-      const combined = units
-        .filter((unit) => authorizedUnits.has(unit.id))
-        .map((unit) => {
-          // Usar la versión guardada (última autorizada)
-          const text = savedNotarialTextByUnit.get(unit.id) || notarialTextByUnit.get(unit.id) || ""
-          return text ? `${unit.name}: ${text}` : ""
-        })
-        .filter(Boolean)
-        .join("\n\n")
-      setCompleteNotarialText(combined || "No se pudo generar el texto completo.")
-    } finally {
+    if (authorizedUnitsList.length === 0) {
+      setCompleteNotarialText("No hay unidades autorizadas.")
       setIsGeneratingCompleteText(false)
+      return
     }
+
+    // Combinar los textos notariales de todas las unidades autorizadas
+    // Cada unidad se separa con un salto de línea doble
+    const combined = authorizedUnitsList
+      .map((unit) => {
+        // Priorizar texto actual (editado) sobre texto guardado
+        const text = notarialTextByUnit.get(unit.id) || savedNotarialTextByUnit.get(unit.id) || ""
+        return text ? text.trim() : ""
+      })
+      .filter(Boolean) // Eliminar textos vacíos
+      .join("\n\n") // Separar cada unidad con dos saltos de línea
+
+    setCompleteNotarialText(combined || "No hay textos notariales disponibles.")
+    setIsGeneratingCompleteText(false)
   }
 
   return (
@@ -899,7 +875,7 @@ export function ValidationWizard({
               Texto Notarial Completo
             </DialogTitle>
             <DialogDescription>
-              Texto notarial combinado de todas las unidades autorizadas, formateado según estándares notariales.
+              Texto notarial de todas las unidades autorizadas mostrado en orden.
             </DialogDescription>
           </DialogHeader>
           <div className="flex-1 overflow-hidden flex flex-col min-h-[500px]">
