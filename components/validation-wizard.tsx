@@ -387,21 +387,9 @@ export function ValidationWizard({
         next.set(unitId, data.notarialText || "")
         return next
       })
-      // Actualizar también el valor guardado automáticamente si las colindancias no han sido editadas
-      // Esto permite que el texto generado automáticamente no se marque como "sin guardar"
-      setSavedColindanciasByUnit((savedColMap) => {
-        const savedColindancias = savedColMap.get(unitId) || ""
-        // Si las colindancias que se usaron para generar coinciden con las guardadas,
-        // también guardar el texto notarial generado automáticamente
-        if (colindanciasText === savedColindancias && colindanciasText) {
-          setSavedNotarialTextByUnit((prev) => {
-            const next = new Map(prev)
-            next.set(unitId, data.notarialText || "")
-            return next
-          })
-        }
-        return savedColMap
-      })
+      // NO guardar automáticamente el texto notarial generado
+      // El usuario debe guardar manualmente si quiere que el texto notarial persista
+      // Esto permite que el texto notarial guardado prevalezca aunque cambien las colindancias
     } catch (e) {
       console.error("[ui] notarialize failed", e)
       setNotarialTextByUnit((prev) => {
@@ -415,14 +403,26 @@ export function ValidationWizard({
   }, [savedColindanciasByUnit])
 
   // Auto-generate notarial text when colindancias change (debounced)
+  // REGLA IMPORTANTE: Solo regenera automáticamente si NO hay texto notarial guardado manualmente
+  // Si el usuario guardó el texto notarial, este prevalece aunque cambien las colindancias
   useEffect(() => {
     if (currentAiText && currentUnit) {
+      // Verificar si hay texto notarial guardado para esta unidad
+      const savedNotarial = savedNotarialTextByUnit.get(currentUnit.id)
+      
+      // Si hay texto notarial guardado, NO regenerar automáticamente
+      // El usuario puede regenerar manualmente si quiere, pero el texto guardado prevalece
+      if (savedNotarial && savedNotarial.trim() !== "") {
+        return // No regenerar si hay texto guardado
+      }
+      
+      // Solo regenerar si no hay texto notarial guardado
       const timer = setTimeout(() => {
         generateNotarialText(currentAiText, currentUnit.id, currentUnit.name)
       }, 500)
       return () => clearTimeout(timer)
     }
-  }, [currentAiText, currentUnit?.id, generateNotarialText])
+  }, [currentAiText, currentUnit?.id, generateNotarialText, savedNotarialTextByUnit])
 
   // Generate complete notarial text when modal opens
   const handleOpenCompleteTextModal = async () => {
