@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server"
 import type { StructuringRequest, StructuringResponse, StructuredUnit } from "@/lib/ai-structuring-types"
-import { readFileSync, writeFileSync } from "fs"
-import { join } from "path"
 
 const cache = new Map<string, StructuredUnit[]>()
 const metadataCache = new Map<string, { lotLocation?: string; totalLotSurface?: number }>()
@@ -1295,41 +1293,6 @@ export async function POST(req: Request) {
         // Call OpenAI Vision with all images
         const aiResponse = await callOpenAIVision(prompt, images)
       
-      // Guardar respuesta RAW de la IA en un archivo TXT antes de procesarla
-      try {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5)
-        const fileName = `ai-response-raw-${timestamp}.txt`
-        const filePath = join(process.cwd(), fileName)
-        
-        const debugContent = [
-          "=".repeat(80),
-          "RESPUESTA RAW DE LA IA - ANTES DE PROCESAR",
-          "=".repeat(80),
-          "",
-          `Timestamp: ${new Date().toISOString()}`,
-          `Archivos de imagen procesados: ${images.length}`,
-          images.map((img, idx) => `  ${idx + 1}. ${img.name} (${img.type}, ${img.size} bytes)`).join("\n"),
-          "",
-          "-".repeat(80),
-          "PROMPT ENVIADO A LA IA:",
-          "-".repeat(80),
-          prompt,
-          "",
-          "-".repeat(80),
-          "RESPUESTA COMPLETA DE LA IA (JSON RAW):",
-          "-".repeat(80),
-          JSON.stringify(aiResponse, null, 2),
-          "",
-          "=".repeat(80),
-        ].join("\n")
-        
-        writeFileSync(filePath, debugContent, "utf-8")
-        console.log(`[api/ai/structure] ✓ Respuesta RAW de la IA guardada en: ${fileName}`)
-      } catch (debugError) {
-        console.error("[api/ai/structure] Error al guardar respuesta RAW:", debugError)
-        // No fallar si hay error al guardar el debug
-      }
-        
         // Extract lot-level metadata if present
         let lotLocation: string | undefined = undefined
         let totalLotSurface: number | undefined = undefined
