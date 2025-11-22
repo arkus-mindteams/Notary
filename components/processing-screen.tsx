@@ -18,6 +18,15 @@ export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs, step
   const [currentStep, setCurrentStep] = useState(0)
   const [started, setStarted] = useState(false)
   const [stepStatus, setStepStatus] = useState<Record<string, { status: "pending" | "in_progress" | "done" | "error"; detail?: string }>>({})
+  const hasRunRef = useRef(false)
+  const onRunRef = useRef(onRun)
+  const onCompleteRef = useRef(onComplete)
+
+  // Mantener referencias actualizadas sin causar re-renders
+  useEffect(() => {
+    onRunRef.current = onRun
+    onCompleteRef.current = onComplete
+  }, [onRun, onComplete])
 
   const defaultSteps = [
     { key: "ocr", label: "OCR (Textract)" },
@@ -90,51 +99,6 @@ export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs, step
       if (watchdog) clearTimeout(watchdog)
     }
   }, []) // Ejecutar solo una vez al montar, usando refs para las funciones actuales
-
-  useEffect(() => {
-    let cancelled = false
-    let watchdog: any
-    async function run() {
-      if (started) return
-      setStarted(true)
-      setStepStatus(Object.fromEntries(stepsToUse.map(s => [s.key, { status: "pending" as const }])))
-      // Watchdog para evitar quedarse pegado
-      watchdog = setTimeout(() => {
-        if (!cancelled) {
-          setProgress(100)
-          onComplete()
-        }
-      }, typeof watchdogMs === "number" ? watchdogMs : 20000)
-      try {
-        if (onRun) {
-          const update = (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => {
-            setStepStatus((prev) => ({ ...prev, [key]: { status, detail } }))
-            const idx = stepsToUse.findIndex(s => s.key === key)
-            if (idx >= 0) setCurrentStep(idx)
-          }
-          await onRun(update)
-        } else {
-          setStepStatus(Object.fromEntries(stepsToUse.map(s => [s.key, { status: "done" as const }])))
-        }
-        if (!cancelled) {
-          setProgress(100)
-          setTimeout(onComplete, 150)
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setProgress(100)
-          setTimeout(onComplete, 150)
-        }
-      } finally {
-        if (watchdog) clearTimeout(watchdog)
-      }
-    }
-    run()
-    return () => {
-      cancelled = true
-      if (watchdog) clearTimeout(watchdog)
-    }
-  }, [onRun, onComplete, started])
 
   useEffect(() => {
     const stepInterval = setInterval(() => {

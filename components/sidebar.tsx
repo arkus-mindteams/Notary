@@ -61,27 +61,43 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
                 </p>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onToggle}
-            className="h-8 w-8 p-0"
-          >
-            {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-          </Button>
+        {/* Sección Notaría */}
+        <div className="p-4">
+          <div className="flex items-center justify-between">
+            {!isCollapsed && (
+              <div className="flex items-center space-x-3">
+                <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                  <Shield className="h-5 w-5 text-white" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-sm text-gray-900">Notaría #3</h2>
+                </div>
+              </div>
+            )}
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onToggle}
+              className="h-8 w-8 p-0"
+            >
+              {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            </Button>
+          </div>
         </div>
       </div>
 
       {/* Navegación */}
       <div className="flex-1 p-4 space-y-2">
         <Button
-          variant={pathname === '/dashboard/deslinde?reset=1' ? 'default' : 'ghost'}
+          variant={pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde' ? 'default' : 'ghost'}
           className={`w-full justify-start ${
             isCollapsed ? 'px-2' : 'px-3'
           } ${
-            pathname === '/dashboard/deslinde?reset=1'
+            pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde'
               ? 'bg-blue-600 text-white hover:bg-blue-700'
               : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
           }`}
