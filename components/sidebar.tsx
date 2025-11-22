@@ -11,7 +11,6 @@ import {
   Shield,
   ChevronLeft,
   ChevronRight,
-  Settings,
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -109,23 +108,8 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
         </Button>
       </div>
 
-      {/* Configuración y Logout */}
-      <div className="p-4 border-t space-y-3">
-        <Button
-          variant={pathname === '/dashboard/settings' ? 'default' : 'ghost'}
-          className={`w-full justify-start ${
-            isCollapsed ? 'px-2' : 'px-3'
-          } ${
-            pathname === '/dashboard/settings'
-              ? 'bg-blue-600 text-white hover:bg-blue-700'
-              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
-          }`}
-          onClick={() => handleNavigation('/dashboard/settings')}
-        >
-          <Settings className="h-4 w-4" />
-          {!isCollapsed && <span className="ml-3">Configuración</span>}
-        </Button>
-
+      {/* Logout */}
+      <div className="p-4 border-t">
         <Button
           variant="ghost"
           className={`w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50 ${
