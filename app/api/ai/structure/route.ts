@@ -10,11 +10,130 @@ function hashPayload(s: string): string {
   return `${h}-${s.length}`
 }
 
-function buildPrompt(): string {
+/**
+ * Normaliza una dirección en español o inglés a su código normalizado corto
+ * @param rawDir - Dirección original (ej: "SURESTE", "NORTE", "SOUTHWEST", "NORTH")
+ * @returns Código normalizado: "N", "S", "E", "W", "NE", "NW", "SE", "SW", "UP", "DOWN"
+ */
+function normalizeDirectionCode(rawDir: string): "N" | "S" | "E" | "W" | "NE" | "NW" | "SE" | "SW" | "UP" | "DOWN" {
+  const upper = rawDir.toUpperCase().trim()
+  
+  // Mapeo de direcciones a códigos normalizados
+  const dirMap: Record<string, "N" | "S" | "E" | "W" | "NE" | "NW" | "SE" | "SW" | "UP" | "DOWN"> = {
+    // Cardinales en español
+    "NORTE": "N",
+    "SUR": "S",
+    "ESTE": "E",
+    "OESTE": "W",
+    // Cardinales en inglés
+    "NORTH": "N",
+    "SOUTH": "S",
+    "EAST": "E",
+    "WEST": "W",
+    // Intercardinales en español
+    "NORESTE": "NE",
+    "NOROESTE": "NW",
+    "SURESTE": "SE",
+    "SUROESTE": "SW",
+    // Intercardinales en inglés
+    "NORTHEAST": "NE",
+    "NORTHWEST": "NW",
+    "SOUTHEAST": "SE",
+    "SOUTHWEST": "SW",
+    // Verticales en español
+    "ARRIBA": "UP",
+    "ABAJO": "DOWN",
+    "SUPERIOR": "UP",
+    "INFERIOR": "DOWN",
+    // Verticales en inglés
+    "UP": "UP",
+    "DOWN": "DOWN",
+  }
+  
+  // Buscar coincidencia exacta
+  if (dirMap[upper]) {
+    return dirMap[upper]
+  }
+  
+  // Si no hay coincidencia exacta, intentar normalización con variantes comunes
+  // Normalizar variantes con dos puntos o espacios
+  const normalized = upper.replace(/[:]+$/, "").replace(/\s+/g, "")
+  
+  if (dirMap[normalized]) {
+    return dirMap[normalized]
+  }
+  
+  // Fallback: si es un código ya normalizado (1-2 caracteres), devolverlo
+  if (/^[NSEW]|[NS][EW]|UP|DOWN$/.test(upper)) {
+    return upper as any
+  }
+  
+  // Si no se puede normalizar, devolver "N" como fallback (aunque esto no debería pasar)
+  console.warn(`[normalizeDirectionCode] No se pudo normalizar dirección: "${rawDir}", usando fallback "N"`)
+  return "N"
+}
+
+/**
+ * Obtiene las reglas para la extracción de colindancias.
+ * Estas reglas son SOLO INTERNAS y NO se leen del JSON.
+ * Las reglas se mantienen hardcodeadas en buildDefaultPrompt().
+ */
+function getColindanciasRules(): string {
+  // Las reglas de colindancias son solo internas, siempre usar el prompt base
+    return buildDefaultPrompt()
+}
+
+function buildDefaultPrompt(): string {
   return [
     "Eres un extractor experto de medidas y colindancias de planos arquitectónicos. Tu tarea es analizar un bloque de texto (producido por OCR o lectura visual de un plano) y devolver únicamente las colindancias, organizadas en JSON, siguiendo reglas estrictas.",
     "",
     "Debes aplicar TODAS las siguientes reglas sin excepción.",
+    "",
+    "=== AGRUPACIÓN DE COLINDANCIAS POR DIRECCIÓN ===",
+    "",
+    "⚠️ REGLA CRÍTICA - DEBES SEGUIR ESTO ESTRICTAMENTE:",
+    "",
+    "1. Cuando aparece una dirección explícita (ej: \"NORTE:\", \"SUROESTE:\", \"NORTE:\", \"SUROESTE:\"), SIEMPRE crea un nuevo bloque de dirección independiente.",
+    "",
+    "2. Cada dirección explícita es SIEMPRE un bloque separado:",
+    "   - Si ves \"SUROESTE:\" dos veces → son DOS bloques SUROESTE independientes",
+    "   - Si ves \"SUROESTE:\" tres veces → son TRES bloques SUROESTE independientes",
+    "   - Cada una tiene exactamente UN segmento (el de esa línea)",
+    "   - NO las agrupes nunca, incluso si son la misma dirección",
+    "",
+    "3. Solo agrupa líneas en un solo bloque cuando:",
+    "   - La primera línea tiene dirección explícita (ej: \"NORTE:\")",
+    "   - Las siguientes líneas NO tienen dirección explícita",
+    "   - Las siguientes líneas están visualmente indentadas o en las líneas inmediatas siguientes",
+    "   - Las siguientes líneas solo tienen medidas y colindantes (sin dirección)",
+    "   → Estas líneas heredadas forman un solo bloque con múltiples segments",
+    "",
+    "4. Ejemplo de AGRUPACIÓN CORRECTA (líneas heredadas):",
+    "   Texto:",
+    '     "NORTE:\\n',
+    '      EN 6.750 m CON UNIDAD B-4\\n',
+    '      EN 1.750 m CON CUBO DE ILUMINACION"',
+    "   Resultado:",
+    "     Un bloque NORTE con 2 segments",
+    "",
+    "5. Ejemplo de NO AGRUPACIÓN (direcciones explícitas repetidas):",
+    "   Texto:",
+    '     "SUROESTE: EN 0.95 m CON VACIO\\n',
+    '      SUROESTE: EN 0.4 m CON VACIO\\n',
+    '      SUROESTE: EN 0.8 m CON VACIO"',
+    "   Resultado:",
+    "     TRES bloques SUROESTE independientes, cada uno con 1 segment",
+    "     NO un solo bloque SUROESTE con 3 segments",
+    "",
+    "6. REGLA DE ORO:",
+    "   - Si una línea tiene dirección explícita (termina en \":\" o tiene \"DIRECCIÓN:\" al inicio) → bloque independiente",
+    "   - Si una línea NO tiene dirección explícita → pertenece al bloque anterior (si está indentada o es línea siguiente inmediata)",
+    "",
+    "5. Prefijo de longitud:",
+    "   - Capturar el prefijo si existe: \"\", \"EN\", \"LC=\", etc.",
+    "   - Si no hay prefijo visible (ej: \"6.750 MTS\"), usar \"\"",
+    "   - Si el prefijo es \"LC=\", capturarlo tal cual: \"LC=\"",
+    "   - Guardar en el campo \"length_prefix\"",
     "",
     "=== IDENTIFICACIÓN DE UNIDADES ===",
     "",
@@ -138,6 +257,7 @@ function buildPrompt(): string {
     "",
     "Entonces:",
     "  length_m = null",
+    "  length_prefix = null",
     "",
     "=== BLOQUES MÚLTIPLES ===",
     "",
@@ -159,39 +279,50 @@ function buildPrompt(): string {
     "",
     "=== FORMATO FINAL JSON ===",
     "",
-    "Devuelve EXCLUSIVAMENTE JSON válido con este esquema:",
+    "Debes devolver SIEMPRE este formato:",
     "",
-    "{",
-    '  "results": [',
-    "    {",
-    '      "unit_name": "UNIDAD X",',
-    '      "boundaries": [',
-    "        {",
-    '          "raw_direction": "SURESTE",',
-    '          "normalized_direction": "SE",',
-    '          "length_m": 1.850,',
-    '          "abutter": "AREA COMUN 20",',
-    '          "order_index": 0',
-    "        }",
-    "      ],",
-    '      "surfaces"?: [ { "name": string, "value_m2": number } ],',
-    '      "anomalies"?: string[]',
-    "    }",
-    "  ],",
-    '  "lotLocation"?: string,  // Ubicación del lote (manzana, lote, dirección, ciudad, estado)',
-    '  "totalLotSurface"?: number  // Superficie total del lote en m² (no la suma de unidades)',
-    "}",
+    "[",
+    "  {",
+    '    "unit_name": "UNIDAD X",',
+    '    "directions": [',
+    "      {",
+    '        "raw_direction": "NORTE",',
+    '        "normalized_direction": "N",',
+    '        "direction_order_index": 0,',
+    '        "segments": [',
+    "          {",
+    '            "length_prefix": "",',
+    '            "length_m": 6.750,',
+    '            "abutter": "UNIDAD B-4",',
+    '            "order_index": 0',
+    "          },",
+    "          {",
+    '            "length_prefix": "",',
+    '            "length_m": 1.750,',
+    '            "abutter": "CUBO DE ILUMINACION",',
+    '            "order_index": 1',
+    "          }",
+    "        ]",
+    "      }",
+    "    ]",
+    "  }",
+    "]",
     "",
     "Reglas del JSON:",
     "  - JSON válido siempre.",
     "  - unit_name según aparece en el plano.",
+    "  - directions: array de bloques de dirección, en orden de aparición.",
     "  - raw_direction = dirección original del texto (ej: \"SURESTE\", \"NORTE\", \"ARRIBA\").",
     "  - normalized_direction = código corto: N/S/E/W/NE/NW/SE/SW/UP/DOWN.",
-    "  - order_index inicia en 0 y se incrementa por cada colindancia en el orden exacto del documento.",
-    "  - length_m puede ser null si no hay medida.",
-    "  - Conserva el orden EXACTO de aparición en el texto (order_index secuencial).",
+    "  - direction_order_index: orden de aparición de cada dirección en el documento (inicia en 0, se incrementa por cada dirección explícita).",
+    "  - segments: array de colindancias que pertenecen a esta dirección.",
+    "  - length_prefix: prefijo de la medida (\"\", \"EN\", \"LC=\", etc.) o null si no hay medida.",
+    "  - length_m: longitud en metros (número) o null si no hay medida.",
+    "  - abutter: nombre del colindante (string vacío si no hay).",
+    "  - order_index: orden GLOBAL secuencial de cada segmento en el documento (inicia en 0, se incrementa continuamente sin importar la dirección).",
+    "  - Cada dirección explícita crea un nuevo bloque en el array \"directions\", incluso si es la misma que la anterior.",
     "",
-    "EJEMPLO COMPLETO:",
+    "EJEMPLO COMPLETO (CON direcciones verticales explícitas):",
     "",
     "Texto de entrada:",
     '"UNIDAD B-2\\n',
@@ -208,29 +339,332 @@ function buildPrompt(): string {
     'ARRIBA: CON UNIDAD C504\\n',
     'ABAJO: CON UNIDAD C506"',
     "",
+    "NOTA: Este ejemplo incluye ARRIBA y ABAJO porque aparecen EXPLÍCITAMENTE en el texto.",
+    "Si NO aparecen en el texto/imagen, NO los incluyas.",
+    "",
+    "⚠️ EJEMPLO CRÍTICO SIN direcciones verticales ⚠️",
+    "",
+    "IMPORTANTE: Este ejemplo muestra cómo NO incluir direcciones verticales cuando NO aparecen explícitamente.",
+    "",
+    "Texto de entrada:",
+    '"UNIDAD B-2\\n',
+    'OESTE:\\n',
+    '6.750 MTS. CON UNIDAD B-4\\n',
+    '1.750 MTS. CON CUBO DE ILUMINACION\\n',
+    'NORTE:\\n',
+    '2.550 MTS CON CUBO DE ILUMINACION\\n',
+    '4.720 MTS. CON JUNTA CONSTRUCTIVA 1\\n',
+    'ESTE:\\n',
+    '0.520 MTS CON AREA COMUN DE SERVICIO 7\\n',
+    'SUR:\\n',
+    '5.370 MTS CON AREA COMUN 1"',
+    "",
+    "⚠️ NOTA: En este texto NO aparece \"ARRIBA:\" ni \"ABAJO:\" ⚠️",
+    "",
+    "Salida JSON esperada (SIN direcciones verticales - SOLO incluir las que aparecen):",
+    "[",
+    "  {",
+    '    "unit_name": "UNIDAD B-2",',
+    '    "directions": [',
+    "      {",
+    '        "raw_direction": "OESTE",',
+    '        "normalized_direction": "W",',
+    '        "direction_order_index": 0,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 6.750, "abutter": "UNIDAD B-4", "order_index": 0 },',
+    '          { "length_prefix": "", "length_m": 1.750, "abutter": "CUBO DE ILUMINACION", "order_index": 1 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "NORTE",',
+    '        "normalized_direction": "N",',
+    '        "direction_order_index": 1,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 2.550, "abutter": "CUBO DE ILUMINACION", "order_index": 2 },',
+    '          { "length_prefix": "", "length_m": 4.720, "abutter": "JUNTA CONSTRUCTIVA 1", "order_index": 3 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "ESTE",',
+    '        "normalized_direction": "E",',
+    '        "direction_order_index": 2,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 0.520, "abutter": "AREA COMUN DE SERVICIO 7", "order_index": 4 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "SUR",',
+    '        "normalized_direction": "S",',
+    '        "direction_order_index": 3,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 5.370, "abutter": "AREA COMUN 1", "order_index": 5 }',
+    "        ]",
+    "      }",
+    "    ]",
+    "  }",
+    "]",
+    "",
+    "IMPORTANTE: NO incluyas ARRIBA o ABAJO si no aparecen en el texto/imagen.",
+    "",
     "Salida JSON esperada:",
-    "{",
-    '  "results": [',
-    "    {",
-    '      "unit_name": "UNIDAD B-2",',
-    '      "boundaries": [',
-    '        { "raw_direction": "OESTE", "normalized_direction": "W", "length_m": 6.75, "abutter": "UNIDAD B-4", "order_index": 0 },',
-    '        { "raw_direction": "OESTE", "normalized_direction": "W", "length_m": 1.75, "abutter": "CUBO DE ILUMINACION", "order_index": 1 },',
-    '        { "raw_direction": "NORTE", "normalized_direction": "N", "length_m": 2.55, "abutter": "CUBO DE ILUMINACION", "order_index": 2 },',
-    '        { "raw_direction": "NORTE", "normalized_direction": "N", "length_m": 4.72, "abutter": "JUNTA CONSTRUCTIVA 1", "order_index": 3 },',
-    '        { "raw_direction": "ESTE", "normalized_direction": "E", "length_m": 0.52, "abutter": "AREA COMUN DE SERVICIO 7", "order_index": 4 },',
-    '        { "raw_direction": "SUR", "normalized_direction": "S", "length_m": 5.37, "abutter": "AREA COMUN 1", "order_index": 5 },',
-    '        { "raw_direction": "ARRIBA", "normalized_direction": "UP", "length_m": null, "abutter": "UNIDAD C504", "order_index": 6 },',
-    '        { "raw_direction": "ABAJO", "normalized_direction": "DOWN", "length_m": null, "abutter": "UNIDAD C506", "order_index": 7 }',
-    "      ]",
-    "    }",
-    "  ]",
-    "}",
+    "[",
+    "  {",
+    '    "unit_name": "UNIDAD B-2",',
+    '    "directions": [',
+    "      {",
+    '        "raw_direction": "OESTE",',
+    '        "normalized_direction": "W",',
+    '        "direction_order_index": 0,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 6.750, "abutter": "UNIDAD B-4", "order_index": 0 },',
+    '          { "length_prefix": "", "length_m": 1.750, "abutter": "CUBO DE ILUMINACION", "order_index": 1 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "NORTE",',
+    '        "normalized_direction": "N",',
+    '        "direction_order_index": 1,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 2.550, "abutter": "CUBO DE ILUMINACION", "order_index": 2 },',
+    '          { "length_prefix": "", "length_m": 4.720, "abutter": "JUNTA CONSTRUCTIVA 1", "order_index": 3 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "ESTE",',
+    '        "normalized_direction": "E",',
+    '        "direction_order_index": 2,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 0.520, "abutter": "AREA COMUN DE SERVICIO 7", "order_index": 4 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "SUR",',
+    '        "normalized_direction": "S",',
+    '        "direction_order_index": 3,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 5.370, "abutter": "AREA COMUN 1", "order_index": 5 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "ARRIBA",',
+    '        "normalized_direction": "UP",',
+    '        "direction_order_index": 4,',
+    '        "segments": [',
+    '          { "length_prefix": null, "length_m": null, "abutter": "UNIDAD C504", "order_index": 6 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "ABAJO",',
+    '        "normalized_direction": "DOWN",',
+    '        "direction_order_index": 5,',
+    '        "segments": [',
+    '          { "length_prefix": null, "length_m": null, "abutter": "UNIDAD C506", "order_index": 7 }',
+    "        ]",
+    "      }",
+    "    ]",
+    "  }",
+    "]",
+    "",
+    "EJEMPLO CON DIRECCIONES REPETIDAS (todas explícitas - NO agrupar):",
+    "",
+    "⚠️ CASO CRÍTICO: Si TODAS las líneas tienen dirección explícita, cada una es un bloque independiente",
+    "",
+    "Texto de entrada:",
+    '"SUROESTE: EN 0.95 m CON VACIO A AREA COMUN 20\\n',
+    'SUROESTE: EN 0.4 m CON VACIO A AREA COMUN 20\\n',
+    'SURESTE: EN 0.8 m CON VACIO A AREA COMUN 20\\n',
+    'SURESTE: EN 5.8 m CON VACIO A AREA COMUN 20\\n',
+    'SUROESTE: EN 4.05 m CON VACIO A AREA COMUN 20"',
+    "",
+    "Salida JSON esperada (cada dirección explícita = bloque independiente):",
+    "[",
+    "  {",
+    '    "unit_name": "UNIDAD X",',
+    '    "directions": [',
+    "      {",
+    '        "raw_direction": "SUROESTE",',
+    '        "normalized_direction": "SW",',
+    '        "direction_order_index": 0,',
+    '        "segments": [',
+    '          { "length_prefix": "EN", "length_m": 0.95, "abutter": "VACIO A AREA COMUN 20", "order_index": 0 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "SUROESTE",',
+    '        "normalized_direction": "SW",',
+    '        "direction_order_index": 1,',
+    '        "segments": [',
+    '          { "length_prefix": "EN", "length_m": 0.4, "abutter": "VACIO A AREA COMUN 20", "order_index": 1 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "SURESTE",',
+    '        "normalized_direction": "SE",',
+    '        "direction_order_index": 2,',
+    '        "segments": [',
+    '          { "length_prefix": "EN", "length_m": 0.8, "abutter": "VACIO A AREA COMUN 20", "order_index": 2 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "SURESTE",',
+    '        "normalized_direction": "SE",',
+    '        "direction_order_index": 3,',
+    '        "segments": [',
+    '          { "length_prefix": "EN", "length_m": 5.8, "abutter": "VACIO A AREA COMUN 20", "order_index": 3 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "SUROESTE",',
+    '        "normalized_direction": "SW",',
+    '        "direction_order_index": 4,',
+    '        "segments": [',
+    '          { "length_prefix": "EN", "length_m": 4.05, "abutter": "VACIO A AREA COMUN 20", "order_index": 4 }',
+    "        ]",
+    "      }",
+    "    ]",
+    "  }",
+    "]",
+    "",
+    "⚠️ ERROR COMÚN: NO hacer esto:",
+    "   NO crear un solo bloque SUROESTE con múltiples segments cuando hay múltiples líneas \"SUROESTE:\" explícitas",
+    "",
+    "EJEMPLO CON DIRECCIONES REPETIDAS (con líneas heredadas):",
+    "",
+    "Texto de entrada:",
+    '"NORTE: 6.750 MTS. CON UNIDAD B-4\\n',
+    '1.750 mts con cubo de iluminacion\\n',
+    'SUR: 5.370 MTS CON AREA COMUN 1\\n',
+    'NORTE: 2.550 MTS CON UNIDAD C-5"',
+    "",
+    "Salida JSON esperada:",
+    "[",
+    "  {",
+    '    "unit_name": "UNIDAD X",',
+    '    "directions": [',
+    "      {",
+    '        "raw_direction": "NORTE",',
+    '        "normalized_direction": "N",',
+    '        "direction_order_index": 0,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 6.750, "abutter": "UNIDAD B-4", "order_index": 0 },',
+    '          { "length_prefix": "", "length_m": 1.750, "abutter": "CUBO DE ILUMINACION", "order_index": 1 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "SUR",',
+    '        "normalized_direction": "S",',
+    '        "direction_order_index": 1,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 5.370, "abutter": "AREA COMUN 1", "order_index": 2 }',
+    "        ]",
+    "      },",
+    "      {",
+    '        "raw_direction": "NORTE",',
+    '        "normalized_direction": "N",',
+    '        "direction_order_index": 2,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 2.550, "abutter": "UNIDAD C-5", "order_index": 3 }',
+    "        ]",
+    "      }",
+    "    ]",
+    "  }",
+    "]",
+    "",
+    "EJEMPLO CON PREFIJO LC=:",
+    "",
+    "Texto de entrada:",
+    '"NORTE: 6.750 MTS. CON UNIDAD B-4\\n',
+    '1.750 mts con cubo de iluminacion\\n',
+    'LC=2.55 con junta constructiva 1"',
+    "",
+    "Salida JSON esperada:",
+    "[",
+    "  {",
+    '    "unit_name": "UNIDAD X",',
+    '    "directions": [',
+    "      {",
+    '        "raw_direction": "NORTE",',
+    '        "normalized_direction": "N",',
+    '        "direction_order_index": 0,',
+    '        "segments": [',
+    '          { "length_prefix": "", "length_m": 6.750, "abutter": "UNIDAD B-4", "order_index": 0 },',
+    '          { "length_prefix": "", "length_m": 1.750, "abutter": "CUBO DE ILUMINACION", "order_index": 1 },',
+    '          { "length_prefix": "LC=", "length_m": 2.55, "abutter": "JUNTA CONSTRUCTIVA 1", "order_index": 2 }',
+    "        ]",
+    "      }",
+    "    ]",
+    "  }",
+    "]",
+    "",
+    "=== REGLA CRÍTICA: NO INVENTAR DIRECCIONES ===",
+    "",
+    "⚠️ ⚠️ ⚠️ REGLA MÁS IMPORTANTE: NUNCA INVENTES DIRECCIONES ⚠️ ⚠️ ⚠️",
+    "",
+    "NUNCA agregues direcciones que NO aparezcan explícitamente en el texto o imagen.",
+    "",
+    "Esta es una de las reglas MÁS IMPORTANTES. Violar esta regla es un ERROR GRAVE.",
+    "",
+    "ADVERTENCIA ESPECIAL SOBRE DIRECCIONES VERTICALES:",
+    "",
+    "Si NO ves explícitamente \"ARRIBA:\" o \"ABAJO:\" en el texto/imagen:",
+    "→ NUNCA las agregues",
+    "→ NO las infieras de las direcciones horizontales",
+    "→ NO las asumas por defecto",
+    "→ SOLO incluye las direcciones que VERDADERAMENTE aparecen en el texto/imagen",
+    "",
+    "",
+    "Ejemplos de ERRORES que DEBES EVITAR:",
+    "",
+    "1. Si NO ves \"ARRIBA:\" o \"ABAJO:\" en el texto/imagen:",
+    "   → NO agregues direcciones verticales (ARRIBA, ABAJO, SUPERIOR, INFERIOR)",
+    "   → NO las inventes, NO las infieras, NO las asumas",
+    "",
+    "2. Si solo ves direcciones horizontales (NORTE, SUR, ESTE, OESTE, intercardinales):",
+    "   → NO agregues direcciones verticales automáticamente",
+    "   → Solo devuelve las direcciones que VERDADERAMENTE aparecen",
+    "",
+    "3. Ejemplo de ERROR (NO HACER):",
+    "   Texto/imagen muestra:",
+    "     \"NORTE: 6.750 m CON UNIDAD B-4\"",
+    "     \"SUR: 5.370 m CON AREA COMUN 1\"",
+    "   Respuesta INCORRECTA:",
+    "     Incluye ARRIBA y ABAJO (aunque no aparecen en el texto)",
+    "   Respuesta CORRECTA:",
+    "     Solo incluye NORTE y SUR (únicamente lo que aparece explícitamente)",
+    "",
+    "4. Las direcciones verticales (ARRIBA, ABAJO) SOLO deben incluirse SI:",
+    "   - Aparecen EXPLÍCITAMENTE en el texto/imagen con \"ARRIBA:\" o \"ABAJO:\"",
+    "   - Están CLARAMENTE VISIBLES en la imagen con esos textos exactos",
+    "   - Si no las ves, NO las agregues bajo NINGUNA circunstancia",
+    "",
+    "5. Reglas para direcciones verticales:",
+    "   - Si el texto dice \"ARRIBA: CON UNIDAD C504\" → SÍ incluirla",
+    "   - Si el texto NO dice \"ARRIBA\" o \"ABAJO\" → NO incluir ninguna dirección vertical",
+    "   - Si la imagen NO muestra \"ARRIBA:\" o \"ABAJO:\" → NO inventar direcciones verticales",
+    "",
+    "REGLA DE ORO:",
+    "Solo extrae lo que VERDADERAMENTE está en el texto/imagen.",
+    "No infieras, no asumas, no inventes, no deduzcas.",
+    "Si no aparece explícitamente, NO existe. Punto.",
+    "",
+    "⚠️ VERIFICACIÓN FINAL ANTES DE ENVIAR LA RESPUESTA ⚠️",
+    "",
+    "Antes de enviar tu respuesta JSON, verifica:",
+    "1. ¿Aparece explícitamente \"ARRIBA:\" en el texto/imagen?",
+    "   → SI NO → NO incluir dirección ARRIBA",
+    "2. ¿Aparece explícitamente \"ABAJO:\" en el texto/imagen?",
+    "   → SI NO → NO incluir dirección ABAJO",
+    "3. Si solo ves direcciones horizontales (NORTE, SUR, ESTE, OESTE, intercardinales):",
+    "   → SOLO incluir esas direcciones",
+    "   → NO agregar direcciones verticales automáticamente",
+    "",
+    "Si tienes dudas, NO incluyas la dirección. Es mejor omitir que inventar.",
     "",
     "=== REGLA FINAL ===",
     "",
     "Nunca inventes datos.",
     "Si existe ambigüedad, elige la interpretación más lógica basada en las reglas y ejemplos reales, pero NO generes información que no esté en el texto.",
+    "NO agregues direcciones verticales si no aparecen explícitamente en el documento.",
     "",
     "Ahora analiza las imágenes y extrae las colindancias según estas reglas.",
   ].join("\n")
@@ -420,15 +854,53 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
 
     const existing = byName.get(norm)
     if (!existing) {
-      // Ensure unit is in new format
+      // Ensure unit is in new format - preserve directions if present with deep copy
       const normalizedUnit: StructuredUnit = {
         unit_name: u.unit_name || u.unit?.name || "UNIDAD",
+        directions: u.directions && Array.isArray(u.directions) 
+          ? u.directions.map((dir: any) => ({
+              ...dir,
+              segments: Array.isArray(dir.segments) 
+                ? dir.segments.map((seg: any) => ({ ...seg }))
+                : []
+            }))
+          : undefined,
         boundaries: u.boundaries || [],
         surfaces: u.surfaces || [],
         anomalies: u.anomalies,
       }
       byName.set(norm, normalizedUnit)
       continue
+    }
+
+    // Preserve directions if present - merge directions when both units have them
+    if (Array.isArray(u.directions) && u.directions.length > 0) {
+      if (Array.isArray(existing.directions) && existing.directions.length > 0) {
+        // Merge directions: preserve order by direction_order_index with deep copy
+        const mergedDirections = [
+          ...(existing.directions || []).map((dir: any) => ({
+            ...dir,
+            segments: Array.isArray(dir.segments) 
+              ? dir.segments.map((seg: any) => ({ ...seg }))
+              : []
+          })),
+          ...(u.directions || []).map((dir: any) => ({
+            ...dir,
+            segments: Array.isArray(dir.segments) 
+              ? dir.segments.map((seg: any) => ({ ...seg }))
+              : []
+          })),
+        ].sort((a, b) => (a.direction_order_index ?? 0) - (b.direction_order_index ?? 0))
+        existing.directions = mergedDirections
+      } else {
+        // Existing unit doesn't have directions, use the new one with deep copy
+        existing.directions = u.directions.map((dir: any) => ({
+          ...dir,
+          segments: Array.isArray(dir.segments) 
+            ? dir.segments.map((seg: any) => ({ ...seg }))
+            : []
+        }))
+      }
     }
 
     // Fusionar boundaries
@@ -817,10 +1289,10 @@ export async function POST(req: Request) {
     
     // Always process (cache disabled)
     try {
-      const prompt = buildPrompt()
+      const prompt = getColindanciasRules()
         // Call OpenAI Vision with all images
         const aiResponse = await callOpenAIVision(prompt, images)
-        
+      
         // Extract lot-level metadata if present
         let lotLocation: string | undefined = undefined
         let totalLotSurface: number | undefined = undefined
@@ -837,40 +1309,76 @@ export async function POST(req: Request) {
         let units: StructuredUnit[] = []
         
         // Normalize response to new format
-        function normalizeUnit(unitRaw: any): StructuredUnit | null {
-          if (!unitRaw || typeof unitRaw !== "object") return null
+      function normalizeUnit(unitRaw: any): StructuredUnit | null {
+        if (!unitRaw || typeof unitRaw !== "object") return null
+        
+        // Extract unit_name (new format) or unit.name (legacy)
+        const unitName = unitRaw.unit_name || unitRaw.unit?.name || "UNIDAD"
+        if (!unitName) return null
+        
+        // Check if unit has directions array (new format from AI)
+        if (Array.isArray(unitRaw.directions) && unitRaw.directions.length > 0) {
+          // Preserve new format with directions and segments
+          const directions = unitRaw.directions
+            .filter((dir: any) => dir.raw_direction && dir.normalized_direction && Array.isArray(dir.segments))
+            .map((dir: any) => ({
+              raw_direction: String(dir.raw_direction).trim(),
+              normalized_direction: dir.normalized_direction as any,
+              direction_order_index: typeof dir.direction_order_index === "number" ? dir.direction_order_index : 0,
+              segments: (dir.segments || [])
+                .map((seg: any) => ({
+                  length_prefix: seg.length_prefix === null || seg.length_prefix === undefined ? null : String(seg.length_prefix).trim(),
+                  length_m: seg.length_m === null || seg.length_m === undefined ? null : (typeof seg.length_m === "number" ? seg.length_m : parseFloat(String(seg.length_m))),
+                  abutter: String(seg.abutter || "").trim(),
+                  order_index: typeof seg.order_index === "number" ? seg.order_index : 0,
+                }))
+                .filter((seg: any) => seg.abutter || seg.length_m !== null),
+            }))
+            .filter((dir: any) => dir.segments.length > 0)
           
-          // Extract unit_name (new format) or unit.name (legacy)
-          const unitName = unitRaw.unit_name || unitRaw.unit?.name || "UNIDAD"
-          if (!unitName) return null
+          if (directions.length === 0) return null
           
-          // Normalize boundaries
-          const boundaries = (unitRaw.boundaries || []).map((b: any, idx: number) => {
-            // Handle new format
-            if (b.raw_direction && b.normalized_direction) {
+          return {
+            unit_name: unitName,
+            directions,
+            // boundaries removed - frontend will generate from directions when needed
+            surfaces: Array.isArray(unitRaw.surfaces) ? unitRaw.surfaces : [],
+            anomalies: Array.isArray(unitRaw.anomalies) ? unitRaw.anomalies : undefined,
+          }
+        }
+        
+        // Handle legacy format: flat boundaries array
+        if (Array.isArray(unitRaw.boundaries) && unitRaw.boundaries.length > 0) {
+          const boundaries = unitRaw.boundaries
+            .map((b: any, idx: number) => {
+              // Handle new format boundary
+              if (b.raw_direction && b.normalized_direction) {
+                return {
+                  raw_direction: b.raw_direction,
+                  normalized_direction: b.normalized_direction as any,
+                  length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
+                  abutter: String(b.abutter || "").trim(),
+                  order_index: typeof b.order_index === "number" ? b.order_index : idx,
+                }
+              }
+              
+              // Handle legacy format (convert to new format)
+              const rawDir = String(b.direction || "").trim()
+              const normalizedDir = normalizeDirectionCode(rawDir)
+              
               return {
-                raw_direction: b.raw_direction,
-                normalized_direction: b.normalized_direction as any,
+                raw_direction: rawDir,
+                normalized_direction: normalizedDir,
                 length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
                 abutter: String(b.abutter || "").trim(),
                 order_index: typeof b.order_index === "number" ? b.order_index : idx,
               }
-            }
-            
-            // Handle legacy format (convert to new format)
-            const rawDir = String(b.direction || "").trim()
-            const normalizedDir = normalizeDirectionCode(rawDir)
-            
-            return {
-              raw_direction: rawDir,
-              normalized_direction: normalizedDir,
-              length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
-              abutter: String(b.abutter || "").trim(),
-              order_index: typeof b.order_index === "number" ? b.order_index : idx,
-            }
-          }).filter((b: any) => b.raw_direction && b.normalized_direction) // Filter out invalid boundaries
+            })
+            .filter((b: any) => b.raw_direction && b.normalized_direction)
           
-          // Only return unit if it has at least one valid boundary
+          // Sort by order_index to ensure correct order
+          boundaries.sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+          
           if (boundaries.length === 0) return null
           
           return {
@@ -881,17 +1389,29 @@ export async function POST(req: Request) {
           }
         }
         
-        if (Array.isArray(aiResponse.results)) {
-          units = aiResponse.results.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
-        } else if (aiResponse.result) {
-          const normalized = normalizeUnit(aiResponse.result)
-          if (normalized) units = [normalized]
-        } else if (aiResponse.unit_name || aiResponse.unit) {
-          const normalized = normalizeUnit(aiResponse)
-          if (normalized) units = [normalized]
-        } else {
-          throw new Error("invalid_ai_shape")
-        }
+        return null
+      }
+        
+      // Handle new format: array of units directly
+      if (Array.isArray(aiResponse)) {
+        units = aiResponse.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
+      } else if (Array.isArray(aiResponse.results)) {
+        // Legacy format with results wrapper
+        units = aiResponse.results.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
+      } else if (Array.isArray(aiResponse.units)) {
+        // New format with units wrapper (IA puede devolver { units: [...] })
+        units = aiResponse.units.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
+      } else if (aiResponse.result) {
+        const normalized = normalizeUnit(aiResponse.result)
+        if (normalized) units = [normalized]
+      } else if (aiResponse.unit_name || aiResponse.unit) {
+        const normalized = normalizeUnit(aiResponse)
+        if (normalized) units = [normalized]
+      } else {
+        // Log the actual response for debugging
+        console.error("[api/ai/structure] Invalid AI response shape:", JSON.stringify(aiResponse, null, 2))
+        throw new Error("invalid_ai_shape")
+      }
         
         if (units.length === 0) {
           throw new Error("No valid units found in AI response")
@@ -901,8 +1421,11 @@ export async function POST(req: Request) {
         // For new format, units are already normalized
         const merged = mergeUnitsByNameNew(units)
         
-        // Filter out units without boundaries
-        const validUnits = merged.filter((u) => u.boundaries && u.boundaries.length > 0)
+        // Filter out units without boundaries or directions
+        const validUnits = merged.filter((u) => 
+          (u.directions && Array.isArray(u.directions) && u.directions.length > 0) ||
+          (u.boundaries && Array.isArray(u.boundaries) && u.boundaries.length > 0)
+        )
         
         // If no valid units, create a fallback
         if (validUnits.length > 0) {
@@ -939,28 +1462,55 @@ export async function POST(req: Request) {
         unit.unit_name = "UNIDAD"
       }
       
-      // Ensure boundaries array exists and is valid
-      if (!Array.isArray(unit.boundaries)) {
-        unit.boundaries = []
+      // Preserve directions if present (new format from AI)
+      if (Array.isArray(unit.directions) && unit.directions.length > 0) {
+        // Unit already has directions format - preserve it with deep copy
+        // Ensure each direction has valid segments
+        unit.directions = unit.directions.map((dir: any) => ({
+          raw_direction: dir.raw_direction,
+          normalized_direction: dir.normalized_direction,
+          direction_order_index: dir.direction_order_index,
+          segments: Array.isArray(dir.segments) 
+            ? dir.segments.map((seg: any) => ({
+                length_prefix: seg.length_prefix,
+                length_m: seg.length_m,
+                abutter: seg.abutter,
+                order_index: seg.order_index,
+              }))
+            : [],
+        })).filter((dir: any) => Array.isArray(dir.segments) && dir.segments.length > 0)
+        
+        // boundaries removed - frontend will generate from directions when needed
+        
+        // Debug: Log directions and segments
+        console.log(`[api/ai/structure] Unit ${unit.unit_name} has ${unit.directions.length} directions`)
+        unit.directions.forEach((dir: any, idx: number) => {
+          console.log(`[api/ai/structure]   Direction ${idx}: ${dir.raw_direction} with ${dir.segments?.length || 0} segments`)
+        })
+      } else {
+        // Legacy format: ensure boundaries array exists and is valid
+        if (!Array.isArray(unit.boundaries)) {
+          unit.boundaries = []
+        }
+        
+        // Normalize each boundary to ensure it has required fields
+        unit.boundaries = unit.boundaries.map((b, idx) => {
+          if (!b.raw_direction) {
+            // Legacy format: try to derive from normalized_direction or direction
+            const rawDir = b.direction || b.normalized_direction || ""
+            b.raw_direction = rawDir
+          }
+          if (!b.normalized_direction) {
+            // Derive from raw_direction
+            const normalizedDir = normalizeDirectionCode(b.raw_direction || b.direction || "")
+            b.normalized_direction = normalizedDir
+          }
+          if (b.order_index === undefined || b.order_index === null) {
+            b.order_index = idx
+          }
+          return b
+        }).filter((b) => b.raw_direction && b.normalized_direction)
       }
-      
-      // Normalize each boundary to ensure it has required fields
-      unit.boundaries = unit.boundaries.map((b, idx) => {
-        if (!b.raw_direction) {
-          // Legacy format: try to derive from normalized_direction or direction
-          const rawDir = b.direction || b.normalized_direction || ""
-          b.raw_direction = rawDir
-        }
-        if (!b.normalized_direction) {
-          // Derive from raw_direction
-          const normalizedDir = normalizeDirectionCode(b.raw_direction || b.direction || "")
-          b.normalized_direction = normalizedDir
-        }
-        if (b.order_index === undefined || b.order_index === null) {
-          b.order_index = idx
-        }
-        return b
-      }).filter((b) => b.raw_direction && b.normalized_direction)
       
       // Ensure surfaces array exists (optional)
       if (!Array.isArray(unit.surfaces)) {
@@ -970,6 +1520,19 @@ export async function POST(req: Request) {
       return unit
     })
 
+    // Debug: Verify segments are present before returning
+    results.forEach((unit, idx) => {
+      if (Array.isArray(unit.directions) && unit.directions.length > 0) {
+        unit.directions.forEach((dir: any, dirIdx: number) => {
+          if (!Array.isArray(dir.segments) || dir.segments.length === 0) {
+            console.warn(`[api/ai/structure] WARNING: Unit ${idx} (${unit.unit_name}), Direction ${dirIdx} (${dir.raw_direction}) has NO segments!`)
+          } else {
+            console.log(`[api/ai/structure] Unit ${idx} (${unit.unit_name}), Direction ${dirIdx} (${dir.raw_direction}) has ${dir.segments.length} segments`)
+          }
+        })
+      }
+    })
+    
     const resp: StructuringResponse = {
       results,
       ...(processedMetadata?.lotLocation ? { lotLocation: processedMetadata.lotLocation } : {}),
