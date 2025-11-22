@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import { Loader2, FileSearch, CheckCircle2 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
@@ -36,7 +36,60 @@ export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs, step
     }, 60)
 
     return () => clearInterval(interval)
-  }, [onComplete])
+  }, [])
+
+  useEffect(() => {
+    // Protección contra ejecuciones duplicadas (React Strict Mode)
+    if (hasRunRef.current) {
+      console.log("[ProcessingScreen] Ya se ejecutó, evitando ejecución duplicada")
+      return
+    }
+    
+    let cancelled = false
+    let watchdog: any
+    async function run() {
+      if (started || hasRunRef.current) return
+      hasRunRef.current = true
+      setStarted(true)
+      setStepStatus(Object.fromEntries(stepsToUse.map(s => [s.key, { status: "pending" as const }])))
+      // Watchdog para evitar quedarse pegado
+      watchdog = setTimeout(() => {
+        if (!cancelled) {
+          setProgress(100)
+          onCompleteRef.current()
+        }
+      }, typeof watchdogMs === "number" ? watchdogMs : 20000)
+      try {
+        const currentOnRun = onRunRef.current
+        if (currentOnRun) {
+          const update = (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => {
+            setStepStatus((prev) => ({ ...prev, [key]: { status, detail } }))
+            const idx = stepsToUse.findIndex(s => s.key === key)
+            if (idx >= 0) setCurrentStep(idx)
+          }
+          await currentOnRun(update)
+        } else {
+          setStepStatus(Object.fromEntries(stepsToUse.map(s => [s.key, { status: "done" as const }])))
+        }
+        if (!cancelled) {
+          setProgress(100)
+          setTimeout(() => onCompleteRef.current(), 150)
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setProgress(100)
+          setTimeout(() => onCompleteRef.current(), 150)
+        }
+      } finally {
+        if (watchdog) clearTimeout(watchdog)
+      }
+    }
+    run()
+    return () => {
+      cancelled = true
+      if (watchdog) clearTimeout(watchdog)
+    }
+  }, []) // Ejecutar solo una vez al montar, usando refs para las funciones actuales
 
   useEffect(() => {
     let cancelled = false

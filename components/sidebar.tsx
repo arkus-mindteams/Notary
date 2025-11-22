@@ -41,17 +41,24 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
     <Card className={`h-full flex flex-col transition-all duration-300 ${
       isCollapsed ? 'w-16' : 'w-64'
     }`}>
-      {/* Header con Logo */}
-      <div className="p-4 border-b">
-        <div className="flex items-center justify-between">
-          {!isCollapsed && (
+      {/* Header con Usuario y Notaría */}
+      <div className="border-b">
+        {/* Sección Usuario */}
+        {!isCollapsed && user && (
+          <div className="p-4 pb-3 border-b">
             <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-                <Shield className="h-5 w-5 text-white" />
+              <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+                <span className="text-sm font-medium text-blue-600">
+                  {user.name.split(' ').map(n => n[0]).join('')}
+                </span>
               </div>
-              <div>
-                <h2 className="font-bold text-sm text-gray-900">Notaría #3</h2>
-                <p className="text-xs text-gray-600">Xavier Ibañez</p>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-900 truncate">
+                  {user.name}
+                </p>
+                <p className="text-xs text-gray-500 capitalize">
+                  {user.role}
+                </p>
               </div>
             </div>
           )}
@@ -85,26 +92,8 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
         </Button>
       </div>
 
-      {/* Información del Usuario y Logout */}
-      <div className="p-4 border-t space-y-3">
-        {!isCollapsed && user && (
-          <div className="flex items-center space-x-3 p-2 bg-gray-50 rounded-lg">
-            <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-              <span className="text-xs font-medium text-blue-600">
-                {user.name.split(' ').map(n => n[0]).join('')}
-              </span>
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-900 truncate">
-                {user.name}
-              </p>
-              <p className="text-xs text-gray-500 capitalize">
-                {user.role}
-              </p>
-            </div>
-          </div>
-        )}
-
+      {/* Logout */}
+      <div className="p-4 border-t">
         <Button
           variant="ghost"
           className={`w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50 ${

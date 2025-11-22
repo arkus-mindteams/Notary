@@ -140,20 +140,34 @@ export function ValidationWizard({
   }
 
   const handleAuthorizeUnit = () => {
+    // Guardar cambios antes de autorizar
+    if (hasUnsavedChanges()) {
+      handleSaveChanges()
+    }
     const newAuthorizedUnits = new Set(authorizedUnits)
     newAuthorizedUnits.add(currentUnit.id)
     setAuthorizedUnits(newAuthorizedUnits)
   }
 
+  const handleUnauthorizeUnit = () => {
+    const newAuthorizedUnits = new Set(authorizedUnits)
+    newAuthorizedUnits.delete(currentUnit.id)
+    setAuthorizedUnits(newAuthorizedUnits)
+  }
+
   const handleNext = () => {
     if (!isLastUnit) {
-      setCurrentUnitIndex(currentUnitIndex + 1)
+      confirmNavigation(() => {
+        setCurrentUnitIndex(currentUnitIndex + 1)
+      })
     }
   }
 
   const handlePrevious = () => {
     if (!isFirstUnit) {
-      setCurrentUnitIndex(currentUnitIndex - 1)
+      confirmNavigation(() => {
+        setCurrentUnitIndex(currentUnitIndex - 1)
+      })
     }
   }
 
@@ -301,16 +315,16 @@ export function ValidationWizard({
     <div className="flex flex-col h-full bg-background">
       {/* Header with Progress */}
       <header className="border-b bg-card">
-        <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4 mb-3 sm:mb-4">
-            <div className="flex items-center gap-3 sm:gap-4 w-full sm:w-auto">
-              <Button variant="ghost" size="sm" onClick={onBack} className="shrink-0">
-                <ArrowLeft className="h-4 w-4 sm:mr-2" />
-                <span className="hidden sm:inline">Volver</span>
+        <div className="container mx-auto px-3 sm:px-4 py-2">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-2">
+            <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
+              <Button variant="ghost" size="sm" onClick={onBack} className="shrink-0 h-8">
+                <ArrowLeft className="h-4 w-4 sm:mr-1" />
+                <span className="hidden sm:inline text-sm">Volver</span>
               </Button>
-              <div className="min-w-0">
-                <h1 className="text-lg sm:text-xl font-semibold truncate">Validación de Deslindes</h1>
-                <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">
+              <div className="min-w-0 flex-1 sm:flex-initial">
+                <h1 className="text-base sm:text-lg font-semibold truncate">Validación de Deslindes</h1>
+                <p className="text-xs text-muted-foreground hidden lg:block">
                   Revisa y autoriza cada unidad antes de exportar
                 </p>
               </div>
@@ -340,9 +354,9 @@ export function ValidationWizard({
             </div>
           </div>
 
-          {/* Progress Bar */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs sm:text-sm">
+          {/* Progress Bar - Compact */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
               <span className="font-medium">
                 Unidad {currentUnitIndex + 1} de {units.length}
               </span>
@@ -350,7 +364,7 @@ export function ValidationWizard({
                 {authorizedUnits.size}/{units.length} autorizadas
               </span>
             </div>
-            <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-muted">
               <div
                 className="h-full bg-green-500 transition-all duration-300"
                 style={{ width: `${(authorizedUnits.size / units.length) * 100}%` }}
@@ -361,8 +375,8 @@ export function ValidationWizard({
               />
             </div>
 
-            {/* Unit Pills */}
-            <div className="flex gap-2 overflow-x-auto pt-2 pb-1 -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap">
+            {/* Unit Pills - Single line with scroll */}
+            <div className="flex gap-1.5 overflow-x-auto pt-1 pb-0.5 -mx-3 px-3 sm:mx-0 sm:px-0 scrollbar-thin">
               {units.map((unit, index) => {
                 const isAuthorized = authorizedUnits.has(unit.id)
                 const isCurrent = index === currentUnitIndex
@@ -373,9 +387,9 @@ export function ValidationWizard({
                     onClick={() => setCurrentUnitIndex(index)}
                     className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
                       isCurrent && isAuthorized
-                        ? "bg-green-600 text-white ring-2 ring-green-400 ring-offset-2"
+                        ? "bg-green-600 text-white ring-1 ring-green-400"
                         : isCurrent
-                          ? "bg-primary text-primary-foreground ring-2 ring-primary/50 ring-offset-2"
+                          ? "bg-primary text-primary-foreground ring-1 ring-primary/50"
                           : isAuthorized
                             ? "bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400"
                             : "bg-muted text-muted-foreground hover:bg-muted/80"
@@ -413,7 +427,7 @@ export function ValidationWizard({
         </Alert>
       )}
 
-      {/* Main Content - Split View */}
+      {/* Main Content - Split View with Collapsible Viewer */}
       <div className="flex-1 overflow-hidden">
         <div className="container mx-auto px-4 sm:px-6 py-4 sm:py-6 h-full">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 h-full">
@@ -434,45 +448,68 @@ export function ValidationWizard({
               )}
             </div>
 
-            {/* Text Panel - Right Side */}
-            <div className="h-[400px] sm:h-[500px] lg:h-full overflow-hidden">
+            {/* Text Panel - Right Side / Full width when viewer collapsed */}
+            <div className={`h-[400px] sm:h-[500px] lg:h-full overflow-hidden ${isViewerCollapsed ? "" : ""}`}>
+              {/* Toggle Button to show viewer when collapsed */}
+              {isViewerCollapsed && (
+                <div className="mb-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5"
+                    onClick={() => setIsViewerCollapsed(false)}
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    <span className="text-xs">Mostrar documento</span>
+                  </Button>
+                </div>
+              )}
               <Card className="flex flex-col h-full">
-                <div className="p-4 sm:p-6 border-b bg-muted/30 shrink-0">
-                  <div className="space-y-4">
-                    {/* Header con información de la unidad */}
-                    <div className="flex items-start justify-between gap-3">
+                <div className="px-3 py-1.5 border-b bg-muted/30 shrink-0">
+                  <div className="space-y-1.5">
+                    {/* Header con información de la unidad - Compact */}
+                    <div className="flex items-center justify-between gap-1.5">
                       <div className="min-w-0 flex-1">
-                        <h2 className="text-base sm:text-lg font-semibold truncate">{currentUnit.name}</h2>
-                        <p className="text-xs sm:text-sm text-muted-foreground mt-1">Superficie: {currentUnit.surface}</p>
+                        <div className="flex items-center gap-1.5">
+                          <h2 className="text-xs sm:text-sm font-semibold truncate">{currentUnit.name}</h2>
+                          <span className="text-xs text-muted-foreground shrink-0">• {currentUnit.surface}</span>
+                        </div>
                       </div>
                       {isCurrentUnitAuthorized ? (
-                        <div className="flex items-center gap-2 text-success shrink-0">
-                          <CheckCircle2 className="h-4 w-4 sm:h-5 sm:w-5" />
-                          <span className="text-xs sm:text-sm font-medium hidden sm:inline">Autorizada</span>
-                        </div>
+                        <Button 
+                          onClick={handleUnauthorizeUnit} 
+                          size="sm" 
+                          variant="outline"
+                          className="gap-1.5 h-8 px-3 shrink-0 border-orange-200 bg-orange-50 hover:bg-orange-100 dark:border-orange-800 dark:bg-orange-900/20 dark:hover:bg-orange-900/30"
+                        >
+                          <AlertCircle className="h-3.5 w-3.5 text-orange-600 dark:text-orange-400" />
+                          <span className="text-xs text-orange-700 dark:text-orange-300">Desautorizar</span>
+                        </Button>
                       ) : (
-                        <Button onClick={handleAuthorizeUnit} size="sm" className="gap-2 shrink-0">
-                          <ShieldCheck className="h-4 w-4" />
-                          <span className="hidden sm:inline">Autorizar</span>
+                        <Button onClick={handleAuthorizeUnit} size="sm" className="gap-1.5 h-8 px-3 shrink-0">
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                          <span className="text-xs">Autorizar</span>
                         </Button>
                       )}
                     </div>
 
-                    {/* Botones de navegación */}
-                    <div className="flex items-center justify-between gap-2">
+                    {/* Botones de navegación - Compacto y centrado */}
+                    <div className="flex items-center justify-center gap-2">
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={handlePrevious}
                         disabled={isFirstUnit}
-                        className="gap-2 flex-1"
+                        className="gap-1 h-8 px-2 shrink-0"
                       >
                         <ChevronLeft className="h-4 w-4" />
-                        <span className="hidden sm:inline">Anterior</span>
+                        <span className="text-xs font-medium">Anterior</span>
                       </Button>
 
-                      <div className="text-xs text-muted-foreground px-2 py-1 bg-muted rounded-md">
-                        {currentUnitIndex + 1} de {units.length}
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-muted/50 border border-border rounded-md shrink-0">
+                        <span className="text-xs font-semibold text-foreground">{currentUnitIndex + 1}</span>
+                        <span className="text-xs text-muted-foreground">/</span>
+                        <span className="text-xs text-muted-foreground">{units.length}</span>
                       </div>
 
                       <Button
@@ -480,12 +517,27 @@ export function ValidationWizard({
                         size="sm"
                         onClick={handleNext}
                         disabled={isLastUnit}
-                        className="gap-2 flex-1"
+                        className="gap-1 h-8 px-2 shrink-0"
                       >
-                        <span className="hidden sm:inline">Siguiente</span>
+                        <span className="text-xs font-medium">Siguiente</span>
                         <ChevronRight className="h-4 w-4" />
                       </Button>
                     </div>
+
+                    {/* Botón Guardar - aparece cuando hay cambios sin guardar y la unidad NO está autorizada */}
+                    {hasUnsavedChanges() && !isCurrentUnitAuthorized && (
+                      <div className="flex justify-end">
+                        <Button
+                          variant="default"
+                          size="sm"
+                          onClick={handleSaveChanges}
+                          className="gap-1.5 h-8 px-3 shrink-0"
+                        >
+                          <Save className="h-3.5 w-3.5" />
+                          <span className="text-xs font-medium">Guardar cambios</span>
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
                 {/* Content area to expand inputs */}
@@ -544,11 +596,11 @@ export function ValidationWizard({
         </div>
       </div>
 
-      {/* Footer simplificado */}
+      {/* Footer simplificado - Compact */}
       <footer className="border-t bg-card">
-        <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
+        <div className="container mx-auto px-3 sm:px-4 py-1.5">
           <div className="flex items-center justify-center">
-            <div className="text-xs sm:text-sm text-muted-foreground">
+            <div className="text-xs text-muted-foreground">
               Auto-guardado {getTimeSinceLastSave()}
             </div>
           </div>
