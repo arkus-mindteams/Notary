@@ -171,15 +171,17 @@ function DeslindePageInner() {
                 } else if (lengthPrefix && lengthNum !== null) {
                   const len = lengthNum.toFixed(3)
                   if (lengthPrefix === "LC=") {
-                    firstLine = `${directionName}: LC=${len} CON ${cleanedWho}`
+                    firstLine = `${directionName}: LC=${len} m CON ${cleanedWho}`
                   } else if (lengthPrefix === "EN" || lengthPrefix === "") {
-                    firstLine = `${directionName}: EN ${len} m CON ${cleanedWho}`
+                    // No mostrar "EN" cuando el prefijo es "EN" o está vacío
+                    firstLine = `${directionName}: ${len} m CON ${cleanedWho}`
                   } else {
                     firstLine = `${directionName}: ${lengthPrefix} ${len} m CON ${cleanedWho}`
                   }
                 } else {
                   const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
-                  firstLine = `${directionName}: EN ${len} m CON ${cleanedWho}`
+                  // No mostrar "EN" por defecto
+                  firstLine = `${directionName}: ${len} m CON ${cleanedWho}`
                 }
                 
                 // Calculate indentation: position after "DIRECTION: "
@@ -196,15 +198,17 @@ function DeslindePageInner() {
                 } else if (lengthPrefix && lengthNum !== null) {
                   const len = lengthNum.toFixed(3)
                   if (lengthPrefix === "LC=") {
-                    lines.push(`${indent}LC=${len} CON ${cleanedWho}`)
+                    lines.push(`${indent}LC=${len} m CON ${cleanedWho}`)
                   } else if (lengthPrefix === "EN" || lengthPrefix === "") {
-                    lines.push(`${indent}EN ${len} m CON ${cleanedWho}`)
+                    // No mostrar "EN" cuando el prefijo es "EN" o está vacío
+                    lines.push(`${indent}${len} m CON ${cleanedWho}`)
                   } else {
                     lines.push(`${indent}${lengthPrefix} ${len} m CON ${cleanedWho}`)
                   }
                 } else {
                   const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
-                  lines.push(`${indent}EN ${len} m CON ${cleanedWho}`)
+                  // No mostrar "EN" por defecto
+                  lines.push(`${indent}${len} m CON ${cleanedWho}`)
                 }
               }
             }
