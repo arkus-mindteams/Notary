@@ -79,6 +79,7 @@ export function ValidationWizard({
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null)
   const [isViewerCollapsed, setIsViewerCollapsed] = useState(false)
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
+  const [manuallyEditedNotarial, setManuallyEditedNotarial] = useState<Set<string>>(new Set())
 
   // Auto-format colindancias text with proper indentation
   const autoFormatColindancias = (text: string): string => {
@@ -415,29 +416,35 @@ export function ValidationWizard({
   }, [savedColindanciasByUnit])
 
   // Auto-generate notarial text when colindancias change (debounced)
+  // Solo regenera si la redacción notarial NO fue editada manualmente
   useEffect(() => {
     if (currentAiText && currentUnit) {
-      const timer = setTimeout(() => {
-        generateNotarialText(currentAiText, currentUnit.id, currentUnit.name)
-      }, 500)
-      return () => clearTimeout(timer)
+      // Solo regenerar automáticamente si NO fue editada manualmente
+      if (!manuallyEditedNotarial.has(currentUnit.id)) {
+        const timer = setTimeout(() => {
+          generateNotarialText(currentAiText, currentUnit.id, currentUnit.name)
+        }, 500)
+        return () => clearTimeout(timer)
+      }
     }
-  }, [currentAiText, currentUnit?.id, generateNotarialText])
+  }, [currentAiText, currentUnit?.id, generateNotarialText, manuallyEditedNotarial])
 
   // Generate complete notarial text when modal opens
+  // Usa la última versión autorizada guardada (savedNotarialTextByUnit y savedColindanciasByUnit)
   const handleOpenCompleteTextModal = async () => {
     setShowCompleteTextModal(true)
     setIsGeneratingCompleteText(true)
     setCompleteNotarialText("")
 
     try {
-      // Get all authorized units with their notarial texts
+      // Get all authorized units with their SAVED notarial texts (última versión autorizada)
       const authorizedUnitsWithTexts = units
         .filter((unit) => authorizedUnits.has(unit.id))
         .map((unit) => ({
           unitName: unit.name,
-          notarialText: notarialTextByUnit.get(unit.id) || "",
-          colindanciasText: aiTextByUnit.get(unit.id) || "",
+          // Usar la versión guardada (última autorizada) en lugar de la actual
+          notarialText: savedNotarialTextByUnit.get(unit.id) || notarialTextByUnit.get(unit.id) || "",
+          colindanciasText: savedColindanciasByUnit.get(unit.id) || aiTextByUnit.get(unit.id) || "",
         }))
 
       if (authorizedUnitsWithTexts.length === 0) {
@@ -463,11 +470,12 @@ export function ValidationWizard({
       setCompleteNotarialText(data.completeText || "")
     } catch (e) {
       console.error("[ui] combine notarial failed", e)
-      // Fallback: combine manually
+      // Fallback: combine manually usando la versión guardada
       const combined = units
         .filter((unit) => authorizedUnits.has(unit.id))
         .map((unit) => {
-          const text = notarialTextByUnit.get(unit.id) || ""
+          // Usar la versión guardada (última autorizada)
+          const text = savedNotarialTextByUnit.get(unit.id) || notarialTextByUnit.get(unit.id) || ""
           return text ? `${unit.name}: ${text}` : ""
         })
         .filter(Boolean)
@@ -708,20 +716,6 @@ export function ValidationWizard({
                       </Button>
                     </div>
 
-                    {/* Botón Guardar - aparece cuando hay cambios sin guardar y la unidad NO está autorizada */}
-                    {hasUnsavedChanges() && !isCurrentUnitAuthorized && (
-                      <div className="flex justify-end">
-                        <Button
-                          variant="default"
-                          size="sm"
-                          onClick={handleSaveChanges}
-                          className="gap-1.5 h-8 px-3 shrink-0"
-                        >
-                          <Save className="h-3.5 w-3.5" />
-                          <span className="text-xs font-medium">Guardar cambios</span>
-                        </Button>
-                      </div>
-                    )}
                   </div>
                 </div>
                 {/* Content area to expand inputs */}
@@ -748,18 +742,25 @@ export function ValidationWizard({
                         readOnly={isCurrentUnitAuthorized}
                         disabled={isCurrentUnitAuthorized}
                         onChange={(e) => {
-                          if (isCurrentUnitAuthorized) return
+                          if (isCurrentUnitAuthorized || !currentUnit) return
                           const value = e.target.value
                           setAiTextByUnit((prev) => {
                             const next = new Map(prev)
                             next.set(currentUnit.id, value)
                             return next
                           })
+                          // Resetear la marca de "editada manualmente" cuando cambian las colindancias
+                          // Esto permite que se regenere automáticamente la redacción notarial
+                          setManuallyEditedNotarial((prev) => {
+                            const next = new Set(prev)
+                            next.delete(currentUnit.id)
+                            return next
+                          })
                           setHasChanges(true)
                         }}
                         onBlur={(e) => {
                           // Apply automatic formatting when user leaves the field
-                          if (isCurrentUnitAuthorized) return
+                          if (isCurrentUnitAuthorized || !currentUnit) return
                           const value = e.target.value
                           const formatted = autoFormatColindancias(value)
                           if (formatted !== value) {
@@ -807,11 +808,17 @@ export function ValidationWizard({
                         readOnly={isCurrentUnitAuthorized}
                         disabled={isCurrentUnitAuthorized}
                         onChange={(e) => {
-                          if (isCurrentUnitAuthorized) return
+                          if (isCurrentUnitAuthorized || !currentUnit) return
                           const value = e.target.value
                           setNotarialTextByUnit((prev) => {
                             const next = new Map(prev)
                             next.set(currentUnit.id, value)
+                            return next
+                          })
+                          // Marcar como editada manualmente para evitar regeneración automática
+                          setManuallyEditedNotarial((prev) => {
+                            const next = new Set(prev)
+                            next.add(currentUnit.id)
                             return next
                           })
                           setHasChanges(true)
