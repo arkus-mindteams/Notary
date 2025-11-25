@@ -11,8 +11,9 @@ import { DocumentViewer } from "@/components/document-viewer"
 import { simulateOCR, type PropertyUnit } from "@/lib/ocr-simulator"
 import type { StructuredUnit, StructuringResponse } from "@/lib/ai-structuring-types"
 import { createStructuredSegments, type TransformedSegment } from "@/lib/text-transformer"
-import { FileText, Scale, Shield, ArrowLeft } from "lucide-react"
+import { FileText, Scale, Shield, ArrowLeft, X, ImageIcon, Play } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Card } from "@/components/ui/card"
 import Link from "next/link"
 type AppState = "upload" | "processing" | "validation"
 
@@ -20,6 +21,7 @@ function DeslindePageInner() {
   const [appState, setAppState] = useState<AppState>("upload")
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [documentUrl, setDocumentUrl] = useState<string>("")
+  const [thumbnailUrls, setThumbnailUrls] = useState<Map<number, string>>(new Map())
   const [units, setUnits] = useState<PropertyUnit[]>([])
   const [unitSegments, setUnitSegments] = useState<Map<string, TransformedSegment[]>>(new Map())
   const [processingStarted, setProcessingStarted] = useState(false)
@@ -40,25 +42,119 @@ function DeslindePageInner() {
       if (documentUrl && !documentUrl.startsWith("/")) {
         URL.revokeObjectURL(documentUrl)
       }
+      // Clean up thumbnail URLs
+      setThumbnailUrls((prev) => {
+        prev.forEach((url) => {
+          if (!url.startsWith("/")) {
+            URL.revokeObjectURL(url)
+          }
+        })
+        return new Map()
+      })
       router.replace("/dashboard/deslinde")
     }
   }, [searchParams, documentUrl, router])
 
+  // Create thumbnail URLs when files change
+  useEffect(() => {
+    setThumbnailUrls((prev) => {
+      const newThumbnailUrls = new Map<number, string>()
+      
+      selectedFiles.forEach((file, index) => {
+        if (prev.has(index)) {
+          // Keep existing URL
+          newThumbnailUrls.set(index, prev.get(index)!)
+        } else {
+          // Create new URL
+          const url = URL.createObjectURL(file)
+          newThumbnailUrls.set(index, url)
+        }
+      })
+      
+      // Clean up URLs for removed files
+      prev.forEach((url, index) => {
+        if (!newThumbnailUrls.has(index)) {
+          if (!url.startsWith("/")) {
+            URL.revokeObjectURL(url)
+          }
+        }
+      })
+      
+      return newThumbnailUrls
+    })
+  }, [selectedFiles])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      setThumbnailUrls((prev) => {
+        prev.forEach((url) => {
+          if (!url.startsWith("/")) {
+            URL.revokeObjectURL(url)
+          }
+        })
+        return new Map()
+      })
+      if (documentUrl && !documentUrl.startsWith("/")) {
+        URL.revokeObjectURL(documentUrl)
+      }
+    }
+  }, [documentUrl])
+
   const handleFilesSelect = async (files: File[]) => {
     if (files.length === 0) return
     
-    setSelectedFiles(files)
+    // Add new files to existing ones, avoiding duplicates by name and size
+    setSelectedFiles((prevFiles) => {
+      const existingFiles = prevFiles || []
+      const newFiles = files.filter(
+        (newFile) =>
+          !existingFiles.some(
+            (existingFile) =>
+              existingFile.name === newFile.name && existingFile.size === newFile.size
+          )
+      )
+      
+      const combinedFiles = [...existingFiles, ...newFiles]
+      
+      // Update preview with first image if we didn't have one
+      if (combinedFiles.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
+        const url = URL.createObjectURL(combinedFiles[0])
+        setDocumentUrl(url)
+      }
+      
+      return combinedFiles
+    })
 
-    // Revoke old URL
+    // Stay in upload state - user will click "Procesar imágenes" button
+  }
+
+  const handleRemoveFile = (index: number) => {
+    setSelectedFiles((prevFiles) => {
+      const newFiles = prevFiles.filter((_, i) => i !== index)
+      
+      // Update preview if we removed the first image
+      if (newFiles.length > 0 && index === 0) {
+        if (documentUrl && !documentUrl.startsWith("/")) {
+          URL.revokeObjectURL(documentUrl)
+        }
+        const url = URL.createObjectURL(newFiles[0])
+        setDocumentUrl(url)
+      } else if (newFiles.length === 0) {
+        // No more files, revoke URL
     if (documentUrl && !documentUrl.startsWith("/")) {
       URL.revokeObjectURL(documentUrl)
     }
-    
-    // Use first image for preview
-    const url = URL.createObjectURL(files[0])
-    setDocumentUrl(url)
+        setDocumentUrl("")
+      }
+      
+      return newFiles
+    })
+  }
 
-    // Iniciar procesamiento inmediatamente al cargar
+  const handleProcessImages = () => {
+    if (selectedFiles.length === 0) return
+    
     setProcessingStarted(false)
     setAiStructuredText(null)
     setUnits([])
@@ -215,51 +311,51 @@ function DeslindePageInner() {
           }
         } else if (unit.boundaries && Array.isArray(unit.boundaries) && unit.boundaries.length > 0) {
           // Fallback to boundaries format for backward compatibility
-          // Mapping for normalized directions to Spanish
-          const dirEs: Record<string, string> = {
-            "N": "NORTE",
-            "S": "SUR",
-            "E": "ESTE",
-            "W": "OESTE",
-            "NE": "NORESTE",
-            "NW": "NOROESTE",
-            "SE": "SURESTE",
-            "SW": "SUROESTE",
-            "UP": "ARRIBA",
-            "DOWN": "ABAJO",
-          }
-          
+        // Mapping for normalized directions to Spanish
+        const dirEs: Record<string, string> = {
+          "N": "NORTE",
+          "S": "SUR",
+          "E": "ESTE",
+          "W": "OESTE",
+          "NE": "NORESTE",
+          "NW": "NOROESTE",
+          "SE": "SURESTE",
+          "SW": "SUROESTE",
+          "UP": "ARRIBA",
+          "DOWN": "ABAJO",
+        }
+        
           const ordered = [...unit.boundaries].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+        
+        // Helper function to get direction key for grouping
+        const getDirectionKey = (b: typeof ordered[0]): string => {
+          const normalizedDir = b.normalized_direction || ""
+          const rawDir = b.raw_direction || ""
           
-          // Helper function to get direction key for grouping
-          const getDirectionKey = (b: typeof ordered[0]): string => {
-            const normalizedDir = b.normalized_direction || ""
-            const rawDir = b.raw_direction || ""
-            
-            if (normalizedDir) {
-              return normalizedDir.toUpperCase()
-            }
-            
-            const upperRaw = rawDir.toUpperCase()
-            if (upperRaw === "NORTE" || upperRaw === "NORTH") return "N"
-            if (upperRaw === "SUR" || upperRaw === "SOUTH") return "S"
-            if (upperRaw === "ESTE" || upperRaw === "EAST") return "E"
-            if (upperRaw === "OESTE" || upperRaw === "WEST") return "W"
-            if (upperRaw === "NORESTE" || upperRaw === "NORTHEAST") return "NE"
-            if (upperRaw === "NOROESTE" || upperRaw === "NORTHWEST") return "NW"
-            if (upperRaw === "SURESTE" || upperRaw === "SOUTHEAST") return "SE"
-            if (upperRaw === "SUROESTE" || upperRaw === "SOUTHWEST") return "SW"
-            if (upperRaw === "ARRIBA" || upperRaw === "UP" || upperRaw === "SUPERIOR") return "UP"
-            if (upperRaw === "ABAJO" || upperRaw === "DOWN" || upperRaw === "INFERIOR") return "DOWN"
-            
-            return upperRaw
+          if (normalizedDir) {
+            return normalizedDir.toUpperCase()
           }
           
-          // Helper function to get Spanish direction name
-          const getSpanishDirectionName = (b: typeof ordered[0]): string => {
-            const rawDir = b.raw_direction || ""
-            const normalizedDir = b.normalized_direction || ""
-            
+          const upperRaw = rawDir.toUpperCase()
+          if (upperRaw === "NORTE" || upperRaw === "NORTH") return "N"
+          if (upperRaw === "SUR" || upperRaw === "SOUTH") return "S"
+          if (upperRaw === "ESTE" || upperRaw === "EAST") return "E"
+          if (upperRaw === "OESTE" || upperRaw === "WEST") return "W"
+          if (upperRaw === "NORESTE" || upperRaw === "NORTHEAST") return "NE"
+          if (upperRaw === "NOROESTE" || upperRaw === "NORTHWEST") return "NW"
+          if (upperRaw === "SURESTE" || upperRaw === "SOUTHEAST") return "SE"
+          if (upperRaw === "SUROESTE" || upperRaw === "SOUTHWEST") return "SW"
+          if (upperRaw === "ARRIBA" || upperRaw === "UP" || upperRaw === "SUPERIOR") return "UP"
+          if (upperRaw === "ABAJO" || upperRaw === "DOWN" || upperRaw === "INFERIOR") return "DOWN"
+          
+          return upperRaw
+        }
+        
+        // Helper function to get Spanish direction name
+        const getSpanishDirectionName = (b: typeof ordered[0]): string => {
+          const rawDir = b.raw_direction || ""
+          const normalizedDir = b.normalized_direction || ""
+          
             let name = rawDir.toUpperCase()
             if (normalizedDir && dirEs[normalizedDir]) {
               name = dirEs[normalizedDir]
@@ -270,30 +366,30 @@ function DeslindePageInner() {
             }
             
             return name
-          }
-          
-          // Group consecutive boundaries with the same direction
+        }
+        
+        // Group consecutive boundaries with the same direction
           const groups: Array<Array<typeof ordered[0]>> = []
-          let currentGroup: Array<typeof ordered[0]> = []
-          let currentDirectionKey: string | null = null
-          
-          for (const b of ordered) {
-            const dirKey = getDirectionKey(b)
+        let currentGroup: Array<typeof ordered[0]> = []
+        let currentDirectionKey: string | null = null
+        
+        for (const b of ordered) {
+          const dirKey = getDirectionKey(b)
             
             if (currentDirectionKey === null || currentDirectionKey !== dirKey) {
-              // Start a new group
+            // Start a new group
               if (currentGroup.length > 0) {
                 groups.push(currentGroup)
-              }
-              currentGroup = [b]
-              currentDirectionKey = dirKey
-            } else {
-              // Add to current group (same direction)
-              currentGroup.push(b)
             }
-          }
-          
-          // Add last group
+            currentGroup = [b]
+            currentDirectionKey = dirKey
+          } else {
+              // Add to current group (same direction)
+            currentGroup.push(b)
+            }
+        }
+        
+        // Add last group
           if (currentGroup.length > 0) {
             groups.push(currentGroup)
           }
@@ -302,46 +398,46 @@ function DeslindePageInner() {
           for (const group of groups) {
             const firstBoundary = group[0]
             const directionName = getSpanishDirectionName(firstBoundary)
+          
+          for (let i = 0; i < group.length; i++) {
+            const b = group[i]
+            const normalizedDir = b.normalized_direction || ""
+            const rawDir = b.raw_direction || ""
             
-            for (let i = 0; i < group.length; i++) {
-              const b = group[i]
-              const normalizedDir = b.normalized_direction || ""
-              const rawDir = b.raw_direction || ""
-              
-              const isVertical = normalizedDir === "UP" || normalizedDir === "DOWN" || 
-                               rawDir.toUpperCase() === "UP" || rawDir.toUpperCase() === "DOWN" ||
-                               rawDir.toUpperCase() === "ARRIBA" || rawDir.toUpperCase() === "ABAJO" ||
-                               rawDir.toUpperCase() === "SUPERIOR" || rawDir.toUpperCase() === "INFERIOR"
-              
-              // Handle length_m: can be null, number, or string
-              const lengthNum = b.length_m === null || b.length_m === undefined 
-                ? null 
-                : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m)))
-              const hasNoMeasure = lengthNum === null || isNaN(lengthNum) || Math.abs(lengthNum) < 0.001
-              
-              const who = (b.abutter || "").toString().trim()
-              // Remove leading "CON " if present (prevents "CON CON" duplication)
-              const cleanedWho = who.replace(/^\s*CON\s+/i, "").trim()
-              
-              if (i === 0) {
-                // First boundary in group: show full direction
-                if (isVertical && hasNoMeasure) {
-                  lines.push(`${directionName}: CON ${cleanedWho}`)
-                } else if (hasNoMeasure && lengthNum === null) {
-                  lines.push(`${directionName}: CON ${cleanedWho}`)
-                } else {
-                  const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
-                  lines.push(`${directionName}: EN ${len} m CON ${cleanedWho}`)
-                }
+            const isVertical = normalizedDir === "UP" || normalizedDir === "DOWN" || 
+                             rawDir.toUpperCase() === "UP" || rawDir.toUpperCase() === "DOWN" ||
+                             rawDir.toUpperCase() === "ARRIBA" || rawDir.toUpperCase() === "ABAJO" ||
+                             rawDir.toUpperCase() === "SUPERIOR" || rawDir.toUpperCase() === "INFERIOR"
+            
+            // Handle length_m: can be null, number, or string
+            const lengthNum = b.length_m === null || b.length_m === undefined 
+              ? null 
+              : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m)))
+            const hasNoMeasure = lengthNum === null || isNaN(lengthNum) || Math.abs(lengthNum) < 0.001
+            
+            const who = (b.abutter || "").toString().trim()
+            // Remove leading "CON " if present (prevents "CON CON" duplication)
+            const cleanedWho = who.replace(/^\s*CON\s+/i, "").trim()
+            
+            if (i === 0) {
+              // First boundary in group: show full direction
+              if (isVertical && hasNoMeasure) {
+                lines.push(`${directionName}: CON ${cleanedWho}`)
+              } else if (hasNoMeasure && lengthNum === null) {
+                lines.push(`${directionName}: CON ${cleanedWho}`)
               } else {
-                // Subsequent boundaries in same group: show only measure and abutter (no direction)
-                if (isVertical && hasNoMeasure) {
-                  lines.push(`         CON ${cleanedWho}`)
-                } else if (hasNoMeasure && lengthNum === null) {
-                  lines.push(`         CON ${cleanedWho}`)
-                } else {
-                  const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
-                  lines.push(`         EN ${len} m CON ${cleanedWho}`)
+                const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
+                lines.push(`${directionName}: EN ${len} m CON ${cleanedWho}`)
+              }
+            } else {
+              // Subsequent boundaries in same group: show only measure and abutter (no direction)
+              if (isVertical && hasNoMeasure) {
+                lines.push(`         CON ${cleanedWho}`)
+              } else if (hasNoMeasure && lengthNum === null) {
+                lines.push(`         CON ${cleanedWho}`)
+              } else {
+                const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
+                lines.push(`         EN ${len} m CON ${cleanedWho}`)
                 }
               }
             }
@@ -426,19 +522,19 @@ function DeslindePageInner() {
           }
         } else {
           // Fallback to boundaries array for backward compatibility
-          for (const b of unit.boundaries || []) {
-            // Use normalized_direction first, fallback to raw_direction
-            const normalizedDir = b.normalized_direction || ""
-            const rawDir = b.raw_direction || ""
-            const key = mapDirection(normalizedDir, rawDir)
-            if (!key) continue
-            boundaries[key].push({
-              id: `${unitId}-${key}-${boundaries[key].length}`,
-              measurement: b.length_m === null || b.length_m === undefined ? "" : String(b.length_m),
-              unit: "M",
-              description: `CON ${b.abutter || ""}`.trim(),
-              regionId: "",
-            })
+        for (const b of unit.boundaries || []) {
+          // Use normalized_direction first, fallback to raw_direction
+          const normalizedDir = b.normalized_direction || ""
+          const rawDir = b.raw_direction || ""
+          const key = mapDirection(normalizedDir, rawDir)
+          if (!key) continue
+          boundaries[key].push({
+            id: `${unitId}-${key}-${boundaries[key].length}`,
+            measurement: b.length_m === null || b.length_m === undefined ? "" : String(b.length_m),
+            unit: "M",
+            description: `CON ${b.abutter || ""}`.trim(),
+            regionId: "",
+          })
           }
         }
 
@@ -612,7 +708,7 @@ function DeslindePageInner() {
               </div>
               <h3 className="font-semibold">Extracción Automática</h3>
               <p className="text-sm text-muted-foreground">
-                Extrae medidas y colindancias de documentos PDF e imágenes
+                Extrae medidas y colindancias de imágenes de planos arquitectónicos
               </p>
             </div>
 
@@ -636,6 +732,59 @@ function DeslindePageInner() {
           {/* Upload Zone */}
           <UploadZone onFilesSelect={handleFilesSelect} />
 
+          {/* Selected Images List */}
+          {selectedFiles.length > 0 && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold">
+                  Imágenes seleccionadas ({selectedFiles.length})
+                </h3>
+                <Button onClick={handleProcessImages} size="lg" className="gap-2">
+                  <Play className="h-4 w-4" />
+                  Procesar imágenes
+                </Button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {selectedFiles.map((file, index) => {
+                  const imageUrl = thumbnailUrls.get(index)
+                  return (
+                    <Card key={`${file.name}-${file.size}-${index}`} className="p-4 relative group">
+                      <div className="flex items-start gap-3">
+                        <div className="flex-shrink-0 w-16 h-16 rounded-lg bg-muted flex items-center justify-center overflow-hidden">
+                          {imageUrl ? (
+                            <img
+                              src={imageUrl}
+                              alt={file.name}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate" title={file.name}>
+                            {file.name}
+                          </p>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {(file.size / 1024 / 1024).toFixed(2)} MB
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 flex-shrink-0"
+                          onClick={() => handleRemoveFile(index)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </Card>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Instructions */}
           <div className="bg-muted/30 rounded-lg p-6 space-y-4">
             <h3 className="font-semibold text-lg">Cómo funciona</h3>
@@ -650,7 +799,7 @@ function DeslindePageInner() {
                 <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-semibold">
                   2
                 </span>
-                <span>El sistema extrae automáticamente las medidas y colindancias</span>
+                <span>Haz clic en "Procesar imágenes" para que el sistema extraiga automáticamente las medidas y colindancias</span>
               </li>
               <li className="flex gap-3">
                 <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-semibold">

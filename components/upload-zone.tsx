@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useCallback, useState } from "react"
+import { useCallback, useState, useEffect, useRef } from "react"
 import { Upload, FileText, ImageIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -13,6 +13,7 @@ interface UploadZoneProps {
 
 export function UploadZone({ onFilesSelect }: UploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false)
+  const cardRef = useRef<HTMLDivElement>(null)
 
   const isValidImage = (file: File): boolean => {
     const validTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp"]
@@ -56,12 +57,63 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
           onFilesSelect(imageFiles)
         }
       }
+      // Reset input to allow selecting the same file again
+      e.target.value = ""
     },
     [onFilesSelect],
   )
 
+  const handlePaste = useCallback(
+    (e: ClipboardEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+
+      const items = e.clipboardData?.items
+      if (!items) return
+
+      const imageFiles: File[] = []
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (item.type.indexOf("image") !== -1) {
+          const file = item.getAsFile()
+          if (file && isValidImage(file)) {
+            // Generate a name for pasted images
+            const timestamp = Date.now()
+            const extension = file.type.split("/")[1] || "png"
+            const namedFile = new File([file], `pasted-image-${timestamp}.${extension}`, {
+              type: file.type,
+            })
+            imageFiles.push(namedFile)
+          }
+        }
+      }
+
+      if (imageFiles.length > 0) {
+        onFilesSelect(imageFiles)
+      }
+    },
+    [onFilesSelect],
+  )
+
+  useEffect(() => {
+    // Add paste event listener to the document
+    const handleDocumentPaste = (e: ClipboardEvent) => {
+      // Only handle paste if the card is focused or if user is clicking/pasting anywhere
+      // This allows pasting from anywhere when the upload zone is visible
+      handlePaste(e)
+    }
+
+    document.addEventListener("paste", handleDocumentPaste)
+    return () => {
+      document.removeEventListener("paste", handleDocumentPaste)
+    }
+  }, [handlePaste])
+
   return (
     <Card
+      ref={cardRef}
+      tabIndex={0}
       className={`relative border-2 border-dashed transition-all duration-200 ${
         isDragging
           ? "border-primary bg-primary/5 scale-[1.02]"
@@ -80,7 +132,7 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
         <div className="space-y-2">
           <h3 className="text-xl font-semibold text-foreground">Arrastra tus imágenes aquí</h3>
           <p className="text-sm text-muted-foreground max-w-md">
-            Sube una o más imágenes del plano arquitectónico con información de deslindes. Puedes subir múltiples imágenes si el plano tiene varias páginas.
+            Sube una o más imágenes del plano arquitectónico con información de deslindes. Puedes subir múltiples imágenes si el plano tiene varias páginas. También puedes pegar imágenes desde el portapapeles (Ctrl+V / Cmd+V).
           </p>
         </div>
 
