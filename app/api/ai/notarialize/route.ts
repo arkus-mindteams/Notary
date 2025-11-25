@@ -39,7 +39,7 @@ function buildNotarialPrompt(colindanciasText: string, unitName: string): string
     "Texto de colindancias:",
     colindanciasText,
     "",
-    "Genera el texto notarial completo siguiendo todas las reglas especificadas.",
+    "IMPORTANTE: Genera el texto notarial completo siguiendo todas las reglas especificadas. RECUERDA: TODOS los números (dígitos) que aparezcan en el texto de colindancias DEBEN convertirse a palabras escritas en el texto notarial final. Por ejemplo: '17' → 'diecisiete', '360' → 'trescientos sesenta', '17.000 m' → 'diecisiete metros'. NUNCA dejes números en dígitos en el texto final.",
   ].join("\n")
 }
 
@@ -98,7 +98,7 @@ export async function POST(req: Request) {
                 content: prompt,
               },
             ],
-            temperature: 0.3,
+            temperature: 0.1, // Baja temperatura para más consistencia en conversión de números
             max_completion_tokens: model.includes("gpt-5") || model.includes("o1") ? 2000 : undefined,
             max_tokens: model.includes("gpt-5") || model.includes("o1") ? undefined : 2000,
           }),
