@@ -3,10 +3,33 @@ async function rasterizePdfPageToPng(file: File, pageNumber: number = 1, rotatio
     throw new Error("pdf_rasterize_on_server")
   }
   console.log("[ocr-client] Rasterizing PDF → PNG", { name: file.name, pageNumber })
-  const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf")
-  if (pdfjs?.GlobalWorkerOptions) {
-    const ver = (pdfjs as any).version || "4.8.69"
-    pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${ver}/build/pdf.worker.min.js`
+  const pdfjsModule: any = await import("pdfjs-dist/legacy/build/pdf")
+  const pdfjs = pdfjsModule?.default || pdfjsModule
+  
+  if (!pdfjs?.getDocument || !pdfjs.GlobalWorkerOptions) {
+    throw new Error("No se pudo inicializar pdf.js correctamente.")
+  }
+  
+  // Configure worker - use the same method as pdf-viewer.tsx
+  const pdfVersion = pdfjs.version || '5.4.296'
+  const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfVersion}/build/pdf.worker.min.mjs`
+  
+  try {
+    // Fetch worker and create blob URL to avoid CORS issues
+    const workerResponse = await fetch(workerUrl)
+    if (workerResponse.ok) {
+      const workerText = await workerResponse.text()
+      const workerBlob = new Blob([workerText], { 
+        type: 'application/javascript' 
+      })
+      const blobUrl = URL.createObjectURL(workerBlob)
+      pdfjs.GlobalWorkerOptions.workerSrc = blobUrl
+    } else {
+      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
+    }
+  } catch (fetchError) {
+    console.warn('[ocr-client] Failed to load worker as blob, using direct URL:', fetchError)
+    pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
   }
   const arrayBuffer = await file.arrayBuffer()
   const loadingTask = pdfjs.getDocument({ data: arrayBuffer })
@@ -28,9 +51,10 @@ async function rasterizePdfPageToPng(file: File, pageNumber: number = 1, rotatio
 
 /**
  * Convert all pages of a PDF file to PNG images (one image per page)
- * Uses server-side API endpoint to avoid pdfjs-dist issues in the browser
+ * Converts PDFs directly in the browser using pdfjs-dist (client-side only)
+ * This avoids server-side dependencies and works well with Next.js serverless
  * @param file PDF file to convert
- * @param rotationDeg Rotation in degrees (0, 90, 180, 270) - currently not used, conversion happens server-side
+ * @param rotationDeg Rotation in degrees (0, 90, 180, 270)
  * @param onProgress Progress callback
  * @returns Array of File objects, one per page
  */
@@ -39,45 +63,87 @@ export async function convertPdfToImages(
   rotationDeg: number = 0,
   onProgress?: (current: number, total: number) => void
 ): Promise<File[]> {
-  console.log("[ocr-client] Converting PDF to images via server API", { name: file.name })
+  if (typeof window === "undefined") {
+    throw new Error("PDF conversion must be done in the browser")
+  }
+
+  console.log("[ocr-client] Converting PDF to images in browser", { name: file.name })
   
-  // Send PDF to server for conversion
-  const formData = new FormData()
-  formData.append("file", file)
+  // Import pdfjs-dist dynamically
+  const pdfjsModule: any = await import("pdfjs-dist/legacy/build/pdf")
+  const pdfjs = pdfjsModule?.default || pdfjsModule
   
-  const response = await fetch("/api/pdf/to-images", {
-    method: "POST",
-    body: formData,
-  })
-  
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.message || "Failed to convert PDF to images")
+  if (!pdfjs?.getDocument || !pdfjs.GlobalWorkerOptions) {
+    throw new Error("No se pudo inicializar pdf.js correctamente.")
   }
   
-  const data = await response.json() as {
-    images: Array<{ data: string; mimeType: string; pageNumber: number; fileName: string }>
-    totalPages: number
-  }
+  // Configure worker - use the same method as pdf-viewer.tsx
+  const pdfVersion = pdfjs.version || '5.4.296'
+  const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfVersion}/build/pdf.worker.min.mjs`
   
-  // Convert base64 images to File objects
-  const files: File[] = []
-  for (let i = 0; i < data.images.length; i++) {
-    const img = data.images[i]
-    onProgress?.(i + 1, data.totalPages)
-    
-    // Convert base64 to blob
-    const binaryString = atob(img.data)
-    const bytes = new Uint8Array(binaryString.length)
-    for (let j = 0; j < binaryString.length; j++) {
-      bytes[j] = binaryString.charCodeAt(j)
+  try {
+    // Fetch worker and create blob URL to avoid CORS issues (same as pdf-viewer.tsx)
+    const workerResponse = await fetch(workerUrl)
+    if (workerResponse.ok) {
+      const workerText = await workerResponse.text()
+      // Create blob with proper type for ES module worker
+      const workerBlob = new Blob([workerText], { 
+        type: 'application/javascript' 
+      })
+      const blobUrl = URL.createObjectURL(workerBlob)
+      pdfjs.GlobalWorkerOptions.workerSrc = blobUrl
+    } else {
+      // Fallback to direct CDN URL
+      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
     }
-    
-    const blob = new Blob([bytes], { type: img.mimeType })
-    const file = new File([blob], img.fileName || `page-${img.pageNumber}.png`, { type: img.mimeType })
-    files.push(file)
+  } catch (fetchError) {
+    // If fetch fails, try direct URL (might work if CDN has CORS)
+    console.warn('[ocr-client] Failed to load worker as blob, using direct URL:', fetchError)
+    pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
   }
   
+  // Load PDF document
+  const arrayBuffer = await file.arrayBuffer()
+  const loadingTask = pdfjs.getDocument({ data: arrayBuffer })
+  const pdf = await loadingTask.promise
+  
+  const totalPages = pdf.numPages
+  const files: File[] = []
+  
+  // Convert each page to image
+  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    const page = await pdf.getPage(pageNum)
+    const viewport = page.getViewport({ scale: 2.0, rotation: rotationDeg as any })
+    
+    // Create canvas element
+    const canvas = document.createElement("canvas")
+    const context = canvas.getContext("2d")
+    if (!context) throw new Error("canvas_unsupported")
+    
+    canvas.width = viewport.width
+    canvas.height = viewport.height
+    
+    // Render page to canvas
+    await page.render({ canvasContext: context, viewport }).promise
+    
+    // Convert canvas to blob
+    const blob: Blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob_failed"))), "image/png")
+    })
+    
+    // Create File object
+    const fileName = file.name.replace(/\.[^.]+$/, "") || "document"
+    const imageFile = new File(
+      [blob],
+      `${fileName}-page-${pageNum}.png`,
+      { type: "image/png" }
+    )
+    
+    files.push(imageFile)
+    onProgress?.(pageNum, totalPages)
+  }
+  
+  console.log("[ocr-client] PDF conversion complete", { pages: files.length })
   return files
 }
 

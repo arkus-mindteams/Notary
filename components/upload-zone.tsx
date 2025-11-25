@@ -24,6 +24,17 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
     )
   }
 
+  const isValidPdf = (file: File): boolean => {
+    return (
+      file.type === 'application/pdf' ||
+      file.name.toLowerCase().endsWith('.pdf')
+    )
+  }
+
+  const isValidFile = (file: File): boolean => {
+    return isValidImage(file) || isValidPdf(file)
+  }
+
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
@@ -40,7 +51,7 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
       e.stopPropagation()
       setIsDragging(false)
 
-      const files = Array.from(e.dataTransfer.files).filter(isValidImage)
+      const files = Array.from(e.dataTransfer.files).filter(isValidFile)
       if (files.length > 0) {
         onFilesSelect(files)
       }
@@ -52,7 +63,7 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files
       if (files && files.length > 0) {
-        const imageFiles = Array.from(files).filter(isValidImage)
+        const imageFiles = Array.from(files).filter(isValidFile)
         if (imageFiles.length > 0) {
           onFilesSelect(imageFiles)
         }
@@ -132,14 +143,14 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
         <div className="space-y-2">
           <h3 className="text-xl font-semibold text-foreground">Arrastra tus imágenes aquí</h3>
           <p className="text-sm text-muted-foreground max-w-md">
-            Sube una o más imágenes del plano arquitectónico con información de plantas arquitectónicas. Puedes subir múltiples imágenes si el plano tiene varias páginas. También puedes pegar imágenes desde el portapapeles (Ctrl+V / Cmd+V).
+            Sube una o más imágenes del plano arquitectónico con información de plantas arquitectónicas. También puedes subir archivos PDF que se convertirán automáticamente a imágenes. Puedes subir múltiples imágenes si el plano tiene varias páginas. También puedes pegar imágenes desde el portapapeles (Ctrl+V / Cmd+V).
           </p>
         </div>
 
-        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
             <ImageIcon className="h-4 w-4" />
-            <span>PNG, JPG, JPEG, WEBP</span>
+            <span>PNG, JPG, JPEG, WEBP, PDF</span>
           </div>
         </div>
 
@@ -148,7 +159,7 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
             type="file"
             id="file-upload"
             className="sr-only"
-            accept="image/png,image/jpeg,image/jpg,image/webp"
+            accept="image/png,image/jpeg,image/jpg,image/webp,application/pdf"
             multiple
             onChange={handleFileInput}
           />

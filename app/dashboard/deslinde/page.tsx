@@ -11,11 +11,81 @@ import { DocumentViewer } from "@/components/document-viewer"
 import { simulateOCR, type PropertyUnit } from "@/lib/ocr-simulator"
 import type { StructuredUnit, StructuringResponse } from "@/lib/ai-structuring-types"
 import { createStructuredSegments, type TransformedSegment } from "@/lib/text-transformer"
-import { FileText, Scale, Shield, ArrowLeft, X, ImageIcon, Play } from "lucide-react"
+import { FileText, Scale, Shield, ArrowLeft, X, ImageIcon, Play, Check, CheckSquare } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { Checkbox } from "@/components/ui/checkbox"
 import Link from "next/link"
 type AppState = "upload" | "processing" | "validation"
+
+// Component for PDF image selection card
+function PdfImageCard({ 
+  image, 
+  index, 
+  isSelected, 
+  onToggle 
+}: { 
+  image: File
+  index: number
+  isSelected: boolean
+  onToggle: () => void
+}) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  
+  useEffect(() => {
+    const url = URL.createObjectURL(image)
+    setImageUrl(url)
+    return () => {
+      URL.revokeObjectURL(url)
+    }
+  }, [image])
+  
+  return (
+    <Card
+      className={`p-3 cursor-pointer transition-all ${
+        isSelected ? 'ring-2 ring-primary' : ''
+      }`}
+      onClick={onToggle}
+    >
+      <div className="space-y-2">
+        <div className="relative aspect-video rounded-lg overflow-hidden bg-muted">
+          {imageUrl ? (
+            <img
+              src={imageUrl}
+              alt={`Página ${index + 1}`}
+              className="w-full h-full object-contain"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <ImageIcon className="h-8 w-8 text-muted-foreground" />
+            </div>
+          )}
+          <div className="absolute top-2 right-2">
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
+              isSelected ? 'bg-primary text-primary-foreground' : 'bg-background/80'
+            }`}>
+              {isSelected && <Check className="h-4 w-4" />}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            checked={isSelected}
+            onCheckedChange={onToggle}
+            onClick={(e) => e.stopPropagation()}
+          />
+          <label
+            className="text-sm font-medium cursor-pointer flex-1"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Página {index + 1}
+          </label>
+        </div>
+      </div>
+    </Card>
+  )
+}
 
 function DeslindePageInner() {
   const [appState, setAppState] = useState<AppState>("upload")
@@ -31,6 +101,9 @@ function DeslindePageInner() {
   const [unitBoundariesText, setUnitBoundariesText] = useState<Map<string, string>>(new Map())
   const [lotLocation, setLotLocation] = useState<string | null>(null)
   const [totalLotSurface, setTotalLotSurface] = useState<number | null>(null)
+  const [pdfConvertedImages, setPdfConvertedImages] = useState<File[]>([])
+  const [selectedPdfImages, setSelectedPdfImages] = useState<Set<number>>(new Set())
+  const [showPdfImageSelector, setShowPdfImageSelector] = useState(false)
 
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -104,29 +177,140 @@ function DeslindePageInner() {
   const handleFilesSelect = async (files: File[]) => {
     if (files.length === 0) return
     
-    // Add new files to existing ones, avoiding duplicates by name and size
-    setSelectedFiles((prevFiles) => {
-      const existingFiles = prevFiles || []
-      const newFiles = files.filter(
-        (newFile) =>
-          !existingFiles.some(
-            (existingFile) =>
-              existingFile.name === newFile.name && existingFile.size === newFile.size
-          )
-      )
-      
-      const combinedFiles = [...existingFiles, ...newFiles]
-      
-      // Update preview with first image if we didn't have one
-      if (combinedFiles.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
-        const url = URL.createObjectURL(combinedFiles[0])
-        setDocumentUrl(url)
+    // Separate PDFs and images
+    const pdfFiles = files.filter(
+      (file) => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+    )
+    const imageFiles = files.filter(
+      (file) => !pdfFiles.includes(file)
+    )
+    
+    // Convert PDFs to images
+    let convertedImages: File[] = []
+    if (pdfFiles.length > 0) {
+      try {
+        for (const pdfFile of pdfFiles) {
+          const { convertPdfToImages } = await import('@/lib/ocr-client')
+          const images = await convertPdfToImages(pdfFile)
+          convertedImages = [...convertedImages, ...images]
+        }
+        
+        // If we have converted images, show selector modal
+        if (convertedImages.length > 0) {
+          setPdfConvertedImages(convertedImages)
+          // Select all by default
+          setSelectedPdfImages(new Set(convertedImages.map((_, index) => index)))
+          setShowPdfImageSelector(true)
+          // Don't add images yet - wait for user selection
+        }
+      } catch (error) {
+        console.error('[deslinde] Error converting PDFs:', error)
+        alert('Error al convertir PDFs a imágenes. Por favor, intenta con imágenes directamente.')
+        return
       }
-      
-      return combinedFiles
+    }
+    
+    // Add regular image files immediately (not from PDF conversion)
+    if (imageFiles.length > 0) {
+      setSelectedFiles((prevFiles) => {
+        const existingFiles = prevFiles || []
+        const newFiles = imageFiles.filter(
+          (newFile) =>
+            !existingFiles.some(
+              (existingFile) =>
+                existingFile.name === newFile.name && existingFile.size === newFile.size
+            )
+        )
+        
+        const combinedFiles = [...existingFiles, ...newFiles]
+        
+        // Update preview with first image if we didn't have one
+        if (combinedFiles.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
+          const url = URL.createObjectURL(combinedFiles[0])
+          setDocumentUrl(url)
+        }
+        
+        return combinedFiles
+      })
+    }
+  }
+  
+  const handleConfirmPdfImageSelection = () => {
+    // Add only selected images from PDF conversion
+    const selectedImages = Array.from(selectedPdfImages)
+      .map(index => pdfConvertedImages[index])
+      .filter(Boolean)
+    
+    if (selectedImages.length > 0) {
+      setSelectedFiles((prevFiles) => {
+        const existingFiles = prevFiles || []
+        const newFiles = selectedImages.filter(
+          (newFile) =>
+            !existingFiles.some(
+              (existingFile) =>
+                existingFile.name === newFile.name && existingFile.size === newFile.size
+            )
+        )
+        
+        const combinedFiles = [...existingFiles, ...newFiles]
+        
+        // Update preview with first image if we didn't have one
+        if (combinedFiles.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
+          const url = URL.createObjectURL(combinedFiles[0])
+          setDocumentUrl(url)
+        }
+        
+        return combinedFiles
+      })
+    }
+    
+    // Close modal and reset
+    setShowPdfImageSelector(false)
+    setPdfConvertedImages([])
+    setSelectedPdfImages(new Set())
+  }
+  
+  const handleCancelPdfImageSelection = () => {
+    // Clean up object URLs
+    pdfConvertedImages.forEach((image) => {
+      const url = URL.createObjectURL(image)
+      URL.revokeObjectURL(url)
     })
-
-    // Stay in upload state - user will click "Procesar imágenes" button
+    
+    // Close modal and reset without adding images
+    setShowPdfImageSelector(false)
+    setPdfConvertedImages([])
+    setSelectedPdfImages(new Set())
+  }
+  
+  // Clean up PDF converted images URLs when component unmounts or images change
+  useEffect(() => {
+    return () => {
+      pdfConvertedImages.forEach((image) => {
+        // Note: We can't revoke URLs created in the modal render
+        // They will be cleaned up when the modal closes
+      })
+    }
+  }, [pdfConvertedImages])
+  
+  const togglePdfImageSelection = (index: number) => {
+    setSelectedPdfImages((prev) => {
+      const newSet = new Set(prev)
+      if (newSet.has(index)) {
+        newSet.delete(index)
+      } else {
+        newSet.add(index)
+      }
+      return newSet
+    })
+  }
+  
+  const selectAllPdfImages = () => {
+    setSelectedPdfImages(new Set(pdfConvertedImages.map((_, index) => index)))
+  }
+  
+  const deselectAllPdfImages = () => {
+    setSelectedPdfImages(new Set())
   }
 
   const handleRemoveFile = (index: number) => {
@@ -731,6 +915,71 @@ function DeslindePageInner() {
 
           {/* Upload Zone */}
           <UploadZone onFilesSelect={handleFilesSelect} />
+
+          {/* PDF Image Selection Modal */}
+          <Dialog open={showPdfImageSelector} onOpenChange={setShowPdfImageSelector}>
+            <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Selecciona las imágenes del PDF</DialogTitle>
+                <p className="text-sm text-muted-foreground">
+                  Se encontraron {pdfConvertedImages.length} página(s) en el PDF. Selecciona las que deseas procesar.
+                </p>
+              </DialogHeader>
+              
+              <div className="space-y-4">
+                {/* Select All / Deselect All buttons */}
+                <div className="flex items-center justify-between">
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={selectAllPdfImages}
+                    >
+                      Seleccionar todas
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={deselectAllPdfImages}
+                    >
+                      Deseleccionar todas
+                    </Button>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {selectedPdfImages.size} de {pdfConvertedImages.length} seleccionadas
+                  </p>
+                </div>
+
+                {/* Images Grid */}
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                  {pdfConvertedImages.map((image, index) => (
+                    <PdfImageCard
+                      key={index}
+                      image={image}
+                      index={index}
+                      isSelected={selectedPdfImages.has(index)}
+                      onToggle={() => togglePdfImageSelection(index)}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={handleCancelPdfImageSelection}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  onClick={handleConfirmPdfImageSelection}
+                  disabled={selectedPdfImages.size === 0}
+                >
+                  Agregar {selectedPdfImages.size > 0 ? `${selectedPdfImages.size} ` : ''}imagen{selectedPdfImages.size !== 1 ? 'es' : ''}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           {/* Selected Images List */}
           {selectedFiles.length > 0 && (
