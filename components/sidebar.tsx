@@ -94,7 +94,7 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
       <div className="flex-1 p-4 space-y-2">
         <Button
           variant={pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde' ? 'default' : 'ghost'}
-          className={`w-full justify-start ${
+          className={`w-full justify-start overflow-hidden ${
             isCollapsed ? 'px-2' : 'px-3'
           } ${
             pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde'
@@ -103,8 +103,8 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
           }`}
           onClick={() => handleNavigation('/dashboard/deslinde?reset=1')}
         >
-          <FileText className="h-4 w-4" />
-          {!isCollapsed && <span className="ml-3">Lectura de Deslinde</span>}
+          <FileText className="h-4 w-4 flex-shrink-0" />
+          {!isCollapsed && <span className="ml-3 truncate text-sm">Lectura de Plantas Arquitectónicas</span>}
         </Button>
       </div>
 

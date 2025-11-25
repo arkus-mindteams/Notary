@@ -11,7 +11,7 @@ export function generateNotarialDocument(
   unitSegments: Map<string, TransformedSegment[]>,
   notarialTextsByUnit?: Map<string, string>,
 ): string {
-  const header = `ESCRITURA DE DESLINDE
+  const header = `ESCRITURA DE PLANTA ARQUITECTÓNICA
 
 PROPIEDAD: ${metadata.propertyName}
 UBICACIÓN: ${metadata.location}
@@ -28,7 +28,7 @@ _______________________________________________
 
 Fecha de elaboración: ${metadata.date}
 
-Este documento ha sido generado mediante el Sistema de Interpretación Notarial de Deslindes.
+Este documento ha sido generado mediante el Sistema de Interpretación Notarial de Plantas Arquitectónicas.
 El texto notarial ha sido validado y autorizado por el usuario.
 `
 
@@ -256,5 +256,5 @@ export async function downloadDocument(content: string, filename: string) {
 export function generateFilename(propertyName: string): string {
   const date = new Date().toISOString().split("T")[0]
   const sanitizedName = propertyName.replace(/[^a-zA-Z0-9]/g, "_")
-  return `Deslinde_${sanitizedName}_${date}.docx`
+  return `PlantaArquitectonica_${sanitizedName}_${date}.docx`
 }

@@ -470,7 +470,7 @@ export function ValidationWizard({
                 <span className="hidden sm:inline text-sm">Volver</span>
               </Button>
               <div className="min-w-0 flex-1 sm:flex-initial">
-                <h1 className="text-base sm:text-lg font-semibold truncate">Validación de Deslindes</h1>
+                <h1 className="text-base sm:text-lg font-semibold truncate">Validación de Plantas Arquitectónicas</h1>
                 <p className="text-xs text-muted-foreground hidden lg:block">
                   Revisa y autoriza cada unidad antes de exportar
                 </p>

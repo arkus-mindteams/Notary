@@ -132,7 +132,7 @@ export function DocumentViewer({ documentUrl, highlightedRegion, onRegionHover, 
             >
               <Image
                 src={documentUrl || "/testdeslinde.png"}
-                alt="Documento de deslinde"
+                alt="Documento de planta arquitectónica"
                 width={1200}
                 height={900}
                 className="max-w-full h-auto shadow-lg"

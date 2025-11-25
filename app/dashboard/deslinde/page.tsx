@@ -386,7 +386,7 @@ function DeslindePageInner() {
           } else {
               // Add to current group (same direction)
             currentGroup.push(b)
-            }
+          }
         }
         
         // Add last group
@@ -694,9 +694,9 @@ function DeslindePageInner() {
         <div className="p-6 space-y-6">
           {/* Header */}
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Lectura de Deslinde</h1>
+            <h1 className="text-3xl font-bold text-gray-900 break-words">Lectura de Plantas Arquitectónicas</h1>
             <p className="text-gray-600 mt-1">
-              Procesa documentos de deslindes y genera texto notarial automáticamente
+              Procesa plantas arquitectónicas y genera texto notarial automáticamente
             </p>
           </div>
 
@@ -793,7 +793,7 @@ function DeslindePageInner() {
                 <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-semibold">
                   1
                 </span>
-                <span>Sube una o más imágenes del plano arquitectónico con información de deslindes</span>
+                <span>Sube una o más imágenes del plano arquitectónico con información de plantas arquitectónicas</span>
               </li>
               <li className="flex gap-3">
                 <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-semibold">

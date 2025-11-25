@@ -132,7 +132,7 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
         <div className="space-y-2">
           <h3 className="text-xl font-semibold text-foreground">Arrastra tus imágenes aquí</h3>
           <p className="text-sm text-muted-foreground max-w-md">
-            Sube una o más imágenes del plano arquitectónico con información de deslindes. Puedes subir múltiples imágenes si el plano tiene varias páginas. También puedes pegar imágenes desde el portapapeles (Ctrl+V / Cmd+V).
+            Sube una o más imágenes del plano arquitectónico con información de plantas arquitectónicas. Puedes subir múltiples imágenes si el plano tiene varias páginas. También puedes pegar imágenes desde el portapapeles (Ctrl+V / Cmd+V).
           </p>
         </div>
 

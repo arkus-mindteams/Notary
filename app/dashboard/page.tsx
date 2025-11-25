@@ -21,7 +21,7 @@ export default function DashboardPage() {
             Bienvenido, {user?.name}
           </h1>
           <p className="text-gray-600">
-            Sistema de Interpretación Notarial de Deslindes
+            Sistema de Interpretación Notarial de Plantas Arquitectónicas
           </p>
         </div>
 
@@ -76,12 +76,12 @@ export default function DashboardPage() {
         {/* Main Action */}
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5" />
-              Lectura de Deslinde
+            <CardTitle className="flex items-center gap-2 min-w-0">
+              <FileText className="h-5 w-5 flex-shrink-0" />
+              <span className="truncate">Lectura de Plantas Arquitectónicas</span>
             </CardTitle>
             <CardDescription>
-              Procesa documentos de deslindes y genera texto notarial automáticamente
+              Procesa plantas arquitectónicas y genera texto notarial automáticamente
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -107,9 +107,9 @@ export default function DashboardPage() {
             
             <div className="pt-4">
               <Button asChild size="lg" className="w-full md:w-auto">
-                <Link href="/dashboard/deslinde?reset=1">
-                  <Upload className="h-4 w-4 mr-2" />
-                  Iniciar Lectura de Deslinde
+                <Link href="/dashboard/deslinde?reset=1" className="flex items-center">
+                  <Upload className="h-4 w-4 mr-2 flex-shrink-0" />
+                  <span className="truncate">Iniciar Lectura de Plantas Arquitectónicas</span>
                 </Link>
               </Button>
             </div>
@@ -129,7 +129,7 @@ export default function DashboardPage() {
               <div className="flex items-center space-x-4 p-3 bg-gray-50 rounded-lg">
                 <div className="w-2 h-2 bg-green-500 rounded-full"></div>
                 <div className="flex-1">
-                  <p className="text-sm font-medium">Deslinde - Propiedad B-2</p>
+                  <p className="text-sm font-medium">Planta Arquitectónica - Propiedad B-2</p>
                   <p className="text-xs text-gray-500">Autorizado hace 2 horas</p>
                 </div>
                 <CheckCircle2 className="h-4 w-4 text-green-500" />
@@ -138,7 +138,7 @@ export default function DashboardPage() {
               <div className="flex items-center space-x-4 p-3 bg-gray-50 rounded-lg">
                 <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
                 <div className="flex-1">
-                  <p className="text-sm font-medium">Deslinde - Propiedad C-1</p>
+                  <p className="text-sm font-medium">Planta Arquitectónica - Propiedad C-1</p>
                   <p className="text-xs text-gray-500">Pendiente de revisión</p>
                 </div>
                 <Clock className="h-4 w-4 text-yellow-500" />
@@ -147,7 +147,7 @@ export default function DashboardPage() {
               <div className="flex items-center space-x-4 p-3 bg-gray-50 rounded-lg">
                 <div className="w-2 h-2 bg-green-500 rounded-full"></div>
                 <div className="flex-1">
-                  <p className="text-sm font-medium">Deslinde - Propiedad A-3</p>
+                  <p className="text-sm font-medium">Planta Arquitectónica - Propiedad A-3</p>
                   <p className="text-xs text-gray-500">Autorizado ayer</p>
                 </div>
                 <CheckCircle2 className="h-4 w-4 text-green-500" />

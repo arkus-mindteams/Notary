@@ -9,7 +9,7 @@ const _geist = Geist({ subsets: ["latin"] })
 const _geistMono = Geist_Mono({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "Sistema de Interpretación Notarial - Deslindes",
+  title: "Sistema de Interpretación Notarial - Plantas Arquitectónicas",
   description: "Sistema profesional para la interpretación y redacción notarial de medidas y colindancias",
   generator: "v0.app",
 }
