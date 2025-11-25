@@ -127,7 +127,7 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
       tabIndex={0}
       className={`relative border-2 border-dashed transition-all duration-200 ${
         isDragging
-          ? "border-primary bg-primary/5 scale-[1.02]"
+          ? "border-primary bg-primary/5 scale-[1.01]"
           : "border-border hover:border-primary/50 hover:bg-muted/30"
       }`}
       onDragEnter={handleDrag}
@@ -135,37 +135,38 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
       onDragOver={handleDrag}
       onDrop={handleDrop}
     >
-      <div className="flex flex-col items-center justify-center gap-6 p-12 text-center">
-        <div className="rounded-full bg-primary/10 p-6">
-          <Upload className="h-12 w-12 text-primary" />
-        </div>
-
-        <div className="space-y-2">
-          <h3 className="text-xl font-semibold text-foreground">Arrastra tus imágenes aquí</h3>
-          <p className="text-sm text-muted-foreground max-w-md">
-            Sube una o más imágenes del plano arquitectónico con información de plantas arquitectónicas. También puedes subir archivos PDF que se convertirán automáticamente a imágenes. Puedes subir múltiples imágenes si el plano tiene varias páginas. También puedes pegar imágenes desde el portapapeles (Ctrl+V / Cmd+V).
-          </p>
-        </div>
-
-          <div className="flex items-center gap-4 text-xs text-muted-foreground">
-          <div className="flex items-center gap-2">
-            <ImageIcon className="h-4 w-4" />
-            <span>PNG, JPG, JPEG, WEBP, PDF</span>
+      <div className="flex flex-row items-center justify-between gap-4 p-4">
+        <div className="flex items-center gap-4 flex-1 min-w-0">
+          <div className="rounded-full bg-primary/10 p-3 flex-shrink-0">
+            <Upload className="h-6 w-6 text-primary" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-semibold text-foreground mb-1">
+              Arrastra imágenes o PDFs aquí
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              También puedes pegar desde el portapapeles (Ctrl+V / Cmd+V) o hacer clic en el botón
+            </p>
           </div>
         </div>
-
-        <div className="relative">
-          <input
-            type="file"
-            id="file-upload"
-            className="sr-only"
-            accept="image/png,image/jpeg,image/jpg,image/webp,application/pdf"
-            multiple
-            onChange={handleFileInput}
-          />
-          <Button asChild size="lg" className="cursor-pointer">
-            <label htmlFor="file-upload">Seleccionar imagen(es)</label>
-          </Button>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <ImageIcon className="h-4 w-4" />
+            <span className="hidden sm:inline">PNG, JPG, PDF</span>
+          </div>
+          <div className="relative">
+            <input
+              type="file"
+              id="file-upload"
+              className="sr-only"
+              accept="image/png,image/jpeg,image/jpg,image/webp,application/pdf"
+              multiple
+              onChange={handleFileInput}
+            />
+            <Button asChild size="sm" className="cursor-pointer">
+              <label htmlFor="file-upload">Seleccionar archivos</label>
+            </Button>
+          </div>
         </div>
       </div>
     </Card>
