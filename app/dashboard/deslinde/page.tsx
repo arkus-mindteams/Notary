@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, useEffect, useState } from "react"
+import { Suspense, useEffect, useState, useRef, useCallback } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
 import { DashboardLayout } from "@/components/dashboard-layout"
 import { ProtectedRoute } from "@/components/protected-route"
@@ -11,7 +11,7 @@ import { DocumentViewer } from "@/components/document-viewer"
 import { simulateOCR, type PropertyUnit } from "@/lib/ocr-simulator"
 import type { StructuredUnit, StructuringResponse } from "@/lib/ai-structuring-types"
 import { createStructuredSegments, type TransformedSegment } from "@/lib/text-transformer"
-import { FileText, Scale, Shield, ArrowLeft, X, ImageIcon, Play, Check, CheckSquare } from "lucide-react"
+import { FileText, Scale, Shield, ArrowLeft, X, ImageIcon, Play, Check, CheckSquare, RotateCw, RotateCcw, Crop, ZoomIn, ZoomOut, Maximize2, Move } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
@@ -19,19 +19,131 @@ import { Checkbox } from "@/components/ui/checkbox"
 import Link from "next/link"
 type AppState = "upload" | "processing" | "validation"
 
+// Helper function to rotate an image file
+async function rotateImageFile(file: File, rotation: number): Promise<File> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        reject(new Error('Could not get canvas context'))
+        return
+      }
+      
+      // Calculate new dimensions based on rotation
+      if (rotation === 90 || rotation === 270) {
+        canvas.width = img.height
+        canvas.height = img.width
+      } else {
+        canvas.width = img.width
+        canvas.height = img.height
+      }
+      
+      // Configure canvas for high-quality rendering
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = "high"
+      
+      // Translate and rotate
+      ctx.translate(canvas.width / 2, canvas.height / 2)
+      ctx.rotate((rotation * Math.PI) / 180)
+      ctx.drawImage(img, -img.width / 2, -img.height / 2)
+      
+      // Convert to blob and then to File with maximum quality
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error('Failed to create blob'))
+          return
+        }
+        const rotatedFile = new File([blob], file.name, { type: file.type })
+        resolve(rotatedFile)
+      }, file.type, 1.0) // 1.0 = maximum quality for PNG
+    }
+    
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('Failed to load image'))
+    }
+    
+    img.src = url
+  })
+}
+
+// Helper function to crop an image file
+async function cropImageFile(file: File, cropArea: { x: number; y: number; width: number; height: number }): Promise<File> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        reject(new Error('Could not get canvas context'))
+        return
+      }
+      
+      // Set canvas size to crop dimensions
+      canvas.width = cropArea.width
+      canvas.height = cropArea.height
+      
+      // Configure canvas for high-quality rendering
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = "high"
+      
+      // Draw only the cropped portion
+      ctx.drawImage(
+        img,
+        cropArea.x, cropArea.y, cropArea.width, cropArea.height, // Source rectangle
+        0, 0, cropArea.width, cropArea.height // Destination rectangle
+      )
+      
+      // Convert to blob with maximum quality
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error('Failed to create blob'))
+          return
+        }
+        const croppedFile = new File([blob], file.name.replace(/\.(png|jpg|jpeg)$/i, '-cropped.$1'), { type: file.type })
+        resolve(croppedFile)
+      }, file.type, 1.0)
+    }
+    
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('Failed to load image'))
+    }
+    
+    img.src = url
+  })
+}
+
 // Component for PDF image selection card
 function PdfImageCard({ 
   image, 
   index, 
   isSelected, 
-  onToggle 
+  onToggle,
+  rotation,
+  onEdit,
+  hasCrop
 }: { 
   image: File
   index: number
   isSelected: boolean
   onToggle: () => void
+  rotation: number
+  onEdit: (index: number) => void
+  hasCrop: boolean
 }) {
   const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const [rotatedImageUrl, setRotatedImageUrl] = useState<string | null>(null)
   
   useEffect(() => {
     const url = URL.createObjectURL(image)
@@ -41,18 +153,61 @@ function PdfImageCard({
     }
   }, [image])
   
+  // Apply rotation to image URL
+  useEffect(() => {
+    if (!imageUrl || rotation === 0) {
+      setRotatedImageUrl(imageUrl)
+      return
+    }
+    
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        setRotatedImageUrl(imageUrl)
+        return
+      }
+      
+      // Calculate new dimensions
+      if (rotation === 90 || rotation === 270) {
+        canvas.width = img.height
+        canvas.height = img.width
+      } else {
+        canvas.width = img.width
+        canvas.height = img.height
+      }
+      
+      // Rotate and draw
+      ctx.translate(canvas.width / 2, canvas.height / 2)
+      ctx.rotate((rotation * Math.PI) / 180)
+      ctx.drawImage(img, -img.width / 2, -img.height / 2)
+      
+      const rotatedUrl = canvas.toDataURL()
+      if (rotatedImageUrl && rotatedImageUrl !== imageUrl && !rotatedImageUrl.startsWith('data:')) {
+        URL.revokeObjectURL(rotatedImageUrl)
+      }
+      setRotatedImageUrl(rotatedUrl)
+    }
+    
+    img.onerror = () => {
+      setRotatedImageUrl(imageUrl)
+    }
+    
+    img.src = imageUrl
+  }, [imageUrl, rotation])
+  
   return (
     <Card
-      className={`p-3 cursor-pointer transition-all ${
+      className={`p-3 transition-all ${
         isSelected ? 'ring-2 ring-primary' : ''
       }`}
-      onClick={onToggle}
     >
       <div className="space-y-2">
-        <div className="relative aspect-video rounded-lg overflow-hidden bg-muted">
-          {imageUrl ? (
+        <div className="relative aspect-video rounded-lg overflow-hidden bg-muted group">
+          {rotatedImageUrl ? (
             <img
-              src={imageUrl}
+              src={rotatedImageUrl}
               alt={`Página ${index + 1}`}
               className="w-full h-full object-contain"
             />
@@ -68,6 +223,32 @@ function PdfImageCard({
               {isSelected && <Check className="h-4 w-4" />}
             </div>
           </div>
+          {/* Edit button - visible on hover */}
+          <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="bg-background/90 hover:bg-background text-xs"
+              onClick={(e) => {
+                e.stopPropagation()
+                onEdit(index)
+              }}
+            >
+              Editar
+            </Button>
+          </div>
+          <div className="absolute top-2 left-2 flex gap-2">
+            {rotation !== 0 && (
+              <div className="bg-primary/90 text-primary-foreground text-xs px-2 py-1 rounded">
+                {rotation}°
+              </div>
+            )}
+            {hasCrop && (
+              <div className="bg-green-600/90 text-white text-xs px-2 py-1 rounded">
+                Área seleccionada
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Checkbox
@@ -77,7 +258,10 @@ function PdfImageCard({
           />
           <label
             className="text-sm font-medium cursor-pointer flex-1"
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggle()
+            }}
           >
             Página {index + 1}
           </label>
@@ -104,6 +288,10 @@ function DeslindePageInner() {
   const [pdfConvertedImages, setPdfConvertedImages] = useState<File[]>([])
   const [selectedPdfImages, setSelectedPdfImages] = useState<Set<number>>(new Set())
   const [showPdfImageSelector, setShowPdfImageSelector] = useState(false)
+  const [imageRotations, setImageRotations] = useState<Map<number, number>>(new Map())
+  const [imageCrops, setImageCrops] = useState<Map<number, { x: number; y: number; width: number; height: number }>>(new Map())
+  const [showCropDialog, setShowCropDialog] = useState(false)
+  const [currentCropIndex, setCurrentCropIndex] = useState<number | null>(null)
 
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -200,6 +388,9 @@ function DeslindePageInner() {
           setPdfConvertedImages(convertedImages)
           // Select all by default
           setSelectedPdfImages(new Set(convertedImages.map((_, index) => index)))
+          // Reset rotations and crops for new images
+          setImageRotations(new Map())
+          setImageCrops(new Map())
           setShowPdfImageSelector(true)
           // Don't add images yet - wait for user selection
         }
@@ -235,16 +426,44 @@ function DeslindePageInner() {
     }
   }
   
-  const handleConfirmPdfImageSelection = () => {
-    // Add only selected images from PDF conversion
-    const selectedImages = Array.from(selectedPdfImages)
-      .map(index => pdfConvertedImages[index])
-      .filter(Boolean)
+  const handleConfirmPdfImageSelection = async () => {
+    // Add only selected images from PDF conversion with rotations and crops applied
+    const selectedIndices = Array.from(selectedPdfImages)
+    const processedImages: File[] = []
     
-    if (selectedImages.length > 0) {
+    for (const index of selectedIndices) {
+      let image = pdfConvertedImages[index]
+      if (!image) continue
+      
+      // Apply rotation first
+      const rotation = imageRotations.get(index) || 0
+      if (rotation !== 0) {
+        try {
+          image = await rotateImageFile(image, rotation)
+        } catch (error) {
+          console.error(`Error rotating image ${index}:`, error)
+          // If rotation fails, continue with original image
+        }
+      }
+      
+      // Apply crop if exists
+      const cropArea = imageCrops.get(index)
+      if (cropArea) {
+        try {
+          image = await cropImageFile(image, cropArea)
+        } catch (error) {
+          console.error(`Error cropping image ${index}:`, error)
+          // If crop fails, continue with rotated image
+        }
+      }
+      
+      processedImages.push(image)
+    }
+    
+    if (processedImages.length > 0) {
       setSelectedFiles((prevFiles) => {
         const existingFiles = prevFiles || []
-        const newFiles = selectedImages.filter(
+        const newFiles = processedImages.filter(
           (newFile) =>
             !existingFiles.some(
               (existingFile) =>
@@ -268,6 +487,8 @@ function DeslindePageInner() {
     setShowPdfImageSelector(false)
     setPdfConvertedImages([])
     setSelectedPdfImages(new Set())
+    setImageRotations(new Map())
+    setImageCrops(new Map())
   }
   
   const handleCancelPdfImageSelection = () => {
@@ -281,6 +502,41 @@ function DeslindePageInner() {
     setShowPdfImageSelector(false)
     setPdfConvertedImages([])
     setSelectedPdfImages(new Set())
+    setImageRotations(new Map())
+  }
+  
+  const handleRotateImage = (index: number, delta: number) => {
+    setImageRotations((prev) => {
+      const newRotations = new Map(prev)
+      const currentRotation = newRotations.get(index) || 0
+      const newRotation = (currentRotation + delta) % 360
+      // Normalize to 0-360 range
+      const normalizedRotation = newRotation < 0 ? newRotation + 360 : newRotation
+      newRotations.set(index, normalizedRotation)
+      return newRotations
+    })
+  }
+  
+  const handleCropImage = (index: number) => {
+    setCurrentCropIndex(index)
+    setShowCropDialog(true)
+  }
+  
+  const handleSaveCrop = (cropArea: { x: number; y: number; width: number; height: number }) => {
+    if (currentCropIndex !== null) {
+      setImageCrops((prev) => {
+        const newCrops = new Map(prev)
+        newCrops.set(currentCropIndex, cropArea)
+        return newCrops
+      })
+    }
+    setShowCropDialog(false)
+    setCurrentCropIndex(null)
+  }
+  
+  const handleCancelCrop = () => {
+    setShowCropDialog(false)
+    setCurrentCropIndex(null)
   }
   
   // Clean up PDF converted images URLs when component unmounts or images change
@@ -884,74 +1140,12 @@ function DeslindePageInner() {
             </p>
           </div>
 
-          {/* How it Works Section */}
-          <div className="bg-gradient-to-br from-primary/5 via-primary/3 to-background rounded-xl border border-primary/10 p-6 md:p-8">
-            <div className="mb-6">
-              <h2 className="text-2xl font-bold text-foreground mb-2">¿Cómo funciona?</h2>
-              <p className="text-muted-foreground">
-                Sigue estos pasos simples para procesar tus plantas arquitectónicas y generar el texto notarial
-              </p>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <Card className="p-5 border-2 border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                <div className="flex flex-col items-start gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="rounded-full bg-primary text-primary-foreground w-10 h-10 flex items-center justify-center font-bold text-lg flex-shrink-0">
-                      1
-                    </div>
-                    <h3 className="font-semibold text-base">Sube tus documentos</h3>
-                  </div>
-                  <p className="text-sm text-muted-foreground leading-relaxed">
-                    Arrastra imágenes o PDFs de plantas arquitectónicas. También puedes pegarlas desde el portapapeles.
-                  </p>
-                </div>
-              </Card>
-
-              <Card className="p-5 border-2 border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                <div className="flex flex-col items-start gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="rounded-full bg-primary text-primary-foreground w-10 h-10 flex items-center justify-center font-bold text-lg flex-shrink-0">
-                      2
-                    </div>
-                    <h3 className="font-semibold text-base">Procesa con IA</h3>
-                  </div>
-                  <p className="text-sm text-muted-foreground leading-relaxed">
-                    El sistema utiliza inteligencia artificial para extraer automáticamente medidas, colindancias y superficies.
-                  </p>
-                </div>
-              </Card>
-
-              <Card className="p-5 border-2 border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                <div className="flex flex-col items-start gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="rounded-full bg-primary text-primary-foreground w-10 h-10 flex items-center justify-center font-bold text-lg flex-shrink-0">
-                      3
-                    </div>
-                    <h3 className="font-semibold text-base">Revisa y edita</h3>
-                  </div>
-                  <p className="text-sm text-muted-foreground leading-relaxed">
-                    Valida la información extraída y edita el texto notarial generado según tus necesidades.
-                  </p>
-                </div>
-              </Card>
-
-              <Card className="p-5 border-2 border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                <div className="flex flex-col items-start gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="rounded-full bg-primary text-primary-foreground w-10 h-10 flex items-center justify-center font-bold text-lg flex-shrink-0">
-                      4
-                    </div>
-                    <h3 className="font-semibold text-base">Exporta el resultado</h3>
-                  </div>
-                  <p className="text-sm text-muted-foreground leading-relaxed">
-                    Obtén tu documento final en formato notarial listo para usar en tus escrituras.
-                  </p>
-                </div>
-              </Card>
-            </div>
+          {/* Upload Zone - Top */}
+          <div>
+            <UploadZone onFilesSelect={handleFilesSelect} />
           </div>
 
-          {/* Selected Images List - Main Content */}
+          {/* Selected Images List - Middle */}
           {selectedFiles.length > 0 ? (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
@@ -1014,9 +1208,71 @@ function DeslindePageInner() {
             </div>
           )}
 
-          {/* Compact Upload Zone */}
-          <div className="border-t pt-6">
-            <UploadZone onFilesSelect={handleFilesSelect} />
+          {/* How it Works Section - Bottom */}
+          <div className="bg-gradient-to-br from-primary/5 via-primary/3 to-background rounded-lg border border-primary/10 p-4 md:p-5">
+            <div className="mb-3">
+              <h2 className="text-lg font-semibold text-foreground mb-1">¿Cómo funciona?</h2>
+              <p className="text-xs text-muted-foreground">
+                Sigue estos pasos simples para procesar tus plantas arquitectónicas
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                      1
+                    </div>
+                    <h3 className="font-medium text-sm">Sube tus documentos</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    Arrastra imágenes o PDFs. También puedes pegarlas desde el portapapeles.
+                  </p>
+                </div>
+              </Card>
+
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                      2
+                    </div>
+                    <h3 className="font-medium text-sm">Procesa con IA</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    La IA extrae automáticamente medidas, colindancias y superficies.
+                  </p>
+                </div>
+              </Card>
+
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                      3
+                    </div>
+                    <h3 className="font-medium text-sm">Revisa y edita</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    Valida la información y edita el texto notarial según tus necesidades.
+                  </p>
+                </div>
+              </Card>
+
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                      4
+                    </div>
+                    <h3 className="font-medium text-sm">Exporta el resultado</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    Obtén tu documento final en formato notarial listo para usar.
+                  </p>
+                </div>
+              </Card>
+            </div>
           </div>
 
           {/* PDF Image Selection Modal */}
@@ -1055,15 +1311,22 @@ function DeslindePageInner() {
 
                 {/* Images Grid */}
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  {pdfConvertedImages.map((image, index) => (
-                    <PdfImageCard
-                      key={index}
-                      image={image}
-                      index={index}
-                      isSelected={selectedPdfImages.has(index)}
-                      onToggle={() => togglePdfImageSelection(index)}
-                    />
-                  ))}
+                  {pdfConvertedImages.map((image, index) => {
+                    const rotation = imageRotations.get(index) || 0
+                    const hasCrop = imageCrops.has(index)
+                    return (
+                      <PdfImageCard
+                        key={index}
+                        image={image}
+                        index={index}
+                        isSelected={selectedPdfImages.has(index)}
+                        onToggle={() => togglePdfImageSelection(index)}
+                        rotation={rotation}
+                        onEdit={handleCropImage}
+                        hasCrop={hasCrop}
+                      />
+                    )
+                  })}
                 </div>
               </div>
 
@@ -1083,9 +1346,670 @@ function DeslindePageInner() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+
+          {/* Area Selection Dialog */}
+          <Dialog open={showCropDialog} onOpenChange={setShowCropDialog}>
+            <DialogContent className="max-w-7xl w-[95vw] max-h-[90vh] overflow-hidden flex flex-col">
+              <DialogHeader>
+                <DialogTitle className="text-xl">Seleccionar área de procesamiento</DialogTitle>
+                <p className="text-sm text-muted-foreground mt-2">
+                  Selecciona el área de la imagen que deseas procesar. Solo esa área será enviada para el análisis.
+                </p>
+              </DialogHeader>
+              
+              {currentCropIndex !== null && pdfConvertedImages[currentCropIndex] && (
+                <ImageCropEditor
+                  image={pdfConvertedImages[currentCropIndex]}
+                  rotation={imageRotations.get(currentCropIndex) || 0}
+                  initialCrop={imageCrops.get(currentCropIndex)}
+                  onSave={handleSaveCrop}
+                  onCancel={handleCancelCrop}
+                  onRotationChange={(newRotation) => {
+                    if (currentCropIndex !== null) {
+                      setImageRotations(prev => {
+                        const newRotations = new Map(prev)
+                        newRotations.set(currentCropIndex, newRotation)
+                        return newRotations
+                      })
+                    }
+                  }}
+                />
+              )}
+            </DialogContent>
+          </Dialog>
         </div>
       </DashboardLayout>
     </ProtectedRoute>
+  )
+}
+
+// Area Selection Editor Component with advanced controls
+function ImageCropEditor({
+  image,
+  rotation = 0,
+  initialCrop,
+  onSave,
+  onCancel,
+  onRotationChange
+}: {
+  image: File
+  rotation?: number
+  initialCrop?: { x: number; y: number; width: number; height: number }
+  onSave: (cropArea: { x: number; y: number; width: number; height: number }) => void
+  onCancel: () => void
+  onRotationChange?: (rotation: number) => void
+}) {
+  const [originalImageUrl, setOriginalImageUrl] = useState<string | null>(null)
+  const [rotatedImageUrl, setRotatedImageUrl] = useState<string | null>(null)
+  const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [isMoving, setIsMoving] = useState(false)
+  const [isResizing, setIsResizing] = useState<string | null>(null) // 'nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'
+  const [startPos, setStartPos] = useState<{ x: number; y: number } | null>(null)
+  const [initialCropArea, setInitialCropArea] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
+  const [cropArea, setCropArea] = useState<{ x: number; y: number; width: number; height: number } | null>(
+    initialCrop || null
+  )
+  const [zoom, setZoom] = useState(1.0)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [isPanning, setIsPanning] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const imageRef = useRef<HTMLImageElement>(null)
+
+  useEffect(() => {
+    const url = URL.createObjectURL(image)
+    setOriginalImageUrl(url)
+    return () => {
+      URL.revokeObjectURL(url)
+    }
+  }, [image])
+
+  // Apply rotation to image for display
+  useEffect(() => {
+    if (!originalImageUrl || rotation === 0) {
+      setRotatedImageUrl(originalImageUrl)
+      return
+    }
+
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        setRotatedImageUrl(originalImageUrl)
+        return
+      }
+
+      // Configure canvas for high-quality rendering
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = "high"
+
+      // Calculate new dimensions based on rotation
+      if (rotation === 90 || rotation === 270) {
+        canvas.width = img.height
+        canvas.height = img.width
+      } else {
+        canvas.width = img.width
+        canvas.height = img.height
+      }
+
+      // Rotate and draw
+      ctx.translate(canvas.width / 2, canvas.height / 2)
+      ctx.rotate((rotation * Math.PI) / 180)
+      ctx.drawImage(img, -img.width / 2, -img.height / 2)
+
+      const rotatedUrl = canvas.toDataURL('image/png', 1.0)
+      setRotatedImageUrl(rotatedUrl)
+      
+      // Update image size based on rotated dimensions
+      setImageSize({ width: canvas.width, height: canvas.height })
+    }
+
+    img.onerror = () => {
+      setRotatedImageUrl(originalImageUrl)
+    }
+
+    img.src = originalImageUrl
+  }, [originalImageUrl, rotation])
+
+  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget
+    // If already set from rotation effect, don't override
+    if (!imageSize) {
+      setImageSize({ width: img.naturalWidth, height: img.naturalHeight })
+    }
+    if (!cropArea && initialCrop) {
+      setCropArea(initialCrop)
+    }
+  }
+
+  const imageSizeRef = useRef(imageSize)
+  useEffect(() => {
+    imageSizeRef.current = imageSize
+  }, [imageSize])
+
+  const getRelativePos = useCallback((clientX: number, clientY: number) => {
+    if (!containerRef.current || !imageRef.current || !imageSizeRef.current) return null
+    
+    // getBoundingClientRect already accounts for CSS transforms (zoom and pan)
+    const imgRect = imageRef.current.getBoundingClientRect()
+    
+    // Calculate position relative to the displayed image
+    const scaleX = imageSizeRef.current.width / imgRect.width
+    const scaleY = imageSizeRef.current.height / imgRect.height
+    
+    const x = (clientX - imgRect.left) * scaleX
+    const y = (clientY - imgRect.top) * scaleY
+    
+    // Clamp to image bounds
+    return {
+      x: Math.max(0, Math.min(imageSizeRef.current.width, x)),
+      y: Math.max(0, Math.min(imageSizeRef.current.height, y))
+    }
+  }, [])
+
+  // Check if clicking on resize handle
+  const getHandleAtPos = (clientX: number, clientY: number, displayCrop: { left: number; top: number; width: number; height: number }) => {
+    if (!containerRef.current) return null
+    
+    const containerRect = containerRef.current.getBoundingClientRect()
+    const x = clientX - containerRect.left
+    const y = clientY - containerRect.top
+    
+    const handleSize = 12
+    const handles = {
+      nw: { x: displayCrop.left, y: displayCrop.top },
+      ne: { x: displayCrop.left + displayCrop.width, y: displayCrop.top },
+      sw: { x: displayCrop.left, y: displayCrop.top + displayCrop.height },
+      se: { x: displayCrop.left + displayCrop.width, y: displayCrop.top + displayCrop.height },
+      n: { x: displayCrop.left + displayCrop.width / 2, y: displayCrop.top },
+      s: { x: displayCrop.left + displayCrop.width / 2, y: displayCrop.top + displayCrop.height },
+      e: { x: displayCrop.left + displayCrop.width, y: displayCrop.top + displayCrop.height / 2 },
+      w: { x: displayCrop.left, y: displayCrop.top + displayCrop.height / 2 },
+    }
+    
+    for (const [handle, pos] of Object.entries(handles)) {
+      if (Math.abs(x - pos.x) < handleSize && Math.abs(y - pos.y) < handleSize) {
+        return handle
+      }
+    }
+    return null
+  }
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (!imageSize || !containerRef.current || !imageRef.current) return
+    
+    const displayCrop = getDisplayCrop()
+    
+    // Check if clicking on pan area (with shift key or middle mouse)
+    if (e.shiftKey || e.button === 1) {
+      setIsPanning(true)
+      setStartPos({ x: e.clientX, y: e.clientY })
+      return
+    }
+    
+    // Check if clicking on existing crop area
+    if (displayCrop && cropArea && cropArea.width > 0 && cropArea.height > 0) {
+      // Check if clicking on resize handle
+      const handle = getHandleAtPos(e.clientX, e.clientY, displayCrop)
+      if (handle) {
+        setIsResizing(handle)
+        // Store initial mouse position and crop area for resizing
+        const pos = getRelativePos(e.clientX, e.clientY)
+        if (pos && cropArea) {
+          setStartPos(pos)
+          setInitialCropArea({ ...cropArea })
+        }
+        return
+      }
+      
+      // Check if clicking inside crop area (to move it)
+      const containerRect = containerRef.current.getBoundingClientRect()
+      const x = e.clientX - containerRect.left
+      const y = e.clientY - containerRect.top
+      
+      if (x >= displayCrop.left && x <= displayCrop.left + displayCrop.width &&
+          y >= displayCrop.top && y <= displayCrop.top + displayCrop.height) {
+        setIsMoving(true)
+        const pos = getRelativePos(e.clientX, e.clientY)
+        if (pos) {
+          setStartPos(pos)
+        }
+        return
+      }
+    }
+    
+    // Start new selection
+    const pos = getRelativePos(e.clientX, e.clientY)
+    if (!pos) return
+    
+    setIsDragging(true)
+    setStartPos(pos)
+    setCropArea({ x: pos.x, y: pos.y, width: 0, height: 0 })
+  }
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!startPos || !imageSizeRef.current) return
+    
+    // Handle panning
+    if (isPanning) {
+      const deltaX = e.clientX - startPos.x
+      const deltaY = e.clientY - startPos.y
+      setPan(prev => ({ x: prev.x + deltaX, y: prev.y + deltaY }))
+      setStartPos({ x: e.clientX, y: e.clientY })
+      return
+    }
+    
+    // Handle resizing
+    if (isResizing && initialCropArea && startPos) {
+      const pos = getRelativePos(e.clientX, e.clientY)
+      if (!pos) return
+      
+      let newArea = { ...initialCropArea }
+      const deltaX = pos.x - startPos.x
+      const deltaY = pos.y - startPos.y
+      
+      switch (isResizing) {
+        case 'nw':
+          newArea.x = Math.max(0, initialCropArea.x + deltaX)
+          newArea.y = Math.max(0, initialCropArea.y + deltaY)
+          newArea.width = initialCropArea.width - deltaX
+          newArea.height = initialCropArea.height - deltaY
+          break
+        case 'ne':
+          newArea.y = Math.max(0, initialCropArea.y + deltaY)
+          newArea.width = initialCropArea.width + deltaX
+          newArea.height = initialCropArea.height - deltaY
+          break
+        case 'sw':
+          newArea.x = Math.max(0, initialCropArea.x + deltaX)
+          newArea.width = initialCropArea.width - deltaX
+          newArea.height = initialCropArea.height + deltaY
+          break
+        case 'se':
+          newArea.width = initialCropArea.width + deltaX
+          newArea.height = initialCropArea.height + deltaY
+          break
+        case 'n':
+          newArea.y = Math.max(0, initialCropArea.y + deltaY)
+          newArea.height = initialCropArea.height - deltaY
+          break
+        case 's':
+          newArea.height = initialCropArea.height + deltaY
+          break
+        case 'e':
+          newArea.width = initialCropArea.width + deltaX
+          break
+        case 'w':
+          newArea.x = Math.max(0, initialCropArea.x + deltaX)
+          newArea.width = initialCropArea.width - deltaX
+          break
+      }
+      
+      // Ensure minimum size
+      if (newArea.width > 10 && newArea.height > 10) {
+        // Clamp to image bounds
+        if (newArea.x < 0) {
+          newArea.width += newArea.x
+          newArea.x = 0
+        }
+        if (newArea.y < 0) {
+          newArea.height += newArea.y
+          newArea.y = 0
+        }
+        if (newArea.x + newArea.width > imageSizeRef.current.width) {
+          newArea.width = imageSizeRef.current.width - newArea.x
+        }
+        if (newArea.y + newArea.height > imageSizeRef.current.height) {
+          newArea.height = imageSizeRef.current.height - newArea.y
+        }
+        
+        // Only set if still valid after clamping
+        if (newArea.width > 10 && newArea.height > 10) {
+          setCropArea(newArea)
+        }
+      }
+      return
+    }
+    
+    // Handle moving existing crop
+    if (isMoving && cropArea && cropArea.width > 0 && cropArea.height > 0) {
+      const pos = getRelativePos(e.clientX, e.clientY)
+      if (!pos || !startPos) return
+      
+      const deltaX = pos.x - startPos.x
+      const deltaY = pos.y - startPos.y
+      
+      const newX = Math.max(0, Math.min(imageSizeRef.current.width - cropArea.width, cropArea.x + deltaX))
+      const newY = Math.max(0, Math.min(imageSizeRef.current.height - cropArea.height, cropArea.y + deltaY))
+      
+      setCropArea({ ...cropArea, x: newX, y: newY })
+      setStartPos(pos)
+      return
+    }
+    
+    // Handle creating new selection
+    if (isDragging) {
+      const pos = getRelativePos(e.clientX, e.clientY)
+      if (!pos) return
+      
+      const width = pos.x - startPos.x
+      const height = pos.y - startPos.y
+      
+      const newX = Math.max(0, Math.min(startPos.x, startPos.x + width))
+      const newY = Math.max(0, Math.min(startPos.y, startPos.y + height))
+      const newWidth = Math.max(10, Math.min(imageSizeRef.current.width - newX, Math.abs(width)))
+      const newHeight = Math.max(10, Math.min(imageSizeRef.current.height - newY, Math.abs(height)))
+      
+      setCropArea({
+        x: newX,
+        y: newY,
+        width: newWidth,
+        height: newHeight
+      })
+    }
+  }, [isDragging, isMoving, isResizing, isPanning, startPos, cropArea, getRelativePos])
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false)
+    setIsMoving(false)
+    setIsResizing(null)
+    setIsPanning(false)
+    setInitialCropArea(null)
+  }, [])
+
+  useEffect(() => {
+    if (isDragging || isMoving || isResizing || isPanning) {
+      document.addEventListener('mousemove', handleMouseMove)
+      document.addEventListener('mouseup', handleMouseUp)
+      return () => {
+        document.removeEventListener('mousemove', handleMouseMove)
+        document.removeEventListener('mouseup', handleMouseUp)
+      }
+    }
+  }, [isDragging, isMoving, isResizing, isPanning, handleMouseMove, handleMouseUp])
+  
+  // Reset crop area to full image
+  const handleSelectAll = () => {
+    if (imageSize) {
+      setCropArea({
+        x: 0,
+        y: 0,
+        width: imageSize.width,
+        height: imageSize.height
+      })
+      setZoom(1.0)
+      setPan({ x: 0, y: 0 })
+    }
+  }
+  
+  // Reset zoom and pan
+  const handleResetView = () => {
+    setZoom(1.0)
+    setPan({ x: 0, y: 0 })
+  }
+
+  const getDisplayCrop = () => {
+    if (!cropArea || !imageSize || !imageRef.current || !containerRef.current) return null
+    
+    // Since the image is inside a div with transform, we need to calculate based on the container
+    const containerRect = containerRef.current.getBoundingClientRect()
+    const imgRect = imageRef.current.getBoundingClientRect()
+    
+    // The image is centered and then transformed, so we need to find its actual position
+    // The transform applies: translate(pan.x, pan.y) scale(zoom) with origin center
+    // So the image's actual position relative to container is:
+    const containerCenterX = containerRect.width / 2
+    const containerCenterY = containerRect.height / 2
+    
+    // Image natural size scaled
+    const scaledWidth = imgRect.width / zoom * zoom
+    const scaledHeight = imgRect.height / zoom * zoom
+    
+    // Image position accounting for centering and transform
+    const imgActualLeft = containerCenterX - scaledWidth / 2 + pan.x
+    const imgActualTop = containerCenterY - scaledHeight / 2 + pan.y
+    
+    // Scale factor from image coordinates to display coordinates
+    const scaleX = scaledWidth / imageSize.width
+    const scaleY = scaledHeight / imageSize.height
+    
+    return {
+      left: imgActualLeft + cropArea.x * scaleX,
+      top: imgActualTop + cropArea.y * scaleY,
+      width: cropArea.width * scaleX,
+      height: cropArea.height * scaleY
+    }
+  }
+
+  const displayCrop = getDisplayCrop()
+
+  const getCursor = () => {
+    if (isPanning) return 'move'
+    if (isResizing) {
+      const cursors: Record<string, string> = {
+        'nw': 'nw-resize', 'ne': 'ne-resize', 'sw': 'sw-resize', 'se': 'se-resize',
+        'n': 'n-resize', 's': 's-resize', 'e': 'e-resize', 'w': 'w-resize'
+      }
+      return cursors[isResizing] || 'crosshair'
+    }
+    if (isMoving) return 'move'
+    if (isDragging) return 'crosshair'
+    return 'crosshair'
+  }
+
+  const handleRotateLeft = useCallback(() => {
+    const newRotation = ((rotation || 0) - 90 + 360) % 360
+    if (onRotationChange) {
+      onRotationChange(newRotation)
+    }
+  }, [rotation, onRotationChange])
+
+  const handleRotateRight = useCallback(() => {
+    const newRotation = ((rotation || 0) + 90) % 360
+    if (onRotationChange) {
+      onRotationChange(newRotation)
+    }
+  }, [rotation, onRotationChange])
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-3 mb-4 pb-3 border-b">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setZoom(prev => Math.max(0.5, prev - 0.1))}
+            disabled={zoom <= 0.5}
+            title="Alejar"
+          >
+            <ZoomOut className="h-4 w-4" />
+          </Button>
+          <span className="text-sm font-medium text-foreground min-w-[65px] text-center">
+            {Math.round(zoom * 100)}%
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setZoom(prev => Math.min(3.0, prev + 0.1))}
+            disabled={zoom >= 3.0}
+            title="Acercar"
+          >
+            <ZoomIn className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleResetView}
+            title="Resetear zoom y posición"
+          >
+            <Maximize2 className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSelectAll}
+          >
+            Seleccionar toda la imagen
+          </Button>
+        </div>
+        <div className="flex items-center gap-2 ml-auto">
+          {/* Rotation controls */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRotateLeft}
+            title="Rotar 90° izquierda"
+          >
+            <RotateCcw className="h-4 w-4" />
+          </Button>
+          <span className="text-sm text-muted-foreground min-w-[60px] text-center">
+            {rotation !== 0 ? `${rotation}°` : '0°'}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRotateRight}
+            title="Rotar 90° derecha"
+          >
+            <RotateCw className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="text-xs text-muted-foreground w-full mt-2">
+          {isPanning ? 'Arrastra para mover la vista' : 
+           isResizing ? 'Arrastra para redimensionar' :
+           isMoving ? 'Arrastra para mover el área' :
+           'Arrastra para seleccionar | Shift+arrastra para mover vista'}
+        </div>
+      </div>
+      
+      <div
+        ref={containerRef}
+        className="relative flex-1 overflow-hidden bg-muted rounded-lg"
+        onMouseDown={handleMouseDown}
+        style={{ cursor: getCursor() }}
+        onWheel={(e) => {
+          e.preventDefault()
+          const delta = e.deltaY > 0 ? -0.1 : 0.1
+          setZoom(prev => Math.max(0.5, Math.min(3.0, prev + delta)))
+        }}
+      >
+        <div
+          className="relative w-full h-full flex items-center justify-center"
+          style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transformOrigin: 'center center'
+          }}
+        >
+          {rotatedImageUrl && (
+            <>
+              <img
+                ref={imageRef}
+                src={rotatedImageUrl}
+                alt="Imagen para seleccionar área"
+                className="max-w-full max-h-full object-contain"
+                onLoad={handleImageLoad}
+                draggable={false}
+              />
+              {displayCrop && displayCrop.width > 0 && displayCrop.height > 0 && (
+                <>
+                  {/* Dimmed overlay outside crop area */}
+                  <div
+                    className="absolute inset-0 bg-black/40 pointer-events-none"
+                    style={{
+                      clipPath: `polygon(
+                        0% 0%,
+                        0% 100%,
+                        ${displayCrop.left}px 100%,
+                        ${displayCrop.left}px ${displayCrop.top}px,
+                        ${displayCrop.left + displayCrop.width}px ${displayCrop.top}px,
+                        ${displayCrop.left + displayCrop.width}px ${displayCrop.top + displayCrop.height}px,
+                        ${displayCrop.left}px ${displayCrop.top + displayCrop.height}px,
+                        ${displayCrop.left}px 100%,
+                        100% 100%,
+                        100% 0%
+                      )`
+                    }}
+                  />
+                  {/* Selection area border */}
+                  <div
+                    className="absolute border-2 border-primary bg-primary/5 pointer-events-none"
+                    style={{
+                      left: `${displayCrop.left}px`,
+                      top: `${displayCrop.top}px`,
+                      width: `${displayCrop.width}px`,
+                      height: `${displayCrop.height}px`
+                    }}
+                  />
+                  {/* Resize handles */}
+                  {['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'].map((handle) => {
+                    const handleSize = 12
+                    const positions: Record<string, { left: number; top: number }> = {
+                      nw: { left: displayCrop.left, top: displayCrop.top },
+                      ne: { left: displayCrop.left + displayCrop.width, top: displayCrop.top },
+                      sw: { left: displayCrop.left, top: displayCrop.top + displayCrop.height },
+                      se: { left: displayCrop.left + displayCrop.width, top: displayCrop.top + displayCrop.height },
+                      n: { left: displayCrop.left + displayCrop.width / 2, top: displayCrop.top },
+                      s: { left: displayCrop.left + displayCrop.width / 2, top: displayCrop.top + displayCrop.height },
+                      e: { left: displayCrop.left + displayCrop.width, top: displayCrop.top + displayCrop.height / 2 },
+                      w: { left: displayCrop.left, top: displayCrop.top + displayCrop.height / 2 },
+                    }
+                    const pos = positions[handle]
+                    const cursors: Record<string, string> = {
+                      'nw': 'nw-resize', 'ne': 'ne-resize', 'sw': 'sw-resize', 'se': 'se-resize',
+                      'n': 'n-resize', 's': 's-resize', 'e': 'e-resize', 'w': 'w-resize'
+                    }
+                    return (
+                      <div
+                        key={handle}
+                        className="absolute bg-primary border-2 border-white rounded-full pointer-events-auto"
+                        style={{
+                          left: `${pos.left - handleSize / 2}px`,
+                          top: `${pos.top - handleSize / 2}px`,
+                          width: `${handleSize}px`,
+                          height: `${handleSize}px`,
+                          cursor: cursors[handle]
+                        }}
+                      />
+                    )
+                  })}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+      
+      {cropArea && cropArea.width > 0 && cropArea.height > 0 && (
+        <div className="mt-4 text-sm text-muted-foreground text-center">
+          Área seleccionada: {Math.round(cropArea.width)} × {Math.round(cropArea.height)} px
+          {imageSize && (
+            <span className="ml-2">
+              ({(cropArea.width / imageSize.width * 100).toFixed(1)}% × {(cropArea.height / imageSize.height * 100).toFixed(1)}%)
+            </span>
+          )}
+        </div>
+      )}
+      
+      <DialogFooter className="mt-4">
+        <Button variant="outline" onClick={onCancel}>
+          Cancelar
+        </Button>
+        <Button
+          onClick={() => {
+            if (cropArea && cropArea.width > 0 && cropArea.height > 0) {
+              onSave(cropArea)
+            }
+          }}
+          disabled={!cropArea || cropArea.width === 0 || cropArea.height === 0}
+        >
+          Seleccionar esta área
+        </Button>
+      </DialogFooter>
+    </div>
   )
 }
 

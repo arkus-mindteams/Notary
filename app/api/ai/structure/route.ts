@@ -1317,7 +1317,7 @@ export async function POST(req: Request) {
       const prompt = getColindanciasRules()
         // Call OpenAI Vision with all images
         const aiResponse = await callOpenAIVision(prompt, images)
-      
+        
         // Extract lot-level metadata if present
         let lotLocation: string | undefined = undefined
         let totalLotSurface: number | undefined = undefined
@@ -1334,13 +1334,13 @@ export async function POST(req: Request) {
         let units: StructuredUnit[] = []
         
         // Normalize response to new format
-      function normalizeUnit(unitRaw: any): StructuredUnit | null {
-        if (!unitRaw || typeof unitRaw !== "object") return null
-        
-        // Extract unit_name (new format) or unit.name (legacy)
-        const unitName = unitRaw.unit_name || unitRaw.unit?.name || "UNIDAD"
-        if (!unitName) return null
-        
+        function normalizeUnit(unitRaw: any): StructuredUnit | null {
+          if (!unitRaw || typeof unitRaw !== "object") return null
+          
+          // Extract unit_name (new format) or unit.name (legacy)
+          const unitName = unitRaw.unit_name || unitRaw.unit?.name || "UNIDAD"
+          if (!unitName) return null
+          
         // Check if unit has directions array (new format from AI)
         if (Array.isArray(unitRaw.directions) && unitRaw.directions.length > 0) {
           // Preserve new format with directions and segments
@@ -1377,27 +1377,27 @@ export async function POST(req: Request) {
           const boundaries = unitRaw.boundaries
             .map((b: any, idx: number) => {
               // Handle new format boundary
-              if (b.raw_direction && b.normalized_direction) {
-                return {
-                  raw_direction: b.raw_direction,
-                  normalized_direction: b.normalized_direction as any,
-                  length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
-                  abutter: String(b.abutter || "").trim(),
-                  order_index: typeof b.order_index === "number" ? b.order_index : idx,
-                }
-              }
-              
-              // Handle legacy format (convert to new format)
-              const rawDir = String(b.direction || "").trim()
-              const normalizedDir = normalizeDirectionCode(rawDir)
-              
+            if (b.raw_direction && b.normalized_direction) {
               return {
-                raw_direction: rawDir,
-                normalized_direction: normalizedDir,
+                raw_direction: b.raw_direction,
+                normalized_direction: b.normalized_direction as any,
                 length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
                 abutter: String(b.abutter || "").trim(),
                 order_index: typeof b.order_index === "number" ? b.order_index : idx,
               }
+            }
+            
+            // Handle legacy format (convert to new format)
+            const rawDir = String(b.direction || "").trim()
+            const normalizedDir = normalizeDirectionCode(rawDir)
+            
+            return {
+              raw_direction: rawDir,
+              normalized_direction: normalizedDir,
+              length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
+              abutter: String(b.abutter || "").trim(),
+              order_index: typeof b.order_index === "number" ? b.order_index : idx,
+            }
             })
             .filter((b: any) => b.raw_direction && b.normalized_direction)
           
@@ -1422,21 +1422,21 @@ export async function POST(req: Request) {
         units = aiResponse.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.results)) {
         // Legacy format with results wrapper
-        units = aiResponse.results.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
+          units = aiResponse.results.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.units)) {
         // New format with units wrapper (IA puede devolver { units: [...] })
         units = aiResponse.units.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
-      } else if (aiResponse.result) {
-        const normalized = normalizeUnit(aiResponse.result)
-        if (normalized) units = [normalized]
-      } else if (aiResponse.unit_name || aiResponse.unit) {
-        const normalized = normalizeUnit(aiResponse)
-        if (normalized) units = [normalized]
-      } else {
+        } else if (aiResponse.result) {
+          const normalized = normalizeUnit(aiResponse.result)
+          if (normalized) units = [normalized]
+        } else if (aiResponse.unit_name || aiResponse.unit) {
+          const normalized = normalizeUnit(aiResponse)
+          if (normalized) units = [normalized]
+        } else {
         // Log the actual response for debugging
         console.error("[api/ai/structure] Invalid AI response shape:", JSON.stringify(aiResponse, null, 2))
-        throw new Error("invalid_ai_shape")
-      }
+          throw new Error("invalid_ai_shape")
+        }
         
         if (units.length === 0) {
           throw new Error("No valid units found in AI response")
@@ -1514,27 +1514,27 @@ export async function POST(req: Request) {
         })
       } else {
         // Legacy format: ensure boundaries array exists and is valid
-        if (!Array.isArray(unit.boundaries)) {
-          unit.boundaries = []
+      if (!Array.isArray(unit.boundaries)) {
+        unit.boundaries = []
+      }
+      
+      // Normalize each boundary to ensure it has required fields
+      unit.boundaries = unit.boundaries.map((b, idx) => {
+        if (!b.raw_direction) {
+          // Legacy format: try to derive from normalized_direction or direction
+          const rawDir = b.direction || b.normalized_direction || ""
+          b.raw_direction = rawDir
         }
-        
-        // Normalize each boundary to ensure it has required fields
-        unit.boundaries = unit.boundaries.map((b, idx) => {
-          if (!b.raw_direction) {
-            // Legacy format: try to derive from normalized_direction or direction
-            const rawDir = b.direction || b.normalized_direction || ""
-            b.raw_direction = rawDir
-          }
-          if (!b.normalized_direction) {
-            // Derive from raw_direction
-            const normalizedDir = normalizeDirectionCode(b.raw_direction || b.direction || "")
-            b.normalized_direction = normalizedDir
-          }
-          if (b.order_index === undefined || b.order_index === null) {
-            b.order_index = idx
-          }
-          return b
-        }).filter((b) => b.raw_direction && b.normalized_direction)
+        if (!b.normalized_direction) {
+          // Derive from raw_direction
+          const normalizedDir = normalizeDirectionCode(b.raw_direction || b.direction || "")
+          b.normalized_direction = normalizedDir
+        }
+        if (b.order_index === undefined || b.order_index === null) {
+          b.order_index = idx
+        }
+        return b
+      }).filter((b) => b.raw_direction && b.normalized_direction)
       }
       
       // Ensure surfaces array exists (optional)
@@ -1557,7 +1557,7 @@ export async function POST(req: Request) {
         })
       }
     })
-    
+
     const resp: StructuringResponse = {
       results,
       ...(processedMetadata?.lotLocation ? { lotLocation: processedMetadata.lotLocation } : {}),

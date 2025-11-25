@@ -35,16 +35,34 @@ async function rasterizePdfPageToPng(file: File, pageNumber: number = 1, rotatio
   const loadingTask = pdfjs.getDocument({ data: arrayBuffer })
   const pdf = await loadingTask.promise
   const page = await pdf.getPage(Math.max(1, Math.min(pageNumber, pdf.numPages)))
-  const viewport = page.getViewport({ scale: 2, rotation: rotationDeg as any })
+  // Increase scale for better OCR quality (3.0 instead of 2.0)
+  const viewport = page.getViewport({ scale: 3.0, rotation: rotationDeg as any })
   const canvas = document.createElement("canvas")
   const context = canvas.getContext("2d")
   if (!context) throw new Error("canvas_unsupported")
+  
+  // Configure canvas for high-quality rendering
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = "high"
+  
   canvas.width = viewport.width
   canvas.height = viewport.height
-  const renderContext = { canvasContext: context, viewport }
+  
+  // Fill with white background
+  context.fillStyle = "white"
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  
+  const renderContext = { 
+    canvasContext: context, 
+    viewport,
+    enableWebGL: false,
+    textLayer: false,
+    annotationLayer: false
+  }
   await page.render(renderContext as any).promise
   const blob: Blob = await new Promise((resolve, reject) => {
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob_failed"))), "image/png")
+    // PNG compression: 1.0 = no compression (best quality)
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob_failed"))), "image/png", 1.0)
   })
   return new File([blob], `${file.name.replace(/\\.[^.]+$/, "")}-p${pageNumber}-r${rotationDeg}.png`, { type: "image/png" })
 }
@@ -113,22 +131,41 @@ export async function convertPdfToImages(
   // Convert each page to image
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     const page = await pdf.getPage(pageNum)
-    const viewport = page.getViewport({ scale: 2.0, rotation: rotationDeg as any })
+    // Increase scale for better OCR quality (3.0 instead of 2.0)
+    // Higher resolution improves text recognition accuracy
+    const viewport = page.getViewport({ scale: 3.0, rotation: rotationDeg as any })
     
     // Create canvas element
     const canvas = document.createElement("canvas")
     const context = canvas.getContext("2d")
     if (!context) throw new Error("canvas_unsupported")
     
+    // Configure canvas for high-quality rendering
+    context.imageSmoothingEnabled = true
+    context.imageSmoothingQuality = "high"
+    
     canvas.width = viewport.width
     canvas.height = viewport.height
     
-    // Render page to canvas
-    await page.render({ canvasContext: context, viewport }).promise
+    // Fill with white background to ensure clean rendering
+    context.fillStyle = "white"
+    context.fillRect(0, 0, canvas.width, canvas.height)
     
-    // Convert canvas to blob
+    // Render page to canvas with high quality
+    await page.render({ 
+      canvasContext: context, 
+      viewport,
+      // Enable text rendering optimization
+      enableWebGL: false,
+      // Render text with better quality
+      textLayer: false,
+      annotationLayer: false
+    }).promise
+    
+    // Convert canvas to blob with maximum quality
     const blob: Blob = await new Promise((resolve, reject) => {
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob_failed"))), "image/png")
+      // PNG compression: 1.0 = no compression (best quality, larger file)
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob_failed"))), "image/png", 1.0)
     })
     
     // Create File object
