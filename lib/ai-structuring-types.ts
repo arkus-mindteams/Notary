@@ -33,9 +33,15 @@ export type StructuredUnit = {
        */
       length_prefix: string | null
       /**
-       * Longitud en metros. Puede ser null si no hay medida disponible
+       * Longitud en metros. Puede ser null si no hay medida disponible.
+       * Puede ser number o string para preservar decimales exactos del documento original.
        */
-      length_m: number | null
+      length_m: number | string | null
+      /**
+       * Valor original de la longitud como string (opcional, para preservar decimales exactos).
+       * Si está presente, se usará este valor en lugar de length_m al formatear.
+       */
+      length_m_raw?: string | null
       /**
        * Nombre del colindante
        */
@@ -63,9 +69,15 @@ export type StructuredUnit = {
      */
     normalized_direction: "N" | "S" | "E" | "W" | "NE" | "NW" | "SE" | "SW" | "UP" | "DOWN"
     /**
-     * Longitud en metros. Puede ser null si no hay medida disponible
+     * Longitud en metros. Puede ser null si no hay medida disponible.
+     * Puede ser number o string para preservar decimales exactos del documento original.
      */
-    length_m: number | null
+    length_m: number | string | null
+    /**
+     * Valor original de la longitud como string (opcional, para preservar decimales exactos).
+     * Si está presente, se usará este valor en lugar de length_m al formatear.
+     */
+    length_m_raw?: string | null
     /**
      * Nombre del colindante
      */

@@ -20,16 +20,31 @@ import Link from "next/link"
 type AppState = "upload" | "processing" | "validation"
 
 // Helper function to format numbers preserving original decimal places
-// This prevents adding unnecessary zeros (e.g., 7.43 stays as "7.43" not "7.430")
-function formatNumberPreservingDecimals(num: number | null): string {
-  if (num === null || isNaN(num)) return "0"
-  // Convert to string and remove trailing zeros
-  const str = num.toString()
-  // If it has a decimal point, remove trailing zeros
-  if (str.includes('.')) {
-    return str.replace(/\.?0+$/, '')
+// Accepts both number and string to preserve exact decimals from the document
+// CRITICAL: If the value is a string, it preserves EXACTLY as-is (including trailing zeros)
+// If it's a number, JavaScript may have already lost trailing zeros, so we can't fully preserve them
+function formatNumberPreservingDecimals(num: number | string | null): string {
+  if (num === null || num === undefined) return "0"
+  
+  // If it's already a string, return it as-is (preserves exact decimals from AI/document)
+  if (typeof num === "string") {
+    const trimmed = num.trim()
+    // Validate it's a valid number string
+    if (trimmed === "" || isNaN(Number(trimmed))) return "0"
+    // Return the string as-is to preserve exact decimal places (e.g., "7.430" stays "7.430")
+    return trimmed
   }
-  return str
+  
+  // If it's a number, JavaScript may have already lost trailing zeros
+  // We can't fully recover them, but we'll convert to string as-is
+  if (typeof num === "number") {
+    if (isNaN(num)) return "0"
+    // Convert to string - note: this may have already lost trailing zeros (7.430 → "7.43")
+    // This is why it's important for the AI to return strings for numbers with specific decimals
+    return num.toString()
+  }
+  
+  return "0"
 }
 
 // Helper function to rotate an image file
@@ -697,9 +712,12 @@ function DeslindePageInner() {
             // Format each segment in this direction
             for (let i = 0; i < direction.segments.length; i++) {
               const segment = direction.segments[i]
-              const lengthNum = segment.length_m === null || segment.length_m === undefined 
+              // Preserve length_m as-is (can be string or number) to maintain exact decimals
+              const lengthValue = segment.length_m
+              // For validation purposes, convert to number if needed
+              const lengthNum = lengthValue === null || lengthValue === undefined 
                 ? null 
-                : (typeof segment.length_m === "number" ? segment.length_m : parseFloat(String(segment.length_m)))
+                : (typeof lengthValue === "string" ? parseFloat(lengthValue) : (typeof lengthValue === "number" ? lengthValue : parseFloat(String(lengthValue))))
               const hasNoMeasure = lengthNum === null || isNaN(lengthNum) || Math.abs(lengthNum) < 0.001
               
               const who = (segment.abutter || "").toString().trim()
@@ -718,7 +736,7 @@ function DeslindePageInner() {
                 } else if (hasNoMeasure && lengthNum === null) {
                   firstLine = `${directionName}: CON ${cleanedWho}`
                 } else if (lengthPrefix && lengthNum !== null) {
-                  const len = formatNumberPreservingDecimals(lengthNum)
+                  const len = formatNumberPreservingDecimals(lengthValue) // Use original value (string or number)
                   if (lengthPrefix === "LC=") {
                     firstLine = `${directionName}: LC=${len} m CON ${cleanedWho}`
                   } else if (lengthPrefix === "EN" || lengthPrefix === "") {
@@ -728,7 +746,7 @@ function DeslindePageInner() {
                     firstLine = `${directionName}: ${lengthPrefix} ${len} m CON ${cleanedWho}`
                   }
                 } else {
-                  const len = lengthNum !== null ? formatNumberPreservingDecimals(lengthNum) : "0"
+                  const len = lengthValue !== null && lengthValue !== undefined ? formatNumberPreservingDecimals(lengthValue) : "0"
                   // No mostrar "EN" por defecto
                   firstLine = `${directionName}: ${len} m CON ${cleanedWho}`
                 }
@@ -745,7 +763,7 @@ function DeslindePageInner() {
                 } else if (hasNoMeasure && lengthNum === null) {
                   lines.push(`${indent}CON ${cleanedWho}`)
                 } else if (lengthPrefix && lengthNum !== null) {
-                  const len = formatNumberPreservingDecimals(lengthNum)
+                  const len = formatNumberPreservingDecimals(lengthValue) // Use original value (string or number)
                   if (lengthPrefix === "LC=") {
                     lines.push(`${indent}LC=${len} m CON ${cleanedWho}`)
                   } else if (lengthPrefix === "EN" || lengthPrefix === "") {
@@ -755,7 +773,7 @@ function DeslindePageInner() {
                     lines.push(`${indent}${lengthPrefix} ${len} m CON ${cleanedWho}`)
                   }
                 } else {
-                  const len = lengthNum !== null ? formatNumberPreservingDecimals(lengthNum) : "0"
+                  const len = lengthValue !== null && lengthValue !== undefined ? formatNumberPreservingDecimals(lengthValue) : "0"
                   // No mostrar "EN" por defecto
                   lines.push(`${indent}${len} m CON ${cleanedWho}`)
                 }
@@ -862,10 +880,11 @@ function DeslindePageInner() {
                              rawDir.toUpperCase() === "ARRIBA" || rawDir.toUpperCase() === "ABAJO" ||
                              rawDir.toUpperCase() === "SUPERIOR" || rawDir.toUpperCase() === "INFERIOR"
             
-            // Handle length_m: can be null, number, or string
-            const lengthNum = b.length_m === null || b.length_m === undefined 
+            // Handle length_m: can be null, number, or string - preserve original to maintain exact decimals
+            const lengthValue = b.length_m
+            const lengthNum = lengthValue === null || lengthValue === undefined 
               ? null 
-              : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m)))
+              : (typeof lengthValue === "string" ? parseFloat(lengthValue) : (typeof lengthValue === "number" ? lengthValue : parseFloat(String(lengthValue))))
             const hasNoMeasure = lengthNum === null || isNaN(lengthNum) || Math.abs(lengthNum) < 0.001
             
             const who = (b.abutter || "").toString().trim()
@@ -879,7 +898,7 @@ function DeslindePageInner() {
               } else if (hasNoMeasure && lengthNum === null) {
                 lines.push(`${directionName}: CON ${cleanedWho}`)
               } else {
-                const len = lengthNum !== null ? formatNumberPreservingDecimals(lengthNum) : "0"
+                const len = lengthValue !== null && lengthValue !== undefined ? formatNumberPreservingDecimals(lengthValue) : "0"
                 lines.push(`${directionName}: EN ${len} m CON ${cleanedWho}`)
               }
             } else {
@@ -889,7 +908,7 @@ function DeslindePageInner() {
               } else if (hasNoMeasure && lengthNum === null) {
                 lines.push(`         CON ${cleanedWho}`)
               } else {
-                const len = lengthNum !== null ? formatNumberPreservingDecimals(lengthNum) : "0"
+                const len = lengthValue !== null && lengthValue !== undefined ? formatNumberPreservingDecimals(lengthValue) : "0"
                 lines.push(`         EN ${len} m CON ${cleanedWho}`)
                 }
               }
