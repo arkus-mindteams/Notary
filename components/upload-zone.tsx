@@ -125,34 +125,32 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
     <Card
       ref={cardRef}
       tabIndex={0}
-      className={`relative border-2 border-dashed transition-all duration-200 ${
+      className={`relative border-2 border-dashed transition-all duration-200 bg-background ${
         isDragging
-          ? "border-primary bg-primary/5 scale-[1.01]"
-          : "border-border hover:border-primary/50 hover:bg-muted/30"
+          ? "border-primary bg-primary/10 scale-[1.02] shadow-lg"
+          : "border-primary/30 hover:border-primary/50 hover:bg-muted/50"
       }`}
       onDragEnter={handleDrag}
       onDragLeave={handleDrag}
       onDragOver={handleDrag}
       onDrop={handleDrop}
     >
-      <div className="flex flex-row items-center justify-between gap-4 p-4">
-        <div className="flex items-center gap-4 flex-1 min-w-0">
-          <div className="rounded-full bg-primary/10 p-3 flex-shrink-0">
-            <Upload className="h-6 w-6 text-primary" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-semibold text-foreground mb-1">
-              Arrastra imágenes o PDFs aquí
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              También puedes pegar desde el portapapeles (Ctrl+V / Cmd+V) o hacer clic en el botón
-            </p>
-          </div>
+      <div className="flex flex-col items-center justify-center gap-6 p-8 text-center">
+        <div className="rounded-full bg-primary/20 p-6 flex-shrink-0">
+          <Upload className="h-12 w-12 text-primary" />
         </div>
-        <div className="flex items-center gap-3 flex-shrink-0">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <ImageIcon className="h-4 w-4" />
-            <span className="hidden sm:inline">PNG, JPG, PDF</span>
+        <div className="space-y-2 max-w-md">
+          <h3 className="text-xl font-bold text-foreground">
+            Arrastra y suelta tus imágenes o PDFs aquí
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            También puedes <strong>pegar desde el portapapeles</strong> usando Ctrl+V (Cmd+V en Mac)
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row items-center gap-4">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <ImageIcon className="h-5 w-5" />
+            <span>PNG, JPG, PDF</span>
           </div>
           <div className="relative">
             <input
@@ -163,8 +161,8 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
               multiple
               onChange={handleFileInput}
             />
-            <Button asChild size="sm" className="cursor-pointer">
-              <label htmlFor="file-upload">Seleccionar archivos</label>
+            <Button asChild size="lg" className="cursor-pointer">
+              <label htmlFor="file-upload" className="cursor-pointer">Seleccionar archivos</label>
             </Button>
           </div>
         </div>

@@ -1131,149 +1131,147 @@ function DeslindePageInner() {
   return (
     <ProtectedRoute>
       <DashboardLayout>
-        <div className="p-6 space-y-6">
-          {/* Header */}
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900 break-words">Lectura de Plantas Arquitectónicas</h1>
-            <p className="text-gray-600 mt-1">
+        <div className="p-6">
+          {/* Header - More subtle */}
+          <div className="mb-6">
+            <h1 className="text-2xl font-bold text-gray-900 break-words">Lectura de Plantas Arquitectónicas</h1>
+            <p className="text-gray-600 text-sm mt-1">
               Procesa plantas arquitectónicas y genera texto notarial automáticamente
             </p>
           </div>
 
-          {/* Upload Zone - Top */}
-          <div>
-            <UploadZone onFilesSelect={handleFilesSelect} />
-          </div>
-
-          {/* Selected Images List - Middle */}
-          {selectedFiles.length > 0 ? (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-2xl font-semibold">
-                  Documentos a procesar ({selectedFiles.length})
-                </h2>
-                <Button onClick={handleProcessImages} size="lg" className="gap-2">
-                  <Play className="h-4 w-4" />
-                  Procesar imágenes
-                </Button>
+          {/* Main Layout: Upload Zone (prominent) then Selected Images below */}
+          <div className="space-y-6">
+            {/* Large Upload Zone - Main Focus */}
+            <div className="min-h-[450px] flex flex-col items-center justify-center">
+              <div className="w-full max-w-2xl">
+                <UploadZone onFilesSelect={handleFilesSelect} />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {selectedFiles.map((file, index) => {
-                  const imageUrl = thumbnailUrls.get(index)
-                  return (
-                    <Card key={`${file.name}-${file.size}-${index}`} className="p-4 relative group">
-                      <div className="space-y-3">
-                        <div className="relative aspect-video rounded-lg bg-muted flex items-center justify-center overflow-hidden">
-                          {imageUrl ? (
-                            <img
-                              src={imageUrl}
-                              alt={file.name}
-                              className="w-full h-full object-contain"
-                            />
-                          ) : (
-                            <ImageIcon className="h-8 w-8 text-muted-foreground" />
-                          )}
-                          <Button
-                            variant="destructive"
-                            size="icon"
-                            className="absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={() => handleRemoveFile(index)}
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-sm font-medium truncate" title={file.name}>
-                            {file.name}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {(file.size / 1024 / 1024).toFixed(2)} MB
-                          </p>
-                        </div>
+            </div>
+
+            {/* Selected Images List - Below upload */}
+            {selectedFiles.length > 0 && (
+              <Card className="p-4">
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-foreground">
+                      Documentos seleccionados ({selectedFiles.length})
+                    </h3>
+                    <Button onClick={handleProcessImages} size="lg" className="gap-2">
+                      <Play className="h-4 w-4" />
+                      Procesar imágenes
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                    {selectedFiles.map((file, index) => {
+                      const imageUrl = thumbnailUrls.get(index)
+                      return (
+                        <Card key={`${file.name}-${file.size}-${index}`} className="p-2 relative group border">
+                          <div className="space-y-2">
+                            <div className="relative aspect-video rounded-md bg-muted flex items-center justify-center overflow-hidden">
+                              {imageUrl ? (
+                                <img
+                                  src={imageUrl}
+                                  alt={file.name}
+                                  className="w-full h-full object-contain"
+                                />
+                              ) : (
+                                <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                              )}
+                              <Button
+                                variant="destructive"
+                                size="icon"
+                                className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => handleRemoveFile(index)}
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                            <div className="space-y-1">
+                              <p className="text-xs font-medium truncate" title={file.name}>
+                                {file.name}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {(file.size / 1024 / 1024).toFixed(2)} MB
+                              </p>
+                            </div>
+                          </div>
+                        </Card>
+                      )
+                    })}
+                  </div>
+                </div>
+              </Card>
+            )}
+
+            {/* How it Works Section - Bottom */}
+            <div className="bg-gradient-to-br from-primary/5 via-primary/3 to-background rounded-lg border border-primary/10 p-4 md:p-5">
+              <div className="mb-3">
+                <h2 className="text-lg font-semibold text-foreground mb-1">¿Cómo funciona?</h2>
+                <p className="text-xs text-muted-foreground">
+                  Sigue estos pasos simples para procesar tus plantas arquitectónicas
+                </p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                  <div className="flex flex-col items-start gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                        1
                       </div>
-                    </Card>
-                  )
-                })}
+                      <h3 className="font-medium text-sm">Sube tus documentos</h3>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-snug">
+                      Arrastra imágenes o PDFs. También puedes pegarlas desde el portapapeles.
+                    </p>
+                  </div>
+                </Card>
+
+                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                  <div className="flex flex-col items-start gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                        2
+                      </div>
+                      <h3 className="font-medium text-sm">Procesa con IA</h3>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-snug">
+                      La IA extrae automáticamente medidas, colindancias y superficies.
+                    </p>
+                  </div>
+                </Card>
+
+                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                  <div className="flex flex-col items-start gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                        3
+                      </div>
+                      <h3 className="font-medium text-sm">Revisa y edita</h3>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-snug">
+                      Valida la información y edita el texto notarial según tus necesidades.
+                    </p>
+                  </div>
+                </Card>
+
+                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                  <div className="flex flex-col items-start gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                        4
+                      </div>
+                      <h3 className="font-medium text-sm">Exporta el resultado</h3>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-snug">
+                      Obtén tu documento final en formato notarial listo para usar.
+                    </p>
+                  </div>
+                </Card>
               </div>
-            </div>
-          ) : (
-            <div className="text-center py-12">
-              <div className="rounded-full bg-muted p-6 w-24 h-24 mx-auto mb-4 flex items-center justify-center">
-                <ImageIcon className="h-12 w-12 text-muted-foreground" />
-              </div>
-              <h3 className="text-lg font-semibold mb-2">No hay documentos seleccionados</h3>
-              <p className="text-sm text-muted-foreground mb-6">
-                Sube imágenes o PDFs para comenzar el procesamiento
-              </p>
-            </div>
-          )}
-
-          {/* How it Works Section - Bottom */}
-          <div className="bg-gradient-to-br from-primary/5 via-primary/3 to-background rounded-lg border border-primary/10 p-4 md:p-5">
-            <div className="mb-3">
-              <h2 className="text-lg font-semibold text-foreground mb-1">¿Cómo funciona?</h2>
-              <p className="text-xs text-muted-foreground">
-                Sigue estos pasos simples para procesar tus plantas arquitectónicas
-              </p>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                <div className="flex flex-col items-start gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-                      1
-                    </div>
-                    <h3 className="font-medium text-sm">Sube tus documentos</h3>
-                  </div>
-                  <p className="text-xs text-muted-foreground leading-snug">
-                    Arrastra imágenes o PDFs. También puedes pegarlas desde el portapapeles.
-                  </p>
-                </div>
-              </Card>
-
-              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                <div className="flex flex-col items-start gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-                      2
-                    </div>
-                    <h3 className="font-medium text-sm">Procesa con IA</h3>
-                  </div>
-                  <p className="text-xs text-muted-foreground leading-snug">
-                    La IA extrae automáticamente medidas, colindancias y superficies.
-                  </p>
-                </div>
-              </Card>
-
-              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                <div className="flex flex-col items-start gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-                      3
-                    </div>
-                    <h3 className="font-medium text-sm">Revisa y edita</h3>
-                  </div>
-                  <p className="text-xs text-muted-foreground leading-snug">
-                    Valida la información y edita el texto notarial según tus necesidades.
-                  </p>
-                </div>
-              </Card>
-
-              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                <div className="flex flex-col items-start gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-                      4
-                    </div>
-                    <h3 className="font-medium text-sm">Exporta el resultado</h3>
-                  </div>
-                  <p className="text-xs text-muted-foreground leading-snug">
-                    Obtén tu documento final en formato notarial listo para usar.
-                  </p>
-                </div>
-              </Card>
             </div>
           </div>
+
 
           {/* PDF Image Selection Modal */}
           <Dialog open={showPdfImageSelector} onOpenChange={setShowPdfImageSelector}>
