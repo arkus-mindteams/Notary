@@ -19,6 +19,19 @@ import { Checkbox } from "@/components/ui/checkbox"
 import Link from "next/link"
 type AppState = "upload" | "processing" | "validation"
 
+// Helper function to format numbers preserving original decimal places
+// This prevents adding unnecessary zeros (e.g., 7.43 stays as "7.43" not "7.430")
+function formatNumberPreservingDecimals(num: number | null): string {
+  if (num === null || isNaN(num)) return "0"
+  // Convert to string and remove trailing zeros
+  const str = num.toString()
+  // If it has a decimal point, remove trailing zeros
+  if (str.includes('.')) {
+    return str.replace(/\.?0+$/, '')
+  }
+  return str
+}
+
 // Helper function to rotate an image file
 async function rotateImageFile(file: File, rotation: number): Promise<File> {
   return new Promise((resolve, reject) => {
@@ -705,7 +718,7 @@ function DeslindePageInner() {
                 } else if (hasNoMeasure && lengthNum === null) {
                   firstLine = `${directionName}: CON ${cleanedWho}`
                 } else if (lengthPrefix && lengthNum !== null) {
-                  const len = lengthNum.toFixed(3)
+                  const len = formatNumberPreservingDecimals(lengthNum)
                   if (lengthPrefix === "LC=") {
                     firstLine = `${directionName}: LC=${len} m CON ${cleanedWho}`
                   } else if (lengthPrefix === "EN" || lengthPrefix === "") {
@@ -715,7 +728,7 @@ function DeslindePageInner() {
                     firstLine = `${directionName}: ${lengthPrefix} ${len} m CON ${cleanedWho}`
                   }
                 } else {
-                  const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
+                  const len = lengthNum !== null ? formatNumberPreservingDecimals(lengthNum) : "0"
                   // No mostrar "EN" por defecto
                   firstLine = `${directionName}: ${len} m CON ${cleanedWho}`
                 }
@@ -732,7 +745,7 @@ function DeslindePageInner() {
                 } else if (hasNoMeasure && lengthNum === null) {
                   lines.push(`${indent}CON ${cleanedWho}`)
                 } else if (lengthPrefix && lengthNum !== null) {
-                  const len = lengthNum.toFixed(3)
+                  const len = formatNumberPreservingDecimals(lengthNum)
                   if (lengthPrefix === "LC=") {
                     lines.push(`${indent}LC=${len} m CON ${cleanedWho}`)
                   } else if (lengthPrefix === "EN" || lengthPrefix === "") {
@@ -742,7 +755,7 @@ function DeslindePageInner() {
                     lines.push(`${indent}${lengthPrefix} ${len} m CON ${cleanedWho}`)
                   }
                 } else {
-                  const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
+                  const len = lengthNum !== null ? formatNumberPreservingDecimals(lengthNum) : "0"
                   // No mostrar "EN" por defecto
                   lines.push(`${indent}${len} m CON ${cleanedWho}`)
                 }
@@ -866,7 +879,7 @@ function DeslindePageInner() {
               } else if (hasNoMeasure && lengthNum === null) {
                 lines.push(`${directionName}: CON ${cleanedWho}`)
               } else {
-                const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
+                const len = lengthNum !== null ? formatNumberPreservingDecimals(lengthNum) : "0"
                 lines.push(`${directionName}: EN ${len} m CON ${cleanedWho}`)
               }
             } else {
@@ -876,7 +889,7 @@ function DeslindePageInner() {
               } else if (hasNoMeasure && lengthNum === null) {
                 lines.push(`         CON ${cleanedWho}`)
               } else {
-                const len = lengthNum !== null ? lengthNum.toFixed(3) : "0.000"
+                const len = lengthNum !== null ? formatNumberPreservingDecimals(lengthNum) : "0"
                 lines.push(`         EN ${len} m CON ${cleanedWho}`)
                 }
               }
@@ -910,7 +923,7 @@ function DeslindePageInner() {
         // Aseguramos unicidad usando también el índice
         const unitId = `${unitIdBase}-${index + 1}`
         const surfaceValue = formatSurfaceValue(unit.surfaces)
-        const surfaceLabel = surfaceValue > 0 ? `${surfaceValue.toFixed(3)} m²` : ""
+        const surfaceLabel = surfaceValue > 0 ? `${formatNumberPreservingDecimals(surfaceValue)} m²` : ""
 
         const boundaries: PropertyUnit["boundaries"] = {
           west: [],
