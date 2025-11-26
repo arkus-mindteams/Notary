@@ -143,10 +143,35 @@ function buildDefaultPrompt(): string {
     '   - "ESTACIONAMIENTO"',
     '   - "ÁREA CONSTRUIDA"',
     '   - "CAJÓN DE ESTACIONAMIENTO"',
-    '   - "MEDIDAS Y COLINDANCIAS"',
+    '   - "MEDIDAS Y COLINDANCIAS" (o variantes con errores ortográficos)',
     "",
     "2. Cada unidad genera un JSON independiente.",
-    '3. El bloque de colindancias comienza después del encabezado "MEDIDAS Y COLINDANCIAS".',
+    '3. El bloque de colindancias comienza después del encabezado "MEDIDAS Y COLINDANCIAS" o sus variantes.',
+    "",
+    "⚠️ IMPORTANTE - ERRORES ORTOGRÁFICOS EN OCR:",
+    "",
+    "El OCR puede producir errores ortográficos comunes. DEBES reconocer y procesar estas variantes:",
+    "",
+    "Variantes de 'COLINDANCIAS' que debes reconocer:",
+    '  - "COLINDANCIAS" (correcto)',
+    '  - "DOLIINDANCIAS" (error común: D en lugar de C)',
+    '  - "COLINDANCIAS" (doble I)',
+    '  - "COLINDANCIAS" (I en lugar de L)',
+    '  - "COLINDANCIAS" (O en lugar de I)',
+    '  - "COLINDANCIAS" (variaciones con letras similares)',
+    "",
+    "Reglas para manejar errores ortográficos:",
+    "1. Si ves 'MEDIDAS Y DOLIINDANCIAS' o variantes similares, trátalo como 'MEDIDAS Y COLINDANCIAS'",
+    "2. Usa corrección fonética y similitud visual para reconocer el encabezado correcto",
+    "3. Busca patrones como 'MEDIDAS Y [palabra similar a COLINDANCIAS]'",
+    "4. Si la palabra tiene 10-12 caracteres y contiene 'COL', 'DOL', 'IND', 'ANCI', 'AS' → es probablemente COLINDANCIAS",
+    "5. NO ignores bloques de texto solo porque el encabezado tiene un error ortográfico",
+    "",
+    "Ejemplos de encabezados válidos (aunque tengan errores):",
+    '  - "MEDIDAS Y DOLIINDANCIAS" → Procesar como "MEDIDAS Y COLINDANCIAS"',
+    '  - "MEDIDAS Y COLINDANCIAS" → Procesar normalmente',
+    '  - "MEDIDAS Y COLINDANCIAS" → Procesar normalmente',
+    '  - "MEDIDAS Y COLINDANCIAS" → Procesar normalmente',
     "",
     "=== DIRECCIONES PERMITIDAS ===",
     "",
@@ -231,7 +256,14 @@ function buildDefaultPrompt(): string {
     "   - NORESTE ↔ NOROESTE",
     "   - NORTE ↔ NOROESTE",
     "",
-    "3. Anti-distorsión:",
+    "3. Errores ortográficos en encabezados:",
+    "   - 'DOLIINDANCIAS' → 'COLINDANCIAS' (D confundido con C)",
+    "   - 'COLINDANCIAS' → 'COLINDANCIAS' (doble I)",
+    "   - 'COLINDANCIAS' → 'COLINDANCIAS' (I confundido con L)",
+    "   - Cualquier variante de 'COLINDANCIAS' con letras similares → 'COLINDANCIAS'",
+    "   - Usa distancia de Levenshtein y similitud fonética para reconocer el encabezado correcto",
+    "",
+    "4. Anti-distorsión:",
     "   Si el texto está ruidoso o pixelado, usar corrección fonética y el patrón más consistente.",
     "",
     "=== BLOQUES RUIDOSOS ===",
@@ -699,12 +731,27 @@ function preFilterOCRText(ocrText: string, unitHint?: string): string {
   if (!ocrText) return ""
   const text = ocrText.replace(/\r/g, "")
   const lower = text.toLowerCase()
-  // Encontrar TODAS las ocurrencias de "Medidas y Colindancias" para construir candidatos
+  // Encontrar TODAS las ocurrencias de "Medidas y Colindancias" y variantes ortográficas
   const headings: number[] = []
-  const regex = /medidas\s*y\s*colindancias/gi
+  // Regex mejorado para reconocer variantes ortográficas comunes de COLINDANCIAS
+  // Variantes comunes: doliindancias, colindancias (doble i), colindancias (i por l), etc.
+  const regex = /medidas\s*y\s*(?:colindancias|doliindancias|colindancias|colindancias|colindancias|colindancias)/gi
   let m: RegExpExecArray | null
   while ((m = regex.exec(lower)) !== null) {
     headings.push(m.index)
+  }
+  
+  // Si no encontramos con el regex exacto, buscar patrones más flexibles
+  if (headings.length === 0) {
+    // Buscar "medidas y" seguido de una palabra de 10-12 caracteres que contenga patrones similares
+    const flexibleRegex = /medidas\s*y\s*[a-z]{10,12}(?:indancias|indancias|indancias)/gi
+    while ((m = flexibleRegex.exec(lower)) !== null) {
+      const match = m[0]
+      // Verificar si la palabra tiene similitud con "colindancias" (contiene "ind", "anci", "as")
+      if (/ind|anci|as/.test(match) && match.length >= 10) {
+        headings.push(m.index)
+      }
+    }
   }
   // Si no hay encabezados claros, regresar texto original acotado
   if (headings.length === 0) {
@@ -717,7 +764,8 @@ function preFilterOCRText(ocrText: string, unitHint?: string): string {
     return sliced.trim()
   }
   // Crear bloques candidatos entre cada encabezado y el siguiente encabezado fuerte
-  const strongHeaderRe = /(^|\n)\s*(superficie|superficies|descripci[oó]n|caracter[ií]sticas|observaciones|datos|medidas\s*y\s*colindancias)\b/gi
+  // Incluir variantes ortográficas de colindancias
+  const strongHeaderRe = /(^|\n)\s*(superficie|superficies|descripci[oó]n|caracter[ií]sticas|observaciones|datos|medidas\s*y\s*(?:colindancias|doliindancias|colindancias|colindancias|colindancias|colindancias))\b/gi
   const candidates: string[] = []
   for (let i = 0; i < headings.length; i++) {
     const start = headings[i]
@@ -1132,13 +1180,26 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
   // Note: Model names may vary (e.g., gpt-5.1, gpt-5.1-preview, gpt-5.1-2024-12-01)
   // Check OpenAI documentation for the exact model identifier
   const model = process.env.OPENAI_MODEL || "gpt-4o"
+  const startTime = Date.now()
   
   // Log the model being used for debugging
-  if (process.env.NODE_ENV === "development") {
-    console.log(`[OpenAI Vision] Using model: ${model}`)
+  console.log(`[OpenAI Vision] Starting request:`, {
+    model,
+    imagesCount: images.length,
+    imageSizes: images.map(img => `${(img.size / 1024).toFixed(2)} KB`),
+    timestamp: new Date().toISOString(),
+  })
+  
+  if (!apiKey) {
+    const error = new Error("OPENAI_API_KEY missing - La clave de API de OpenAI no está configurada")
+    console.error("[OpenAI Vision] Configuration error:", error.message)
+    throw error
   }
   
-  if (!apiKey) throw new Error("OPENAI_API_KEY missing")
+  // Validate API key format (OpenAI keys start with 'sk-')
+  if (!apiKey.startsWith('sk-')) {
+    console.warn("[OpenAI Vision] API key format suspicious (does not start with 'sk-')")
+  }
   
   // Convert images to base64
   const imageParts = await Promise.all(
@@ -1155,13 +1216,12 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
   )
 
   const url = `https://api.openai.com/v1/chat/completions`
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
+  
+  let resp: Response
+  let requestBody: any
+  
+  try {
+    requestBody = {
       model,
       messages: [
         {
@@ -1187,17 +1247,144 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
         ? { max_completion_tokens: 4000 }
         : { max_tokens: 4000 }
       ),
-    }),
+    }
+    
+    const requestSize = JSON.stringify(requestBody).length
+    console.log(`[OpenAI Vision] Request body size: ${(requestSize / 1024).toFixed(2)} KB`)
+    
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    })
+  } catch (networkError: any) {
+    const elapsed = Date.now() - startTime
+    console.error("[OpenAI Vision] Network error:", {
+      error: networkError.message,
+      stack: networkError.stack,
+      elapsedMs: elapsed,
+      url,
+    })
+    throw new Error(
+      `Error de red al conectar con OpenAI: ${networkError.message}. ` +
+      `Verifica tu conexión a internet y que la API de OpenAI esté disponible.`
+    )
+  }
+
+  const elapsed = Date.now() - startTime
+  console.log(`[OpenAI Vision] Response received:`, {
+    status: resp.status,
+    statusText: resp.statusText,
+    elapsedMs: elapsed,
+    headers: Object.fromEntries(resp.headers.entries()),
   })
 
   if (!resp.ok) {
-    const errorText = await resp.text()
-    throw new Error(`OpenAI API error: ${resp.status} - ${errorText}`)
+    let errorText = ""
+    let errorJson: any = null
+    
+    try {
+      errorText = await resp.text()
+      try {
+        errorJson = JSON.parse(errorText)
+      } catch {
+        // Not JSON, use as text
+      }
+    } catch (readError) {
+      console.error("[OpenAI Vision] Error reading error response:", readError)
+      errorText = "No se pudo leer el mensaje de error"
+    }
+    
+    // Parse OpenAI-specific errors
+    const errorType = errorJson?.error?.type || "unknown"
+    const errorMessage = errorJson?.error?.message || errorText || `HTTP ${resp.status}`
+    const errorCode = errorJson?.error?.code || null
+    
+     // Enhanced error messages based on status codes and error types
+     let userMessage = ""
+     switch (resp.status) {
+       case 401:
+         userMessage = "API key inválida o no autorizada. Verifica que OPENAI_API_KEY esté correctamente configurada."
+         break
+       case 429:
+         // Distinguish between rate limit and insufficient quota
+         if (errorCode === "insufficient_quota" || errorType === "insufficient_quota") {
+           let modelSuggestion = ""
+           if (model.includes("gpt-5") || model.includes("gpt-4.5") || model.includes("orion")) {
+             modelSuggestion = "\n\n💡 RECOMENDACIÓN: El modelo '" + model + "' puede ser más costoso. " +
+               "Considera cambiar a un modelo más económico como 'gpt-4o' (recomendado) o 'gpt-4o-mini' " +
+               "configurando OPENAI_MODEL=gpt-4o en tu archivo .env"
+           }
+           userMessage = `❌ Cuota insuficiente. Has excedido tu límite de créditos/cuota en OpenAI.` +
+             `\n\nVerifica tu plan y detalles de facturación en: https://platform.openai.com/account/billing` +
+             `\nTambién puedes agregar créditos o actualizar tu plan de facturación.${modelSuggestion}`
+         } else {
+           userMessage = "⏱️ Límite de tasa excedido. Has enviado demasiadas solicitudes en poco tiempo. " +
+             "Intenta de nuevo en unos momentos o reduce la frecuencia de solicitudes."
+         }
+         break
+       case 500:
+       case 502:
+       case 503:
+       case 504:
+         userMessage = "La API de OpenAI está experimentando problemas. Por favor, intenta de nuevo más tarde."
+         break
+       case 400:
+         userMessage = `Solicitud inválida: ${errorMessage}`
+         break
+       default:
+         userMessage = `Error de la API de OpenAI (${resp.status}): ${errorMessage}`
+     }
+    
+    const errorDetails = {
+      status: resp.status,
+      statusText: resp.statusText,
+      errorType,
+      errorCode,
+      errorMessage,
+      errorText: errorText.substring(0, 500), // First 500 chars
+      elapsedMs: elapsed,
+      model,
+      imagesCount: images.length,
+    }
+    
+    console.error("[OpenAI Vision] API Error - Full details:", errorDetails)
+    
+    throw new Error(userMessage)
   }
 
-  const data = await resp.json()
+  let data: any
+  try {
+    data = await resp.json()
+  } catch (parseError) {
+    const elapsed = Date.now() - startTime
+    console.error("[OpenAI Vision] Error parsing JSON response:", {
+      error: parseError,
+      elapsedMs: elapsed,
+    })
+    throw new Error("La respuesta de OpenAI no es válida (no es JSON). Intenta de nuevo.")
+  }
+  
+  // Log response metadata
+  const totalElapsed = Date.now() - startTime
+  console.log(`[OpenAI Vision] Response parsed:`, {
+    id: data?.id,
+    model: data?.model,
+    usage: data?.usage,
+    choicesCount: data?.choices?.length || 0,
+    totalElapsedMs: totalElapsed,
+  })
+  
   const text = data?.choices?.[0]?.message?.content
-  if (!text) throw new Error("empty_response")
+  if (!text) {
+    console.error("[OpenAI Vision] Empty response content:", {
+      data: JSON.stringify(data).substring(0, 500),
+    })
+    throw new Error("La API de OpenAI devolvió una respuesta vacía. Intenta de nuevo.")
+  }
   
   // Try to parse JSON, handle markdown code blocks if present
   let jsonText = text.trim()
@@ -1206,7 +1393,20 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
     if (match) jsonText = match[1]
   }
   
-  return JSON.parse(jsonText)
+  try {
+    const parsed = JSON.parse(jsonText)
+    console.log(`[OpenAI Vision] Successfully parsed response in ${totalElapsed}ms`)
+    return parsed
+  } catch (parseError: any) {
+    console.error("[OpenAI Vision] Error parsing JSON content:", {
+      error: parseError.message,
+      jsonText: jsonText.substring(0, 500),
+    })
+    throw new Error(
+      `La respuesta de OpenAI no contiene JSON válido: ${parseError.message}. ` +
+      `El contenido recibido no pudo ser parseado.`
+    )
+  }
 }
 
 // Updated for new format
@@ -1316,7 +1516,9 @@ export async function POST(req: Request) {
     try {
       const prompt = getColindanciasRules()
         // Call OpenAI Vision with all images
+        console.log(`[api/ai/structure] Calling OpenAI Vision API with ${images.length} image(s)`)
         const aiResponse = await callOpenAIVision(prompt, images)
+        console.log(`[api/ai/structure] OpenAI Vision response received:`, JSON.stringify(aiResponse, null, 2).substring(0, 3000))
         
         // Extract lot-level metadata if present
         let lotLocation: string | undefined = undefined
@@ -1335,33 +1537,87 @@ export async function POST(req: Request) {
         
         // Normalize response to new format
         function normalizeUnit(unitRaw: any): StructuredUnit | null {
-          if (!unitRaw || typeof unitRaw !== "object") return null
+          if (!unitRaw || typeof unitRaw !== "object") {
+            console.warn(`[api/ai/structure] normalizeUnit: invalid unitRaw:`, unitRaw)
+            return null
+          }
           
           // Extract unit_name (new format) or unit.name (legacy)
           const unitName = unitRaw.unit_name || unitRaw.unit?.name || "UNIDAD"
-          if (!unitName) return null
+          if (!unitName) {
+            console.warn(`[api/ai/structure] normalizeUnit: unit without name:`, unitRaw)
+            return null
+          }
+          
+          console.log(`[api/ai/structure] Normalizing unit: "${unitName}"`, {
+            rawKeys: Object.keys(unitRaw),
+            hasDirections: !!(unitRaw.directions && Array.isArray(unitRaw.directions) && unitRaw.directions.length > 0),
+            directionsCount: unitRaw.directions?.length || 0,
+            hasBoundaries: !!(unitRaw.boundaries && Array.isArray(unitRaw.boundaries) && unitRaw.boundaries.length > 0),
+            boundariesCount: unitRaw.boundaries?.length || 0,
+          })
           
         // Check if unit has directions array (new format from AI)
         if (Array.isArray(unitRaw.directions) && unitRaw.directions.length > 0) {
+          console.log(`[api/ai/structure] Unit "${unitName}" has ${unitRaw.directions.length} direction(s)`)
           // Preserve new format with directions and segments
           const directions = unitRaw.directions
-            .filter((dir: any) => dir.raw_direction && dir.normalized_direction && Array.isArray(dir.segments))
-            .map((dir: any) => ({
-              raw_direction: String(dir.raw_direction).trim(),
-              normalized_direction: dir.normalized_direction as any,
-              direction_order_index: typeof dir.direction_order_index === "number" ? dir.direction_order_index : 0,
-              segments: (dir.segments || [])
-                .map((seg: any) => ({
-                  length_prefix: seg.length_prefix === null || seg.length_prefix === undefined ? null : String(seg.length_prefix).trim(),
-                  length_m: seg.length_m === null || seg.length_m === undefined ? null : (typeof seg.length_m === "number" ? seg.length_m : parseFloat(String(seg.length_m))),
-                  abutter: String(seg.abutter || "").trim(),
-                  order_index: typeof seg.order_index === "number" ? seg.order_index : 0,
-                }))
-                .filter((seg: any) => seg.abutter || seg.length_m !== null),
-            }))
-            .filter((dir: any) => dir.segments.length > 0)
+            .filter((dir: any, idx: number) => {
+              const isValid = dir.raw_direction && dir.normalized_direction && Array.isArray(dir.segments)
+              if (!isValid) {
+                console.warn(`[api/ai/structure] Unit "${unitName}", direction ${idx} is invalid:`, dir)
+              }
+              return isValid
+            })
+            .map((dir: any, idx: number) => {
+              const originalSegments = dir.segments || []
+              console.log(`[api/ai/structure] Unit "${unitName}", direction ${idx} ("${dir.raw_direction}") has ${originalSegments.length} segment(s)`)
+              
+              const segments = originalSegments
+                .map((seg: any, segIdx: number) => {
+                  const processed = {
+                    length_prefix: seg.length_prefix === null || seg.length_prefix === undefined ? null : String(seg.length_prefix).trim(),
+                    length_m: seg.length_m === null || seg.length_m === undefined ? null : (typeof seg.length_m === "number" ? seg.length_m : parseFloat(String(seg.length_m))),
+                    abutter: String(seg.abutter || "").trim(),
+                    order_index: typeof seg.order_index === "number" ? seg.order_index : 0,
+                  }
+                  
+                  if (segIdx === 0) {
+                    console.log(`[api/ai/structure] Unit "${unitName}", direction "${dir.raw_direction}", segment 0:`, processed)
+                  }
+                  return processed
+                })
+                .filter((seg: any) => {
+                  const hasContent = seg.abutter || seg.length_m !== null
+                  if (!hasContent) {
+                    console.warn(`[api/ai/structure] Unit "${unitName}", direction "${dir.raw_direction}": segment filtered out (no content):`, seg)
+                  }
+                  return hasContent
+                })
+              
+              console.log(`[api/ai/structure] Unit "${unitName}", direction "${dir.raw_direction}": ${originalSegments.length} → ${segments.length} segments after filtering`)
+              
+              return {
+                raw_direction: String(dir.raw_direction).trim(),
+                normalized_direction: dir.normalized_direction as any,
+                direction_order_index: typeof dir.direction_order_index === "number" ? dir.direction_order_index : 0,
+                segments,
+              }
+            })
+            .filter((dir: any) => {
+              const hasSegments = dir.segments.length > 0
+              if (!hasSegments) {
+                console.warn(`[api/ai/structure] Unit "${unitName}": direction "${dir.raw_direction}" filtered out (no segments with content)`)
+              }
+              return hasSegments
+            })
           
-          if (directions.length === 0) return null
+          console.log(`[api/ai/structure] Unit "${unitName}": ${unitRaw.directions.length} → ${directions.length} direction(s) after filtering`)
+          
+          if (directions.length === 0) {
+            console.warn(`[api/ai/structure] Unit "${unitName}": No valid directions with segments found. Raw directions:`, JSON.stringify(unitRaw.directions, null, 2).substring(0, 1000))
+            return null
+          }
           
           return {
             unit_name: unitName,

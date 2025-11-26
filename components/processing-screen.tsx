@@ -1,9 +1,11 @@
 "use client"
 
 import { useEffect, useState, useRef } from "react"
-import { Loader2, FileSearch, CheckCircle2 } from "lucide-react"
+import { Loader2, FileSearch, CheckCircle2, AlertCircle, X } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
+import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
 interface ProcessingScreenProps {
   fileName: string
@@ -11,9 +13,10 @@ interface ProcessingScreenProps {
   onRun?: (update: (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => void) => Promise<void>
   watchdogMs?: number
   steps?: Array<{ key: string; label: string }>
+  error?: { message: string; details?: string } | null
 }
 
-export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs, steps }: ProcessingScreenProps) {
+export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs, steps, error }: ProcessingScreenProps) {
   const [progress, setProgress] = useState(0)
   const [currentStep, setCurrentStep] = useState(0)
   const [started, setStarted] = useState(false)
@@ -86,6 +89,22 @@ export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs, step
         }
       } catch (e) {
         if (!cancelled) {
+          const errorMessage = e instanceof Error ? e.message : String(e)
+          console.error("[ProcessingScreen] Error during processing:", {
+            error: e,
+            message: errorMessage,
+            stack: e instanceof Error ? e.stack : undefined,
+          })
+          // Mark all steps as error if not already marked
+          setStepStatus((prev) => {
+            const updated = { ...prev }
+            stepsToUse.forEach((step) => {
+              if (updated[step.key]?.status !== "error") {
+                updated[step.key] = { status: "error" as const, detail: errorMessage }
+              }
+            })
+            return updated
+          })
           setProgress(100)
           setTimeout(() => onCompleteRef.current(), 150)
         }
@@ -130,21 +149,62 @@ export function ProcessingScreen({ fileName, onComplete, onRun, watchdogMs, step
               const s = stepStatus[step.key]?.status || "pending"
               const isActive = s === "in_progress"
               const isComplete = s === "done"
+              const hasError = s === "error"
+              const errorDetail = stepStatus[step.key]?.detail
 
               return (
                 <div
                   key={index}
                   className={`flex items-center gap-3 p-3 rounded-lg transition-all ${
-                    isActive ? "bg-primary/10 text-primary" : isComplete ? "text-success" : "text-muted-foreground"
+                    isActive 
+                      ? "bg-primary/10 text-primary" 
+                      : isComplete 
+                        ? "text-success" 
+                        : hasError
+                          ? "bg-destructive/10 text-destructive"
+                          : "text-muted-foreground"
                   }`}
                 >
-                  <Loader2 className={`h-5 w-5 ${isActive ? "animate-spin" : "opacity-30"}`} />
-                  <span className="text-sm font-medium">{labelByKey[step.key]}</span>
+                  {hasError ? (
+                    <AlertCircle className="h-5 w-5" />
+                  ) : (
+                    <Loader2 className={`h-5 w-5 ${isActive ? "animate-spin" : "opacity-30"}`} />
+                  )}
+                  <div className="flex-1">
+                    <span className="text-sm font-medium">{labelByKey[step.key]}</span>
+                    {errorDetail && (
+                      <p className="text-xs text-destructive/80 mt-1">{errorDetail}</p>
+                    )}
+                  </div>
                   {isComplete && <CheckCircle2 className="h-4 w-4 ml-auto" />}
                 </div>
               )
             })}
           </div>
+
+          {/* Error Alert */}
+          {error && (
+            <Alert variant="destructive" className="mt-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Error al procesar</AlertTitle>
+              <AlertDescription className="mt-2">
+                <p className="font-medium">{error.message}</p>
+                {error.details && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-sm text-muted-foreground">
+                      Detalles técnicos
+                    </summary>
+                    <pre className="mt-2 text-xs bg-muted p-2 rounded overflow-auto max-h-40">
+                      {error.details}
+                    </pre>
+                  </details>
+                )}
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Revisa la consola del navegador (F12) para más información.
+                </p>
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
       </Card>
     </div>

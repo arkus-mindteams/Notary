@@ -292,6 +292,7 @@ function DeslindePageInner() {
   const [imageCrops, setImageCrops] = useState<Map<number, { x: number; y: number; width: number; height: number }>>(new Map())
   const [showCropDialog, setShowCropDialog] = useState(false)
   const [currentCropIndex, setCurrentCropIndex] = useState<number | null>(null)
+  const [processingError, setProcessingError] = useState<{ message: string; details?: string } | null>(null)
 
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -600,6 +601,7 @@ function DeslindePageInner() {
     setUnits([])
     setUnitSegments(new Map())
     setUnitBoundariesText(new Map())
+    setProcessingError(null) // Reset error state
     setAppState("processing")
   }
 
@@ -634,15 +636,81 @@ function DeslindePageInner() {
         body: formData,
       })
       if (!resp.ok) {
-        const errorText = await resp.text()
-        throw new Error(errorText || `HTTP ${resp.status}`)
+        let errorText = ""
+        let errorDetails = ""
+        try {
+          errorText = await resp.text()
+          // Try to parse as JSON for structured error
+          try {
+            const errorJson = JSON.parse(errorText)
+            errorDetails = errorJson.message || errorJson.error || errorText
+          } catch {
+            errorDetails = errorText || `HTTP ${resp.status} ${resp.statusText}`
+          }
+        } catch (parseError) {
+          errorDetails = `HTTP ${resp.status} ${resp.statusText} - No se pudo leer el mensaje de error`
+        }
+        
+        console.error("[deslinde] API Error Response:", {
+          status: resp.status,
+          statusText: resp.statusText,
+          errorText,
+          errorDetails,
+          url: "/api/ai/structure",
+        })
+        
+        throw new Error(errorDetails || `Error del servidor: ${resp.status}`)
       }
-      const data = (await resp.json()) as StructuringResponse
+      
+      let data: StructuringResponse
+      try {
+        const responseText = await resp.text()
+        console.log("[deslinde] Raw API response:", responseText.substring(0, 500)) // Log first 500 chars
+        data = JSON.parse(responseText) as StructuringResponse
+      } catch (parseError) {
+        console.error("[deslinde] Error parsing API response:", {
+          error: parseError,
+          responseType: resp.headers.get("content-type"),
+        })
+        throw new Error("La respuesta del servidor no es válida. Por favor, intenta nuevamente.")
+      }
       console.log("[deslinde] AI response received:", {
         unitsCount: data.results?.length || 0,
         hasLocation: !!data.lotLocation,
         hasSurface: !!data.totalLotSurface,
       })
+      
+      // Log detailed unit information
+      if (data.results && Array.isArray(data.results)) {
+        console.log("[deslinde] Units details:", data.results.map((u: StructuredUnit) => ({
+          unit_name: u.unit_name,
+          hasDirections: !!(u.directions && Array.isArray(u.directions) && u.directions.length > 0),
+          directionsCount: u.directions?.length || 0,
+          hasBoundaries: !!(u.boundaries && Array.isArray(u.boundaries) && u.boundaries.length > 0),
+          boundariesCount: u.boundaries?.length || 0,
+          segmentsCount: u.directions?.reduce((sum, dir) => sum + (dir.segments?.length || 0), 0) || 0,
+        })))
+        
+        // Log full structure of each unit for debugging
+        data.results.forEach((u: StructuredUnit, index: number) => {
+          console.log(`[deslinde] Unit ${index + 1} full structure:`, JSON.stringify(u, null, 2))
+          if (u.directions && Array.isArray(u.directions)) {
+            console.log(`[deslinde] Unit ${index + 1} directions:`, u.directions.map((dir: any) => ({
+              raw_direction: dir.raw_direction,
+              normalized_direction: dir.normalized_direction,
+              segmentsCount: dir.segments?.length || 0,
+              segments: dir.segments,
+            })))
+          }
+          if (u.boundaries && Array.isArray(u.boundaries)) {
+            console.log(`[deslinde] Unit ${index + 1} boundaries:`, u.boundaries)
+          }
+        })
+      }
+      
+      // Log the raw response from API for debugging
+      console.log("[deslinde] Raw API response structure:", JSON.stringify(data, null, 2).substring(0, 2000))
+      
       update?.("ai", "done")
       
       // Extract lot-level metadata
@@ -660,6 +728,73 @@ function DeslindePageInner() {
       if (!structuredUnits.length) {
         throw new Error("No se detectaron unidades en el texto proporcionado.")
       }
+
+      // Validate that units have colindancias (directions or boundaries)
+      // Check both the presence of directions/boundaries and that they have actual segments/boundaries
+      const validUnits = structuredUnits.filter((u) => {
+        // Check if has directions with segments
+        if (u.directions && Array.isArray(u.directions) && u.directions.length > 0) {
+          // Check if any direction has segments with content
+          const hasSegments = u.directions.some((dir: any) => 
+            dir.segments && Array.isArray(dir.segments) && dir.segments.length > 0 &&
+            dir.segments.some((seg: any) => 
+              seg.abutter || seg.length_m !== null && seg.length_m !== undefined
+            )
+          )
+          if (hasSegments) return true
+        }
+        
+        // Check if has boundaries with content
+        if (u.boundaries && Array.isArray(u.boundaries) && u.boundaries.length > 0) {
+          // Check if boundaries have actual content
+          const hasContent = u.boundaries.some((b: any) => 
+            b.abutter || (b.length_m !== null && b.length_m !== undefined)
+          )
+          if (hasContent) return true
+        }
+        
+        return false
+      })
+
+      if (validUnits.length === 0) {
+        // Enhanced debugging: log exactly why units are invalid
+        console.error("[deslinde] All units are invalid (no colindancias):", JSON.stringify(structuredUnits, null, 2))
+        structuredUnits.forEach((u, index) => {
+          console.error(`[deslinde] Unit ${index + 1} validation details:`, {
+            unit_name: u.unit_name,
+            hasDirectionsArray: !!(u.directions && Array.isArray(u.directions)),
+            directionsLength: u.directions?.length || 0,
+            directionsWithSegments: u.directions?.filter((dir: any) => 
+              dir.segments && Array.isArray(dir.segments) && dir.segments.length > 0
+            ).length || 0,
+            totalSegments: u.directions?.reduce((sum: number, dir: any) => 
+              sum + (dir.segments?.length || 0), 0) || 0,
+            segmentsWithContent: u.directions?.reduce((sum: number, dir: any) => 
+              sum + (dir.segments?.filter((seg: any) => seg.abutter || seg.length_m).length || 0), 0) || 0,
+            hasBoundariesArray: !!(u.boundaries && Array.isArray(u.boundaries)),
+            boundariesLength: u.boundaries?.length || 0,
+            boundariesWithContent: u.boundaries?.filter((b: any) => 
+              b.abutter || (b.length_m !== null && b.length_m !== undefined)
+            ).length || 0,
+          })
+        })
+        
+        throw new Error(
+          `Se detectaron ${structuredUnits.length} unidad(es) pero ninguna tiene colindancias. ` +
+          `Esto puede deberse a que la imagen no contiene información de colindancias o la IA no pudo extraerla correctamente. ` +
+          `Por favor, verifica que la imagen contenga la sección de "MEDIDAS Y COLINDANCIAS" y vuelve a intentar. ` +
+          `Revisa la consola para más detalles sobre la respuesta de la IA.`
+        )
+      }
+
+      if (validUnits.length < structuredUnits.length) {
+        console.warn(
+          `[deslinde] Filtered out ${structuredUnits.length - validUnits.length} invalid unit(s) without colindancias`
+        )
+      }
+
+      // Use only valid units with colindancias
+      const unitsToProcess = validUnits
 
       const formatBoundaries = (unit: StructuredUnit) => {
         const lines: string[] = []
@@ -899,7 +1034,7 @@ function DeslindePageInner() {
       const segmentsMap = new Map<string, TransformedSegment[]>()
       const boundariesTextMap = new Map<string, string>()
 
-      structuredUnits.forEach((unit, index) => {
+      unitsToProcess.forEach((unit, index) => {
         // Handle new format (unit_name)
         const unitName = unit.unit_name?.trim() || `UNIDAD ${index + 1}`
         const unitIdBase =
@@ -990,7 +1125,7 @@ function DeslindePageInner() {
       })
 
       // Construir texto de colindancias por unidad
-      structuredUnits.forEach((unit, index) => {
+      unitsToProcess.forEach((unit, index) => {
         // Handle new format (unit_name)
         const unitName = unit.unit_name?.trim() || `UNIDAD ${index + 1}`
         const unitIdBase =
@@ -1014,7 +1149,30 @@ function DeslindePageInner() {
       setUnits(propertyUnits)
       setUnitSegments(segmentsMap)
     } catch (e) {
-      console.error("[deslinde] Error processing with AI:", e)
+      // Enhanced error logging
+      const errorMessage = e instanceof Error ? e.message : String(e)
+      const errorStack = e instanceof Error ? e.stack : undefined
+      const errorDetails = {
+        message: errorMessage,
+        stack: errorStack,
+        name: e instanceof Error ? e.name : typeof e,
+        timestamp: new Date().toISOString(),
+        filesCount: selectedFiles.length,
+        fileNames: selectedFiles.map(f => f.name),
+      }
+      
+      console.error("[deslinde] Error processing with AI - Full details:", errorDetails)
+      console.error("[deslinde] Error object:", e)
+      
+      // Set error state for UI display
+      setProcessingError({
+        message: errorMessage || "Ocurrió un error al procesar las imágenes",
+        details: errorStack ? `Stack: ${errorStack.substring(0, 500)}` : undefined,
+      })
+      
+      // Update processing status to error
+      update?.("ai", "error", errorMessage)
+      
       // Fallback: create empty unit
       setAiStructuredText(null)
       const unit: PropertyUnit = {
@@ -1028,8 +1186,8 @@ function DeslindePageInner() {
       segmentsMap.set(unit.id, [
         {
           id: "unit-fallback-0",
-          originalText: "No se pudo procesar el documento.",
-          notarialText: "No se pudo procesar el documento.",
+          originalText: `Error: ${errorMessage}`,
+          notarialText: `Error al procesar el documento: ${errorMessage}`,
           regionId: "",
           direction: "FALLBACK",
         },
@@ -1091,12 +1249,27 @@ function DeslindePageInner() {
               onRun={async (update) => {
                 try {
                   await handleProcessingComplete(update)
-                } catch {
-                  update("ai", "error")
+                } catch (e) {
+                  const errorMessage = e instanceof Error ? e.message : String(e)
+                  console.error("[deslinde] Error in ProcessingScreen onRun:", {
+                    error: e,
+                    message: errorMessage,
+                    stack: e instanceof Error ? e.stack : undefined,
+                  })
+                  update("ai", "error", errorMessage)
+                  setProcessingError({
+                    message: errorMessage || "Error desconocido durante el procesamiento",
+                  })
                 }
               }}
-              onComplete={() => setAppState("validation")}
+              onComplete={() => {
+                // Only transition to validation if there's no error
+                if (!processingError) {
+                  setAppState("validation")
+                }
+              }}
               watchdogMs={watchdogMs}
+              error={processingError}
               steps={processSteps}
             />
           </div>
