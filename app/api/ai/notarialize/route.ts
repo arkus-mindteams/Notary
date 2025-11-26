@@ -39,7 +39,19 @@ function buildNotarialPrompt(colindanciasText: string, unitName: string): string
     "Texto de colindancias:",
     colindanciasText,
     "",
-    "IMPORTANTE: Genera el texto notarial completo siguiendo todas las reglas especificadas. RECUERDA: TODOS los números (dígitos) que aparezcan en el texto de colindancias DEBEN convertirse a palabras escritas en el texto notarial final. Por ejemplo: '17' → 'diecisiete', '360' → 'trescientos sesenta', '17.000 m' → 'diecisiete metros'. NUNCA dejes números en dígitos en el texto final.",
+    "IMPORTANTE - CONSISTENCIA Y FORMATO:",
+    "",
+    "1. TODOS los números (dígitos) que aparezcan en el texto de colindancias DEBEN convertirse a palabras escritas en el texto notarial final. Por ejemplo: '17' → 'diecisiete', '360' → 'trescientos sesenta', '17.000 m' → 'diecisiete metros'. NUNCA dejes números en dígitos en el texto final.",
+    "",
+    "2. ESTRUCTURA DE PUNTUACIÓN - Cuando una dirección se repite explícitamente en líneas separadas, cada repetición debe separarse con punto y coma (;). Ejemplo correcto: 'al sur, en X metros, con A; al sur, en Y metros, con B'. NO uses comas con 'y' para agrupar cuando la dirección se repite explícitamente.",
+    "",
+    "3. AGRUPACIÓN - Solo agrupa con 'y' o 'en N tramos' cuando las líneas NO repiten la dirección explícitamente (líneas heredadas). Si cada línea tiene la dirección explícita, usa punto y coma entre cada una.",
+    "",
+    "4. PRECISIÓN - Mantén TODOS los números exactamente como aparecen en el texto de colindancias. Si el texto dice 'ochocientos treinta y uno', NO lo cambies a 'ochocientos treinta y tres' ni a ningún otro número. Si el texto dice 'lote cuarenta y cuatro, manzana ochocientos treinta y uno', mantén esos números exactos.",
+    "",
+    "5. ORDEN - Sigue EXACTAMENTE el orden de las colindancias tal como aparecen en el texto técnico. No reordenes ni reorganices.",
+    "",
+    "Genera el texto notarial completo siguiendo todas las reglas especificadas.",
   ].join("\n")
 }
 
