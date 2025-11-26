@@ -1363,12 +1363,31 @@ export async function POST(req: Request) {
               normalized_direction: dir.normalized_direction as any,
               direction_order_index: typeof dir.direction_order_index === "number" ? dir.direction_order_index : 0,
               segments: (dir.segments || [])
-                .map((seg: any) => ({
-                  length_prefix: seg.length_prefix === null || seg.length_prefix === undefined ? null : String(seg.length_prefix).trim(),
-                  length_m: seg.length_m === null || seg.length_m === undefined ? null : (typeof seg.length_m === "number" ? seg.length_m : parseFloat(String(seg.length_m))),
-                  abutter: String(seg.abutter || "").trim(),
-                  order_index: typeof seg.order_index === "number" ? seg.order_index : 0,
-                }))
+                .map((seg: any) => {
+                  // Preserve length_m as string if it's already a string, otherwise convert to number
+                  // This allows preserving exact decimal places from the AI response
+                  let lengthM: number | string | null = null
+                  if (seg.length_m !== null && seg.length_m !== undefined) {
+                    if (typeof seg.length_m === "string") {
+                      // Already a string, preserve it as-is (maintains exact decimals)
+                      lengthM = seg.length_m.trim()
+                    } else if (typeof seg.length_m === "number") {
+                      // It's a number, keep it as number
+                      lengthM = seg.length_m
+                    } else {
+                      // Try to parse, but prefer string if original was likely a decimal
+                      const parsed = parseFloat(String(seg.length_m))
+                      lengthM = isNaN(parsed) ? null : parsed
+                    }
+                  }
+                  
+                  return {
+                    length_prefix: seg.length_prefix === null || seg.length_prefix === undefined ? null : String(seg.length_prefix).trim(),
+                    length_m: lengthM,
+                    abutter: String(seg.abutter || "").trim(),
+                    order_index: typeof seg.order_index === "number" ? seg.order_index : 0,
+                  }
+                })
                 .filter((seg: any) => seg.abutter || seg.length_m !== null),
             }))
             .filter((dir: any) => dir.segments.length > 0)
