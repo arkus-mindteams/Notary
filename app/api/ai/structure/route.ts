@@ -45,6 +45,8 @@ function normalizeDirectionCode(rawDir: string): "N" | "S" | "E" | "W" | "NE" | 
     "ABAJO": "DOWN",
     "SUPERIOR": "UP",
     "INFERIOR": "DOWN",
+    "COLINDANCIA SUPERIOR": "UP",
+    "COLINDANCIA INFERIOR": "DOWN",
     // Verticales en inglés
     "UP": "UP",
     "DOWN": "DOWN",
@@ -163,8 +165,8 @@ function buildDefaultPrompt(): string {
     '  - SUROESTE → "SW"',
     "",
     "Verticales:",
-    '  - ARRIBA / SUPERIOR → "UP"',
-    '  - ABAJO / INFERIOR → "DOWN"',
+    '  - ARRIBA / SUPERIOR / COLINDANCIA SUPERIOR → "UP"',
+    '  - ABAJO / INFERIOR / COLINDANCIA INFERIOR → "DOWN"',
     "",
     "Regla:",
     "No inventes direcciones. Normaliza variantes incorrectas usando distancia Levenshtein. Por ejemplo:",
@@ -346,7 +348,7 @@ function buildDefaultPrompt(): string {
     "  - JSON válido siempre.",
     "  - unit_name según aparece en el plano.",
     "  - directions: array de bloques de dirección, en orden de aparición.",
-    "  - raw_direction = dirección original del texto (ej: \"SURESTE\", \"NORTE\", \"ARRIBA\").",
+    "  - raw_direction = dirección original del texto (ej: \"SURESTE\", \"NORTE\", \"ARRIBA\", \"COLINDANCIA SUPERIOR\", \"COLINDANCIA INFERIOR\").",
     "  - normalized_direction = código corto: N/S/E/W/NE/NW/SE/SW/UP/DOWN.",
     "  - direction_order_index: orden de aparición de cada dirección en el documento (inicia en 0, se incrementa por cada dirección explícita).",
     "  - segments: array de colindancias que pertenecen a esta dirección.",
@@ -374,10 +376,16 @@ function buildDefaultPrompt(): string {
     'SUR:\\n',
     '5.370 MTS CON AREA COMUN 1\\n',
     'ARRIBA: CON UNIDAD C504\\n',
-    'ABAJO: CON UNIDAD C506"',
+    'ABAJO: CON UNIDAD C506\\n',
+    'COLINDANCIA SUPERIOR: CON UNIDAD D-5\\n',
+    'COLINDANCIA INFERIOR: CON UNIDAD D-6"',
     "",
-    "NOTA: Este ejemplo incluye ARRIBA y ABAJO porque aparecen EXPLÍCITAMENTE en el texto.",
+    "NOTA: Este ejemplo incluye ARRIBA, ABAJO, COLINDANCIA SUPERIOR y COLINDANCIA INFERIOR porque aparecen EXPLÍCITAMENTE en el texto.",
     "Si NO aparecen en el texto/imagen, NO los incluyas.",
+    "",
+    "Variantes aceptadas para direcciones verticales:",
+    "  - ARRIBA / SUPERIOR / COLINDANCIA SUPERIOR → todas se normalizan a UP",
+    "  - ABAJO / INFERIOR / COLINDANCIA INFERIOR → todas se normalizan a DOWN",
     "",
     "⚠️ EJEMPLO CRÍTICO SIN direcciones verticales ⚠️",
     "",
@@ -643,7 +651,7 @@ function buildDefaultPrompt(): string {
     "",
     "ADVERTENCIA ESPECIAL SOBRE DIRECCIONES VERTICALES:",
     "",
-    "Si NO ves explícitamente \"ARRIBA:\" o \"ABAJO:\" en el texto/imagen:",
+    "Si NO ves explícitamente \"ARRIBA:\", \"ABAJO:\", \"SUPERIOR:\", \"INFERIOR:\", \"COLINDANCIA SUPERIOR:\" o \"COLINDANCIA INFERIOR:\" en el texto/imagen:",
     "→ NUNCA las agregues",
     "→ NO las infieras de las direcciones horizontales",
     "→ NO las asumas por defecto",
@@ -669,15 +677,18 @@ function buildDefaultPrompt(): string {
     "   Respuesta CORRECTA:",
     "     Solo incluye NORTE y SUR (únicamente lo que aparece explícitamente)",
     "",
-    "4. Las direcciones verticales (ARRIBA, ABAJO) SOLO deben incluirse SI:",
-    "   - Aparecen EXPLÍCITAMENTE en el texto/imagen con \"ARRIBA:\" o \"ABAJO:\"",
+    "4. Las direcciones verticales (ARRIBA, ABAJO, SUPERIOR, INFERIOR, COLINDANCIA SUPERIOR, COLINDANCIA INFERIOR) SOLO deben incluirse SI:",
+    "   - Aparecen EXPLÍCITAMENTE en el texto/imagen con \"ARRIBA:\", \"ABAJO:\", \"SUPERIOR:\", \"INFERIOR:\", \"COLINDANCIA SUPERIOR:\" o \"COLINDANCIA INFERIOR:\"",
     "   - Están CLARAMENTE VISIBLES en la imagen con esos textos exactos",
     "   - Si no las ves, NO las agregues bajo NINGUNA circunstancia",
     "",
     "5. Reglas para direcciones verticales:",
+    "   - Variantes aceptadas: ARRIBA, ABAJO, SUPERIOR, INFERIOR, COLINDANCIA SUPERIOR, COLINDANCIA INFERIOR",
     "   - Si el texto dice \"ARRIBA: CON UNIDAD C504\" → SÍ incluirla",
-    "   - Si el texto NO dice \"ARRIBA\" o \"ABAJO\" → NO incluir ninguna dirección vertical",
-    "   - Si la imagen NO muestra \"ARRIBA:\" o \"ABAJO:\" → NO inventar direcciones verticales",
+    "   - Si el texto dice \"COLINDANCIA SUPERIOR: CON UNIDAD X\" → SÍ incluirla",
+    "   - Si el texto dice \"COLINDANCIA INFERIOR: CON UNIDAD Y\" → SÍ incluirla",
+    "   - Si el texto NO dice ninguna variante de dirección vertical → NO incluir ninguna dirección vertical",
+    "   - Si la imagen NO muestra ninguna variante de dirección vertical → NO inventar direcciones verticales",
     "",
     "REGLA DE ORO:",
     "Solo extrae lo que VERDADERAMENTE está en el texto/imagen.",
@@ -997,13 +1008,25 @@ function heuristicBoundaries(ocrText: string): StructuredUnit["boundaries"] {
     ABAJO: "DOWN",
     SUPERIOR: "UP",
     INFERIOR: "DOWN",
+    "COLINDANCIA SUPERIOR": "UP",
+    "COLINDANCIA INFERIOR": "DOWN",
   }
   let order = 0
   for (const raw of lines) {
     const l = raw.toUpperCase().trim()
-    const dirMatch = l.match(/\b(AL\s+)?(NOROESTE|NORESTE|SURESTE|SUROESTE|NORTE|SUR|ESTE|OESTE|ARRIBA|ABAJO|SUPERIOR|INFERIOR)\b/)
-    if (!dirMatch) continue
-    const dir = dirMap[(dirMatch[2] || "").toUpperCase()]
+    // Try to match "COLINDANCIA SUPERIOR" or "COLINDANCIA INFERIOR" first (two words)
+    let dirMatch = l.match(/\b(AL\s+)?(COLINDANCIA\s+SUPERIOR|COLINDANCIA\s+INFERIOR)\b/i)
+    let dir: string | undefined
+    if (dirMatch) {
+      dir = dirMap[(dirMatch[2] || "").toUpperCase().replace(/\s+/g, " ")]
+    } else {
+      // Otherwise try single word directions
+      dirMatch = l.match(/\b(AL\s+)?(NOROESTE|NORESTE|SURESTE|SUROESTE|NORTE|SUR|ESTE|OESTE|ARRIBA|ABAJO|SUPERIOR|INFERIOR)\b/i)
+      if (dirMatch) {
+        dir = dirMap[(dirMatch[2] || "").toUpperCase()]
+      }
+    }
+    if (!dirMatch || !dir) continue
     if (!dir) continue
     // Longitud: números con punto o coma, opcional m/mts/ml
     const lenMatch =
@@ -1045,6 +1068,8 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
     ABAJO: "DOWN",
     SUPERIOR: "UP",
     INFERIOR: "DOWN",
+    "COLINDANCIA SUPERIOR": "UP",
+    "COLINDANCIA INFERIOR": "DOWN",
   }
   const lines = ocrText.split(/\n+/).map((s) => s.trim()).filter(Boolean)
   const upper = lines.map((s) => s.toUpperCase())
@@ -1052,10 +1077,21 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
   let order = 0
   for (let i = 0; i < upper.length; i++) {
     // Acepta encabezado solo o encabezado con contenido en la misma línea
-    const lm = upper[i].match(/^(AL\s+)?(NOROESTE|NORESTE|SURESTE|SUROESTE|NORTE|SUR|ESTE|OESTE|ARRIBA|ABAJO|SUPERIOR|INFERIOR)\s*:?\s*(.*)$/)
-    if (!lm) continue
-    const dirEs = (lm[2] || "").toUpperCase()
-    const direction = dirMap[dirEs]
+    // Try to match "COLINDANCIA SUPERIOR" or "COLINDANCIA INFERIOR" first (two words)
+    let lm = upper[i].match(/^(AL\s+)?(COLINDANCIA\s+SUPERIOR|COLINDANCIA\s+INFERIOR)\s*:?\s*(.*)$/i)
+    let direction: string | undefined
+    if (lm) {
+      const dirEs = (lm[2] || "").toUpperCase().replace(/\s+/g, " ")
+      direction = dirMap[dirEs]
+    } else {
+      // Otherwise try single word directions
+      lm = upper[i].match(/^(AL\s+)?(NOROESTE|NORESTE|SURESTE|SUROESTE|NORTE|SUR|ESTE|OESTE|ARRIBA|ABAJO|SUPERIOR|INFERIOR)\s*:?\s*(.*)$/i)
+      if (lm) {
+        const dirEs = (lm[2] || "").toUpperCase()
+        direction = dirMap[dirEs]
+      }
+    }
+    if (!lm || !direction) continue
     if (!direction) continue
     // Buscar en las próximas líneas un patrón de longitud y colindante.
     let length_m = 0
@@ -1357,10 +1393,18 @@ export async function POST(req: Request) {
         if (Array.isArray(unitRaw.directions) && unitRaw.directions.length > 0) {
           // Preserve new format with directions and segments
           const directions = unitRaw.directions
-            .filter((dir: any) => dir.raw_direction && dir.normalized_direction && Array.isArray(dir.segments))
-            .map((dir: any) => ({
-              raw_direction: String(dir.raw_direction).trim(),
-              normalized_direction: dir.normalized_direction as any,
+            .filter((dir: any) => dir.raw_direction && Array.isArray(dir.segments))
+            .map((dir: any) => {
+              const rawDir = String(dir.raw_direction).trim()
+              // Ensure normalized_direction is correct, normalize it if needed
+              let normalizedDir = dir.normalized_direction
+              if (!normalizedDir || !["N", "S", "E", "W", "NE", "NW", "SE", "SW", "UP", "DOWN"].includes(normalizedDir)) {
+                normalizedDir = normalizeDirectionCode(rawDir)
+              }
+              
+              return {
+                raw_direction: rawDir,
+                normalized_direction: normalizedDir as any,
               direction_order_index: typeof dir.direction_order_index === "number" ? dir.direction_order_index : 0,
               segments: (dir.segments || [])
                 .map((seg: any) => {
