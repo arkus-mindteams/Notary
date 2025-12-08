@@ -30,15 +30,189 @@ export default function PreavisoPage() {
     setPreavisoData(data)
   }
 
-  const handleGenerateDocument = async (data: PreavisoData) => {
+  const handleGenerateDocument = async (data: PreavisoData, uploadedDocuments?: any[], activeTramiteId?: string | null) => {
     try {
+      // Generar documento
       const generatedDoc = PreavisoGenerator.generatePreavisoDocument(data)
       setDocument(generatedDoc)
       setEditedDocument(generatedDoc.text)
       setAppState('document')
+
+      // Guardar en expedientes (async, no bloquea la UI)
+      try {
+        await savePreavisoToExpedientes(data, generatedDoc, uploadedDocuments, activeTramiteId)
+      } catch (error) {
+        console.error('Error guardando en expedientes (no crítico):', error)
+        // No mostrar error al usuario, es opcional
+      }
     } catch (error) {
       console.error('Error generando documento:', error)
       alert('Error al generar el documento. Por favor, intenta de nuevo.')
+    }
+  }
+
+  const savePreavisoToExpedientes = async (
+    data: PreavisoData, 
+    doc: PreavisoDocument,
+    uploadedDocuments?: any[],
+    existingTramiteId?: string | null
+  ) => {
+    // 1. Buscar o crear comprador usando findOrCreate
+    let comprador
+    try {
+      // Intentar crear primero
+      const createResponse = await fetch('/api/expedientes/compradores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nombre: data.comprador.nombre,
+          rfc: data.comprador.rfc,
+          curp: data.comprador.curp,
+        }),
+      })
+
+      if (createResponse.ok) {
+        comprador = await createResponse.json()
+      } else if (createResponse.status === 409) {
+        // Ya existe, buscarlo por RFC
+        const searchResponse = await fetch(`/api/expedientes/compradores?rfc=${encodeURIComponent(data.comprador.rfc)}`)
+        if (searchResponse.ok) {
+          comprador = await searchResponse.json()
+        } else {
+          throw new Error('No se pudo obtener el comprador')
+        }
+      } else {
+        throw new Error('Error creando/buscando comprador')
+      }
+    } catch (error) {
+      console.error('Error en comprador:', error)
+      throw error
+    }
+
+    // 2. Si hay trámite existente, actualizarlo; si no, crear uno nuevo
+    let tramite
+    if (existingTramiteId) {
+      // Actualizar trámite existente con comprador y datos finales
+      const updateResponse = await fetch(`/api/expedientes/tramites?id=${existingTramiteId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          comprador_id: comprador.id,
+          datos: {
+            tipoOperacion: data.tipoOperacion,
+            vendedor: data.vendedor,
+            inmueble: data.inmueble,
+            actosNotariales: data.actosNotariales,
+          },
+          estado: 'completado',
+        }),
+      })
+
+      if (!updateResponse.ok) {
+        throw new Error('Error actualizando trámite')
+      }
+
+      tramite = await updateResponse.json()
+    } else {
+      // Crear nuevo trámite
+      const tramiteResponse = await fetch('/api/expedientes/tramites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          compradorId: comprador.id,
+          tipo: 'preaviso',
+          datos: {
+            tipoOperacion: data.tipoOperacion,
+            vendedor: data.vendedor,
+            inmueble: data.inmueble,
+            actosNotariales: data.actosNotariales,
+          },
+          estado: 'completado',
+        }),
+      })
+
+      if (!tramiteResponse.ok) {
+        throw new Error('Error creando trámite')
+      }
+
+      tramite = await tramiteResponse.json()
+    }
+
+    // 3. Actualizar comprador_id de documentos que fueron subidos durante el borrador
+    if (existingTramiteId) {
+      try {
+        const { DocumentoService } = await import('@/lib/services/documento-service')
+        await DocumentoService.updateDocumentosCompradorId(tramite.id, comprador.id)
+      } catch (error) {
+        console.error('Error actualizando comprador_id de documentos:', error)
+        // Continuar aunque falle
+      }
+    }
+
+    // 4. Subir documentos si existen (solo los que no fueron subidos durante el borrador)
+    if (uploadedDocuments && uploadedDocuments.length > 0) {
+      for (const uploadedDoc of uploadedDocuments) {
+        if (uploadedDoc.file && uploadedDoc.processed) {
+          try {
+            // Determinar tipo de documento
+            const detectDocumentType = (fileName: string): string => {
+              const name = fileName.toLowerCase()
+              if (name.includes('escritura') || name.includes('titulo') || name.includes('propiedad')) return 'escritura'
+              if (name.includes('plano') || name.includes('croquis') || name.includes('catastral')) return 'plano'
+              if (name.includes('ine') || name.includes('ife') || name.includes('identificacion')) {
+                // Determinar si es vendedor o comprador basado en el contexto
+                return 'ine_comprador' // Por defecto comprador, se puede mejorar
+              }
+              return 'escritura'
+            }
+
+            const docType = detectDocumentType(uploadedDoc.name)
+
+            // Subir documento (si no fue subido durante el borrador)
+            // Los documentos ya subidos durante el borrador solo necesitan actualizar comprador_id
+            const formData = new FormData()
+            formData.append('file', uploadedDoc.file)
+            formData.append('compradorId', comprador.id)
+            formData.append('tipo', docType)
+            formData.append('tramiteId', tramite.id)
+
+            const uploadResponse = await fetch('/api/expedientes/documentos/upload', {
+              method: 'POST',
+              body: formData,
+            })
+
+            if (uploadResponse.ok) {
+              const documento = await uploadResponse.json()
+              
+              // Asociar documento al trámite
+              await fetch(`/api/expedientes/tramites/${tramite.id}/documentos`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  documentoId: documento.id,
+                }),
+              })
+            }
+          } catch (error) {
+            console.error(`Error subiendo documento ${uploadedDoc.name}:`, error)
+            // Continuar con los demás documentos
+          }
+        }
+      }
+    }
+
+    // 4. Guardar referencia del documento generado
+    if (doc) {
+      await fetch(`/api/expedientes/tramites?id=${tramite.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          documento_generado: {
+            formato: 'docx',
+            // URL se generará cuando se descargue
+          },
+        }),
+      })
     }
   }
 

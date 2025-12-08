@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Progress } from '@/components/ui/progress'
+import { useAuth } from '@/lib/auth-context'
 import { 
   Send, 
   Bot, 
@@ -75,7 +76,7 @@ interface UploadedDocument {
 
 interface PreavisoChatProps {
   onDataComplete: (data: PreavisoData) => void
-  onGenerateDocument: (data: PreavisoData) => void
+  onGenerateDocument: (data: PreavisoData, uploadedDocuments?: UploadedDocument[], activeTramiteId?: string | null) => void
 }
 
 const INITIAL_MESSAGES = [
@@ -85,32 +86,125 @@ const INITIAL_MESSAGES = [
 ]
 
 export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoChatProps) {
+  const { user } = useAuth()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [initialMessagesSent, setInitialMessagesSent] = useState(false)
+  const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
+  const [isCheckingDraft, setIsCheckingDraft] = useState(true)
 
-  // Enviar mensajes iniciales con delay
+  // Verificar si hay trámite guardado al iniciar
   useEffect(() => {
-    if (!initialMessagesSent) {
-      const sendInitialMessages = async () => {
-        for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
-          await new Promise(resolve => setTimeout(resolve, i * 400)) // Delay de 400ms entre mensajes
-          setMessages(prev => {
-            // Verificar que no esté duplicado
-            const exists = prev.some(m => m.id === `initial-${i}`)
-            if (exists) return prev
-            return [...prev, {
-              id: `initial-${i}`,
-              role: 'assistant',
-              content: INITIAL_MESSAGES[i],
-              timestamp: new Date()
-            }]
+    const checkDraftTramite = async () => {
+      if (!user?.id) {
+        setIsCheckingDraft(false)
+        return
+      }
+
+      try {
+        const response = await fetch(`/api/expedientes/tramites/active-draft?userId=${user.id}&tipo=preaviso`)
+        
+        if (response.ok) {
+          const tramite = await response.json()
+          setActiveTramiteId(tramite.id)
+          
+          // Cargar datos guardados
+          if (tramite.datos) {
+            const savedData = tramite.datos as any
+            setData(prev => ({
+              ...prev,
+              ...savedData,
+              // Asegurar que actosNotariales esté presente
+              actosNotariales: savedData.actosNotariales || prev.actosNotariales
+            }))
+          }
+
+          // Agregar mensaje de la IA preguntando si continuar
+          const continueMessage: ChatMessage = {
+            id: 'draft-detected',
+            role: 'assistant',
+            content: `He detectado que tienes un pre-aviso en progreso guardado. ¿Deseas continuar con ese trámite o prefieres iniciar uno nuevo? Responde "continuar" o "nuevo".`,
+            timestamp: new Date()
+          }
+          setMessages([continueMessage])
+        } else {
+          // No hay trámite guardado, enviar mensajes iniciales normales
+          sendInitialMessages()
+        }
+      } catch (error) {
+        console.error('Error verificando trámite guardado:', error)
+        sendInitialMessages()
+      } finally {
+        setIsCheckingDraft(false)
+      }
+    }
+
+    const sendInitialMessages = async () => {
+      for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
+        await new Promise(resolve => setTimeout(resolve, i * 400))
+        setMessages(prev => {
+          const exists = prev.some(m => m.id === `initial-${i}`)
+          if (exists) return prev
+          return [...prev, {
+            id: `initial-${i}`,
+            role: 'assistant',
+            content: INITIAL_MESSAGES[i],
+            timestamp: new Date()
+          }]
+        })
+      }
+      setInitialMessagesSent(true)
+    }
+
+    checkDraftTramite()
+  }, [user?.id])
+
+  // Guardar progreso automáticamente cuando cambian los datos
+  useEffect(() => {
+    const saveProgress = async () => {
+      // Solo guardar si hay datos significativos y hay un trámite activo o usuario
+      if (!user?.id || (!data.vendedor.nombre && !data.inmueble.direccion && !data.comprador.nombre)) {
+        return
+      }
+
+      try {
+        // Si no hay trámite activo, crear uno
+        if (!activeTramiteId) {
+          const response = await fetch('/api/expedientes/tramites', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              compradorId: null, // Sin comprador aún
+              userId: user.id,
+              tipo: 'preaviso',
+              datos: data,
+              estado: 'en_proceso',
+            }),
+          })
+
+          if (response.ok) {
+            const tramite = await response.json()
+            setActiveTramiteId(tramite.id)
+          }
+        } else {
+          // Actualizar trámite existente
+          await fetch(`/api/expedientes/tramites?id=${activeTramiteId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              datos: data,
+            }),
           })
         }
-        setInitialMessagesSent(true)
+      } catch (error) {
+        console.error('Error guardando progreso (no crítico):', error)
+        // No mostrar error al usuario, es guardado en background
       }
-      sendInitialMessages()
     }
-  }, [initialMessagesSent])
+
+    // Debounce: guardar después de 2 segundos de inactividad
+    const timer = setTimeout(saveProgress, 2000)
+    return () => clearTimeout(timer)
+  }, [data, activeTramiteId, user?.id])
   const [input, setInput] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const [uploadedDocuments, setUploadedDocuments] = useState<UploadedDocument[]>([])
@@ -168,6 +262,77 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     setInput('')
     setIsProcessing(true)
 
+    // Manejar respuesta de continuar/nuevo trámite
+    const lowerInput = currentInput.toLowerCase().trim()
+    if (lowerInput === 'continuar' || lowerInput === 'seguir' || lowerInput === 'sí' || lowerInput === 'si') {
+      if (activeTramiteId) {
+        const continueMessage: ChatMessage = {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: 'Perfecto, continuemos con tu trámite guardado. ¿Qué información necesitas agregar o modificar?',
+          timestamp: new Date()
+        }
+        setMessages(prev => [...prev, continueMessage])
+        setIsProcessing(false)
+        return
+      }
+    } else if (lowerInput === 'nuevo' || lowerInput === 'nuevo trámite' || lowerInput === 'empezar nuevo') {
+      // Crear nuevo trámite
+      if (user?.id) {
+        try {
+          const response = await fetch('/api/expedientes/tramites', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              compradorId: null,
+              userId: user.id,
+              tipo: 'preaviso',
+              datos: {
+                tipoOperacion: null,
+                vendedor: { nombre: '', rfc: '', curp: '', tieneCredito: false },
+                comprador: { nombre: '', rfc: '', curp: '', necesitaCredito: false },
+                inmueble: { direccion: '', folioReal: '', seccion: '', partida: '', superficie: '', valor: '' },
+                actosNotariales: { cancelacionCreditoVendedor: false, compraventa: false, aperturaCreditoComprador: false }
+              },
+              estado: 'en_proceso',
+            }),
+          })
+
+          if (response.ok) {
+            const tramite = await response.json()
+            setActiveTramiteId(tramite.id)
+            setData({
+              tipoOperacion: null,
+              vendedor: { nombre: '', rfc: '', curp: '', tieneCredito: false },
+              comprador: { nombre: '', rfc: '', curp: '', necesitaCredito: false },
+              inmueble: { direccion: '', folioReal: '', seccion: '', partida: '', superficie: '', valor: '' },
+              actosNotariales: { cancelacionCreditoVendedor: false, compraventa: false, aperturaCreditoComprador: false },
+              documentos: []
+            })
+          }
+        } catch (error) {
+          console.error('Error creando nuevo trámite:', error)
+        }
+      }
+
+      // Enviar mensajes iniciales
+      for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
+        await new Promise(resolve => setTimeout(resolve, i * 400))
+        setMessages(prev => {
+          const exists = prev.some(m => m.id === `initial-${i}`)
+          if (exists) return prev
+          return [...prev, {
+            id: `initial-${i}`,
+            role: 'assistant',
+            content: INITIAL_MESSAGES[i],
+            timestamp: new Date()
+          }]
+        })
+      }
+      setIsProcessing(false)
+      return
+    }
+
     try {
       // Llamar al agente de IA
       const response = await fetch('/api/ai/preaviso-chat', {
@@ -184,7 +349,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             vendedor: data.vendedor.nombre ? data.vendedor : undefined,
             comprador: data.comprador.nombre ? data.comprador : undefined,
             inmueble: data.inmueble.direccion ? data.inmueble : undefined,
-            documentos: data.documentos
+            documentos: data.documentos,
+            hasDraftTramite: !!activeTramiteId
           }
         })
       })
@@ -231,6 +397,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
         // Verificar si está completo
         if (isDataComplete(newData)) {
           onDataComplete(newData)
+          // Llamar a onGenerateDocument con los documentos subidos y el trámite activo
+          onGenerateDocument(newData, uploadedDocuments.filter(d => d.processed), activeTramiteId)
         }
       }
 
@@ -356,6 +524,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
         setProcessingProgress(50 + (i / totalFiles) * 40) // 50-90% para procesamiento
         
         try {
+          // Procesar documento con IA para extraer información
           const formData = new FormData()
           formData.append('file', imageFile)
           formData.append('documentType', docType)
@@ -375,6 +544,30 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 ? { ...d, processed: true, extractedData: processResult.extractedData }
                 : d
             ))
+
+            // Subir documento a S3 y asociarlo al trámite activo (si existe)
+            // Esto permite que los documentos estén disponibles incluso si el usuario sale
+            if (activeTramiteId) {
+              try {
+                const uploadFormData = new FormData()
+                uploadFormData.append('file', originalFile) // Usar archivo original, no imagen convertida
+                uploadFormData.append('compradorId', '') // Sin comprador aún
+                uploadFormData.append('tipo', docType)
+                uploadFormData.append('tramiteId', activeTramiteId)
+
+                const uploadResponse = await fetch('/api/expedientes/documentos/upload', {
+                  method: 'POST',
+                  body: uploadFormData,
+                })
+
+                if (uploadResponse.ok) {
+                  console.log(`[PreavisoChat] Documento ${originalFile.name} subido a S3 y asociado al trámite`)
+                }
+              } catch (uploadError) {
+                console.error(`Error subiendo documento ${originalFile.name} a S3:`, uploadError)
+                // No bloquear el flujo si falla la subida
+              }
+            }
 
             // Actualizar datos con información extraída
             if (processResult.extractedData) {

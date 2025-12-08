@@ -12,6 +12,7 @@ interface ChatRequest {
     comprador?: any
     inmueble?: any
     documentos?: string[]
+    hasDraftTramite?: boolean
   }
 }
 
@@ -22,8 +23,15 @@ function buildSystemPrompt(context?: ChatRequest['context']): string {
   const tieneIdVendedor = documentosSolicitados.some(d => d.toLowerCase().includes('vendedor') || d.toLowerCase().includes('ine') || d.toLowerCase().includes('ife'))
   const tieneIdComprador = documentosSolicitados.some(d => d.toLowerCase().includes('comprador') || d.toLowerCase().includes('ine') || d.toLowerCase().includes('ife'))
   const tieneRfcCurp = documentosSolicitados.some(d => d.toLowerCase().includes('rfc') || d.toLowerCase().includes('curp'))
+  const hasDraftTramite = context?.hasDraftTramite || false
+
+  let draftNotice = ''
+  if (hasDraftTramite) {
+    draftNotice = `\n\n⚠️ IMPORTANTE: El usuario tiene un trámite guardado en progreso. Si el usuario responde "continuar", "seguir" o similar, confirma que continuará con ese trámite. Si responde "nuevo", "empezar nuevo" o similar, inicia un trámite completamente nuevo.`
+  }
 
   return `Eres un asistente jurídico especializado en derecho notarial mexicano, específicamente en la generación de Solicitudes de Certificado con Efecto de Pre-Aviso de Compraventa para la Notaría Pública #3.
+${draftNotice}
 
 Tu función es guiar al usuario (abogado, asistente jurídico o pasante de la notaría) a través de un WIZARD ESTRUCTURADO para construir el modelo de datos Preaviso completo.
 

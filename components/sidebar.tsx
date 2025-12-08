@@ -12,6 +12,7 @@ import {
   ChevronLeft,
   ChevronRight,
   MessageSquare,
+  FolderOpen,
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -121,6 +122,21 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
         >
           <MessageSquare className="h-4 w-4 flex-shrink-0" />
           {!isCollapsed && <span className="ml-3 truncate text-sm">Pre-Aviso</span>}
+        </Button>
+
+        <Button
+          variant={pathname === '/dashboard/expedientes' ? 'default' : 'ghost'}
+          className={`w-full justify-start overflow-hidden ${
+            isCollapsed ? 'px-2' : 'px-3'
+          } ${
+            pathname === '/dashboard/expedientes'
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+          }`}
+          onClick={() => handleNavigation('/dashboard/expedientes')}
+        >
+          <FolderOpen className="h-4 w-4 flex-shrink-0" />
+          {!isCollapsed && <span className="ml-3 truncate text-sm">Expedientes</span>}
         </Button>
       </div>
 
