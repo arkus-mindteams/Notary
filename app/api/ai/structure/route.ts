@@ -1557,7 +1557,6 @@ export async function POST(req: Request) {
         headers: { 'Content-Type': 'application/json' }
       })
     }
-    }
 
     // Ensure all units have valid structure
     if (!processedUnits) {
