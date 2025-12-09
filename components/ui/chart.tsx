@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import * as RechartsPrimitive from 'recharts'
+import DOMPurify from 'dompurify'
 
 import { cn } from '@/lib/utils'
 
