@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
+import { toast } from "sonner"
 import Link from "next/link"
 type AppState = "upload" | "processing" | "validation"
 
@@ -424,7 +425,10 @@ function DeslindePageInner() {
         }
       } catch (error) {
         console.error('[deslinde] Error converting PDFs:', error)
-        alert('Error al convertir PDFs a imágenes. Por favor, intenta con imágenes directamente.')
+        toast.error('Error al convertir PDFs', {
+          description: 'No se pudieron convertir los PDFs a imágenes. Intenta subiendo las imágenes directamente.',
+          duration: 6000,
+        })
         return
       }
     }
@@ -470,7 +474,10 @@ function DeslindePageInner() {
           image = await rotateImageFile(image, rotation)
         } catch (error) {
           console.error(`Error rotating image ${index}:`, error)
-          // If rotation fails, continue with original image
+          toast.error(`Error al rotar imagen ${index + 1}`, {
+            description: 'Se continuará con la imagen original.',
+            duration: 4000,
+          })
         }
       }
       
@@ -481,7 +488,10 @@ function DeslindePageInner() {
           image = await cropImageFile(image, cropArea)
         } catch (error) {
           console.error(`Error cropping image ${index}:`, error)
-          // If crop fails, continue with rotated image
+          toast.error(`Error al recortar imagen ${index + 1}`, {
+            description: 'Se continuará con la imagen sin recortar.',
+            duration: 4000,
+          })
         }
       }
       
@@ -662,8 +672,20 @@ function DeslindePageInner() {
         body: formData,
       })
       if (!resp.ok) {
-        const errorText = await resp.text()
-        throw new Error(errorText || `HTTP ${resp.status}`)
+        let errorMessage = `HTTP ${resp.status}`
+        let errorDetails = ""
+
+        try {
+          const errorData = await resp.json()
+          errorMessage = errorData.error || errorMessage
+          errorDetails = errorData.details || ""
+        } catch {
+          // If not JSON, use text response
+          const errorText = await resp.text()
+          errorMessage = errorText || errorMessage
+        }
+
+        throw new Error(`${errorMessage}${errorDetails ? ` - ${errorDetails}` : ""}`)
       }
       const data = (await resp.json()) as StructuringResponse
       console.log("[deslinde] AI response received:", {

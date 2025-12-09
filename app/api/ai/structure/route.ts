@@ -1544,9 +1544,19 @@ export async function POST(req: Request) {
         }
     } catch (e: any) {
       console.error("[api/ai/structure] OpenAI Vision error:", e)
-      // Fallback: create a simple unit from the first image name
-      processedUnits = [simpleFallbackNew(images[0]?.name || "UNIDAD")]
-      console.log(`[api/ai/structure] Using fallback unit`)
+
+      // Return a proper error response that the frontend can handle
+      const errorMessage = e.message || "Error desconocido al procesar las imágenes"
+
+      return Response.json({
+        error: errorMessage,
+        code: "AI_PROCESSING_ERROR",
+        details: "La IA no pudo procesar las imágenes proporcionadas. Esto puede deberse a baja calidad, resolución insuficiente, o formato no compatible."
+      }, {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    }
     }
 
     // Ensure all units have valid structure
