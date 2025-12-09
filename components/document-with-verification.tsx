@@ -6,11 +6,11 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { 
-  FileText, 
-  Eye, 
-  CheckCircle2, 
-  AlertCircle, 
+import {
+  FileText,
+  Eye,
+  CheckCircle2,
+  AlertCircle,
   Info,
   Search,
   Download,
@@ -29,6 +29,7 @@ import { PDFExporter } from '@/lib/pdf-exporter'
 import { WordExporter } from '@/lib/word-exporter'
 import { SessionManager } from '@/lib/session-manager'
 import { DashboardLayout } from '@/components/dashboard-layout'
+import DOMPurify from 'dompurify'
 
 interface DocumentSection {
   id: string
@@ -372,9 +373,14 @@ export function DocumentWithVerification({
                                   placeholder="Edita el contenido de esta sección..."
                                 />
                               ) : (
-                                <div 
+                                <div
                                   className="text-foreground leading-relaxed"
-                                  dangerouslySetInnerHTML={{ __html: editedContent[section.id] || section.content }}
+                                  dangerouslySetInnerHTML={{
+                                    __html: DOMPurify.sanitize(editedContent[section.id] || section.content, {
+                                      ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'span', 'div'],
+                                      ALLOWED_ATTR: ['class', 'style']
+                                    })
+                                  }}
                                 />
                               )}
                             </div>

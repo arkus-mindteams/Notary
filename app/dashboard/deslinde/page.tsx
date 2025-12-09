@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
+import { toast } from "sonner"
 import Link from "next/link"
 type AppState = "upload" | "processing" | "validation"
 
@@ -424,7 +425,10 @@ function DeslindePageInner() {
         }
       } catch (error) {
         console.error('[deslinde] Error converting PDFs:', error)
-        alert('Error al convertir PDFs a imágenes. Por favor, intenta con imágenes directamente.')
+        toast.error('Error al convertir PDFs', {
+          description: 'No se pudieron convertir los PDFs a imágenes. Intenta subiendo las imágenes directamente.',
+          duration: 6000,
+        })
         return
       }
     }
@@ -470,7 +474,10 @@ function DeslindePageInner() {
           image = await rotateImageFile(image, rotation)
         } catch (error) {
           console.error(`Error rotating image ${index}:`, error)
-          // If rotation fails, continue with original image
+          toast.error(`Error al rotar imagen ${index + 1}`, {
+            description: 'Se continuará con la imagen original.',
+            duration: 4000,
+          })
         }
       }
       
@@ -481,7 +488,10 @@ function DeslindePageInner() {
           image = await cropImageFile(image, cropArea)
         } catch (error) {
           console.error(`Error cropping image ${index}:`, error)
-          // If crop fails, continue with rotated image
+          toast.error(`Error al recortar imagen ${index + 1}`, {
+            description: 'Se continuará con la imagen sin recortar.',
+            duration: 4000,
+          })
         }
       }
       
@@ -662,8 +672,77 @@ function DeslindePageInner() {
         body: formData,
       })
       if (!resp.ok) {
-        const errorText = await resp.text()
-        throw new Error(errorText || `HTTP ${resp.status}`)
+        let errorMessage = `HTTP ${resp.status}`
+        let errorDetails = ""
+
+        try {
+          const errorData = await resp.json()
+          errorMessage = errorData.error || errorMessage
+          errorDetails = errorData.details || ""
+        } catch {
+          // If not JSON, use text response
+          const errorText = await resp.text()
+          errorMessage = errorText || errorMessage
+        }
+
+        // Show user-friendly error message
+        const fullErrorMessage = `${errorMessage}${errorDetails ? ` - ${errorDetails}` : ""}`
+        
+        // Extract specific error types for better UX
+        let toastTitle = "Error al procesar imágenes"
+        let toastDescription = errorDetails || errorMessage
+
+        if (errorMessage.includes("No se puede leer con suficiente precisión") || 
+            errorMessage.includes("baja resolución") ||
+            errorMessage.includes("resolución insuficiente")) {
+          toastTitle = "Calidad de imagen insuficiente"
+          toastDescription = "Sube imágenes con mayor resolución o haz recortes cercanos a las secciones 'ANEXO - MEDIDAS Y COLINDANCIAS'."
+        } else if (errorMessage.includes("invalid_ai_shape") || 
+                   errorMessage.includes("AI_RESPONSE_INVALID") ||
+                   errorMessage.includes("AI_PROCESSING_ERROR")) {
+          toastTitle = "Texto ilegible o de baja calidad"
+          toastDescription = "La IA no pudo leer el texto correctamente. Consejos: asegúrate de que la imagen esté enfocada, bien iluminada, sin sombras, y que el texto sea claro y legible. Evita imágenes borrosas o con baja resolución."
+        } else if (errorMessage.includes("No valid units found") || 
+                   errorMessage.includes("No se detectaron unidades")) {
+          toastTitle = "No se encontraron unidades válidas"
+          toastDescription = "Asegúrate de que la imagen contenga información de colindancias y medidas. Revisa que sea legible."
+        }
+
+        // Update processing status to error FIRST
+        update?.("ai", "error", toastDescription)
+
+        // Show toast notification with better visibility and design
+        toast.error(toastTitle, {
+          description: toastDescription,
+          duration: 12000, // Show longer
+          position: "top-center", // More visible position
+          style: {
+            background: "linear-gradient(135deg, hsl(var(--destructive)) 0%, hsl(var(--destructive) / 0.95) 100%)",
+            color: "hsl(var(--destructive-foreground))",
+            border: "2px solid hsl(var(--destructive) / 0.3)",
+            borderLeft: "4px solid hsl(var(--destructive-foreground))",
+            fontSize: "15px",
+            fontWeight: "600",
+            padding: "20px 24px",
+            borderRadius: "12px",
+            boxShadow: "0 8px 24px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05)",
+            minWidth: "400px",
+            maxWidth: "600px",
+          },
+          className: "error-toast",
+          descriptionClassName: "text-sm leading-relaxed opacity-95 mt-2",
+          titleClassName: "text-base font-semibold mb-1",
+        })
+
+        // Return user to upload page after a short delay to let them see the error
+        setTimeout(() => {
+          setAppState("upload")
+          setProcessingStarted(false)
+        }, 2500)
+
+        // Don't throw error - just return early to stop processing
+        // The error state is already set and toast is shown
+        return
       }
       const data = (await resp.json()) as StructuringResponse
       console.log("[deslinde] AI response received:", {
@@ -1047,6 +1126,76 @@ function DeslindePageInner() {
       setUnitSegments(segmentsMap)
     } catch (e) {
       console.error("[deslinde] Error processing with AI:", e)
+      
+      // If error was already handled with toast (from API error response), don't show duplicate
+      // Only show toast here if it's an unexpected error that wasn't caught earlier
+      if (e instanceof Error) {
+        const errorStr = e.message
+        const alreadyHandled = errorStr.includes("invalid_ai_shape") || 
+                               errorStr.includes("No se puede leer") || 
+                               errorStr.includes("baja resolución") ||
+                               errorStr.includes("resolución insuficiente") ||
+                               errorStr.includes("No valid units found") ||
+                               errorStr.includes("No se detectaron unidades") ||
+                               errorStr.includes("AI_PROCESSING_ERROR") ||
+                               errorStr.includes("AI_RESPONSE_INVALID")
+        
+        if (!alreadyHandled) {
+          // This is an unexpected error, show generic message
+          toast.error("Error inesperado al procesar", {
+            description: "Ocurrió un error inesperado. Por favor, intenta de nuevo o contacta soporte.",
+            duration: 12000,
+            position: "top-center",
+            style: {
+              background: "linear-gradient(135deg, hsl(var(--destructive)) 0%, hsl(var(--destructive) / 0.95) 100%)",
+              color: "hsl(var(--destructive-foreground))",
+              border: "2px solid hsl(var(--destructive) / 0.3)",
+              borderLeft: "4px solid hsl(var(--destructive-foreground))",
+              fontSize: "15px",
+              fontWeight: "600",
+              padding: "20px 24px",
+              borderRadius: "12px",
+              boxShadow: "0 8px 24px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05)",
+              minWidth: "400px",
+              maxWidth: "600px",
+            },
+            descriptionClassName: "text-sm leading-relaxed opacity-95 mt-2",
+            titleClassName: "text-base font-semibold mb-1",
+          })
+        }
+      } else {
+        // Unknown error type
+        toast.error("Error al procesar", {
+          description: "Ocurrió un error desconocido. Por favor, intenta de nuevo.",
+          duration: 12000,
+          position: "top-center",
+          style: {
+            background: "linear-gradient(135deg, hsl(var(--destructive)) 0%, hsl(var(--destructive) / 0.95) 100%)",
+            color: "hsl(var(--destructive-foreground))",
+            border: "2px solid hsl(var(--destructive) / 0.3)",
+            borderLeft: "4px solid hsl(var(--destructive-foreground))",
+            fontSize: "15px",
+            fontWeight: "600",
+            padding: "20px 24px",
+            borderRadius: "12px",
+            boxShadow: "0 8px 24px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05)",
+            minWidth: "400px",
+            maxWidth: "600px",
+          },
+          descriptionClassName: "text-sm leading-relaxed opacity-95 mt-2",
+          titleClassName: "text-base font-semibold mb-1",
+        })
+      }
+
+      // Update processing status
+      update?.("ai", "error")
+
+      // Return user to upload page after a short delay
+      setTimeout(() => {
+        setAppState("upload")
+        setProcessingStarted(false)
+      }, 2500)
+
       // Fallback: create empty unit
       setAiStructuredText(null)
       const unit: PropertyUnit = {
@@ -1123,7 +1272,9 @@ function DeslindePageInner() {
               onRun={async (update) => {
                 try {
                   await handleProcessingComplete(update)
-                } catch {
+                } catch (error) {
+                  // Error toast is already shown in handleProcessingComplete
+                  // Just update the processing status
                   update("ai", "error")
                 }
               }}
