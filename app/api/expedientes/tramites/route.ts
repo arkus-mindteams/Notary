@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { TramiteService } from '@/lib/services/tramite-service'
 import { TramiteDocumentoService } from '@/lib/services/tramite-documento-service'
-import type { CreateTramiteRequest, TramiteConDocumentos } from '@/lib/types/expediente-types'
+import type { CreateTramiteRequest, UpdateTramiteRequest, TramiteConDocumentos } from '@/lib/types/expediente-types'
 
 export async function GET(req: Request) {
   try {
@@ -71,9 +71,10 @@ export async function POST(req: Request) {
     const body: CreateTramiteRequest = await req.json()
 
     // Validar campos requeridos
-    if (!body.compradorId || !body.tipo || !body.datos) {
+    // compradorId puede ser null para trámites en borrador
+    if (body.compradorId === undefined || !body.tipo || !body.datos) {
       return NextResponse.json(
-        { error: 'bad_request', message: 'compradorId, tipo y datos son requeridos' },
+        { error: 'bad_request', message: 'tipo y datos son requeridos. compradorId puede ser null para borradores' },
         { status: 400 }
       )
     }
@@ -101,14 +102,24 @@ export async function PUT(req: Request) {
       )
     }
 
-    const body: {
+    const body: UpdateTramiteRequest = await req.json()
+
+    // Convertir camelCase a snake_case para el servicio
+    const updateData: {
+      comprador_id?: string | null
       datos?: any
       estado?: string
       documento_generado?: any
       notas?: string
-    } = await req.json()
+    } = {}
+    
+    if (body.compradorId !== undefined) updateData.comprador_id = body.compradorId
+    if (body.datos !== undefined) updateData.datos = body.datos
+    if (body.estado !== undefined) updateData.estado = body.estado
+    if (body.documento_generado !== undefined) updateData.documento_generado = body.documento_generado
+    if (body.notas !== undefined) updateData.notas = body.notas
 
-    const tramite = await TramiteService.updateTramite(id, body)
+    const tramite = await TramiteService.updateTramite(id, updateData)
     return NextResponse.json(tramite)
   } catch (error: any) {
     console.error('[api/expedientes/tramites] Error:', error)

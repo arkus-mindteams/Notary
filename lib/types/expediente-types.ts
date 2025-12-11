@@ -119,6 +119,14 @@ export interface CreateTramiteRequest {
   notas?: string
 }
 
+export interface UpdateTramiteRequest {
+  compradorId?: string | null // NULL para trámites en borrador
+  datos?: PreavisoDatos | PlanoArquitectonicoDatos | Record<string, any>
+  estado?: EstadoTramite
+  documento_generado?: DocumentoGenerado | null
+  notas?: string
+}
+
 export interface UploadDocumentoRequest {
   compradorId?: string | null // NULL para documentos en borrador
   tipo: TipoDocumento

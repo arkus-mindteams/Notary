@@ -97,7 +97,7 @@ export default function PreavisoPage() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          comprador_id: comprador.id,
+          compradorId: comprador.id,
           datos: {
             tipoOperacion: data.tipoOperacion,
             vendedor: data.vendedor,

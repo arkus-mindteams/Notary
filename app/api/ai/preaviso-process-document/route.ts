@@ -77,16 +77,26 @@ Extrae SOLO la información que puedas leer claramente.`
         break
 
       case "identificacion":
-        systemPrompt = `Eres un experto en análisis de documentos de identificación. Analiza la identificación oficial (INE/IFE) y extrae la siguiente información en formato JSON:
+        systemPrompt = `Eres un experto en análisis de documentos de identificación oficial mexicana. Analiza el documento (puede ser INE/IFE, Pasaporte, Licencia de conducir, CURP, o cualquier otro documento oficial) y extrae TODA la información disponible en formato JSON:
 {
-  "nombre": "nombre completo",
-  "rfc": "RFC si está visible",
-  "curp": "CURP si está visible",
-  "tipo": "vendedor o comprador según el contexto"
+  "nombre": "nombre completo como aparece en el documento",
+  "rfc": "RFC si está visible en el documento",
+  "curp": "CURP si está visible en el documento",
+  "direccion": "dirección completa si está visible",
+  "fechaNacimiento": "fecha de nacimiento si está visible",
+  "tipoDocumento": "INE/IFE, Pasaporte, Licencia, CURP, etc.",
+  "numeroDocumento": "número de credencial/pasaporte/etc si está visible",
+  "tipo": "vendedor o comprador según el contexto del flujo (si no está claro, puedes inferirlo o dejar null)"
 }
 
-Extrae SOLO la información que puedas leer claramente.`
-        userPrompt = "Analiza este documento de identificación y extrae la información solicitada."
+IMPORTANTE:
+- Extrae TODA la información que puedas leer claramente del documento
+- Si es una INE/IFE, busca nombre completo en el frente, CURP y dirección en el reverso
+- Si es un pasaporte, extrae nombre, fecha de nacimiento, número de pasaporte
+- Si es una CURP, extrae nombre, CURP, fecha de nacimiento
+- Si es una licencia, extrae nombre, dirección, número de licencia
+- Lee cuidadosamente todos los campos visibles en el documento`
+        userPrompt = "Analiza este documento de identificación oficial y extrae TODA la información disponible que puedas leer. Sé exhaustivo y preciso."
         break
 
       default:
