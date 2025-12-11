@@ -18,7 +18,14 @@ import {
   AlertCircle,
   Loader2,
   Upload,
-  FileCheck
+  FileCheck,
+  Building2,
+  UserCircle,
+  CreditCard,
+  Users,
+  FileCheck2,
+  Eye,
+  EyeOff
 } from 'lucide-react'
 
 export interface ChatMessage {
@@ -72,6 +79,7 @@ interface UploadedDocument {
   processed: boolean
   extractedData?: any
   error?: string
+  documentType?: string // Tipo detectado: 'escritura', 'plano', 'identificacion', etc.
 }
 
 interface PreavisoChatProps {
@@ -91,6 +99,35 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
   const [initialMessagesSent, setInitialMessagesSent] = useState(false)
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
   const [isCheckingDraft, setIsCheckingDraft] = useState(true)
+  const [data, setData] = useState<PreavisoData>({
+    tipoOperacion: null,
+    vendedor: {
+      nombre: '',
+      rfc: '',
+      curp: '',
+      tieneCredito: false
+    },
+    comprador: {
+      nombre: '',
+      rfc: '',
+      curp: '',
+      necesitaCredito: false
+    },
+    inmueble: {
+      direccion: '',
+      folioReal: '',
+      seccion: '',
+      partida: '',
+      superficie: '',
+      valor: ''
+    },
+    actosNotariales: {
+      cancelacionCreditoVendedor: false,
+      compraventa: false,
+      aperturaCreditoComprador: false
+    },
+    documentos: []
+  })
 
   // Verificar si hay trámite guardado al iniciar
   useEffect(() => {
@@ -211,37 +248,45 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
   const [isProcessingDocument, setIsProcessingDocument] = useState(false)
   const [processingProgress, setProcessingProgress] = useState(0)
   const [processingFileName, setProcessingFileName] = useState<string | null>(null)
-  const [data, setData] = useState<PreavisoData>({
-    tipoOperacion: null,
-    vendedor: {
-      nombre: '',
-      rfc: '',
-      curp: '',
-      tieneCredito: false
-    },
-    comprador: {
-      nombre: '',
-      rfc: '',
-      curp: '',
-      necesitaCredito: false
-    },
-    inmueble: {
-      direccion: '',
-      folioReal: '',
-      seccion: '',
-      partida: '',
-      superficie: '',
-      valor: ''
-    },
-    actosNotariales: {
-      cancelacionCreditoVendedor: false,
-      compraventa: false,
-      aperturaCreditoComprador: false
-    },
-    documentos: []
-  })
+  const [showDataPanel, setShowDataPanel] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Calcular progreso basado en datos completados
+  const getProgress = () => {
+    let completed = 0
+    let total = 6
+
+    // Paso 1: Inmueble
+    if (data.inmueble.folioReal || data.inmueble.direccion) completed++
+    
+    // Paso 2: Vendedor
+    if (data.vendedor.nombre && data.vendedor.rfc && data.vendedor.curp) completed++
+    
+    // Paso 3: Crédito vendedor (opcional, pero se cuenta si tiene crédito)
+    if (data.vendedor.tieneCredito) {
+      if (data.vendedor.institucionCredito && data.vendedor.numeroCredito) completed++
+    } else {
+      completed++ // Si no tiene crédito, el paso está completo
+    }
+    
+    // Paso 4: Comprador
+    if (data.comprador.nombre && data.comprador.rfc && data.comprador.curp) completed++
+    
+    // Paso 5: Crédito comprador (opcional)
+    if (data.comprador.necesitaCredito) {
+      if (data.comprador.institucionCredito && data.comprador.montoCredito) completed++
+    } else {
+      completed++ // Si no necesita crédito, el paso está completo
+    }
+    
+    // Paso 6: Valor (parte de paso 5 pero lo contamos separado)
+    if (data.inmueble.valor) completed++
+
+    return { completed, total, percentage: Math.round((completed / total) * 100) }
+  }
+
+  const progress = getProgress()
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -340,7 +385,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
+          body: JSON.stringify({
           messages: [
             ...messages.map(m => ({ role: m.role, content: m.content })),
             { role: 'user' as const, content: currentInput }
@@ -350,6 +395,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             comprador: data.comprador.nombre ? data.comprador : undefined,
             inmueble: data.inmueble.direccion ? data.inmueble : undefined,
             documentos: data.documentos,
+            documentosProcesados: uploadedDocuments
+              .filter(d => d.processed && d.extractedData)
+              .map(d => ({
+                nombre: d.name,
+                tipo: d.documentType || 'desconocido',
+                informacionExtraida: d.extractedData
+              })),
             hasDraftTramite: !!activeTramiteId
           }
         })
@@ -500,12 +552,22 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
 
     // Procesar cada documento con IA
     try {
-      // Determinar tipo de documento basado en el nombre original
-      const detectDocumentType = (fileName: string): string => {
+      // Determinar tipo de documento basado en el nombre original o contenido visual
+      const detectDocumentType = async (fileName: string, file: File): Promise<string> => {
         const name = fileName.toLowerCase()
+        // Detección por nombre
         if (name.includes('escritura') || name.includes('titulo') || name.includes('propiedad')) return 'escritura'
         if (name.includes('plano') || name.includes('croquis') || name.includes('catastral')) return 'plano'
-        if (name.includes('ine') || name.includes('ife') || name.includes('identificacion')) return 'identificacion'
+        if (name.includes('ine') || name.includes('ife') || name.includes('identificacion') || 
+            name.includes('pasaporte') || name.includes('licencia') || name.includes('curp')) return 'identificacion'
+        
+        // Si no se puede determinar por nombre, intentar detectar visualmente
+        // Para imágenes pequeñas o genéricas, asumir que puede ser identificación
+        // La IA Vision detectará automáticamente el tipo al procesar
+        if (file.type.startsWith('image/') && file.size < 5 * 1024 * 1024) { // Archivos pequeños probablemente son IDs
+          return 'identificacion'
+        }
+        
         return 'escritura' // default
       }
 
@@ -519,7 +581,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
         const originalFile = Array.from(files).find(f => 
           imageFile.name.includes(f.name.replace(/\.[^.]+$/, ''))
         ) || files[0]
-        const docType = detectDocumentType(originalFile.name)
+        const docType = await detectDocumentType(originalFile.name, originalFile)
         
         setProcessingProgress(50 + (i / totalFiles) * 40) // 50-90% para procesamiento
         
@@ -541,7 +603,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             // Actualizar documento original como procesado
             setUploadedDocuments(prev => prev.map(d => 
               d.name === originalFile.name
-                ? { ...d, processed: true, extractedData: processResult.extractedData }
+                ? { ...d, processed: true, extractedData: processResult.extractedData, documentType: docType }
                 : d
             ))
 
@@ -588,14 +650,24 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 } else if (docType === 'plano') {
                   if (extracted.superficie) updated.inmueble.superficie = extracted.superficie
                 } else if (docType === 'identificacion') {
-                  if (extracted.nombre && extracted.tipo === 'vendedor') {
-                    updated.vendedor.nombre = extracted.nombre
-                    if (extracted.rfc) updated.vendedor.rfc = extracted.rfc
-                    if (extracted.curp) updated.vendedor.curp = extracted.curp
-                  } else if (extracted.nombre && extracted.tipo === 'comprador') {
-                    updated.comprador.nombre = extracted.nombre
-                    if (extracted.rfc) updated.comprador.rfc = extracted.rfc
-                    if (extracted.curp) updated.comprador.curp = extracted.curp
+                  // Para identificaciones, intentar determinar si es vendedor o comprador
+                  // basándose en el contexto (qué datos faltan) o el campo 'tipo' extraído
+                  const isVendedor = extracted.tipo === 'vendedor' || (!data.vendedor.nombre && data.comprador.nombre)
+                  const isComprador = extracted.tipo === 'comprador' || (!data.comprador.nombre && data.vendedor.nombre)
+                  
+                  // Si no se puede determinar, usar el primero que falte (vendedor primero)
+                  const targetPerson = isVendedor ? 'vendedor' : (isComprador ? 'comprador' : (!data.vendedor.nombre ? 'vendedor' : 'comprador'))
+                  
+                  if (extracted.nombre) {
+                    if (targetPerson === 'vendedor') {
+                      updated.vendedor.nombre = extracted.nombre
+                      if (extracted.rfc) updated.vendedor.rfc = extracted.rfc
+                      if (extracted.curp) updated.vendedor.curp = extracted.curp
+                    } else {
+                      updated.comprador.nombre = extracted.nombre
+                      if (extracted.rfc) updated.comprador.rfc = extracted.rfc
+                      if (extracted.curp) updated.comprador.curp = extracted.curp
+                    }
                   }
                 }
                 
@@ -625,6 +697,23 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
 
       // Después de procesar, consultar al agente de IA para determinar siguientes pasos
       const newDocuments = [...data.documentos, ...fileNames]
+      
+      // Recopilar información extraída de los documentos procesados
+      const processedDocsInfo = uploadedDocuments
+        .filter(d => d.processed && d.extractedData)
+        .map(d => {
+          const extracted = d.extractedData
+          let info = `Documento: ${d.name}\n`
+          if (extracted.nombre) info += `Nombre: ${extracted.nombre}\n`
+          if (extracted.rfc) info += `RFC: ${extracted.rfc}\n`
+          if (extracted.curp) info += `CURP: ${extracted.curp}\n`
+          if (extracted.folioReal) info += `Folio Real: ${extracted.folioReal}\n`
+          if (extracted.direccion || extracted.ubicacion) info += `Dirección: ${extracted.direccion || extracted.ubicacion}\n`
+          if (extracted.tipoDocumento) info += `Tipo: ${extracted.tipoDocumento}\n`
+          return info.trim()
+        })
+        .join('\n\n')
+
       const chatResponse = await fetch('/api/ai/preaviso-chat', {
         method: 'POST',
         headers: {
@@ -633,13 +722,26 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
         body: JSON.stringify({
           messages: [
             ...messages.filter(m => m.id !== processingMessage.id).map(m => ({ role: m.role, content: m.content })),
-            { role: 'user' as const, content: `He subido ${fileNames.length} documento(s). He procesado la información extraída. ¿Cuál es el siguiente paso?` }
+            { 
+              role: 'user' as const, 
+              content: processedDocsInfo 
+                ? `He subido ${fileNames.length} documento(s) y he procesado la información extraída automáticamente:\n\n${processedDocsInfo}\n\n¿Cuál es el siguiente paso?`
+                : `He subido ${fileNames.length} documento(s). ¿Cuál es el siguiente paso?`
+            }
           ],
           context: {
             vendedor: data.vendedor.nombre ? data.vendedor : undefined,
             comprador: data.comprador.nombre ? data.comprador : undefined,
             inmueble: data.inmueble.direccion ? data.inmueble : undefined,
-            documentos: newDocuments
+            documentos: newDocuments,
+            documentosProcesados: uploadedDocuments
+              .filter(d => d.processed && d.extractedData)
+              .map(d => ({
+                nombre: d.name,
+                tipo: d.documentType || 'desconocido',
+                informacionExtraida: d.extractedData
+              })),
+            hasDraftTramite: !!activeTramiteId
           }
         })
       })
@@ -748,8 +850,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
 
   return (
     <div className="h-full flex flex-col gap-4 overflow-hidden">
-      {/* Chat principal */}
-      <Card className="flex-1 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
+      {/* Layout con panel de información - Parte superior */}
+      <div className="flex-1 flex gap-4 min-h-0 overflow-hidden">
+        {/* Chat principal */}
+        <Card className="flex-1 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
         <CardContent className="flex-1 flex flex-col p-0 min-h-0">
           {/* Header moderno */}
           <div className="border-b border-gray-200/80 bg-gradient-to-r from-white via-gray-50/50 to-white backdrop-blur-sm px-6 py-2.5">
@@ -757,28 +861,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
               <div className="flex items-center space-x-3">
                 <div className="relative group">
                   <div className="w-12 h-12 rounded-2xl overflow-hidden bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-600 flex items-center justify-center shadow-lg ring-2 ring-blue-100 group-hover:ring-blue-200 transition-all">
-                    {/* Imagen del asistente legal - Reemplazar con imagen real en /public/assistant-lawyer.png */}
-                    <Image
-                      src="/assistant-lawyer.png"
-                      alt="Asistente Legal"
-                      width={48}
-                      height={48}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        // Fallback a icono de balanza de justicia si la imagen no existe
-                        const target = e.target as HTMLImageElement
-                        target.style.display = 'none'
-                        const parent = target.parentElement
-                        if (parent && !parent.querySelector('svg')) {
-                          parent.innerHTML = `
-                            <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-                              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/>
-                              <path d="M9 11h6v2H9zm0-4h6v2H9z" opacity="0.3"/>
-                            </svg>
-                          `
-                        }
-                      }}
-                    />
+                      <Image
+                        src="/ai-img.png"
+                        alt="Asistente Legal"
+                        width={48}
+                        height={48}
+                        className="w-full h-full object-cover"
+                        priority
+                      />
                   </div>
                   <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-white shadow-sm">
                     <div className="w-full h-full bg-green-400 rounded-full animate-pulse"></div>
@@ -833,24 +923,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     {message.role === 'assistant' && (
                       <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
                         <Image
-                          src="/assistant-lawyer.png"
+                          src="/ai-img.png"
                           alt="Asistente Legal"
                           width={32}
                           height={32}
                           className="w-full h-full object-cover"
-                          onError={(e) => {
-                            // Fallback a icono de balanza si la imagen no existe
-                            const target = e.target as HTMLImageElement
-                            target.style.display = 'none'
-                            const parent = target.parentElement
-                            if (parent && !parent.querySelector('svg')) {
-                              parent.innerHTML = `
-                                <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
-                                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
-                                </svg>
-                              `
-                            }
-                          }}
                         />
                       </div>
                     )}
@@ -908,26 +985,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 <div className="flex justify-start">
                   <div className="flex items-end space-x-2">
                     <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
-                      <Image
-                        src="/assistant-lawyer.png"
-                        alt="Asistente Legal"
-                        width={32}
-                        height={32}
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          // Fallback a icono de balanza si la imagen no existe
-                          const target = e.target as HTMLImageElement
-                          target.style.display = 'none'
-                          const parent = target.parentElement
-                          if (parent && !parent.querySelector('svg')) {
-                            parent.innerHTML = `
-                              <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
-                              </svg>
-                            `
-                          }
-                        }}
-                      />
+                      <Bot className="w-5 h-5 text-white" />
                     </div>
                     <div className="bg-white rounded-2xl px-4 py-3 shadow-sm border border-gray-100">
                       <div className="flex space-x-1.5">
@@ -1033,7 +1091,247 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
         </CardContent>
       </Card>
 
-      {/* Panel de documentos debajo del chat */}
+      {/* Panel de información extraída */}
+      {showDataPanel && (
+        <Card className="w-80 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
+          <CardContent className="flex-1 flex flex-col p-0 min-h-0">
+            {/* Header del panel */}
+            <div className="border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white px-4 py-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-sm text-gray-900">Información Capturada</h3>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setShowDataPanel(false)}
+                >
+                  <EyeOff className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="mt-2">
+                <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
+                  <span>Progreso</span>
+                  <span>{progress.completed}/{progress.total} pasos</span>
+                </div>
+                <Progress value={progress.percentage} className="h-2" />
+              </div>
+            </div>
+
+            {/* Contenido del panel */}
+            <ScrollArea className="flex-1 p-4">
+              <div className="space-y-4">
+                {/* Paso 1: Inmueble */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {data.inmueble.folioReal || data.inmueble.direccion ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <Building2 className="h-4 w-4" />
+                      <span>Paso 1: Inmueble</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.inmueble.folioReal && (
+                      <div><span className="font-medium">Folio Real:</span> {data.inmueble.folioReal}</div>
+                    )}
+                    {data.inmueble.direccion && (
+                      <div><span className="font-medium">Dirección:</span> {data.inmueble.direccion}</div>
+                    )}
+                    {data.inmueble.seccion && (
+                      <div><span className="font-medium">Sección:</span> {data.inmueble.seccion}</div>
+                    )}
+                    {data.inmueble.partida && (
+                      <div><span className="font-medium">Partida:</span> {data.inmueble.partida}</div>
+                    )}
+                    {data.inmueble.superficie && (
+                      <div><span className="font-medium">Superficie:</span> {data.inmueble.superficie}</div>
+                    )}
+                    {!data.inmueble.folioReal && !data.inmueble.direccion && (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Paso 2: Vendedor */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {data.vendedor.nombre && data.vendedor.rfc && data.vendedor.curp ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <UserCircle className="h-4 w-4" />
+                      <span>Paso 2: Vendedor</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.vendedor.nombre && (
+                      <div><span className="font-medium">Nombre:</span> {data.vendedor.nombre}</div>
+                    )}
+                    {data.vendedor.rfc && (
+                      <div><span className="font-medium">RFC:</span> {data.vendedor.rfc}</div>
+                    )}
+                    {data.vendedor.curp && (
+                      <div><span className="font-medium">CURP:</span> {data.vendedor.curp}</div>
+                    )}
+                    {!data.vendedor.nombre && !data.vendedor.rfc && (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Paso 3: Crédito Vendedor */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {data.vendedor.tieneCredito ? (
+                      data.vendedor.institucionCredito && data.vendedor.numeroCredito ? (
+                        <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <AlertCircle className="h-4 w-4 text-yellow-500" />
+                      )
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <CreditCard className="h-4 w-4" />
+                      <span>Paso 3: Crédito Vendedor</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.vendedor.tieneCredito ? (
+                      <>
+                        {data.vendedor.institucionCredito && (
+                          <div><span className="font-medium">Institución:</span> {data.vendedor.institucionCredito}</div>
+                        )}
+                        {data.vendedor.numeroCredito && (
+                          <div><span className="font-medium">Número:</span> {data.vendedor.numeroCredito}</div>
+                        )}
+                        {!data.vendedor.institucionCredito && (
+                          <div className="text-yellow-600 italic">Información pendiente</div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="text-gray-500">No tiene crédito pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Paso 4: Comprador */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {data.comprador.nombre && data.comprador.rfc && data.comprador.curp ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <Users className="h-4 w-4" />
+                      <span>Paso 4: Comprador</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.comprador.nombre && (
+                      <div><span className="font-medium">Nombre:</span> {data.comprador.nombre}</div>
+                    )}
+                    {data.comprador.rfc && (
+                      <div><span className="font-medium">RFC:</span> {data.comprador.rfc}</div>
+                    )}
+                    {data.comprador.curp && (
+                      <div><span className="font-medium">CURP:</span> {data.comprador.curp}</div>
+                    )}
+                    {!data.comprador.nombre && !data.comprador.rfc && (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Paso 5: Crédito Comprador */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {data.comprador.necesitaCredito ? (
+                      data.comprador.institucionCredito && data.comprador.montoCredito ? (
+                        <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <AlertCircle className="h-4 w-4 text-yellow-500" />
+                      )
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <CreditCard className="h-4 w-4" />
+                      <span>Paso 5: Crédito Comprador</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.comprador.necesitaCredito ? (
+                      <>
+                        {data.comprador.institucionCredito && (
+                          <div><span className="font-medium">Institución:</span> {data.comprador.institucionCredito}</div>
+                        )}
+                        {data.comprador.montoCredito && (
+                          <div><span className="font-medium">Monto:</span> {data.comprador.montoCredito}</div>
+                        )}
+                        {!data.comprador.institucionCredito && (
+                          <div className="text-yellow-600 italic">Información pendiente</div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="text-gray-500">No necesita crédito</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Paso 6: Valor y Actos */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {data.inmueble.valor ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <FileCheck2 className="h-4 w-4" />
+                      <span>Paso 6: Valor y Actos</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.inmueble.valor && (
+                      <div><span className="font-medium">Valor:</span> ${data.inmueble.valor}</div>
+                    )}
+                    <div className="mt-2 pt-2 border-t border-gray-200">
+                      <div className="font-medium mb-1">Actos determinados:</div>
+                      <div className="space-y-0.5">
+                        {data.actosNotariales.compraventa && (
+                          <div className="text-green-600">✓ Compraventa</div>
+                        )}
+                        {data.actosNotariales.cancelacionCreditoVendedor && (
+                          <div className="text-blue-600">✓ Cancelación crédito vendedor</div>
+                        )}
+                        {data.actosNotariales.aperturaCreditoComprador && (
+                          <div className="text-purple-600">✓ Apertura crédito comprador</div>
+                        )}
+                        {!data.actosNotariales.compraventa && (
+                          <div className="text-gray-400 italic">Pendiente determinación</div>
+                        )}
+                      </div>
+                    </div>
+                    {!data.inmueble.valor && (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+      )}
+      </div>
+
+      {/* Panel de documentos debajo del chat y panel de información */}
       {uploadedDocuments.length > 0 && (
         <div className="flex-shrink-0 bg-white rounded-lg border border-gray-200 shadow-sm">
           {/* Header moderno */}
@@ -1120,6 +1418,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             </ScrollArea>
           </div>
         </div>
+      )}
+
+      {/* Botón para mostrar panel si está oculto */}
+      {!showDataPanel && (
+        <Button
+          variant="outline"
+          size="icon"
+          className="fixed right-6 top-1/2 -translate-y-1/2 z-10 shadow-lg"
+          onClick={() => setShowDataPanel(true)}
+        >
+          <Eye className="h-4 w-4" />
+        </Button>
       )}
     </div>
   )

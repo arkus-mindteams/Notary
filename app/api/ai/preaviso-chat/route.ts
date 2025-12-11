@@ -12,6 +12,11 @@ interface ChatRequest {
     comprador?: any
     inmueble?: any
     documentos?: string[]
+    documentosProcesados?: Array<{
+      nombre: string
+      tipo: string
+      informacionExtraida: any
+    }>
     hasDraftTramite?: boolean
   }
 }
@@ -56,6 +61,7 @@ FASE 1: INFORMACIÓN DEL INMUEBLE
 2. Plano o croquis catastral
    - Extraer: superficie, medidas, colindancias
    - Si no disponible: captura manual
+   - Si el usuario menciona croquis catastral o planos y pregunta cómo obtener esa info, indícale que puede usar el módulo de lectura de plantas arquitectónicas (deslinde) para extraer superficie y colindancias a partir de planos/imagenes, y que luego puede traer esos datos aquí.
 
 FASE 2: INFORMACIÓN DEL VENDEDOR
 3. Identificación oficial (INE/IFE)
@@ -111,9 +117,16 @@ REGLAS CRÍTICAS DE CONVERSACIÓN:
    - Ejemplo: "Necesito la Escritura o título de propiedad. Extraeré: folio real, sección, partida, ubicación y propietario. Si no la tiene, puede proporcionar la información manualmente. Debe ser exacta. ¿Tiene disponible la Escritura?"
 
 3. MANEJO DE DOCUMENTOS:
-   - Si se sube documento: "Documento recibido. Procesando para extraer [campos]. Esto tomará unos momentos."
+   - IMPORTANTE: Los documentos que el usuario sube (INEs, Pasaportes, Escrituras, Planos, etc.) SE PROCESAN AUTOMÁTICAMENTE con IA Vision para extraer información.
+   - Cuando el usuario sube un documento, el sistema automáticamente:
+     * Lee el contenido con IA Vision (puede leer INEs, Pasaportes, Escrituras, Planos, CURPs, Licencias, etc.)
+     * Extrae información estructurada (nombres, RFC, CURP, folios, direcciones, etc.)
+     * Actualiza los datos del pre-aviso automáticamente
+   - Si se sube documento: Debes confirmar la información extraída y explicarla en lenguaje natural, como un notario explicando a su cliente. Menciona qué información se extrajo exitosamente y qué falta por completar.
    - Si no tiene documento: "Puede proporcionar la información manualmente. Es fundamental que sea exacta y coincida con los documentos oficiales para garantizar la validez legal del Pre-Aviso."
    - Si información manual: Confirmar cada dato y pedir verificación
+   - Al compartir resultados de lectura de un documento, explica en lenguaje natural, como un notario hablando con su cliente, la información relevante extraída (folio real, partes, valores, colindancias, créditos, gravámenes, etc.), resaltando faltantes o dudas.
+   - NUNCA digas que no puedes leer documentos. El sistema SÍ procesa automáticamente todos los documentos subidos (INEs, Pasaportes, Escrituras, etc.) usando IA Vision.
 
 4. DETERMINACIÓN DE ACTOS:
    - Preguntar explícitamente sobre créditos
@@ -132,15 +145,64 @@ ESTADO ACTUAL:
 - ID Comprador: ${tieneIdComprador ? '✓ Recibida' : '✗ Pendiente'}
 - RFC/CURP: ${tieneRfcCurp ? '✓ Recibidos' : '✗ Pendientes'}
 
-CONTEXTO ACTUAL:
-${context ? JSON.stringify(context, null, 2) : 'Inicio de conversación - Fase 1: Información del Inmueble'}
+CONTEXTO ACTUAL DE DATOS CAPTURADOS:
+${context ? JSON.stringify({
+  vendedor: context.vendedor,
+  comprador: context.comprador,
+  inmueble: context.inmueble
+}, null, 2) : 'Inicio de conversación - Fase 1: Información del Inmueble'}
+
+INFORMACIÓN DE DOCUMENTOS PROCESADOS (PUEDES USAR ESTA INFORMACIÓN PARA RESPONDER):
+${context?.documentosProcesados && context.documentosProcesados.length > 0
+  ? context.documentosProcesados.map((doc, idx) => {
+      const info = doc.informacionExtraida || {}
+      let resumen = `\n${idx + 1}. ${doc.nombre} (Tipo: ${doc.tipo})\n`
+      
+      if (doc.tipo === 'identificacion') {
+        if (info.nombre) resumen += `   - Nombre: ${info.nombre}\n`
+        if (info.rfc) resumen += `   - RFC: ${info.rfc}\n`
+        if (info.curp) resumen += `   - CURP: ${info.curp}\n`
+        if (info.direccion) resumen += `   - Dirección: ${info.direccion}\n`
+        if (info.tipoDocumento) resumen += `   - Tipo de documento: ${info.tipoDocumento}\n`
+        if (info.numeroDocumento) resumen += `   - Número: ${info.numeroDocumento}\n`
+      } else if (doc.tipo === 'escritura') {
+        if (info.folioReal) resumen += `   - Folio Real: ${info.folioReal}\n`
+        if (info.seccion) resumen += `   - Sección: ${info.seccion}\n`
+        if (info.partida) resumen += `   - Partida: ${info.partida}\n`
+        if (info.ubicacion) resumen += `   - Ubicación: ${info.ubicacion}\n`
+        if (info.propietario?.nombre) resumen += `   - Propietario: ${info.propietario.nombre}\n`
+        if (info.propietario?.rfc) resumen += `   - RFC Propietario: ${info.propietario.rfc}\n`
+        if (info.superficie) resumen += `   - Superficie: ${info.superficie}\n`
+        if (info.valor) resumen += `   - Valor: ${info.valor}\n`
+      } else if (doc.tipo === 'plano') {
+        if (info.superficie) resumen += `   - Superficie: ${info.superficie}\n`
+        if (info.lote) resumen += `   - Lote: ${info.lote}\n`
+        if (info.manzana) resumen += `   - Manzana: ${info.manzana}\n`
+        if (info.medidas) resumen += `   - Medidas: ${info.medidas}\n`
+      }
+      
+      return resumen
+    }).join('')
+  : '   Ningún documento procesado aún.\n'}
+
+IMPORTANTE SOBRE USO DE DOCUMENTOS:
+- Cuando el usuario haga preguntas sobre información que ya está en los documentos procesados, usa esa información directamente.
+- Ejemplos:
+  * Si pregunta "¿cuál es el folio real?" y ya hay una escritura procesada con folio real, responde con ese dato.
+  * Si pregunta "¿qué nombre tiene el vendedor?" y ya hay una INE procesada, responde con el nombre extraído.
+  * Si pregunta "¿qué información tenemos del inmueble?" y hay documentos procesados, menciona toda la información relevante extraída.
+- SIEMPRE menciona que la información proviene de los documentos procesados cuando la uses.
+- Si el usuario pregunta sobre algo que no está en los documentos procesados, indica qué falta y cómo obtenerlo.
 
 INSTRUCCIONES FINALES:
-- Si es inicio: Comenzar con Fase 1, solicitando SOLO la Escritura
-- Si ya hay documentos: Confirmar extracción y avanzar al siguiente paso del wizard
-- Mantener el orden del wizard (Fase 1 → 2 → 3 → 4)
+- Si es inicio: Comenzar con PASO 1 (Inmueble), solicitando SOLO la Escritura o título de propiedad
+- Si ya hay documentos: Confirmar extracción y avanzar al siguiente paso del flujo
+- Mantener el orden estricto del flujo: PASO 1 → PASO 2 → PASO 3 → PASO 4 → PASO 5 → PASO 6
+- NO saltar pasos, NO retroceder sin razón justificada
 - Ser paciente, profesional y educativo
 - Recordar: UN DOCUMENTO A LA VEZ, UN PASO A LA VEZ
+- Al procesar documentos, explicar la información relevante extraída en lenguaje natural, como un notario explicaría a su cliente
+- Si el usuario menciona croquis catastral o planos, indicarle que puede usar el módulo de "Lectura de Plantas Arquitectónicas" (Deslinde) para procesarlos
 
 Responde siempre en español, de forma profesional, educada y guiando paso a paso según el wizard estructurado.`
 }
