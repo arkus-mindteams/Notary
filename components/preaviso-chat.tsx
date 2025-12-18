@@ -116,6 +116,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [initialMessagesSent, setInitialMessagesSent] = useState(false)
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
+  const [expedienteExistente, setExpedienteExistente] = useState<{
+    compradorId: string
+    compradorNombre: string
+    tieneExpedientes: boolean
+    cantidadTramites: number
+    tramites: Array<{ id: string, tipo: string, estado: string, createdAt: string, updatedAt: string }>
+  } | null>(null)
   const [isCheckingDraft, setIsCheckingDraft] = useState(true)
   const checkingDraftRef = useRef(false) // Ref para evitar llamadas duplicadas
   const [data, setData] = useState<PreavisoData>({
@@ -428,27 +435,25 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     )
   }
 
-  // Calcular progreso basado en datos completados (9 pasos: PASO 1-9)
+  // Calcular progreso basado en datos completados (6 pasos: PASO 1-6 consolidados)
   const getProgress = () => {
     let completed = 0
-    let total = 9
+    let total = 6
 
-    // PASO 1: Expediente (comprador)
-    if (data.comprador.nombre) completed++
-    
-    // PASO 2: Operación y Forma de Pago
+    // PASO 1: Operación y Forma de Pago
     if (data.tipoOperacion && (data.comprador.institucionCredito || data.comprador.necesitaCredito === false)) completed++
     
-    // PASO 3: Inmueble y Registro
-    if (data.inmueble.folioReal && data.inmueble.seccion && data.inmueble.partida) completed++
+    // PASO 2: Inmueble y Registro (consolidado con objeto del acto: incluye dirección, superficie, valor)
+    if (data.inmueble.folioReal && data.inmueble.seccion && data.inmueble.partida && 
+        data.inmueble.direccion && data.inmueble.superficie && data.inmueble.valor) completed++
     
-    // PASO 4: Vendedor(es)
+    // PASO 3: Vendedor(es)
     if (data.vendedor.nombre && data.vendedor.rfc && data.vendedor.curp) completed++
     
-    // PASO 5: Comprador(es)
+    // PASO 4: Comprador(es) (consolidado con expediente)
     if (data.comprador.nombre && data.comprador.rfc && data.comprador.curp) completed++
     
-    // PASO 6: Crédito del Comprador (si aplica)
+    // PASO 5: Crédito del Comprador (si aplica)
     if (data.tipoOperacion) {
       if (data.comprador.necesitaCredito) {
         // Si necesita crédito, debe tener institución y monto
@@ -459,7 +464,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       }
     }
     
-    // PASO 7: Cancelación de Hipoteca (si aplica)
+    // PASO 6: Cancelación de Hipoteca (si aplica)
     if (data.vendedor.nombre) {
       if (data.vendedor.tieneCredito !== undefined || data.vendedor.institucionCredito) {
         // Si tiene crédito, debe tener institución y número
@@ -471,12 +476,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
         }
       }
     }
-    
-    // PASO 8: Objeto del Acto
-    if (data.inmueble.direccion && data.inmueble.superficie && data.inmueble.valor) completed++
-    
-    // PASO 9: Revisión Final (se considera completo cuando todos los datos críticos están presentes)
-    if (isDataComplete(data)) completed++
 
     return { completed, total, percentage: Math.round((completed / total) * 100) }
   }
@@ -605,7 +604,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 tipo: d.documentType || 'desconocido',
                 informacionExtraida: d.extractedData
               })),
-            hasDraftTramite: !!activeTramiteId
+            hasDraftTramite: !!activeTramiteId,
+            expedienteExistente: expedienteExistente || undefined
           }
         })
       })
@@ -820,14 +820,27 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
           formData.append('file', imageFile)
           formData.append('documentType', docType)
 
+          // Obtener token de sesión para autenticación (necesario para buscar expedientes)
+          const { data: { session } } = await supabase.auth.getSession()
+          const headers: HeadersInit = {}
+          if (session?.access_token) {
+            headers['Authorization'] = `Bearer ${session.access_token}`
+          }
+
           const processResponse = await fetch('/api/ai/preaviso-process-document', {
             method: 'POST',
+            headers,
             body: formData
           })
 
           if (processResponse.ok) {
             const processResult = await processResponse.json()
             processedCount++
+            
+            // Si hay información de expediente existente, guardarla
+            if (processResult.expedienteExistente) {
+              setExpedienteExistente(processResult.expedienteExistente)
+            }
             
             // Actualizar documento original como procesado
             setUploadedDocuments(prev => prev.map(d => 
@@ -1537,29 +1550,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             <div className="flex-1 min-h-0 overflow-hidden">
               <ScrollArea className="h-full">
                 <div className="p-4 space-y-4">
-                {/* PASO 1 – EXPEDIENTE */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {data.comprador.nombre ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <FolderOpen className="h-4 w-4" />
-                      <span>PASO 1: Expediente</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.comprador.nombre ? (
-                      <div><span className="font-medium">Comprador:</span> {data.comprador.nombre}</div>
-                    ) : (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* PASO 2 – OPERACIÓN Y FORMA DE PAGO */}
+                {/* PASO 1 – OPERACIÓN Y FORMA DE PAGO */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
                     {data.tipoOperacion && (data.comprador.institucionCredito || (data.comprador.necesitaCredito === false && data.tipoOperacion)) ? (
@@ -1569,7 +1560,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <CreditCard className="h-4 w-4" />
-                      <span>PASO 2: Operación y Forma de Pago</span>
+                      <span>PASO 1: Operación y Forma de Pago</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
@@ -1588,17 +1579,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                   </div>
                 </div>
 
-                {/* PASO 3 – INMUEBLE Y REGISTRO */}
+                {/* PASO 2 – INMUEBLE Y REGISTRO (CONSOLIDADO) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.inmueble.folioReal && data.inmueble.seccion && data.inmueble.partida ? (
+                    {data.inmueble.folioReal && data.inmueble.seccion && data.inmueble.partida && 
+                     data.inmueble.direccion && data.inmueble.superficie && data.inmueble.valor ? (
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <Building2 className="h-4 w-4" />
-                      <span>PASO 3: Inmueble y Registro</span>
+                      <span>PASO 2: Inmueble y Registro</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
@@ -1612,7 +1604,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                       <div><span className="font-medium">Sección:</span> {data.inmueble.seccion}</div>
                     )}
                     {data.inmueble.direccion && (
-                      <div><span className="font-medium">Ubicación:</span> {data.inmueble.direccion}</div>
+                      <div><span className="font-medium">Dirección:</span> {data.inmueble.direccion}</div>
+                    )}
+                    {data.inmueble.superficie && (
+                      <div><span className="font-medium">Superficie:</span> {data.inmueble.superficie}</div>
+                    )}
+                    {data.inmueble.valor && (
+                      <div><span className="font-medium">Valor:</span> {data.inmueble.valor}</div>
                     )}
                     {!data.inmueble.folioReal && !data.inmueble.partida && (
                       <div className="text-gray-400 italic">Pendiente</div>
@@ -1620,7 +1618,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                   </div>
                 </div>
 
-                {/* PASO 4 – VENDEDOR(ES) */}
+                {/* PASO 3 – VENDEDOR(ES) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
                     {data.vendedor.nombre && data.vendedor.rfc && data.vendedor.curp ? (
@@ -1630,7 +1628,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <UserCircle className="h-4 w-4" />
-                      <span>PASO 4: Vendedor(es)</span>
+                      <span>PASO 3: Vendedor(es)</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
@@ -1652,7 +1650,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                   </div>
                 </div>
 
-                {/* PASO 5 – COMPRADOR(ES) */}
+                {/* PASO 4 – COMPRADOR(ES) (CONSOLIDADO CON EXPEDIENTE) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
                     {data.comprador.nombre && data.comprador.rfc && data.comprador.curp ? (
@@ -1662,7 +1660,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <Users className="h-4 w-4" />
-                      <span>PASO 5: Comprador(es)</span>
+                      <span>PASO 4: Comprador(es)</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
@@ -1676,7 +1674,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                       <div><span className="font-medium">CURP:</span> {data.comprador.curp}</div>
                     )}
                     {!data.comprador.nombre && !data.comprador.rfc && (
-                      <div className="text-gray-400 italic">Pendiente</div>
+                      <div className="text-gray-400 italic">Pendiente (requiere identificación oficial)</div>
                     )}
                   </div>
                 </div>
@@ -1697,7 +1695,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <CreditCard className="h-4 w-4" />
-                      <span>PASO 6: Crédito del Comprador</span>
+                      <span>PASO 5: Crédito del Comprador</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
@@ -1745,7 +1743,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <FileCheck2 className="h-4 w-4" />
-                      <span>PASO 7: Cancelación de Hipoteca</span>
+                      <span>PASO 6: Cancelación de Hipoteca</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
@@ -1775,65 +1773,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                   </div>
                 </div>
 
-                {/* PASO 8 – OBJETO DEL ACTO */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {data.inmueble.direccion && data.inmueble.superficie && data.inmueble.valor ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <FileText className="h-4 w-4" />
-                      <span>PASO 8: Objeto del Acto</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.inmueble.direccion && (
-                      <div><span className="font-medium">Ubicación:</span> {data.inmueble.direccion}</div>
-                    )}
-                    {data.inmueble.superficie && (
-                      <div><span className="font-medium">Superficie:</span> {typeof data.inmueble.superficie === 'string' ? data.inmueble.superficie : String(data.inmueble.superficie)}</div>
-                    )}
-                    {data.inmueble.valor && (
-                      <div><span className="font-medium">Valor:</span> ${typeof data.inmueble.valor === 'string' ? data.inmueble.valor : String(data.inmueble.valor)}</div>
-                    )}
-                    {!data.inmueble.direccion && !data.inmueble.superficie && (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* PASO 9 – REVISIÓN FINAL */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    <AlertCircle className="h-4 w-4 text-gray-400" />
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <FileCheck2 className="h-4 w-4" />
-                      <span>PASO 9: Revisión Final</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    <div className="mt-2 pt-2 border-t border-gray-200">
-                      <div className="font-medium mb-1">Actos determinados:</div>
-                      <div className="space-y-0.5">
-                        {data.actosNotariales.compraventa && (
-                          <div className="text-green-600">✓ Compraventa</div>
-                        )}
-                        {data.actosNotariales.cancelacionCreditoVendedor && (
-                          <div className="text-blue-600">✓ Cancelación crédito vendedor</div>
-                        )}
-                        {data.actosNotariales.aperturaCreditoComprador && (
-                          <div className="text-purple-600">✓ Apertura crédito comprador</div>
-                        )}
-                        {!data.actosNotariales.compraventa && (
-                          <div className="text-gray-400 italic">Pendiente determinación</div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="text-gray-400 italic mt-2">Pendiente confirmación final</div>
-                  </div>
-                </div>
                 </div>
               </ScrollArea>
             </div>

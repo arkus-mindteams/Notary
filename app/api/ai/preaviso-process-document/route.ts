@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server"
+import { CompradorService } from '@/lib/services/comprador-service'
+import { TramiteService } from '@/lib/services/tramite-service'
+import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 
 export async function POST(req: Request) {
   try {
@@ -186,11 +189,60 @@ Devuelve la información en formato JSON estructurado.`
       )
     }
 
+    // Si es una identificación del comprador, buscar expedientes existentes
+    let expedienteExistente = null
+    if (documentType === "identificacion" && extractedData?.tipo === "comprador") {
+      try {
+        // Obtener usuario actual para filtrar por notaría si es necesario
+        const currentUser = await getCurrentUserFromRequest(req)
+        const notariaId = currentUser?.rol === 'superadmin' ? null : currentUser?.notaria_id
+
+        // Buscar comprador por RFC o CURP
+        let comprador = null
+        if (extractedData.rfc) {
+          comprador = await CompradorService.findCompradorByRFC(extractedData.rfc)
+        }
+        if (!comprador && extractedData.curp) {
+          comprador = await CompradorService.findCompradorByCURP(extractedData.curp)
+        }
+
+        if (comprador) {
+          // Verificar que el comprador pertenece a la notaría del usuario (si es abogado)
+          if (currentUser?.rol === 'abogado' && comprador.notaria_id !== currentUser.notaria_id) {
+            // El comprador no pertenece a la notaría del abogado, no retornar expedientes
+            expedienteExistente = null
+          } else {
+            // Buscar trámites relacionados al comprador
+            const tramites = await TramiteService.findTramitesByCompradorId(comprador.id, notariaId || undefined)
+            
+            expedienteExistente = {
+              compradorId: comprador.id,
+              compradorNombre: comprador.nombre,
+              tieneExpedientes: tramites.length > 0,
+              cantidadTramites: tramites.length,
+              tramites: tramites.map(t => ({
+                id: t.id,
+                tipo: t.tipo,
+                estado: t.estado,
+                createdAt: t.created_at,
+                updatedAt: t.updated_at
+              }))
+            }
+          }
+        }
+      } catch (error: any) {
+        // Si hay error al buscar expedientes, no fallar el procesamiento del documento
+        // Solo loguear el error
+        console.error("[preaviso-process-document] Error buscando expedientes:", error)
+      }
+    }
+
     return NextResponse.json({
       success: true,
       extractedData,
       fileName: file.name,
       fileType: documentType,
+      ...(expedienteExistente && { expedienteExistente }),
     })
 
   } catch (error: any) {
