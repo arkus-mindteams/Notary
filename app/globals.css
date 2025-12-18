@@ -1,6 +1,22 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Enhanced toast styles */
+.error-toast {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.error-toast [data-title] {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.error-toast [data-description] {
+  line-height: 1.6;
+  margin-top: 8px;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 :root {

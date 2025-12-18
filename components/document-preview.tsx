@@ -5,12 +5,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
-import { 
-  FileText, 
-  Download, 
-  Edit, 
-  Eye, 
-  CheckCircle2, 
+import {
+  FileText,
+  Download,
+  Edit,
+  Eye,
+  CheckCircle2,
   AlertCircle,
   Calendar,
   User,
@@ -18,6 +18,7 @@ import {
   Hash
 } from 'lucide-react'
 import { GeneratedDocument } from '@/lib/document-generator'
+import DOMPurify from 'dompurify'
 
 interface DocumentPreviewProps {
   document: GeneratedDocument
@@ -105,10 +106,13 @@ export function DocumentPreview({
               </CardHeader>
               <CardContent>
                 <div className="prose prose-sm max-w-none">
-                  <div 
+                  <div
                     className="whitespace-pre-line text-gray-700 leading-relaxed"
-                    dangerouslySetInnerHTML={{ 
-                      __html: section.content.replace(/\n/g, '<br>') 
+                    dangerouslySetInnerHTML={{
+                      __html: DOMPurify.sanitize(section.content.replace(/\n/g, '<br>'), {
+                        ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'span', 'div'],
+                        ALLOWED_ATTR: ['class', 'style']
+                      })
                     }}
                   />
                 </div>
@@ -140,9 +144,14 @@ export function DocumentPreview({
           Descargar HTML
         </Button>
       </div>
-      <div 
+      <div
         className="border rounded-lg p-4 bg-white max-h-96 overflow-auto"
-        dangerouslySetInnerHTML={{ __html: document.html }}
+        dangerouslySetInnerHTML={{
+          __html: DOMPurify.sanitize(document.html, {
+            ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'span', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'table', 'tr', 'td', 'th'],
+            ALLOWED_ATTR: ['class', 'style', 'colspan', 'rowspan']
+          })
+        }}
       />
     </div>
   )
