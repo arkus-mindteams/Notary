@@ -613,11 +613,11 @@ function DeslindePageInner() {
       
       // Update preview if we removed the first image
       if (newFiles.length > 0 && index === 0) {
-        if (documentUrl && !documentUrl.startsWith("/")) {
-          URL.revokeObjectURL(documentUrl)
-        }
+    if (documentUrl && !documentUrl.startsWith("/")) {
+      URL.revokeObjectURL(documentUrl)
+    }
         const url = URL.createObjectURL(newFiles[0])
-        setDocumentUrl(url)
+    setDocumentUrl(url)
       } else if (newFiles.length === 0) {
         // No more files, revoke URL
     if (documentUrl && !documentUrl.startsWith("/")) {
@@ -942,11 +942,11 @@ function DeslindePageInner() {
         // Add last group
           if (currentGroup.length > 0) {
             groups.push(currentGroup)
-          }
-          
+        }
+        
           // Format each group
           for (const group of groups) {
-            const firstBoundary = group[0]
+          const firstBoundary = group[0]
             const directionName = getSpanishDirectionName(firstBoundary)
           
           for (let i = 0; i < group.length; i++) {
@@ -1344,7 +1344,7 @@ function DeslindePageInner() {
                       <Play className="h-4 w-4" />
                       Procesar imágenes
                     </Button>
-                  </div>
+              </div>
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
                     {selectedFiles.map((file, index) => {
                       const imageUrl = thumbnailUrls.get(index)
@@ -1369,7 +1369,7 @@ function DeslindePageInner() {
                               >
                                 <X className="h-3 w-3" />
                               </Button>
-                            </div>
+            </div>
                             <div className="space-y-1">
                               <p className="text-xs font-medium truncate" title={file.name}>
                                 {file.name}
@@ -1377,12 +1377,12 @@ function DeslindePageInner() {
                               <p className="text-xs text-muted-foreground">
                                 {(file.size / 1024 / 1024).toFixed(2)} MB
                               </p>
-                            </div>
-                          </div>
+              </div>
+            </div>
                         </Card>
                       )
                     })}
-                  </div>
+          </div>
                 </div>
               </Card>
             )}
@@ -1400,7 +1400,7 @@ function DeslindePageInner() {
                   <div className="flex flex-col items-start gap-2">
                     <div className="flex items-center gap-2">
                       <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-                        1
+                  1
                       </div>
                       <h3 className="font-medium text-sm">Sube tus documentos</h3>
                     </div>
@@ -1414,7 +1414,7 @@ function DeslindePageInner() {
                   <div className="flex flex-col items-start gap-2">
                     <div className="flex items-center gap-2">
                       <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-                        2
+                  2
                       </div>
                       <h3 className="font-medium text-sm">Procesa con IA</h3>
                     </div>
@@ -1428,7 +1428,7 @@ function DeslindePageInner() {
                   <div className="flex flex-col items-start gap-2">
                     <div className="flex items-center gap-2">
                       <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-                        3
+                  3
                       </div>
                       <h3 className="font-medium text-sm">Revisa y edita</h3>
                     </div>
@@ -1443,7 +1443,7 @@ function DeslindePageInner() {
                     <div className="flex items-center gap-2">
                       <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
                         4
-                      </div>
+          </div>
                       <h3 className="font-medium text-sm">Exporta el resultado</h3>
                     </div>
                     <p className="text-xs text-muted-foreground leading-snug">

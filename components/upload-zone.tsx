@@ -152,18 +152,18 @@ export function UploadZone({ onFilesSelect }: UploadZoneProps) {
             <ImageIcon className="h-5 w-5" />
             <span>PNG, JPG, PDF</span>
           </div>
-          <div className="relative">
-            <input
-              type="file"
-              id="file-upload"
-              className="sr-only"
+        <div className="relative">
+          <input
+            type="file"
+            id="file-upload"
+            className="sr-only"
               accept="image/png,image/jpeg,image/jpg,image/webp,application/pdf"
-              multiple
-              onChange={handleFileInput}
-            />
-            <Button asChild size="lg" className="cursor-pointer">
+            multiple
+            onChange={handleFileInput}
+          />
+          <Button asChild size="lg" className="cursor-pointer">
               <label htmlFor="file-upload" className="cursor-pointer">Seleccionar archivos</label>
-            </Button>
+          </Button>
           </div>
         </div>
       </div>

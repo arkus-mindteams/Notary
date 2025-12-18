@@ -1,73 +1,160 @@
 "use client"
 
-import React, { createContext, useContext, useState, useEffect } from 'react'
-
-export interface User {
-  id: string
-  email: string
-  name: string
-  role: 'abogado' | 'notario' | 'admin'
-}
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { createBrowserClient } from '@/lib/supabase'
+import type { AuthUser } from '@/lib/types/auth-types'
+import type { Session } from '@supabase/supabase-js'
 
 interface AuthContextType {
-  user: User | null
+  user: AuthUser | null
+  session: Session | null
   login: (email: string, password: string) => Promise<boolean>
-  logout: () => void
+  logout: () => Promise<void>
   isLoading: boolean
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<AuthUser | null>(null)
+  const [session, setSession] = useState<Session | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  // Memoizar la instancia del cliente para evitar recrearla en cada render
+  const supabase = useMemo(() => createBrowserClient(), [])
+  const fetchingRef = useRef(false) // Ref para evitar llamadas duplicadas
 
-  // Verificar si hay usuario guardado en localStorage al cargar
-  useEffect(() => {
-    const savedUser = localStorage.getItem('notaria_user')
-    if (savedUser) {
-      try {
-        setUser(JSON.parse(savedUser))
-      } catch (error) {
-        console.error('Error parsing saved user:', error)
-        localStorage.removeItem('notaria_user')
-      }
+  const fetchUser = useCallback(async (authUserId: string) => {
+    // Evitar llamadas duplicadas simultáneas
+    if (fetchingRef.current) {
+      return
     }
-    setIsLoading(false)
-  }, [])
+
+    try {
+      fetchingRef.current = true
+      
+      // Obtener token de la sesión actual
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      
+      if (!currentSession?.access_token) {
+        setUser(null)
+        setSession(null)
+        setIsLoading(false)
+        return
+      }
+
+      const response = await fetch('/api/auth/me', {
+        headers: {
+          'Authorization': `Bearer ${currentSession.access_token}`,
+        },
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setUser(data.user)
+      } else {
+        setUser(null)
+        setSession(null)
+      }
+    } catch (error) {
+      console.error('Error fetching user:', error)
+      setUser(null)
+      setSession(null)
+    } finally {
+      setIsLoading(false)
+      fetchingRef.current = false
+    }
+  }, [supabase])
+
+  // Verificar sesión al cargar
+  useEffect(() => {
+    let mounted = true
+
+    // Verificar sesión existente
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!mounted) return
+      
+      if (session) {
+        setSession(session)
+        fetchUser(session.user.id)
+      } else {
+        setIsLoading(false)
+      }
+    })
+
+    // Escuchar cambios en la autenticación
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!mounted) return
+
+      if (session) {
+        setSession(session)
+        // onAuthStateChange se dispara después del login, así que llamamos fetchUser
+        await fetchUser(session.user.id)
+      } else {
+        setSession(null)
+        setUser(null)
+        setIsLoading(false)
+      }
+    })
+
+    return () => {
+      mounted = false
+      subscription.unsubscribe()
+    }
+  }, [fetchUser, supabase])
 
   const login = async (email: string, password: string): Promise<boolean> => {
-    setIsLoading(true)
-    
-    // Simular validación de credenciales
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    
-    // Credenciales de prueba
-    if (email === 'abogado@notaria.com' && password === 'demo123') {
-      const userData: User = {
-        id: '1',
-        email: 'abogado@notaria.com',
-        name: 'Xavier Ibañez Veramendi',
-        role: 'abogado'
-      }
+    try {
+      setIsLoading(true)
       
-      setUser(userData)
-      localStorage.setItem('notaria_user', JSON.stringify(userData))
-      setIsLoading(false)
+      // Autenticar directamente con Supabase
+      const { data: sessionData, error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
+
+      if (authError || !sessionData.session || !sessionData.user) {
+        setIsLoading(false)
+        return false
+      }
+
+      // No llamar a /api/auth/me aquí, onAuthStateChange lo hará automáticamente
+      // Solo actualizar la sesión y esperar a que onAuthStateChange complete
+      setSession(sessionData.session)
+      
+      // Actualizar último login (llamar a login API para registrar)
+      await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      }).catch(() => {}) // Ignorar errores en actualización de login
+      
+      // Esperar a que onAuthStateChange complete el fetchUser
+      // Esto evita llamadas duplicadas
       return true
+    } catch (error) {
+      console.error('Error en login:', error)
+      setIsLoading(false)
+      return false
     }
-    
-    setIsLoading(false)
-    return false
   }
 
-  const logout = () => {
-    setUser(null)
-    localStorage.removeItem('notaria_user')
+  const logout = async (): Promise<void> => {
+    try {
+      setIsLoading(true)
+      await supabase.auth.signOut()
+      setUser(null)
+      setSession(null)
+    } catch (error) {
+      console.error('Error en logout:', error)
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isLoading }}>
+    <AuthContext.Provider value={{ user, session, login, logout, isLoading }}>
       {children}
     </AuthContext.Provider>
   )
@@ -80,4 +167,3 @@ export function useAuth() {
   }
   return context
 }
-

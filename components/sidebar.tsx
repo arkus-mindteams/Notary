@@ -11,6 +11,11 @@ import {
   Shield,
   ChevronLeft,
   ChevronRight,
+  MessageSquare,
+  FolderOpen,
+  Settings,
+  Users,
+  FileCode,
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -26,11 +31,14 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
 
   const handleLogout = async () => {
     setIsLoggingOut(true)
-    // Simular delay de logout
-    await new Promise(resolve => setTimeout(resolve, 500))
-    logout()
-    router.push('/login')
-    setIsLoggingOut(false)
+    try {
+      await logout()
+      router.push('/login')
+    } catch (error) {
+      console.error('Error en logout:', error)
+    } finally {
+      setIsLoggingOut(false)
+    }
   }
 
   const handleNavigation = (path: string) => {
@@ -106,6 +114,77 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
           <FileText className="h-4 w-4 flex-shrink-0" />
           {!isCollapsed && <span className="ml-3 truncate text-sm">Lectura de Plantas Arquitectónicas</span>}
         </Button>
+        
+        <Button
+          variant={pathname === '/dashboard/preaviso' ? 'default' : 'ghost'}
+          className={`w-full justify-start overflow-hidden ${
+            isCollapsed ? 'px-2' : 'px-3'
+          } ${
+            pathname === '/dashboard/preaviso'
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+          }`}
+          onClick={() => handleNavigation('/dashboard/preaviso')}
+        >
+          <MessageSquare className="h-4 w-4 flex-shrink-0" />
+          {!isCollapsed && <span className="ml-3 truncate text-sm">Pre-Aviso</span>}
+        </Button>
+
+        <Button
+          variant={pathname === '/dashboard/expedientes' ? 'default' : 'ghost'}
+          className={`w-full justify-start overflow-hidden ${
+            isCollapsed ? 'px-2' : 'px-3'
+          } ${
+            pathname === '/dashboard/expedientes'
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+          }`}
+          onClick={() => handleNavigation('/dashboard/expedientes')}
+        >
+          <FolderOpen className="h-4 w-4 flex-shrink-0" />
+          {!isCollapsed && <span className="ml-3 truncate text-sm">Expedientes</span>}
+        </Button>
+
+        {/* Sección Administración (solo para superadmin) */}
+        {user?.role === 'superadmin' && (
+          <>
+            <div className={`px-4 py-2 ${isCollapsed ? 'px-2' : ''}`}>
+              {!isCollapsed && (
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                  Administración
+                </p>
+              )}
+            </div>
+            <Button
+              variant={pathname === '/dashboard/admin/usuarios' ? 'default' : 'ghost'}
+              className={`w-full justify-start overflow-hidden ${
+                isCollapsed ? 'px-2' : 'px-3'
+              } ${
+                pathname === '/dashboard/admin/usuarios'
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+              }`}
+              onClick={() => handleNavigation('/dashboard/admin/usuarios')}
+            >
+              <Users className="h-4 w-4 flex-shrink-0" />
+              {!isCollapsed && <span className="ml-3 truncate text-sm">Usuarios</span>}
+            </Button>
+            <Button
+              variant={pathname === '/dashboard/admin/preaviso-config' ? 'default' : 'ghost'}
+              className={`w-full justify-start overflow-hidden ${
+                isCollapsed ? 'px-2' : 'px-3'
+              } ${
+                pathname === '/dashboard/admin/preaviso-config'
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+              }`}
+              onClick={() => handleNavigation('/dashboard/admin/preaviso-config')}
+            >
+              <FileCode className="h-4 w-4 flex-shrink-0" />
+              {!isCollapsed && <span className="ml-3 truncate text-sm">Config. Preaviso</span>}
+            </Button>
+          </>
+        )}
       </div>
 
       {/* Logout */}

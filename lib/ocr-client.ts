@@ -3,7 +3,7 @@ async function rasterizePdfPageToPng(file: File, pageNumber: number = 1, rotatio
     throw new Error("pdf_rasterize_on_server")
   }
   console.log("[ocr-client] Rasterizing PDF → PNG", { name: file.name, pageNumber })
-  const pdfjsModule: any = await import("pdfjs-dist/legacy/build/pdf")
+  const pdfjsModule: any = await import("pdfjs-dist/build/pdf")
   const pdfjs = pdfjsModule?.default || pdfjsModule
   
   if (!pdfjs?.getDocument || !pdfjs.GlobalWorkerOptions) {
@@ -87,8 +87,8 @@ export async function convertPdfToImages(
 
   console.log("[ocr-client] Converting PDF to images in browser", { name: file.name })
   
-  // Import pdfjs-dist dynamically
-  const pdfjsModule: any = await import("pdfjs-dist/legacy/build/pdf")
+  // Import pdfjs-dist dynamically (same path as pdf-canvas-viewer.tsx which works)
+  const pdfjsModule: any = await import("pdfjs-dist/build/pdf")
   const pdfjs = pdfjsModule?.default || pdfjsModule
   
   if (!pdfjs?.getDocument || !pdfjs.GlobalWorkerOptions) {
