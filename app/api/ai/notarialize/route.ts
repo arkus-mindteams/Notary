@@ -77,7 +77,7 @@ function buildNotarialPrompt(colindanciasText: string, unitName: string): string
     "      NORTE: 0.300 m CON VACIO",
     "            0.970 m CON VACIO",
     "            6.000 m CON AREA COMUN",
-    "      → 'al oeste, en cuatro metros, con vacío; al oeste, en cuatro metros quinientos milímetros, con vacío; al norte, en tres tramos, el primero de tres decímetros, con vacío, el segundo de nueve decímetros setenta centímetros, con vacío, y el tercero de seis metros, con área común'",
+    "      → 'al oeste, en cuatro metros, con vacío; al oeste, en cuatro metros quinientos milímetros, con vacío; al norte, en tres tramos, el primero de trescientos milímetros, con vacío, el segundo de novecientos setenta milímetros, con vacío, y el tercero de seis metros, con área común'",
     "      NOTA CRÍTICA: Las dos líneas de OESTE son independientes (separadas con punto y coma). Las tres líneas de NORTE son tramos (líneas heredadas después de NORTE:), por lo que deben agruparse como 'en tres tramos'.",
     "",
     "4. PRECISIÓN - Mantén TODOS los números exactamente como aparecen en el texto de colindancias. Si el texto dice 'ochocientos treinta y uno', NO lo cambies a 'ochocientos treinta y tres' ni a ningún otro número. Si el texto dice 'lote cuarenta y cuatro, manzana ochocientos treinta y uno', mantén esos números exactos.",
