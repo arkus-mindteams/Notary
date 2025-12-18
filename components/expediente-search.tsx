@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Search, User, FileText, Loader2 } from 'lucide-react'
+import { useFetchWithAuth } from '@/lib/hooks/use-fetch-with-auth'
 import type { Comprador, ExpedienteCompleto } from '@/lib/types/expediente-types'
 
 interface ExpedienteSearchProps {
@@ -15,6 +16,7 @@ interface ExpedienteSearchProps {
 }
 
 export function ExpedienteSearch({ onExpedienteSelect, searchQuery, onSearchChange }: ExpedienteSearchProps) {
+  const fetchWithAuth = useFetchWithAuth()
   const [compradores, setCompradores] = useState<Comprador[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -29,7 +31,7 @@ export function ExpedienteSearch({ onExpedienteSelect, searchQuery, onSearchChan
     setError(null)
 
     try {
-      const response = await fetch(`/api/expedientes/compradores?search=${encodeURIComponent(searchQuery)}`)
+      const response = await fetchWithAuth(`/api/expedientes/compradores?search=${encodeURIComponent(searchQuery)}`)
       
       if (!response.ok) {
         throw new Error('Error en la búsqueda')
@@ -48,7 +50,7 @@ export function ExpedienteSearch({ onExpedienteSelect, searchQuery, onSearchChan
   const handleCompradorClick = async (comprador: Comprador) => {
     setIsLoading(true)
     try {
-      const response = await fetch(`/api/expedientes/compradores?id=${comprador.id}`)
+      const response = await fetchWithAuth(`/api/expedientes/compradores?id=${comprador.id}`)
       if (!response.ok) {
         throw new Error('Error al cargar expediente')
       }

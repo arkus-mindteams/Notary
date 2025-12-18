@@ -28,7 +28,7 @@ export default function LoginPage() {
     try {
       const success = await login(email, password)
       if (success) {
-        router.push('/dashboard/deslinde')
+        router.push('/dashboard')
       } else {
         setError('Credenciales incorrectas. Por favor, verifique su email y contraseña.')
       }

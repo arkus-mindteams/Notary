@@ -5,7 +5,7 @@ export class CompradorService {
   /**
    * Crea un nuevo comprador
    */
-  static async createComprador(data: CreateCompradorRequest): Promise<Comprador> {
+  static async createComprador(data: CreateCompradorRequest & { notaria_id?: string }): Promise<Comprador> {
     const supabase = createServerClient()
 
     const { data: comprador, error } = await supabase
@@ -17,6 +17,7 @@ export class CompradorService {
         direccion: data.direccion || null,
         telefono: data.telefono || null,
         email: data.email || null,
+        notaria_id: data.notaria_id || null, // Agregar notaria_id
       })
       .select()
       .single()
@@ -97,17 +98,35 @@ export class CompradorService {
 
   /**
    * Busca compradores por nombre, RFC o CURP
+   * Si notariaId se proporciona, filtra por notaría (para abogados)
    */
-  static async searchCompradores(query: string, limit: number = 20): Promise<Comprador[]> {
+  static async searchCompradores(
+    query: string, 
+    limit: number = 20,
+    notariaId?: string | null
+  ): Promise<Comprador[]> {
     const supabase = createServerClient()
 
     const searchQuery = `%${query}%`
 
-    const { data, error } = await supabase
+    let dbQuery = supabase
       .from('compradores')
       .select('*')
       .or(`nombre.ilike.${searchQuery},rfc.ilike.${searchQuery},curp.ilike.${searchQuery}`)
       .limit(limit)
+
+    // Si hay notariaId, filtrar por notaría (para abogados)
+    if (notariaId !== undefined) {
+      if (notariaId === null) {
+        // Superadmin: no filtrar
+        // No agregar filtro
+      } else {
+        // Abogado: filtrar por su notaría
+        dbQuery = dbQuery.eq('notaria_id', notariaId)
+      }
+    }
+
+    const { data, error } = await dbQuery
 
     if (error) {
       throw new Error(`Error searching compradores: ${error.message}`)

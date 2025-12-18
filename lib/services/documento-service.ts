@@ -162,10 +162,12 @@ export class DocumentoService {
     })
 
     // Guardar metadata en Supabase con hash
+    // usuario_id se pasa como parte del request (agregado en la API route)
     const { data: documento, error } = await supabase
       .from('documentos')
       .insert({
         comprador_id: request.compradorId || null,
+        usuario_id: (request as any).usuarioId || null, // Agregado desde la API route
         tipo: request.tipo,
         nombre: request.file.name,
         s3_key: s3Info.key,

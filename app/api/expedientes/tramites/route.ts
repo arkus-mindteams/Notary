@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { TramiteService } from '@/lib/services/tramite-service'
 import { TramiteDocumentoService } from '@/lib/services/tramite-documento-service'
+import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import type { CreateTramiteRequest, UpdateTramiteRequest, TramiteConDocumentos } from '@/lib/types/expediente-types'
 
 export async function GET(req: Request) {
@@ -68,6 +69,15 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    // Obtener usuario actual del token
+    const currentUser = await getCurrentUserFromRequest(req)
+    if (!currentUser || !currentUser.activo) {
+      return NextResponse.json(
+        { error: 'unauthorized', message: 'No autenticado' },
+        { status: 401 }
+      )
+    }
+
     const body: CreateTramiteRequest = await req.json()
 
     // Validar campos requeridos
@@ -79,7 +89,13 @@ export async function POST(req: Request) {
       )
     }
 
-    const tramite = await TramiteService.createTramite(body)
+    // Agregar usuario_id automáticamente
+    const tramiteData: CreateTramiteRequest = {
+      ...body,
+      userId: currentUser.id, // Siempre usar el usuario del token
+    }
+
+    const tramite = await TramiteService.createTramite(tramiteData)
     return NextResponse.json(tramite, { status: 201 })
   } catch (error: any) {
     console.error('[api/expedientes/tramites] Error:', error)

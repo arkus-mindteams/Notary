@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, SupabaseClient } from '@supabase/supabase-js'
 
 // Cliente para operaciones server-side (usa service role key)
 export function createServerClient() {
@@ -35,5 +35,35 @@ export function createClientClient() {
   }
 
   return createClient(supabaseUrl, supabaseAnonKey)
+}
+
+// Instancia singleton del cliente del navegador (para evitar múltiples instancias)
+let browserClientInstance: SupabaseClient | null = null
+
+// Cliente para el navegador (con persistencia de sesión)
+// Usa un patrón singleton para evitar múltiples instancias
+export function createBrowserClient(): SupabaseClient {
+  // Si ya existe una instancia, reutilizarla
+  if (browserClientInstance) {
+    return browserClientInstance
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('Missing Supabase environment variables')
+  }
+
+  // Crear instancia única
+  browserClientInstance = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
+  })
+
+  return browserClientInstance
 }
 

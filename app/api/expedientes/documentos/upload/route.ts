@@ -1,10 +1,20 @@
 import { NextResponse } from 'next/server'
 import { DocumentoService } from '@/lib/services/documento-service'
 import { TramiteService } from '@/lib/services/tramite-service'
+import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import type { TipoDocumento } from '@/lib/types/expediente-types'
 
 export async function POST(req: Request) {
   try {
+    // Obtener usuario actual del token
+    const currentUser = await getCurrentUserFromRequest(req)
+    if (!currentUser || !currentUser.activo) {
+      return NextResponse.json(
+        { error: 'unauthorized', message: 'No autenticado' },
+        { status: 401 }
+      )
+    }
+
     const formData = await req.formData()
     const file = formData.get('file') as File | null
     const compradorId = formData.get('compradorId') as string | null
@@ -70,14 +80,17 @@ export async function POST(req: Request) {
       }
     }
 
-    // Subir documento
+    // Subir documento (agregar usuarioId al request)
+    const uploadRequest: any = {
+      compradorId,
+      tipo: tipo as TipoDocumento,
+      file,
+      metadata,
+      usuarioId: currentUser.id, // Agregar usuario_id
+    }
+    
     const documento = await DocumentoService.uploadDocumento(
-      {
-        compradorId,
-        tipo: tipo as TipoDocumento,
-        file,
-        metadata,
-      },
+      uploadRequest,
       tramiteId || undefined,
       tipoTramite
     )

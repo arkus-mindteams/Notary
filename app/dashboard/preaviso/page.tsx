@@ -5,6 +5,8 @@ import { DashboardLayout } from '@/components/dashboard-layout'
 import { ProtectedRoute } from '@/components/protected-route'
 import { PreavisoChat, type PreavisoData } from '@/components/preaviso-chat'
 import { PreavisoGenerator, type PreavisoDocument } from '@/lib/preaviso-generator'
+import { createBrowserClient } from '@/lib/supabase'
+import { useMemo } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -21,6 +23,7 @@ import {
 type AppState = 'chat' | 'document' | 'editing'
 
 export default function PreavisoPage() {
+  const supabase = useMemo(() => createBrowserClient(), [])
   const [appState, setAppState] = useState<AppState>('chat')
   const [preavisoData, setPreavisoData] = useState<PreavisoData | null>(null)
   const [document, setDocument] = useState<PreavisoDocument | null>(null)
@@ -61,9 +64,16 @@ export default function PreavisoPage() {
     let comprador
     try {
       // Intentar crear primero
+      // Obtener token de la sesión
+      const { data: { session } } = await supabase.auth.getSession()
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
+
       const createResponse = await fetch('/api/expedientes/compradores', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           nombre: data.comprador.nombre,
           rfc: data.comprador.rfc,
@@ -75,7 +85,16 @@ export default function PreavisoPage() {
         comprador = await createResponse.json()
       } else if (createResponse.status === 409) {
         // Ya existe, buscarlo por RFC
-        const searchResponse = await fetch(`/api/expedientes/compradores?rfc=${encodeURIComponent(data.comprador.rfc)}`)
+        // Obtener token para la búsqueda
+        const { data: { session: searchSession } } = await supabase.auth.getSession()
+        const searchHeaders: HeadersInit = {}
+        if (searchSession?.access_token) {
+          searchHeaders['Authorization'] = `Bearer ${searchSession.access_token}`
+        }
+
+        const searchResponse = await fetch(`/api/expedientes/compradores?rfc=${encodeURIComponent(data.comprador.rfc)}`, {
+          headers: searchHeaders,
+        })
         if (searchResponse.ok) {
           comprador = await searchResponse.json()
         } else {
@@ -93,9 +112,16 @@ export default function PreavisoPage() {
     let tramite
     if (existingTramiteId) {
       // Actualizar trámite existente con comprador y datos finales
+      // Obtener token para actualizar trámite
+      const { data: { session: updateSession } } = await supabase.auth.getSession()
+      const updateHeaders: HeadersInit = { 'Content-Type': 'application/json' }
+      if (updateSession?.access_token) {
+        updateHeaders['Authorization'] = `Bearer ${updateSession.access_token}`
+      }
+
       const updateResponse = await fetch(`/api/expedientes/tramites?id=${existingTramiteId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: updateHeaders,
         body: JSON.stringify({
           compradorId: comprador.id,
           datos: {
@@ -115,9 +141,16 @@ export default function PreavisoPage() {
       tramite = await updateResponse.json()
     } else {
       // Crear nuevo trámite
+      // Obtener token para crear trámite
+      const { data: { session: tramiteSession } } = await supabase.auth.getSession()
+      const tramiteHeaders: HeadersInit = { 'Content-Type': 'application/json' }
+      if (tramiteSession?.access_token) {
+        tramiteHeaders['Authorization'] = `Bearer ${tramiteSession.access_token}`
+      }
+
       const tramiteResponse = await fetch('/api/expedientes/tramites', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: tramiteHeaders,
         body: JSON.stringify({
           compradorId: comprador.id,
           tipo: 'preaviso',
@@ -185,9 +218,16 @@ export default function PreavisoPage() {
               const documento = await uploadResponse.json()
               
               // Asociar documento al trámite
+              // Obtener token para asociar documento
+              const { data: { session: associateSession } } = await supabase.auth.getSession()
+              const associateHeaders: HeadersInit = { 'Content-Type': 'application/json' }
+              if (associateSession?.access_token) {
+                associateHeaders['Authorization'] = `Bearer ${associateSession.access_token}`
+              }
+
               await fetch(`/api/expedientes/tramites/${tramite.id}/documentos`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: associateHeaders,
                 body: JSON.stringify({
                   documentoId: documento.id,
                 }),
@@ -203,9 +243,16 @@ export default function PreavisoPage() {
 
     // 4. Guardar referencia del documento generado
     if (doc) {
+      // Obtener token para actualizar documento generado
+      const { data: { session: docSession } } = await supabase.auth.getSession()
+      const docHeaders: HeadersInit = { 'Content-Type': 'application/json' }
+      if (docSession?.access_token) {
+        docHeaders['Authorization'] = `Bearer ${docSession.access_token}`
+      }
+
       await fetch(`/api/expedientes/tramites?id=${tramite.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: docHeaders,
         body: JSON.stringify({
           documento_generado: {
             formato: 'docx',

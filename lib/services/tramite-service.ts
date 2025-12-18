@@ -61,9 +61,27 @@ export class TramiteService {
 
   /**
    * Busca trámites por comprador
+   * Si notariaId se proporciona, filtra por notaría del comprador (para abogados)
    */
-  static async findTramitesByCompradorId(compradorId: string): Promise<Tramite[]> {
+  static async findTramitesByCompradorId(
+    compradorId: string,
+    notariaId?: string | null
+  ): Promise<Tramite[]> {
     const supabase = createServerClient()
+
+    // Primero verificar que el comprador pertenece a la notaría (si se especifica)
+    if (notariaId !== undefined && notariaId !== null) {
+      const { data: comprador } = await supabase
+        .from('compradores')
+        .select('notaria_id')
+        .eq('id', compradorId)
+        .single()
+
+      if (!comprador || comprador.notaria_id !== notariaId) {
+        // El comprador no pertenece a la notaría del abogado
+        return []
+      }
+    }
 
     const { data, error } = await supabase
       .from('tramites')

@@ -3,15 +3,28 @@ import { CompradorService } from '@/lib/services/comprador-service'
 import { TramiteService } from '@/lib/services/tramite-service'
 import { DocumentoService } from '@/lib/services/documento-service'
 import { TramiteDocumentoService } from '@/lib/services/tramite-documento-service'
+import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import type { CreateCompradorRequest, ExpedienteCompleto } from '@/lib/types/expediente-types'
 
 export async function GET(req: Request) {
   try {
+    // Obtener usuario actual para aplicar filtros
+    const currentUser = await getCurrentUserFromRequest(req)
+    if (!currentUser || !currentUser.activo) {
+      return NextResponse.json(
+        { error: 'unauthorized', message: 'No autenticado' },
+        { status: 401 }
+      )
+    }
+
     const { searchParams } = new URL(req.url)
     const id = searchParams.get('id')
     const search = searchParams.get('search')
     const rfc = searchParams.get('rfc')
     const curp = searchParams.get('curp')
+
+    // Determinar notariaId para filtros (null para superadmin, notaria_id para abogado)
+    const notariaId = currentUser.rol === 'superadmin' ? null : currentUser.notaria_id
 
     // Si hay ID, obtener expediente completo
     if (id) {
@@ -23,8 +36,16 @@ export async function GET(req: Request) {
         )
       }
 
-      // Obtener todos los trámites
-      const tramites = await TramiteService.findTramitesByCompradorId(id)
+      // Verificar que el comprador pertenece a la notaría del usuario (si es abogado)
+      if (currentUser.rol === 'abogado' && comprador.notaria_id !== currentUser.notaria_id) {
+        return NextResponse.json(
+          { error: 'forbidden', message: 'No tienes acceso a este expediente' },
+          { status: 403 }
+        )
+      }
+
+      // Obtener todos los trámites (con filtro de notaría si es abogado)
+      const tramites = await TramiteService.findTramitesByCompradorId(id, notariaId)
 
       // Obtener documentos de cada trámite
       const tramitesConDocumentos = await Promise.all(
@@ -73,9 +94,9 @@ export async function GET(req: Request) {
       return NextResponse.json(comprador)
     }
 
-    // Búsqueda por texto
+    // Búsqueda por texto (con filtro de notaría si es abogado)
     if (search) {
-      const compradores = await CompradorService.searchCompradores(search)
+      const compradores = await CompradorService.searchCompradores(search, 20, notariaId)
       return NextResponse.json(compradores)
     }
 
@@ -95,6 +116,17 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    // Obtener usuario actual para asignar notaria_id
+    const currentUser = await getCurrentUserFromRequest(req)
+    if (!currentUser || !currentUser.activo) {
+      return NextResponse.json(
+        { error: 'unauthorized', message: 'No autenticado' },
+        { status: 401 }
+      )
+    }
+
+    // Determinar notaria_id: usar la del usuario si es abogado, null si es superadmin
+    const notariaId = currentUser.rol === 'superadmin' ? null : currentUser.notaria_id
     const body: CreateCompradorRequest = await req.json()
 
     // Validar campos requeridos
@@ -105,7 +137,11 @@ export async function POST(req: Request) {
       )
     }
 
-    const comprador = await CompradorService.createComprador(body)
+    // Agregar notaria_id al crear comprador
+    const comprador = await CompradorService.createComprador({
+      ...body,
+      notaria_id: notariaId,
+    })
     return NextResponse.json(comprador, { status: 201 })
   } catch (error: any) {
     console.error('[api/expedientes/compradores] Error:', error)

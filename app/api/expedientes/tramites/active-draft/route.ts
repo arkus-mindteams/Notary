@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { TramiteService } from '@/lib/services/tramite-service'
+import { TramiteDocumentoService } from '@/lib/services/tramite-documento-service'
 
 export async function GET(req: Request) {
   try {
@@ -30,7 +31,13 @@ export async function GET(req: Request) {
       )
     }
 
-    return NextResponse.json(tramite)
+    // Obtener documentos asociados al trámite
+    const documentos = await TramiteDocumentoService.listDocumentosPorTramite(tramite.id)
+
+    return NextResponse.json({
+      ...tramite,
+      documentos
+    })
   } catch (error: any) {
     console.error('[api/expedientes/tramites/active-draft] Error:', error)
     return NextResponse.json(
