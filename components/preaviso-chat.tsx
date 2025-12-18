@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import Image from 'next/image'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Progress } from '@/components/ui/progress'
 import { useAuth } from '@/lib/auth-context'
+import { createBrowserClient } from '@/lib/supabase'
 import { 
   Send, 
   Bot, 
@@ -25,7 +26,8 @@ import {
   Users,
   FileCheck2,
   Eye,
-  EyeOff
+  EyeOff,
+  FolderOpen
 } from 'lucide-react'
 
 export interface ChatMessage {
@@ -61,6 +63,15 @@ export interface PreavisoData {
     partida: string
     superficie: string
     valor: string
+    unidad?: string
+    modulo?: string
+    condominio?: string
+    conjuntoHabitacional?: string
+    lote?: string
+    manzana?: string
+    fraccionamiento?: string
+    colonia?: string
+    tipoPredio?: string
   }
   actosNotariales: {
     cancelacionCreditoVendedor: boolean
@@ -89,16 +100,24 @@ interface PreavisoChatProps {
 
 const INITIAL_MESSAGES = [
   "Buenos días. Bienvenido al sistema de Solicitud de Certificado con Efecto de Pre-Aviso de Compraventa.",
-  "Iniciaré el proceso de captura de información. Comenzamos con la información del inmueble.",
-  "Necesito la Escritura o título de propiedad. Extraeré: folio real, sección, partida, ubicación y propietario. Si no la tiene, puede proporcionar la información manualmente. Debe ser exacta. ¿Tiene disponible la Escritura?"
+  "Para comenzar, ¿tienes la hoja de inscripción del inmueble? Necesito folio real, sección y partida. Si no la tienes, puedo capturar los datos manualmente."
 ]
 
 export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoChatProps) {
   const { user } = useAuth()
+  const supabase = useMemo(() => createBrowserClient(), [])
+  const messageIdCounterRef = useRef(0)
+  
+  // Función helper para generar IDs únicos para mensajes
+  const generateMessageId = (prefix: string = 'msg'): string => {
+    messageIdCounterRef.current++
+    return `${prefix}-${Date.now()}-${messageIdCounterRef.current}-${Math.random().toString(36).substr(2, 9)}`
+  }
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [initialMessagesSent, setInitialMessagesSent] = useState(false)
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
   const [isCheckingDraft, setIsCheckingDraft] = useState(true)
+  const checkingDraftRef = useRef(false) // Ref para evitar llamadas duplicadas
   const [data, setData] = useState<PreavisoData>({
     tipoOperacion: null,
     vendedor: {
@@ -111,7 +130,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       nombre: '',
       rfc: '',
       curp: '',
-      necesitaCredito: false
+      necesitaCredito: false // Se actualizará cuando se capture
     },
     inmueble: {
       direccion: '',
@@ -119,7 +138,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       seccion: '',
       partida: '',
       superficie: '',
-      valor: ''
+      valor: '',
+      unidad: '',
+      modulo: '',
+      condominio: '',
+      conjuntoHabitacional: '',
+      lote: '',
+      manzana: '',
+      fraccionamiento: '',
+      colonia: '',
+      tipoPredio: ''
     },
     actosNotariales: {
       cancelacionCreditoVendedor: false,
@@ -131,68 +159,192 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
 
   // Verificar si hay trámite guardado al iniciar
   useEffect(() => {
+    let mounted = true
+
     const checkDraftTramite = async () => {
-      if (!user?.id) {
-        setIsCheckingDraft(false)
+      // Evitar llamadas duplicadas
+      if (checkingDraftRef.current) {
         return
       }
 
+      if (!user?.id) {
+        if (mounted) {
+          setIsCheckingDraft(false)
+        }
+        return
+      }
+
+      checkingDraftRef.current = true
+
       try {
-        const response = await fetch(`/api/expedientes/tramites/active-draft?userId=${user.id}&tipo=preaviso`)
+        // Obtener token de la sesión para autenticación
+        const { data: { session } } = await supabase.auth.getSession()
+        const headers: HeadersInit = {}
+        if (session?.access_token) {
+          headers['Authorization'] = `Bearer ${session.access_token}`
+        }
+        
+        const response = await fetch(`/api/expedientes/tramites/active-draft?userId=${user.id}&tipo=preaviso`, {
+          headers
+        })
+        
+        if (!mounted) {
+          checkingDraftRef.current = false
+          return
+        }
         
         if (response.ok) {
           const tramite = await response.json()
-          setActiveTramiteId(tramite.id)
           
-          // Cargar datos guardados
-          if (tramite.datos) {
-            const savedData = tramite.datos as any
-            setData(prev => ({
-              ...prev,
-              ...savedData,
-              // Asegurar que actosNotariales esté presente
-              actosNotariales: savedData.actosNotariales || prev.actosNotariales
-            }))
-          }
+          if (mounted) {
+            setActiveTramiteId(tramite.id)
+            
+            // Cargar datos guardados
+            if (tramite.datos) {
+              const savedData = tramite.datos as any
+              
+              // Normalizar datos para asegurar que todos los campos string sean realmente strings
+              setData(prev => {
+                const normalizedData: PreavisoData = {
+                  tipoOperacion: savedData.tipoOperacion || null,
+                  vendedor: {
+                    nombre: typeof savedData.vendedor?.nombre === 'string' ? savedData.vendedor.nombre : String(savedData.vendedor?.nombre || ''),
+                    rfc: typeof savedData.vendedor?.rfc === 'string' ? savedData.vendedor.rfc : String(savedData.vendedor?.rfc || ''),
+                    curp: typeof savedData.vendedor?.curp === 'string' ? savedData.vendedor.curp : String(savedData.vendedor?.curp || ''),
+                    tieneCredito: savedData.vendedor?.tieneCredito || false,
+                    institucionCredito: typeof savedData.vendedor?.institucionCredito === 'string' ? savedData.vendedor.institucionCredito : (savedData.vendedor?.institucionCredito ? String(savedData.vendedor.institucionCredito) : undefined),
+                    numeroCredito: typeof savedData.vendedor?.numeroCredito === 'string' ? savedData.vendedor.numeroCredito : (savedData.vendedor?.numeroCredito ? String(savedData.vendedor.numeroCredito) : undefined)
+                  },
+                  comprador: {
+                    nombre: typeof savedData.comprador?.nombre === 'string' ? savedData.comprador.nombre : String(savedData.comprador?.nombre || ''),
+                    rfc: typeof savedData.comprador?.rfc === 'string' ? savedData.comprador.rfc : String(savedData.comprador.rfc || ''),
+                    curp: typeof savedData.comprador?.curp === 'string' ? savedData.comprador.curp : String(savedData.comprador?.curp || ''),
+                    necesitaCredito: savedData.comprador?.necesitaCredito ?? false,
+                    institucionCredito: typeof savedData.comprador?.institucionCredito === 'string' ? savedData.comprador.institucionCredito : (savedData.comprador?.institucionCredito ? String(savedData.comprador.institucionCredito) : undefined),
+                    montoCredito: typeof savedData.comprador?.montoCredito === 'string' ? savedData.comprador.montoCredito : (savedData.comprador?.montoCredito ? String(savedData.comprador.montoCredito) : undefined)
+                  },
+                  inmueble: {
+                    direccion: typeof savedData.inmueble?.direccion === 'string' ? savedData.inmueble.direccion : String(savedData.inmueble?.direccion || ''),
+                    folioReal: typeof savedData.inmueble?.folioReal === 'string' ? savedData.inmueble.folioReal : String(savedData.inmueble?.folioReal || ''),
+                    seccion: typeof savedData.inmueble?.seccion === 'string' ? savedData.inmueble.seccion : String(savedData.inmueble?.seccion || ''),
+                    partida: typeof savedData.inmueble?.partida === 'string' ? savedData.inmueble.partida : String(savedData.inmueble?.partida || ''),
+                    superficie: typeof savedData.inmueble?.superficie === 'string' ? savedData.inmueble.superficie : (savedData.inmueble?.superficie ? String(savedData.inmueble.superficie) : ''),
+                    valor: typeof savedData.inmueble?.valor === 'string' ? savedData.inmueble.valor : (savedData.inmueble?.valor ? String(savedData.inmueble.valor) : ''),
+                    unidad: typeof savedData.inmueble?.unidad === 'string' ? savedData.inmueble.unidad : (savedData.inmueble?.unidad ? String(savedData.inmueble.unidad) : ''),
+                    modulo: typeof savedData.inmueble?.modulo === 'string' ? savedData.inmueble.modulo : (savedData.inmueble?.modulo ? String(savedData.inmueble.modulo) : ''),
+                    condominio: typeof savedData.inmueble?.condominio === 'string' ? savedData.inmueble.condominio : (savedData.inmueble?.condominio ? String(savedData.inmueble.condominio) : ''),
+                    conjuntoHabitacional: typeof savedData.inmueble?.conjuntoHabitacional === 'string' ? savedData.inmueble.conjuntoHabitacional : (savedData.inmueble?.conjuntoHabitacional ? String(savedData.inmueble.conjuntoHabitacional) : ''),
+                    lote: typeof savedData.inmueble?.lote === 'string' ? savedData.inmueble.lote : (savedData.inmueble?.lote ? String(savedData.inmueble.lote) : ''),
+                    manzana: typeof savedData.inmueble?.manzana === 'string' ? savedData.inmueble.manzana : (savedData.inmueble?.manzana ? String(savedData.inmueble.manzana) : ''),
+                    fraccionamiento: typeof savedData.inmueble?.fraccionamiento === 'string' ? savedData.inmueble.fraccionamiento : (savedData.inmueble?.fraccionamiento ? String(savedData.inmueble.fraccionamiento) : ''),
+                    colonia: typeof savedData.inmueble?.colonia === 'string' ? savedData.inmueble.colonia : (savedData.inmueble?.colonia ? String(savedData.inmueble.colonia) : ''),
+                    tipoPredio: typeof savedData.inmueble?.tipoPredio === 'string' ? savedData.inmueble.tipoPredio : (savedData.inmueble?.tipoPredio ? String(savedData.inmueble.tipoPredio) : '')
+                  },
+                  actosNotariales: savedData.actosNotariales || prev.actosNotariales,
+                  documentos: Array.isArray(savedData.documentos) ? savedData.documentos : []
+                }
+                return normalizedData
+              })
+            }
 
-          // Agregar mensaje de la IA preguntando si continuar
-          const continueMessage: ChatMessage = {
-            id: 'draft-detected',
-            role: 'assistant',
-            content: `He detectado que tienes un pre-aviso en progreso guardado. ¿Deseas continuar con ese trámite o prefieres iniciar uno nuevo? Responde "continuar" o "nuevo".`,
-            timestamp: new Date()
+            // Cargar documentos guardados
+            if (tramite.documentos && Array.isArray(tramite.documentos) && tramite.documentos.length > 0) {
+              // Crear objetos UploadedDocument virtuales para documentos ya procesados
+              const savedDocs: UploadedDocument[] = tramite.documentos.map((doc: any) => {
+                // Crear un File virtual (blob vacío) para documentos ya guardados
+                const virtualFile = new File([], doc.nombre, { type: doc.mime_type || 'application/pdf' })
+                
+                // Mapear tipo de documento de BD a tipo esperado por la IA
+                let docType = 'escritura'
+                const dbType = doc.tipo?.toLowerCase() || ''
+                const name = doc.nombre.toLowerCase()
+                
+                // Si el tipo en BD es específico, usarlo
+                if (dbType === 'ine_vendedor' || dbType === 'ine_comprador' || 
+                    name.includes('ine') || name.includes('ife') || name.includes('identificacion') || name.includes('pasaporte')) {
+                  docType = 'identificacion'
+                } else if (dbType === 'plano' || dbType === 'plano_arquitectonico' || dbType === 'croquis_catastral' ||
+                           name.includes('plano') || name.includes('croquis') || name.includes('catastral')) {
+                  docType = 'plano'
+                } else if (dbType === 'escritura' || name.includes('escritura') || name.includes('titulo') || 
+                           name.includes('propiedad') || name.includes('inscripcion') || name.includes('hoja')) {
+                  docType = 'escritura'
+                }
+
+                return {
+                  id: doc.id,
+                  file: virtualFile,
+                  name: doc.nombre,
+                  type: doc.mime_type || 'application/pdf',
+                  size: doc.tamaño || 0,
+                  processed: true, // Ya están procesados
+                  extractedData: doc.metadata || null, // Usar metadata como extractedData
+                  documentType: docType
+                }
+              })
+              
+              setUploadedDocuments(savedDocs)
+            }
+
+            // Agregar mensaje de la IA preguntando si continuar
+            const continueMessage: ChatMessage = {
+              id: generateMessageId('draft-detected'),
+              role: 'assistant',
+              content: `He detectado que tienes un pre-aviso en progreso guardado. ¿Deseas continuar con ese trámite o prefieres iniciar uno nuevo? Responde "continuar" o "nuevo".`,
+              timestamp: new Date()
+            }
+            setMessages([continueMessage])
           }
-          setMessages([continueMessage])
         } else {
           // No hay trámite guardado, enviar mensajes iniciales normales
-          sendInitialMessages()
+          if (mounted) {
+            sendInitialMessages()
+          }
         }
       } catch (error) {
         console.error('Error verificando trámite guardado:', error)
-        sendInitialMessages()
+        if (mounted) {
+          sendInitialMessages()
+        }
       } finally {
-        setIsCheckingDraft(false)
+        if (mounted) {
+          setIsCheckingDraft(false)
+        }
+        checkingDraftRef.current = false
       }
     }
 
     const sendInitialMessages = async () => {
       for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
+        if (!mounted) break
+        
         await new Promise(resolve => setTimeout(resolve, i * 400))
+        
+        if (!mounted) break
+        
+        const initialMessageId = generateMessageId('initial')
         setMessages(prev => {
-          const exists = prev.some(m => m.id === `initial-${i}`)
+          const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
           if (exists) return prev
           return [...prev, {
-            id: `initial-${i}`,
+            id: initialMessageId,
             role: 'assistant',
             content: INITIAL_MESSAGES[i],
             timestamp: new Date()
           }]
         })
       }
-      setInitialMessagesSent(true)
+      if (mounted) {
+        setInitialMessagesSent(true)
+      }
     }
 
     checkDraftTramite()
+
+    return () => {
+      mounted = false
+      checkingDraftRef.current = false
+    }
   }, [user?.id])
 
   // Guardar progreso automáticamente cuando cambian los datos
@@ -204,11 +356,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       }
 
       try {
+        // Obtener token de la sesión para autenticación
+        const { data: { session } } = await supabase.auth.getSession()
+        const headers: HeadersInit = { 'Content-Type': 'application/json' }
+        if (session?.access_token) {
+          headers['Authorization'] = `Bearer ${session.access_token}`
+        }
+
         // Si no hay trámite activo, crear uno
         if (!activeTramiteId) {
           const response = await fetch('/api/expedientes/tramites', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
               compradorId: null, // Sin comprador aún
               userId: user.id,
@@ -226,7 +385,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
           // Actualizar trámite existente
           await fetch(`/api/expedientes/tramites?id=${activeTramiteId}`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
               datos: data,
             }),
@@ -251,37 +410,73 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
   const [showDataPanel, setShowDataPanel] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const textInputRef = useRef<HTMLTextAreaElement>(null)
 
-  // Calcular progreso basado en datos completados
+  // Verificar si todos los datos críticos están completos
+  const isDataComplete = (data: PreavisoData): boolean => {
+    return !!(
+      data.vendedor.nombre &&
+      data.vendedor.rfc &&
+      data.vendedor.curp &&
+      data.comprador.nombre &&
+      data.comprador.rfc &&
+      data.comprador.curp &&
+      data.inmueble.direccion &&
+      data.inmueble.folioReal &&
+      data.inmueble.superficie &&
+      data.inmueble.valor
+    )
+  }
+
+  // Calcular progreso basado en datos completados (9 pasos: PASO 1-9)
   const getProgress = () => {
     let completed = 0
-    let total = 6
+    let total = 9
 
-    // Paso 1: Inmueble
-    if (data.inmueble.folioReal || data.inmueble.direccion) completed++
+    // PASO 1: Expediente (comprador)
+    if (data.comprador.nombre) completed++
     
-    // Paso 2: Vendedor
+    // PASO 2: Operación y Forma de Pago
+    if (data.tipoOperacion && (data.comprador.institucionCredito || data.comprador.necesitaCredito === false)) completed++
+    
+    // PASO 3: Inmueble y Registro
+    if (data.inmueble.folioReal && data.inmueble.seccion && data.inmueble.partida) completed++
+    
+    // PASO 4: Vendedor(es)
     if (data.vendedor.nombre && data.vendedor.rfc && data.vendedor.curp) completed++
     
-    // Paso 3: Crédito vendedor (opcional, pero se cuenta si tiene crédito)
-    if (data.vendedor.tieneCredito) {
-      if (data.vendedor.institucionCredito && data.vendedor.numeroCredito) completed++
-    } else {
-      completed++ // Si no tiene crédito, el paso está completo
-    }
-    
-    // Paso 4: Comprador
+    // PASO 5: Comprador(es)
     if (data.comprador.nombre && data.comprador.rfc && data.comprador.curp) completed++
     
-    // Paso 5: Crédito comprador (opcional)
-    if (data.comprador.necesitaCredito) {
-      if (data.comprador.institucionCredito && data.comprador.montoCredito) completed++
-    } else {
-      completed++ // Si no necesita crédito, el paso está completo
+    // PASO 6: Crédito del Comprador (si aplica)
+    if (data.tipoOperacion) {
+      if (data.comprador.necesitaCredito) {
+        // Si necesita crédito, debe tener institución y monto
+        if (data.comprador.institucionCredito && data.comprador.montoCredito) completed++
+      } else if (data.comprador.necesitaCredito === false) {
+        // Si no necesita crédito (pago de contado), el paso está completo
+        completed++
+      }
     }
     
-    // Paso 6: Valor (parte de paso 5 pero lo contamos separado)
-    if (data.inmueble.valor) completed++
+    // PASO 7: Cancelación de Hipoteca (si aplica)
+    if (data.vendedor.nombre) {
+      if (data.vendedor.tieneCredito !== undefined || data.vendedor.institucionCredito) {
+        // Si tiene crédito, debe tener institución y número
+        if (data.vendedor.tieneCredito) {
+          if (data.vendedor.institucionCredito && data.vendedor.numeroCredito) completed++
+        } else {
+          // Si no tiene crédito, el paso está completo
+          completed++
+        }
+      }
+    }
+    
+    // PASO 8: Objeto del Acto
+    if (data.inmueble.direccion && data.inmueble.superficie && data.inmueble.valor) completed++
+    
+    // PASO 9: Revisión Final (se considera completo cuando todos los datos críticos están presentes)
+    if (isDataComplete(data)) completed++
 
     return { completed, total, percentage: Math.round((completed / total) * 100) }
   }
@@ -296,7 +491,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     if (!input.trim() || isProcessing) return
 
     const userMessage: ChatMessage = {
-      id: Date.now().toString(),
+      id: generateMessageId('user'),
       role: 'user',
       content: input.trim(),
       timestamp: new Date()
@@ -312,7 +507,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     if (lowerInput === 'continuar' || lowerInput === 'seguir' || lowerInput === 'sí' || lowerInput === 'si') {
       if (activeTramiteId) {
         const continueMessage: ChatMessage = {
-          id: Date.now().toString(),
+          id: generateMessageId('continue'),
           role: 'assistant',
           content: 'Perfecto, continuemos con tu trámite guardado. ¿Qué información necesitas agregar o modificar?',
           timestamp: new Date()
@@ -325,9 +520,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       // Crear nuevo trámite
       if (user?.id) {
         try {
+          // Obtener token de la sesión
+          const { data: { session } } = await supabase.auth.getSession()
+          const headers: HeadersInit = { 'Content-Type': 'application/json' }
+          if (session?.access_token) {
+            headers['Authorization'] = `Bearer ${session.access_token}`
+          }
+
           const response = await fetch('/api/expedientes/tramites', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
               compradorId: null,
               userId: user.id,
@@ -336,7 +538,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 tipoOperacion: null,
                 vendedor: { nombre: '', rfc: '', curp: '', tieneCredito: false },
                 comprador: { nombre: '', rfc: '', curp: '', necesitaCredito: false },
-                inmueble: { direccion: '', folioReal: '', seccion: '', partida: '', superficie: '', valor: '' },
+                inmueble: { direccion: '', folioReal: '', seccion: '', partida: '', superficie: '', valor: '', unidad: '', modulo: '', condominio: '', conjuntoHabitacional: '', lote: '', manzana: '', fraccionamiento: '', colonia: '', tipoPredio: '' },
                 actosNotariales: { cancelacionCreditoVendedor: false, compraventa: false, aperturaCreditoComprador: false }
               },
               estado: 'en_proceso',
@@ -363,11 +565,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       // Enviar mensajes iniciales
       for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
         await new Promise(resolve => setTimeout(resolve, i * 400))
+        const initialMessageId = generateMessageId('initial')
         setMessages(prev => {
-          const exists = prev.some(m => m.id === `initial-${i}`)
+          const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
           if (exists) return prev
           return [...prev, {
-            id: `initial-${i}`,
+            id: initialMessageId,
             role: 'assistant',
             content: INITIAL_MESSAGES[i],
             timestamp: new Date()
@@ -415,12 +618,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       const messagesToAdd = result.messages || [result.message]
       
       // Agregar mensajes con delay para efecto conversacional
-      // Usar un timestamp único para evitar duplicados
-      const baseTimestamp = Date.now()
       for (let i = 0; i < messagesToAdd.length; i++) {
         await new Promise(resolve => setTimeout(resolve, i * 300)) // 300ms entre mensajes
         const assistantMessage: ChatMessage = {
-          id: `msg-${baseTimestamp}-${i}`,
+          id: generateMessageId('ai'),
           role: 'assistant',
           content: messagesToAdd[i],
           timestamp: new Date()
@@ -436,28 +637,52 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       }
 
       // Intentar extraer información estructurada de la respuesta
-      const lastMessage = messagesToAdd[messagesToAdd.length - 1] || ''
-      const extractedData = extractDataFromMessage(lastMessage, currentInput, data)
+      // Procesar todos los mensajes de la IA para extraer información
+      const allAIMessages = messagesToAdd.join('\n\n')
+      const extractedData = extractDataFromMessage(allAIMessages, currentInput, data)
       if (extractedData) {
-        const newData = { ...data, ...extractedData }
-        
-        // Determinar actos notariales
-        const actos = determineActosNotariales(newData)
-        newData.actosNotariales = actos
-        setData(newData)
-
-        // Verificar si está completo
-        if (isDataComplete(newData)) {
-          onDataComplete(newData)
-          // Llamar a onGenerateDocument con los documentos subidos y el trámite activo
-          onGenerateDocument(newData, uploadedDocuments.filter(d => d.processed), activeTramiteId)
-        }
+        setData(prevData => {
+          const newData = { ...prevData }
+          
+          // Actualizar tipoOperacion
+          if (extractedData.tipoOperacion !== undefined) {
+            newData.tipoOperacion = extractedData.tipoOperacion
+          }
+          
+          // Actualizar comprador (merge profundo)
+          if (extractedData.comprador) {
+            newData.comprador = { ...prevData.comprador, ...extractedData.comprador }
+          }
+          
+          // Actualizar vendedor (merge profundo)
+          if (extractedData.vendedor) {
+            newData.vendedor = { ...prevData.vendedor, ...extractedData.vendedor }
+          }
+          
+          // Actualizar inmueble (merge profundo)
+          if (extractedData.inmueble) {
+            newData.inmueble = { ...prevData.inmueble, ...extractedData.inmueble }
+          }
+          
+          // Determinar actos notariales
+          const actos = determineActosNotariales(newData)
+          newData.actosNotariales = actos
+          
+          // Verificar si está completo
+          if (isDataComplete(newData)) {
+            onDataComplete(newData)
+            // Llamar a onGenerateDocument con los documentos subidos y el trámite activo
+            onGenerateDocument(newData, uploadedDocuments.filter(d => d.processed), activeTramiteId)
+          }
+          
+          return newData
+        })
       }
 
     } catch (error) {
       console.error('Error en chat:', error)
       const errorMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
+        id: generateMessageId('error'),
         role: 'assistant',
         content: 'Disculpe, ha ocurrido un error al procesar su mensaje. Por favor, intente nuevamente o proporcione la información de otra manera.',
         timestamp: new Date()
@@ -465,6 +690,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       setMessages(prev => [...prev, errorMessage])
     } finally {
       setIsProcessing(false)
+      // Restaurar foco en el input después de procesar
+      setTimeout(() => {
+        textInputRef.current?.focus()
+      }, 100)
     }
   }
 
@@ -482,7 +711,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
 
     // Agregar documentos originales a la lista (sin mostrar imágenes convertidas)
     const originalDocs: UploadedDocument[] = Array.from(files).map(file => ({
-      id: `${Date.now()}-${Math.random()}`,
+      id: generateMessageId('doc'),
       file,
       name: file.name,
       type: file.type,
@@ -494,7 +723,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     // Mensaje de usuario
     const fileNames = Array.from(files).map(f => f.name)
     const fileMessage: ChatMessage = {
-      id: Date.now().toString(),
+      id: generateMessageId('file'),
       role: 'user',
       content: `He subido el siguiente documento: ${fileNames.join(', ')}`,
       timestamp: new Date(),
@@ -504,7 +733,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
 
     // Mensaje de procesamiento
     const processingMessage: ChatMessage = {
-      id: `${Date.now()}-processing`,
+      id: generateMessageId('processing'),
       role: 'assistant',
       content: 'Procesando documento...',
       timestamp: new Date()
@@ -536,7 +765,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
         setProcessingProgress(0)
         setProcessingFileName(null)
         const errorMessage: ChatMessage = {
-          id: (Date.now() + 1).toString(),
+          id: generateMessageId('pdf-error'),
           role: 'assistant',
           content: 'Error al convertir PDFs a imágenes. Por favor, intente con imágenes directamente.',
           timestamp: new Date()
@@ -611,6 +840,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             // Esto permite que los documentos estén disponibles incluso si el usuario sale
             if (activeTramiteId) {
               try {
+                // Obtener token de la sesión para autenticación
+                const { data: { session } } = await supabase.auth.getSession()
+                const headers: HeadersInit = {}
+                if (session?.access_token) {
+                  headers['Authorization'] = `Bearer ${session.access_token}`
+                }
+
                 const uploadFormData = new FormData()
                 uploadFormData.append('file', originalFile) // Usar archivo original, no imagen convertida
                 uploadFormData.append('compradorId', '') // Sin comprador aún
@@ -619,6 +855,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
 
                 const uploadResponse = await fetch('/api/expedientes/documentos/upload', {
                   method: 'POST',
+                  headers,
                   body: uploadFormData,
                 })
 
@@ -647,6 +884,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                   if (extracted.propietario?.curp) updated.vendedor.curp = extracted.propietario.curp
                   if (extracted.superficie) updated.inmueble.superficie = extracted.superficie
                   if (extracted.valor) updated.inmueble.valor = extracted.valor
+                  // Campos adicionales del inmueble
+                  if (extracted.unidad) updated.inmueble.unidad = extracted.unidad
+                  if (extracted.modulo) updated.inmueble.modulo = extracted.modulo
+                  if (extracted.condominio) updated.inmueble.condominio = extracted.condominio
+                  if (extracted.conjuntoHabitacional) updated.inmueble.conjuntoHabitacional = extracted.conjuntoHabitacional
+                  if (extracted.lote) updated.inmueble.lote = extracted.lote
+                  if (extracted.manzana) updated.inmueble.manzana = extracted.manzana
+                  if (extracted.fraccionamiento) updated.inmueble.fraccionamiento = extracted.fraccionamiento
+                  if (extracted.colonia) updated.inmueble.colonia = extracted.colonia
+                  if (extracted.tipoPredio) updated.inmueble.tipoPredio = extracted.tipoPredio
                 } else if (docType === 'plano') {
                   if (extracted.superficie) updated.inmueble.superficie = extracted.superficie
                 } else if (docType === 'identificacion') {
@@ -792,34 +1039,217 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
   }
 
   const extractDataFromMessage = (aiMessage: string, userInput: string, currentData: PreavisoData): Partial<PreavisoData> | null => {
-    // Extraer información básica usando patrones simples
     const updates: Partial<PreavisoData> = {}
     let hasUpdates = false
 
-    // Detectar nombres (patrones comunes)
-    const nombrePattern = /(?:nombre|vendedor|comprador)[:\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)+)/gi
-    const nombres = [...userInput.matchAll(nombrePattern)]
+    // Intentar extraer JSON estructurado del mensaje de la IA
+    const dataUpdateMatch = aiMessage.match(/<DATA_UPDATE>([\s\S]*?)<\/DATA_UPDATE>/)
     
-    // Detectar RFC
-    const rfcPattern = /RFC[:\s]+([A-Z]{3,4}\d{6}[A-Z0-9]{3})/gi
-    const rfcMatch = userInput.match(rfcPattern)
-    
-    // Detectar CURP
-    const curpPattern = /CURP[:\s]+([A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d)/gi
-    const curpMatch = userInput.match(curpPattern)
+    if (dataUpdateMatch) {
+      try {
+        const jsonData = JSON.parse(dataUpdateMatch[1].trim())
+        
+        // Actualizar tipoOperacion
+        if (jsonData.tipoOperacion !== undefined && jsonData.tipoOperacion !== null) {
+          updates.tipoOperacion = jsonData.tipoOperacion
+          hasUpdates = true
+        }
 
-    // Detectar folio real
-    const folioPattern = /folio[:\s]+(?:real[:\s]+)?(\d+)/gi
-    const folioMatch = userInput.match(folioPattern)
+        // Actualizar comprador
+        if (jsonData.comprador) {
+          const compradorUpdates: Partial<PreavisoData['comprador']> = {}
+          if (jsonData.comprador.nombre !== undefined && jsonData.comprador.nombre !== null) {
+            compradorUpdates.nombre = jsonData.comprador.nombre
+            hasUpdates = true
+          }
+          if (jsonData.comprador.rfc !== undefined && jsonData.comprador.rfc !== null) {
+            compradorUpdates.rfc = jsonData.comprador.rfc
+            hasUpdates = true
+          }
+          if (jsonData.comprador.curp !== undefined && jsonData.comprador.curp !== null) {
+            compradorUpdates.curp = jsonData.comprador.curp
+            hasUpdates = true
+          }
+          if (jsonData.comprador.necesitaCredito !== undefined && jsonData.comprador.necesitaCredito !== null) {
+            compradorUpdates.necesitaCredito = jsonData.comprador.necesitaCredito
+            hasUpdates = true
+          }
+          if (jsonData.comprador.institucionCredito !== undefined && jsonData.comprador.institucionCredito !== null) {
+            compradorUpdates.institucionCredito = jsonData.comprador.institucionCredito
+            hasUpdates = true
+          }
+          if (jsonData.comprador.montoCredito !== undefined && jsonData.comprador.montoCredito !== null) {
+            compradorUpdates.montoCredito = jsonData.comprador.montoCredito
+            hasUpdates = true
+          }
+          if (Object.keys(compradorUpdates).length > 0) {
+            updates.comprador = { ...currentData.comprador, ...compradorUpdates }
+          }
+        }
 
-    // Detectar crédito
-    const creditoPattern = /(?:tiene|tiene|necesita)[\s]+(?:crédito|hipoteca)/gi
-    const tieneCredito = creditoPattern.test(userInput.toLowerCase())
+        // Actualizar vendedor
+        if (jsonData.vendedor) {
+          const vendedorUpdates: Partial<PreavisoData['vendedor']> = {}
+          if (jsonData.vendedor.nombre !== undefined && jsonData.vendedor.nombre !== null) {
+            vendedorUpdates.nombre = jsonData.vendedor.nombre
+            hasUpdates = true
+          }
+          if (jsonData.vendedor.rfc !== undefined && jsonData.vendedor.rfc !== null) {
+            vendedorUpdates.rfc = jsonData.vendedor.rfc
+            hasUpdates = true
+          }
+          if (jsonData.vendedor.curp !== undefined && jsonData.vendedor.curp !== null) {
+            vendedorUpdates.curp = jsonData.vendedor.curp
+            hasUpdates = true
+          }
+          if (jsonData.vendedor.tieneCredito !== undefined && jsonData.vendedor.tieneCredito !== null) {
+            vendedorUpdates.tieneCredito = jsonData.vendedor.tieneCredito
+            hasUpdates = true
+          }
+          if (jsonData.vendedor.institucionCredito !== undefined && jsonData.vendedor.institucionCredito !== null) {
+            vendedorUpdates.institucionCredito = jsonData.vendedor.institucionCredito
+            hasUpdates = true
+          }
+          if (jsonData.vendedor.numeroCredito !== undefined && jsonData.vendedor.numeroCredito !== null) {
+            vendedorUpdates.numeroCredito = jsonData.vendedor.numeroCredito
+            hasUpdates = true
+          }
+          if (Object.keys(vendedorUpdates).length > 0) {
+            updates.vendedor = { ...currentData.vendedor, ...vendedorUpdates }
+          }
+        }
 
-    // Actualizar datos si se encuentran
-    if (nombres.length > 0 && !currentData.vendedor.nombre) {
-      updates.vendedor = { ...currentData.vendedor, nombre: nombres[0][1] }
-      hasUpdates = true
+        // Actualizar inmueble
+        if (jsonData.inmueble) {
+          const inmuebleUpdates: Partial<PreavisoData['inmueble']> = {}
+          if (jsonData.inmueble.direccion !== undefined && jsonData.inmueble.direccion !== null) {
+            inmuebleUpdates.direccion = jsonData.inmueble.direccion
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.folioReal !== undefined && jsonData.inmueble.folioReal !== null) {
+            inmuebleUpdates.folioReal = jsonData.inmueble.folioReal
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.seccion !== undefined && jsonData.inmueble.seccion !== null) {
+            inmuebleUpdates.seccion = jsonData.inmueble.seccion
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.partida !== undefined && jsonData.inmueble.partida !== null) {
+            inmuebleUpdates.partida = jsonData.inmueble.partida
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.superficie !== undefined && jsonData.inmueble.superficie !== null) {
+            // Asegurar que superficie sea un string, no un objeto
+            inmuebleUpdates.superficie = typeof jsonData.inmueble.superficie === 'string' 
+              ? jsonData.inmueble.superficie 
+              : String(jsonData.inmueble.superficie)
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.valor !== undefined && jsonData.inmueble.valor !== null) {
+            // Asegurar que valor sea un string, no un objeto
+            inmuebleUpdates.valor = typeof jsonData.inmueble.valor === 'string' 
+              ? jsonData.inmueble.valor 
+              : String(jsonData.inmueble.valor)
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.unidad !== undefined && jsonData.inmueble.unidad !== null) {
+            inmuebleUpdates.unidad = jsonData.inmueble.unidad
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.modulo !== undefined && jsonData.inmueble.modulo !== null) {
+            inmuebleUpdates.modulo = jsonData.inmueble.modulo
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.condominio !== undefined && jsonData.inmueble.condominio !== null) {
+            inmuebleUpdates.condominio = jsonData.inmueble.condominio
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.conjuntoHabitacional !== undefined && jsonData.inmueble.conjuntoHabitacional !== null) {
+            inmuebleUpdates.conjuntoHabitacional = jsonData.inmueble.conjuntoHabitacional
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.lote !== undefined && jsonData.inmueble.lote !== null) {
+            inmuebleUpdates.lote = jsonData.inmueble.lote
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.manzana !== undefined && jsonData.inmueble.manzana !== null) {
+            inmuebleUpdates.manzana = jsonData.inmueble.manzana
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.fraccionamiento !== undefined && jsonData.inmueble.fraccionamiento !== null) {
+            inmuebleUpdates.fraccionamiento = jsonData.inmueble.fraccionamiento
+            hasUpdates = true
+          }
+          if (jsonData.inmueble.colonia !== undefined && jsonData.inmueble.colonia !== null) {
+            inmuebleUpdates.colonia = jsonData.inmueble.colonia
+            hasUpdates = true
+          }
+          if (Object.keys(inmuebleUpdates).length > 0) {
+            updates.inmueble = { ...currentData.inmueble, ...inmuebleUpdates }
+          }
+        }
+
+      } catch (error) {
+        console.error('Error parseando JSON de actualización de datos:', error)
+        // Si falla el parseo, continuar con métodos de fallback
+      }
+    }
+
+    // Fallback: Detectar información básica usando patrones simples si no hay JSON
+    if (!hasUpdates) {
+      // Detectar tipo de operación
+      const operacionMatch = userInput.match(/(?:operación|tipo)[:\s]+(compraventa|compra-venta)/i)
+      if (operacionMatch && !currentData.tipoOperacion) {
+        updates.tipoOperacion = 'compraventa'
+        hasUpdates = true
+      }
+
+      // Detectar forma de pago
+      const contadoMatch = userInput.match(/(?:pago|pagar|forma de pago)[:\s]+(?:de\s+)?contado/i)
+      const creditoMatch = userInput.match(/(?:pago|pagar|forma de pago|crédito|hipoteca)[:\s]+(?:mediante\s+)?(?:crédito|hipoteca)/i)
+      
+      if (contadoMatch && currentData.comprador.necesitaCredito === false) {
+        // Ya está en false, no actualizar
+      } else if (contadoMatch) {
+        if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+        updates.comprador.necesitaCredito = false
+        hasUpdates = true
+      } else if (creditoMatch) {
+        if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+        updates.comprador.necesitaCredito = true
+        hasUpdates = true
+      }
+
+      // Detectar nombres (patrones comunes)
+      const nombrePattern = /(?:nombre|vendedor|comprador)[:\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)+)/gi
+      const nombres = [...userInput.matchAll(nombrePattern)]
+      
+      // Detectar RFC
+      const rfcPattern = /RFC[:\s]+([A-Z]{3,4}\d{6}[A-Z0-9]{3})/gi
+      const rfcMatch = userInput.match(rfcPattern)
+      
+      // Detectar CURP
+      const curpPattern = /CURP[:\s]+([A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d)/gi
+      const curpMatch = userInput.match(curpPattern)
+
+      // Actualizar datos si se encuentran
+      if (nombres.length > 0 && !currentData.vendedor.nombre) {
+        if (!updates.vendedor) updates.vendedor = { ...currentData.vendedor }
+        updates.vendedor.nombre = nombres[0][1]
+        hasUpdates = true
+      }
+
+      if (rfcMatch && !currentData.vendedor.rfc) {
+        if (!updates.vendedor) updates.vendedor = { ...currentData.vendedor }
+        updates.vendedor.rfc = rfcMatch[1]
+        hasUpdates = true
+      }
+
+      if (curpMatch && !currentData.vendedor.curp) {
+        if (!updates.vendedor) updates.vendedor = { ...currentData.vendedor }
+        updates.vendedor.curp = curpMatch[1]
+        hasUpdates = true
+      }
     }
 
     return hasUpdates ? updates : null
@@ -831,21 +1261,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       compraventa: true,
       aperturaCreditoComprador: data.comprador.necesitaCredito || false
     }
-  }
-
-  const isDataComplete = (data: PreavisoData): boolean => {
-    return !!(
-      data.vendedor.nombre &&
-      data.vendedor.rfc &&
-      data.vendedor.curp &&
-      data.comprador.nombre &&
-      data.comprador.rfc &&
-      data.comprador.curp &&
-      data.inmueble.direccion &&
-      data.inmueble.folioReal &&
-      data.inmueble.superficie &&
-      data.inmueble.valor
-    )
   }
 
   return (
@@ -1044,6 +1459,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
               {/* Input de texto moderno */}
               <div className="flex-1 relative">
                 <Textarea
+                  ref={textInputRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -1118,44 +1534,93 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             </div>
 
             {/* Contenido del panel */}
-            <ScrollArea className="flex-1 p-4">
-              <div className="space-y-4">
-                {/* Paso 1: Inmueble */}
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <ScrollArea className="h-full">
+                <div className="p-4 space-y-4">
+                {/* PASO 1 – EXPEDIENTE */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.inmueble.folioReal || data.inmueble.direccion ? (
+                    {data.comprador.nombre ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <FolderOpen className="h-4 w-4" />
+                      <span>PASO 1: Expediente</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.comprador.nombre ? (
+                      <div><span className="font-medium">Comprador:</span> {data.comprador.nombre}</div>
+                    ) : (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PASO 2 – OPERACIÓN Y FORMA DE PAGO */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {data.tipoOperacion && (data.comprador.institucionCredito || (data.comprador.necesitaCredito === false && data.tipoOperacion)) ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <CreditCard className="h-4 w-4" />
+                      <span>PASO 2: Operación y Forma de Pago</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.tipoOperacion ? (
+                      <>
+                        <div><span className="font-medium">Tipo de operación:</span> {data.tipoOperacion}</div>
+                        {data.comprador.institucionCredito || (data.comprador.necesitaCredito === false && data.tipoOperacion) ? (
+                          <div><span className="font-medium">Forma de pago:</span> {data.comprador.necesitaCredito ? 'Crédito' : 'Contado'}</div>
+                        ) : (
+                          <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PASO 3 – INMUEBLE Y REGISTRO */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {data.inmueble.folioReal && data.inmueble.seccion && data.inmueble.partida ? (
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <Building2 className="h-4 w-4" />
-                      <span>Paso 1: Inmueble</span>
+                      <span>PASO 3: Inmueble y Registro</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
                     {data.inmueble.folioReal && (
                       <div><span className="font-medium">Folio Real:</span> {data.inmueble.folioReal}</div>
                     )}
-                    {data.inmueble.direccion && (
-                      <div><span className="font-medium">Dirección:</span> {data.inmueble.direccion}</div>
+                    {data.inmueble.partida && (
+                      <div><span className="font-medium">Partida(s):</span> {data.inmueble.partida}</div>
                     )}
                     {data.inmueble.seccion && (
                       <div><span className="font-medium">Sección:</span> {data.inmueble.seccion}</div>
                     )}
-                    {data.inmueble.partida && (
-                      <div><span className="font-medium">Partida:</span> {data.inmueble.partida}</div>
+                    {data.inmueble.direccion && (
+                      <div><span className="font-medium">Ubicación:</span> {data.inmueble.direccion}</div>
                     )}
-                    {data.inmueble.superficie && (
-                      <div><span className="font-medium">Superficie:</span> {data.inmueble.superficie}</div>
-                    )}
-                    {!data.inmueble.folioReal && !data.inmueble.direccion && (
+                    {!data.inmueble.folioReal && !data.inmueble.partida && (
                       <div className="text-gray-400 italic">Pendiente</div>
                     )}
                   </div>
                 </div>
 
-                {/* Paso 2: Vendedor */}
+                {/* PASO 4 – VENDEDOR(ES) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
                     {data.vendedor.nombre && data.vendedor.rfc && data.vendedor.curp ? (
@@ -1165,7 +1630,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <UserCircle className="h-4 w-4" />
-                      <span>Paso 2: Vendedor</span>
+                      <span>PASO 4: Vendedor(es)</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
@@ -1178,49 +1643,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     {data.vendedor.curp && (
                       <div><span className="font-medium">CURP:</span> {data.vendedor.curp}</div>
                     )}
+                    {data.vendedor.tieneCredito !== undefined && (
+                      <div><span className="font-medium">Crédito pendiente:</span> {data.vendedor.tieneCredito ? 'Sí' : 'No'}</div>
+                    )}
                     {!data.vendedor.nombre && !data.vendedor.rfc && (
                       <div className="text-gray-400 italic">Pendiente</div>
                     )}
                   </div>
                 </div>
 
-                {/* Paso 3: Crédito Vendedor */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {data.vendedor.tieneCredito ? (
-                      data.vendedor.institucionCredito && data.vendedor.numeroCredito ? (
-                        <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      ) : (
-                        <AlertCircle className="h-4 w-4 text-yellow-500" />
-                      )
-                    ) : (
-                      <CheckCircle2 className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <CreditCard className="h-4 w-4" />
-                      <span>Paso 3: Crédito Vendedor</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.vendedor.tieneCredito ? (
-                      <>
-                        {data.vendedor.institucionCredito && (
-                          <div><span className="font-medium">Institución:</span> {data.vendedor.institucionCredito}</div>
-                        )}
-                        {data.vendedor.numeroCredito && (
-                          <div><span className="font-medium">Número:</span> {data.vendedor.numeroCredito}</div>
-                        )}
-                        {!data.vendedor.institucionCredito && (
-                          <div className="text-yellow-600 italic">Información pendiente</div>
-                        )}
-                      </>
-                    ) : (
-                      <div className="text-gray-500">No tiene crédito pendiente</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Paso 4: Comprador */}
+                {/* PASO 5 – COMPRADOR(ES) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
                     {data.comprador.nombre && data.comprador.rfc && data.comprador.curp ? (
@@ -1230,7 +1662,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <Users className="h-4 w-4" />
-                      <span>Paso 4: Comprador</span>
+                      <span>PASO 5: Comprador(es)</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
@@ -1249,59 +1681,139 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                   </div>
                 </div>
 
-                {/* Paso 5: Crédito Comprador */}
+                {/* PASO 6 – CRÉDITO DEL COMPRADOR (si aplica) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.comprador.necesitaCredito ? (
-                      data.comprador.institucionCredito && data.comprador.montoCredito ? (
+                    {data.tipoOperacion && (data.comprador.institucionCredito || data.comprador.necesitaCredito === false) ? (
+                      data.comprador.necesitaCredito && data.comprador.institucionCredito && data.comprador.montoCredito ? (
                         <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      ) : (
+                      ) : data.comprador.necesitaCredito ? (
                         <AlertCircle className="h-4 w-4 text-yellow-500" />
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4 text-gray-400" />
                       )
                     ) : (
-                      <CheckCircle2 className="h-4 w-4 text-gray-400" />
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <CreditCard className="h-4 w-4" />
-                      <span>Paso 5: Crédito Comprador</span>
+                      <span>PASO 6: Crédito del Comprador</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.comprador.necesitaCredito ? (
-                      <>
-                        {data.comprador.institucionCredito && (
-                          <div><span className="font-medium">Institución:</span> {data.comprador.institucionCredito}</div>
-                        )}
-                        {data.comprador.montoCredito && (
-                          <div><span className="font-medium">Monto:</span> {data.comprador.montoCredito}</div>
-                        )}
-                        {!data.comprador.institucionCredito && (
-                          <div className="text-yellow-600 italic">Información pendiente</div>
-                        )}
-                      </>
+                    {data.tipoOperacion ? (
+                      data.comprador.institucionCredito || data.comprador.necesitaCredito === false ? (
+                        data.comprador.necesitaCredito ? (
+                          <>
+                            {data.comprador.institucionCredito && (
+                              <div><span className="font-medium">Institución:</span> {data.comprador.institucionCredito}</div>
+                            )}
+                            {data.comprador.montoCredito && (
+                              <div><span className="font-medium">Monto:</span> {data.comprador.montoCredito}</div>
+                            )}
+                            {!data.comprador.institucionCredito && (
+                              <div className="text-yellow-600 italic">Información pendiente</div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="text-gray-500">No aplica (pago de contado)</div>
+                        )
+                      ) : (
+                        <div className="text-gray-400 italic">Pendiente (definir forma de pago primero)</div>
+                      )
                     ) : (
-                      <div className="text-gray-500">No necesita crédito</div>
+                      <div className="text-gray-400 italic">Pendiente</div>
                     )}
                   </div>
                 </div>
 
-                {/* Paso 6: Valor y Actos */}
+                {/* PASO 7 – CANCELACIÓN DE HIPOTECA (si existe) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.inmueble.valor ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    {data.vendedor.nombre && (data.vendedor.tieneCredito !== undefined || data.vendedor.institucionCredito) ? (
+                      data.vendedor.tieneCredito ? (
+                        data.vendedor.institucionCredito && data.vendedor.numeroCredito ? (
+                          <CheckCircle2 className="h-4 w-4 text-green-500" />
+                        ) : (
+                          <AlertCircle className="h-4 w-4 text-yellow-500" />
+                        )
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4 text-gray-400" />
+                      )
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
                     )}
                     <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
                       <FileCheck2 className="h-4 w-4" />
-                      <span>Paso 6: Valor y Actos</span>
+                      <span>PASO 7: Cancelación de Hipoteca</span>
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.inmueble.valor && (
-                      <div><span className="font-medium">Valor:</span> ${data.inmueble.valor}</div>
+                    {data.vendedor.nombre ? (
+                      data.vendedor.tieneCredito !== undefined || data.vendedor.institucionCredito ? (
+                        data.vendedor.tieneCredito ? (
+                          <>
+                            {data.vendedor.institucionCredito && (
+                              <div><span className="font-medium">Institución:</span> {data.vendedor.institucionCredito}</div>
+                            )}
+                            {data.vendedor.numeroCredito && (
+                              <div><span className="font-medium">Número de crédito:</span> {data.vendedor.numeroCredito}</div>
+                            )}
+                            {!data.vendedor.institucionCredito && (
+                              <div className="text-yellow-600 italic">Pendiente confirmación</div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="text-gray-500">No aplica (sin hipoteca)</div>
+                        )
+                      ) : (
+                        <div className="text-gray-400 italic">Pendiente (verificar en escritura)</div>
+                      )
+                    ) : (
+                      <div className="text-gray-400 italic">Pendiente (requiere información del vendedor)</div>
                     )}
+                  </div>
+                </div>
+
+                {/* PASO 8 – OBJETO DEL ACTO */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {data.inmueble.direccion && data.inmueble.superficie && data.inmueble.valor ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <FileText className="h-4 w-4" />
+                      <span>PASO 8: Objeto del Acto</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.inmueble.direccion && (
+                      <div><span className="font-medium">Ubicación:</span> {data.inmueble.direccion}</div>
+                    )}
+                    {data.inmueble.superficie && (
+                      <div><span className="font-medium">Superficie:</span> {typeof data.inmueble.superficie === 'string' ? data.inmueble.superficie : String(data.inmueble.superficie)}</div>
+                    )}
+                    {data.inmueble.valor && (
+                      <div><span className="font-medium">Valor:</span> ${typeof data.inmueble.valor === 'string' ? data.inmueble.valor : String(data.inmueble.valor)}</div>
+                    )}
+                    {!data.inmueble.direccion && !data.inmueble.superficie && (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PASO 9 – REVISIÓN FINAL */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    <AlertCircle className="h-4 w-4 text-gray-400" />
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <FileCheck2 className="h-4 w-4" />
+                      <span>PASO 9: Revisión Final</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
                     <div className="mt-2 pt-2 border-t border-gray-200">
                       <div className="font-medium mb-1">Actos determinados:</div>
                       <div className="space-y-0.5">
@@ -1319,13 +1831,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                         )}
                       </div>
                     </div>
-                    {!data.inmueble.valor && (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
+                    <div className="text-gray-400 italic mt-2">Pendiente confirmación final</div>
                   </div>
                 </div>
-              </div>
-            </ScrollArea>
+                </div>
+              </ScrollArea>
+            </div>
           </CardContent>
         </Card>
       )}
