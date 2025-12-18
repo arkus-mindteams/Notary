@@ -125,6 +125,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
   } | null>(null)
   const [isCheckingDraft, setIsCheckingDraft] = useState(true)
   const checkingDraftRef = useRef(false) // Ref para evitar llamadas duplicadas
+  const savedDraftDocumentsRef = useRef<UploadedDocument[]>([]) // Documentos guardados del trámite draft (se cargan solo si el usuario continúa)
   const [data, setData] = useState<PreavisoData>({
     tipoOperacion: null,
     vendedor: {
@@ -254,7 +255,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
               })
             }
 
-            // Cargar documentos guardados
+            // Guardar documentos guardados en ref (se cargarán solo si el usuario decide continuar)
             if (tramite.documentos && Array.isArray(tramite.documentos) && tramite.documentos.length > 0) {
               // Crear objetos UploadedDocument virtuales para documentos ya procesados
               const savedDocs: UploadedDocument[] = tramite.documentos.map((doc: any) => {
@@ -290,7 +291,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 }
               })
               
-              setUploadedDocuments(savedDocs)
+              // Guardar en ref, NO cargar todavía (solo se cargarán si el usuario dice "continuar")
+              savedDraftDocumentsRef.current = savedDocs
+            } else {
+              // No hay documentos guardados, asegurar que el ref esté vacío
+              savedDraftDocumentsRef.current = []
             }
 
             // Agregar mensaje de la IA preguntando si continuar
@@ -303,14 +308,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             setMessages([continueMessage])
           }
         } else {
-          // No hay trámite guardado, enviar mensajes iniciales normales
+          // No hay trámite guardado, asegurar que los documentos estén vacíos y enviar mensajes iniciales normales
           if (mounted) {
+            setUploadedDocuments([])
+            savedDraftDocumentsRef.current = []
             sendInitialMessages()
           }
         }
       } catch (error) {
         console.error('Error verificando trámite guardado:', error)
         if (mounted) {
+          setUploadedDocuments([])
+          savedDraftDocumentsRef.current = []
           sendInitialMessages()
         }
       } finally {
@@ -505,6 +514,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     const lowerInput = currentInput.toLowerCase().trim()
     if (lowerInput === 'continuar' || lowerInput === 'seguir' || lowerInput === 'sí' || lowerInput === 'si') {
       if (activeTramiteId) {
+        // Cargar documentos guardados del trámite
+        setUploadedDocuments(savedDraftDocumentsRef.current)
+        // Limpiar el ref después de cargar
+        savedDraftDocumentsRef.current = []
+        
         const continueMessage: ChatMessage = {
           id: generateMessageId('continue'),
           role: 'assistant',
@@ -516,6 +530,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
         return
       }
     } else if (lowerInput === 'nuevo' || lowerInput === 'nuevo trámite' || lowerInput === 'empezar nuevo') {
+      // Limpiar documentos y refs al crear nuevo trámite
+      setUploadedDocuments([])
+      savedDraftDocumentsRef.current = []
       // Crear nuevo trámite
       if (user?.id) {
         try {
@@ -555,6 +572,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
               actosNotariales: { cancelacionCreditoVendedor: false, compraventa: false, aperturaCreditoComprador: false },
               documentos: []
             })
+            // Asegurar que los documentos estén vacíos para nuevo trámite
+            setUploadedDocuments([])
+            savedDraftDocumentsRef.current = []
           }
         } catch (error) {
           console.error('Error creando nuevo trámite:', error)
@@ -637,8 +657,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       }
 
       // Intentar extraer información estructurada de la respuesta
-      // Procesar todos los mensajes de la IA para extraer información
-      const allAIMessages = messagesToAdd.join('\n\n')
+      // Incluir mensajes previos de la IA para detectar confirmaciones
+      const previousAIMessages = messages
+        .filter(m => m.role === 'assistant')
+        .slice(-3) // Últimos 3 mensajes de la IA
+        .map(m => m.content)
+        .join('\n\n')
+      const allAIMessages = (previousAIMessages ? previousAIMessages + '\n\n' : '') + messagesToAdd.join('\n\n')
       const extractedData = extractDataFromMessage(allAIMessages, currentInput, data)
       if (extractedData) {
         setData(prevData => {
@@ -1210,6 +1235,117 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
 
     // Fallback: Detectar información básica usando patrones simples si no hay JSON
     if (!hasUpdates) {
+      // Detectar confirmaciones: si el usuario responde "sí", "si", "correcto", etc., extraer datos de la pregunta previa de la IA
+      const confirmacionMatch = userInput.match(/^(sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|está correcto|confirmo|confirmado)$/i)
+      if (confirmacionMatch && aiMessage) {
+        // Extraer información de la pregunta previa de la IA que contiene los datos a confirmar
+        
+        // Detectar Folio Real
+        const folioMatch = aiMessage.match(/folio\s+real\s+(\d+)/i)
+        if (folioMatch && !currentData.inmueble.folioReal) {
+          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+          updates.inmueble.folioReal = folioMatch[1]
+          hasUpdates = true
+        }
+        
+        // Detectar Partida
+        const partidaMatch = aiMessage.match(/partida\s+(\d+)/i)
+        if (partidaMatch && !currentData.inmueble.partida) {
+          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+          updates.inmueble.partida = partidaMatch[1]
+          hasUpdates = true
+        }
+        
+        // Detectar Sección
+        const seccionMatch = aiMessage.match(/sección\s+([A-ZÁÉÍÓÚÑ]+)/i)
+        if (seccionMatch && !currentData.inmueble.seccion) {
+          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+          updates.inmueble.seccion = seccionMatch[1].toUpperCase()
+          hasUpdates = true
+        }
+        
+        // Detectar superficie (con diferentes formatos)
+        const superficieMatch = aiMessage.match(/superficie\s+de\s+([\d,.]+)\s*m[²2]/i) || aiMessage.match(/([\d,.]+)\s*m[²2]/i)
+        if (superficieMatch && !currentData.inmueble.superficie) {
+          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+          updates.inmueble.superficie = superficieMatch[1].replace(/,/g, '')
+          hasUpdates = true
+        }
+        
+        // Detectar valor
+        const valorMatch = aiMessage.match(/valor\s+de\s+(\$?[\d,.]+)/i) || aiMessage.match(/\$\s*([\d,.]+)/i)
+        if (valorMatch && !currentData.inmueble.valor) {
+          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+          updates.inmueble.valor = valorMatch[1].replace(/,/g, '')
+          hasUpdates = true
+        }
+        
+        // Detectar dirección (buscando patrones como "LOTE X MANZANA Y", "DESARROLLO", etc.)
+        const direccionPatterns = [
+          /(lote\s+\d+\s+manzana\s+\d+[^.]*)/i,
+          /(desarrollo[^.,]*)/i,
+          /(fraccionamiento[^.,]*)/i,
+          /(colonia[^.,]*)/i
+        ]
+        for (const pattern of direccionPatterns) {
+          const direccionMatch = aiMessage.match(pattern)
+          if (direccionMatch && !currentData.inmueble.direccion) {
+            if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+            // Extraer más contexto alrededor del match
+            const matchIndex = aiMessage.toLowerCase().indexOf(direccionMatch[1].toLowerCase())
+            const start = Math.max(0, matchIndex - 50)
+            const end = Math.min(aiMessage.length, matchIndex + direccionMatch[1].length + 100)
+            const contexto = aiMessage.substring(start, end)
+            // Buscar municipio también
+            const municipioMatch = contexto.match(/municipio[:\s]+([A-ZÁÉÍÓÚÑ\s]+?)(?:,|\.|$)/i)
+            const municipio = municipioMatch ? municipioMatch[1].trim() : 'TIJUANA'
+            updates.inmueble.direccion = direccionMatch[1].trim() + (municipio ? `, ${municipio}` : '')
+            hasUpdates = true
+            break
+          }
+        }
+        
+        // Extraer LOTE y MANZANA específicos
+        const loteMatch = aiMessage.match(/lote\s+(\d+)/i)
+        if (loteMatch && !currentData.inmueble.lote) {
+          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+          updates.inmueble.lote = loteMatch[1]
+          hasUpdates = true
+        }
+        
+        const manzanaMatch = aiMessage.match(/manzana\s+(\d+)/i)
+        if (manzanaMatch && !currentData.inmueble.manzana) {
+          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+          updates.inmueble.manzana = manzanaMatch[1]
+          hasUpdates = true
+        }
+        
+        // Extraer fraccionamiento
+        const fraccionamientoMatch = aiMessage.match(/(?:desarrollo|fraccionamiento)\s+([A-ZÁÉÍÓÚÑ0-9\s]+?)(?:,|\.|municipio|$)/i)
+        if (fraccionamientoMatch && !currentData.inmueble.fraccionamiento) {
+          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+          updates.inmueble.fraccionamiento = fraccionamientoMatch[1].trim()
+          hasUpdates = true
+        }
+        
+        // Detectar tipo de operación
+        if (aiMessage.match(/compraventa/i) && !currentData.tipoOperacion) {
+          updates.tipoOperacion = 'compraventa'
+          hasUpdates = true
+        }
+        
+        // Detectar forma de pago
+        if (aiMessage.match(/contado/i) && currentData.comprador.necesitaCredito === undefined) {
+          if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+          updates.comprador.necesitaCredito = false
+          hasUpdates = true
+        } else if (aiMessage.match(/crédito|credito/i) && currentData.comprador.necesitaCredito === undefined) {
+          if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+          updates.comprador.necesitaCredito = true
+          hasUpdates = true
+        }
+      }
+
       // Detectar tipo de operación
       const operacionMatch = userInput.match(/(?:operación|tipo)[:\s]+(compraventa|compra-venta)/i)
       if (operacionMatch && !currentData.tipoOperacion) {
@@ -1221,9 +1357,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       const contadoMatch = userInput.match(/(?:pago|pagar|forma de pago)[:\s]+(?:de\s+)?contado/i)
       const creditoMatch = userInput.match(/(?:pago|pagar|forma de pago|crédito|hipoteca)[:\s]+(?:mediante\s+)?(?:crédito|hipoteca)/i)
       
-      if (contadoMatch && currentData.comprador.necesitaCredito === false) {
-        // Ya está en false, no actualizar
-      } else if (contadoMatch) {
+      if (contadoMatch && currentData.comprador.necesitaCredito === undefined) {
         if (!updates.comprador) updates.comprador = { ...currentData.comprador }
         updates.comprador.necesitaCredito = false
         hasUpdates = true
