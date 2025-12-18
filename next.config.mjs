@@ -20,6 +20,9 @@ const nextConfig = {
     
     return config;
   },
+  // Configuración de Turbopack vacía para silenciar el error cuando se usa Turbopack
+  // La funcionalidad de PDFs funciona en el cliente, así que esta config no afecta la conversión
+  turbopack: {},
 }
 
 export default nextConfig
