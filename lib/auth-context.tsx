@@ -68,24 +68,67 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Verificar sesión al cargar
   useEffect(() => {
     let mounted = true
+    let timeoutId: NodeJS.Timeout | null = null
+    let sessionChecked = false
 
-    // Verificar sesión existente
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!mounted) return
-      
-      if (session) {
-        setSession(session)
-        fetchUser(session.user.id)
-      } else {
+    // Timeout de seguridad: si getSession tarda más de 5 segundos, asumir que no hay sesión
+    timeoutId = setTimeout(() => {
+      if (mounted && !sessionChecked) {
+        console.warn('[Auth] Timeout verificando sesión, asumiendo no autenticado')
+        sessionChecked = true
         setIsLoading(false)
       }
-    })
+    }, 5000)
+
+    // Verificar sesión existente con manejo de errores
+    supabase.auth.getSession()
+      .then(({ data: { session }, error }) => {
+        if (!mounted) return
+        
+        sessionChecked = true
+        
+        // Limpiar timeout si la respuesta llegó a tiempo
+        if (timeoutId) {
+          clearTimeout(timeoutId)
+          timeoutId = null
+        }
+        
+        if (error) {
+          console.error('[Auth] Error obteniendo sesión:', error)
+          setIsLoading(false)
+          return
+        }
+        
+        if (session) {
+          setSession(session)
+          fetchUser(session.user.id)
+        } else {
+          setIsLoading(false)
+        }
+      })
+      .catch((error) => {
+        console.error('[Auth] Error inesperado obteniendo sesión:', error)
+        if (mounted) {
+          sessionChecked = true
+          if (timeoutId) {
+            clearTimeout(timeoutId)
+          }
+          setIsLoading(false)
+        }
+      })
 
     // Escuchar cambios en la autenticación
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!mounted) return
+
+      // Limpiar timeout si hay cambio de estado
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+        timeoutId = null
+      }
+      sessionChecked = true
 
       if (session) {
         setSession(session)
@@ -100,6 +143,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       mounted = false
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
       subscription.unsubscribe()
     }
   }, [fetchUser, supabase])
