@@ -18,7 +18,6 @@ interface ChatRequest {
       tipo: string
       informacionExtraida: any
     }>
-    hasDraftTramite?: boolean
     expedienteExistente?: {
       compradorId: string
       compradorNombre: string
@@ -57,7 +56,6 @@ async function buildSystemPrompt(context?: ChatRequest['context']): Promise<stri
     basePrompt = `Eres un asistente jurídico especializado en derecho notarial mexicano, específicamente en la generación de Solicitudes de Certificado con Efecto de Pre-Aviso de Compraventa para la Notaría Pública #3.`
   }
 
-  const hasDraftTramite = context?.hasDraftTramite || false
   const documentosProcesados = context?.documentosProcesados || []
   
   // Analizar documentos procesados para determinar estado actual
@@ -101,11 +99,6 @@ async function buildSystemPrompt(context?: ChatRequest['context']): Promise<stri
       estadoActual = 'ESTADO 6'
       estadoDescripcion = 'CANCELACIÓN DE HIPOTECA - Verificar si aplica cancelación'
     }
-  }
-
-  let draftNotice = ''
-  if (hasDraftTramite) {
-    draftNotice = `\n\n⚠️ IMPORTANTE: El usuario tiene un trámite guardado en progreso. Si el usuario responde "continuar", "seguir" o similar, confirma que continuará con ese trámite. Si responde "nuevo", "empezar nuevo" o similar, inicia un trámite completamente nuevo.`
   }
 
   // Información sobre expedientes existentes del comprador
@@ -160,7 +153,6 @@ async function buildSystemPrompt(context?: ChatRequest['context']): Promise<stri
 
   // Construir contexto adicional dinámico (información específica de la sesión)
   const contextoDinamico = `
-${draftNotice}
 ${expedienteExistenteNotice}
 
 ================================================================

@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 const s3Client = new S3Client({
@@ -152,29 +152,75 @@ export class S3Service {
   }
 
   /**
+   * Verifica que el bucket existe y es accesible
+   */
+  private static async verifyBucket(): Promise<void> {
+    if (!BUCKET) {
+      throw new Error('AWS_S3_BUCKET environment variable is not set. Por favor, configura AWS_S3_BUCKET o OCR_S3_BUCKET en tus variables de entorno.')
+    }
+
+    try {
+      await s3Client.send(new HeadBucketCommand({ Bucket: BUCKET }))
+    } catch (error: any) {
+      if (error.name === 'NoSuchBucket' || error.name === 'NotFound') {
+        throw new Error(
+          `El bucket de S3 "${BUCKET}" no existe. ` +
+          `Por favor, crea el bucket en AWS S3 o verifica que el nombre sea correcto. ` +
+          `Región configurada: ${process.env.AWS_REGION || 'us-east-1'}. ` +
+          `Ejecuta 'npx tsx scripts/verify-s3.ts' para verificar la configuración.`
+        )
+      } else if (error.name === 'AccessDenied') {
+        throw new Error(
+          `Acceso denegado al bucket "${BUCKET}". ` +
+          `Verifica que las credenciales de AWS tengan permisos para acceder al bucket. ` +
+          `Ejecuta 'npx tsx scripts/verify-s3.ts' para verificar la configuración.`
+        )
+      } else if (error.name === 'InvalidAccessKeyId' || error.name === 'SignatureDoesNotMatch') {
+        throw new Error(
+          `Credenciales de AWS inválidas. ` +
+          `Verifica que AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY sean correctos. ` +
+          `Ejecuta 'npx tsx scripts/verify-s3.ts' para verificar la configuración.`
+        )
+      }
+      throw error
+    }
+  }
+
+  /**
    * Sube un archivo a S3
    */
   static async uploadFile(options: UploadFileOptions): Promise<S3FileInfo> {
     const { file, key, contentType, metadata } = options
 
-    if (!BUCKET) {
-      throw new Error('AWS_S3_BUCKET environment variable is not set')
-    }
+    // Verificar que el bucket existe antes de intentar subir
+    await this.verifyBucket()
 
     const arrayBuffer = file instanceof File 
       ? await file.arrayBuffer() 
       : file
     const body = new Uint8Array(arrayBuffer)
 
-    await s3Client.send(
-      new PutObjectCommand({
-        Bucket: BUCKET,
-        Key: key,
-        Body: body,
-        ContentType: contentType || (file instanceof File ? file.type : 'application/octet-stream'),
-        Metadata: metadata,
-      })
-    )
+    try {
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: BUCKET,
+          Key: key,
+          Body: body,
+          ContentType: contentType || (file instanceof File ? file.type : 'application/octet-stream'),
+          Metadata: metadata,
+        })
+      )
+    } catch (error: any) {
+      if (error.name === 'NoSuchBucket' || error.name === 'NotFound') {
+        throw new Error(
+          `El bucket de S3 "${BUCKET}" no existe. ` +
+          `Por favor, crea el bucket en AWS S3 o verifica que el nombre sea correcto. ` +
+          `Región configurada: ${process.env.AWS_REGION || 'us-east-1'}. ` +
+          `Ejecuta 'npx tsx scripts/verify-s3.ts' para verificar la configuración.`
+        )
+      }
+      throw error
+    }
 
     return {
       bucket: BUCKET,
@@ -189,6 +235,9 @@ export class S3Service {
     if (!BUCKET) {
       throw new Error('AWS_S3_BUCKET environment variable is not set')
     }
+
+    // Verificar que el bucket existe antes de generar la URL
+    await this.verifyBucket()
 
     const command = new GetObjectCommand({
       Bucket: BUCKET,
@@ -205,6 +254,9 @@ export class S3Service {
     if (!BUCKET) {
       throw new Error('AWS_S3_BUCKET environment variable is not set')
     }
+
+    // Verificar que el bucket existe antes de eliminar
+    await this.verifyBucket()
 
     await s3Client.send(
       new DeleteObjectCommand({

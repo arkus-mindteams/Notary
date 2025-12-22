@@ -35,10 +35,81 @@ export async function POST(req: Request) {
       )
     }
 
+    // Validar y normalizar el tipo MIME a formatos soportados por OpenAI
+    // OpenAI Vision API solo acepta: png, jpeg, gif, webp
+    const supportedMimeTypes: Record<string, string> = {
+      'image/png': 'image/png',
+      'image/jpeg': 'image/jpeg',
+      'image/jpg': 'image/jpeg', // Normalizar jpg a jpeg
+      'image/gif': 'image/gif',
+      'image/webp': 'image/webp',
+    }
+
+    let mimeType = file.type?.toLowerCase() || 'image/jpeg'
+    
+    // Normalizar tipos comunes
+    if (mimeType === 'image/jpg') {
+      mimeType = 'image/jpeg'
+    }
+    
+    // Verificar que el tipo sea soportado
+    if (!supportedMimeTypes[mimeType] && !mimeType.startsWith('image/')) {
+      // Si no es un tipo soportado, intentar detectarlo por extensión
+      const fileName = file.name.toLowerCase()
+      if (fileName.endsWith('.png')) {
+        mimeType = 'image/png'
+      } else if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) {
+        mimeType = 'image/jpeg'
+      } else if (fileName.endsWith('.gif')) {
+        mimeType = 'image/gif'
+      } else if (fileName.endsWith('.webp')) {
+        mimeType = 'image/webp'
+      } else {
+        // Por defecto, usar PNG si no se puede determinar
+        mimeType = 'image/png'
+      }
+    }
+
+    // Validar que el tipo final sea soportado
+    if (!supportedMimeTypes[mimeType] && !mimeType.match(/^image\/(png|jpeg|gif|webp)$/)) {
+      return NextResponse.json(
+        { 
+          error: "unsupported_format", 
+          message: `Formato de imagen no soportado: ${mimeType}. OpenAI solo acepta: PNG, JPEG, GIF, WEBP.` 
+        },
+        { status: 400 }
+      )
+    }
+
     // Convertir archivo a base64
     const arrayBuffer = await file.arrayBuffer()
+    
+    // Validar que el archivo no esté vacío
+    if (arrayBuffer.byteLength === 0) {
+      return NextResponse.json(
+        { error: "invalid_file", message: "El archivo está vacío" },
+        { status: 400 }
+      )
+    }
+    
+    // Validar tamaño máximo (OpenAI tiene límites)
+    const maxSize = 20 * 1024 * 1024 // 20MB
+    if (arrayBuffer.byteLength > maxSize) {
+      return NextResponse.json(
+        { error: "file_too_large", message: `El archivo es demasiado grande (${Math.round(arrayBuffer.byteLength / 1024 / 1024)}MB). Máximo: 20MB` },
+        { status: 400 }
+      )
+    }
+    
     const base64 = Buffer.from(arrayBuffer).toString("base64")
-    const mimeType = file.type || "image/jpeg"
+    
+    // Asegurar que el mimeType final sea válido
+    mimeType = supportedMimeTypes[mimeType] || mimeType
+    
+    // Log para debugging en desarrollo
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[preaviso-process-document] Processing file: ${file.name}, type: ${mimeType}, size: ${arrayBuffer.byteLength} bytes`)
+    }
 
     // Construir prompt según el tipo de documento
     let systemPrompt = ""
@@ -155,10 +226,33 @@ Devuelve la información en formato JSON estructurado.`
 
     if (!resp.ok) {
       const errorText = await resp.text()
+      let errorData: any = {}
+      try {
+        errorData = JSON.parse(errorText)
+      } catch {
+        // Si no es JSON, usar el texto como está
+      }
+      
       console.error(`[preaviso-process-document] OpenAI API error: ${resp.status} - ${errorText}`)
+      
+      // Manejar errores específicos de formato de imagen
+      if (errorData?.error?.code === 'invalid_image_format' || 
+          errorData?.error?.message?.includes('unsupported image') ||
+          errorData?.error?.message?.includes('image format')) {
+        return NextResponse.json(
+          { 
+            error: "invalid_image_format", 
+            message: `Formato de imagen no soportado por OpenAI. El archivo debe ser PNG, JPEG, GIF o WEBP. Tipo detectado: ${mimeType}. Por favor, verifica que el archivo sea una imagen válida.` 
+          },
+          { status: 400 }
+        )
+      }
+      
+      // Manejar otros errores de OpenAI
+      const errorMessage = errorData?.error?.message || `Error procesando documento: ${resp.status}`
       return NextResponse.json(
-        { error: "api_error", message: `Error procesando documento: ${resp.status}` },
-        { status: 500 }
+        { error: "api_error", message: errorMessage },
+        { status: resp.status >= 400 && resp.status < 500 ? resp.status : 500 }
       )
     }
 

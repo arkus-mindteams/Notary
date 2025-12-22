@@ -8,11 +8,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Shield, Mail, Lock, Eye, EyeOff } from 'lucide-react'
+import { Mail, Lock, Eye, EyeOff } from 'lucide-react'
+import Image from 'next/image'
 
 export default function LoginPage() {
-  const [email, setEmail] = useState('abogado@notaria.com')
-  const [password, setPassword] = useState('demo123')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -42,22 +43,16 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <Card className="w-full max-w-md shadow-lg">
-        <CardHeader className="text-center space-y-4">
+        <CardHeader className="text-center space-y-4 p-0">
           {/* Logo */}
-          <div className="flex justify-center">
-            <div className="w-16 h-16 bg-blue-600 rounded-lg flex items-center justify-center">
-              <Shield className="h-8 w-8 text-white" />
-            </div>
-          </div>
-          
-          {/* Título */}
-          <div className="space-y-1">
-            <CardTitle className="text-2xl font-bold text-gray-900">
-              Notaría #3
-            </CardTitle>
-            <CardDescription className="text-sm text-gray-600">
-              Xavier Ibañez Veramendi
-            </CardDescription>
+          <div className="w-full h-48 relative">
+            <Image
+              src="/notaria-logo.jpeg"
+              alt="Logo Notaría"
+              fill
+              className="object-contain object-center"
+              priority
+            />
           </div>
         </CardHeader>
 

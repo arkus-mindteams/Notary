@@ -123,9 +123,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     cantidadTramites: number
     tramites: Array<{ id: string, tipo: string, estado: string, createdAt: string, updatedAt: string }>
   } | null>(null)
-  const [isCheckingDraft, setIsCheckingDraft] = useState(true)
-  const checkingDraftRef = useRef(false) // Ref para evitar llamadas duplicadas
-  const savedDraftDocumentsRef = useRef<UploadedDocument[]>([]) // Documentos guardados del trámite draft (se cargan solo si el usuario continúa)
   const [data, setData] = useState<PreavisoData>({
     tipoOperacion: null,
     vendedor: {
@@ -165,201 +162,82 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     documentos: []
   })
 
-  // Verificar si hay trámite guardado al iniciar
+  // Enviar mensajes iniciales y crear nuevo trámite al iniciar
   useEffect(() => {
     let mounted = true
 
-    const checkDraftTramite = async () => {
-      // Evitar llamadas duplicadas
-      if (checkingDraftRef.current) {
-        return
-      }
-
+    const initializeChat = async () => {
       if (!user?.id) {
-        if (mounted) {
-          setIsCheckingDraft(false)
-        }
         return
       }
 
-      checkingDraftRef.current = true
-
+      // Crear nuevo trámite siempre
       try {
-        // Obtener token de la sesión para autenticación
         const { data: { session } } = await supabase.auth.getSession()
-        const headers: HeadersInit = {}
+        const headers: HeadersInit = { 'Content-Type': 'application/json' }
         if (session?.access_token) {
           headers['Authorization'] = `Bearer ${session.access_token}`
         }
-        
-        const response = await fetch(`/api/expedientes/tramites/active-draft?userId=${user.id}&tipo=preaviso`, {
-          headers
+
+        const response = await fetch('/api/expedientes/tramites', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            compradorId: null,
+            userId: user.id,
+            tipo: 'preaviso',
+            datos: {
+              tipoOperacion: null,
+              vendedor: { nombre: '', rfc: '', curp: '', tieneCredito: false },
+              comprador: { nombre: '', rfc: '', curp: '', necesitaCredito: false },
+              inmueble: { direccion: '', folioReal: '', seccion: '', partida: '', superficie: '', valor: '', unidad: '', modulo: '', condominio: '', conjuntoHabitacional: '', lote: '', manzana: '', fraccionamiento: '', colonia: '', tipoPredio: '' },
+              actosNotariales: { cancelacionCreditoVendedor: false, compraventa: false, aperturaCreditoComprador: false }
+            },
+            estado: 'en_proceso',
+          }),
         })
-        
-        if (!mounted) {
-          checkingDraftRef.current = false
-          return
-        }
-        
-        if (response.ok) {
+
+        if (response.ok && mounted) {
           const tramite = await response.json()
-          
-          if (mounted) {
-            setActiveTramiteId(tramite.id)
-            
-            // Cargar datos guardados
-            if (tramite.datos) {
-              const savedData = tramite.datos as any
-              
-              // Normalizar datos para asegurar que todos los campos string sean realmente strings
-              setData(prev => {
-                const normalizedData: PreavisoData = {
-                  tipoOperacion: savedData.tipoOperacion || null,
-                  vendedor: {
-                    nombre: typeof savedData.vendedor?.nombre === 'string' ? savedData.vendedor.nombre : String(savedData.vendedor?.nombre || ''),
-                    rfc: typeof savedData.vendedor?.rfc === 'string' ? savedData.vendedor.rfc : String(savedData.vendedor?.rfc || ''),
-                    curp: typeof savedData.vendedor?.curp === 'string' ? savedData.vendedor.curp : String(savedData.vendedor?.curp || ''),
-                    tieneCredito: savedData.vendedor?.tieneCredito || false,
-                    institucionCredito: typeof savedData.vendedor?.institucionCredito === 'string' ? savedData.vendedor.institucionCredito : (savedData.vendedor?.institucionCredito ? String(savedData.vendedor.institucionCredito) : undefined),
-                    numeroCredito: typeof savedData.vendedor?.numeroCredito === 'string' ? savedData.vendedor.numeroCredito : (savedData.vendedor?.numeroCredito ? String(savedData.vendedor.numeroCredito) : undefined)
-                  },
-                  comprador: {
-                    nombre: typeof savedData.comprador?.nombre === 'string' ? savedData.comprador.nombre : String(savedData.comprador?.nombre || ''),
-                    rfc: typeof savedData.comprador?.rfc === 'string' ? savedData.comprador.rfc : String(savedData.comprador.rfc || ''),
-                    curp: typeof savedData.comprador?.curp === 'string' ? savedData.comprador.curp : String(savedData.comprador?.curp || ''),
-                    necesitaCredito: savedData.comprador?.necesitaCredito ?? false,
-                    institucionCredito: typeof savedData.comprador?.institucionCredito === 'string' ? savedData.comprador.institucionCredito : (savedData.comprador?.institucionCredito ? String(savedData.comprador.institucionCredito) : undefined),
-                    montoCredito: typeof savedData.comprador?.montoCredito === 'string' ? savedData.comprador.montoCredito : (savedData.comprador?.montoCredito ? String(savedData.comprador.montoCredito) : undefined)
-                  },
-                  inmueble: {
-                    direccion: typeof savedData.inmueble?.direccion === 'string' ? savedData.inmueble.direccion : String(savedData.inmueble?.direccion || ''),
-                    folioReal: typeof savedData.inmueble?.folioReal === 'string' ? savedData.inmueble.folioReal : String(savedData.inmueble?.folioReal || ''),
-                    seccion: typeof savedData.inmueble?.seccion === 'string' ? savedData.inmueble.seccion : String(savedData.inmueble?.seccion || ''),
-                    partida: typeof savedData.inmueble?.partida === 'string' ? savedData.inmueble.partida : String(savedData.inmueble?.partida || ''),
-                    superficie: typeof savedData.inmueble?.superficie === 'string' ? savedData.inmueble.superficie : (savedData.inmueble?.superficie ? String(savedData.inmueble.superficie) : ''),
-                    valor: typeof savedData.inmueble?.valor === 'string' ? savedData.inmueble.valor : (savedData.inmueble?.valor ? String(savedData.inmueble.valor) : ''),
-                    unidad: typeof savedData.inmueble?.unidad === 'string' ? savedData.inmueble.unidad : (savedData.inmueble?.unidad ? String(savedData.inmueble.unidad) : ''),
-                    modulo: typeof savedData.inmueble?.modulo === 'string' ? savedData.inmueble.modulo : (savedData.inmueble?.modulo ? String(savedData.inmueble.modulo) : ''),
-                    condominio: typeof savedData.inmueble?.condominio === 'string' ? savedData.inmueble.condominio : (savedData.inmueble?.condominio ? String(savedData.inmueble.condominio) : ''),
-                    conjuntoHabitacional: typeof savedData.inmueble?.conjuntoHabitacional === 'string' ? savedData.inmueble.conjuntoHabitacional : (savedData.inmueble?.conjuntoHabitacional ? String(savedData.inmueble.conjuntoHabitacional) : ''),
-                    lote: typeof savedData.inmueble?.lote === 'string' ? savedData.inmueble.lote : (savedData.inmueble?.lote ? String(savedData.inmueble.lote) : ''),
-                    manzana: typeof savedData.inmueble?.manzana === 'string' ? savedData.inmueble.manzana : (savedData.inmueble?.manzana ? String(savedData.inmueble.manzana) : ''),
-                    fraccionamiento: typeof savedData.inmueble?.fraccionamiento === 'string' ? savedData.inmueble.fraccionamiento : (savedData.inmueble?.fraccionamiento ? String(savedData.inmueble.fraccionamiento) : ''),
-                    colonia: typeof savedData.inmueble?.colonia === 'string' ? savedData.inmueble.colonia : (savedData.inmueble?.colonia ? String(savedData.inmueble.colonia) : ''),
-                    tipoPredio: typeof savedData.inmueble?.tipoPredio === 'string' ? savedData.inmueble.tipoPredio : (savedData.inmueble?.tipoPredio ? String(savedData.inmueble.tipoPredio) : '')
-                  },
-                  actosNotariales: savedData.actosNotariales || prev.actosNotariales,
-                  documentos: Array.isArray(savedData.documentos) ? savedData.documentos : []
-                }
-                return normalizedData
-              })
-            }
-
-            // Guardar documentos guardados en ref (se cargarán solo si el usuario decide continuar)
-            if (tramite.documentos && Array.isArray(tramite.documentos) && tramite.documentos.length > 0) {
-              // Crear objetos UploadedDocument virtuales para documentos ya procesados
-              const savedDocs: UploadedDocument[] = tramite.documentos.map((doc: any) => {
-                // Crear un File virtual (blob vacío) para documentos ya guardados
-                const virtualFile = new File([], doc.nombre, { type: doc.mime_type || 'application/pdf' })
-                
-                // Mapear tipo de documento de BD a tipo esperado por la IA
-                let docType = 'escritura'
-                const dbType = doc.tipo?.toLowerCase() || ''
-                const name = doc.nombre.toLowerCase()
-                
-                // Si el tipo en BD es específico, usarlo
-                if (dbType === 'ine_vendedor' || dbType === 'ine_comprador' || 
-                    name.includes('ine') || name.includes('ife') || name.includes('identificacion') || name.includes('pasaporte')) {
-                  docType = 'identificacion'
-                } else if (dbType === 'plano' || dbType === 'plano_arquitectonico' || dbType === 'croquis_catastral' ||
-                           name.includes('plano') || name.includes('croquis') || name.includes('catastral')) {
-                  docType = 'plano'
-                } else if (dbType === 'escritura' || name.includes('escritura') || name.includes('titulo') || 
-                           name.includes('propiedad') || name.includes('inscripcion') || name.includes('hoja')) {
-                  docType = 'escritura'
-                }
-
-                return {
-                  id: doc.id,
-                  file: virtualFile,
-                  name: doc.nombre,
-                  type: doc.mime_type || 'application/pdf',
-                  size: doc.tamaño || 0,
-                  processed: true, // Ya están procesados
-                  extractedData: doc.metadata || null, // Usar metadata como extractedData
-                  documentType: docType
-                }
-              })
-              
-              // Guardar en ref, NO cargar todavía (solo se cargarán si el usuario dice "continuar")
-              savedDraftDocumentsRef.current = savedDocs
-            } else {
-              // No hay documentos guardados, asegurar que el ref esté vacío
-              savedDraftDocumentsRef.current = []
-            }
-
-            // Agregar mensaje de la IA preguntando si continuar
-            const continueMessage: ChatMessage = {
-              id: generateMessageId('draft-detected'),
-              role: 'assistant',
-              content: `He detectado que tienes un pre-aviso en progreso guardado. ¿Deseas continuar con ese trámite o prefieres iniciar uno nuevo? Responde "continuar" o "nuevo".`,
-              timestamp: new Date()
-            }
-            setMessages([continueMessage])
-          }
-        } else {
-          // No hay trámite guardado, asegurar que los documentos estén vacíos y enviar mensajes iniciales normales
-          if (mounted) {
-            setUploadedDocuments([])
-            savedDraftDocumentsRef.current = []
-            sendInitialMessages()
-          }
+          setActiveTramiteId(tramite.id)
         }
       } catch (error) {
-        console.error('Error verificando trámite guardado:', error)
-        if (mounted) {
-          setUploadedDocuments([])
-          savedDraftDocumentsRef.current = []
-          sendInitialMessages()
-        }
-      } finally {
-        if (mounted) {
-          setIsCheckingDraft(false)
-        }
-        checkingDraftRef.current = false
+        console.error('Error creando nuevo trámite:', error)
       }
+
+      // Enviar mensajes iniciales
+      const sendInitialMessages = async () => {
+        for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
+          if (!mounted) break
+          
+          await new Promise(resolve => setTimeout(resolve, i * 400))
+          
+          if (!mounted) break
+          
+          const initialMessageId = generateMessageId('initial')
+          setMessages(prev => {
+            const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
+            if (exists) return prev
+            return [...prev, {
+              id: initialMessageId,
+              role: 'assistant',
+              content: INITIAL_MESSAGES[i],
+              timestamp: new Date()
+            }]
+          })
+        }
+        if (mounted) {
+          setInitialMessagesSent(true)
+        }
+      }
+
+      sendInitialMessages()
     }
 
-    const sendInitialMessages = async () => {
-      for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
-        if (!mounted) break
-        
-        await new Promise(resolve => setTimeout(resolve, i * 400))
-        
-        if (!mounted) break
-        
-        const initialMessageId = generateMessageId('initial')
-        setMessages(prev => {
-          const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
-          if (exists) return prev
-          return [...prev, {
-            id: initialMessageId,
-            role: 'assistant',
-            content: INITIAL_MESSAGES[i],
-            timestamp: new Date()
-          }]
-        })
-      }
-      if (mounted) {
-        setInitialMessagesSent(true)
-      }
-    }
-
-    checkDraftTramite()
+    initializeChat()
 
     return () => {
       mounted = false
-      checkingDraftRef.current = false
     }
   }, [user?.id])
 
@@ -424,6 +302,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
   const [processingProgress, setProcessingProgress] = useState(0)
   const [processingFileName, setProcessingFileName] = useState<string | null>(null)
   const [showDataPanel, setShowDataPanel] = useState(true)
+  const [isDragging, setIsDragging] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textInputRef = useRef<HTMLTextAreaElement>(null)
@@ -510,96 +389,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     setInput('')
     setIsProcessing(true)
 
-    // Manejar respuesta de continuar/nuevo trámite
-    const lowerInput = currentInput.toLowerCase().trim()
-    if (lowerInput === 'continuar' || lowerInput === 'seguir' || lowerInput === 'sí' || lowerInput === 'si') {
-      if (activeTramiteId) {
-        // Cargar documentos guardados del trámite
-        setUploadedDocuments(savedDraftDocumentsRef.current)
-        // Limpiar el ref después de cargar
-        savedDraftDocumentsRef.current = []
-        
-        const continueMessage: ChatMessage = {
-          id: generateMessageId('continue'),
-          role: 'assistant',
-          content: 'Perfecto, continuemos con tu trámite guardado. ¿Qué información necesitas agregar o modificar?',
-          timestamp: new Date()
-        }
-        setMessages(prev => [...prev, continueMessage])
-        setIsProcessing(false)
-        return
-      }
-    } else if (lowerInput === 'nuevo' || lowerInput === 'nuevo trámite' || lowerInput === 'empezar nuevo') {
-      // Limpiar documentos y refs al crear nuevo trámite
-      setUploadedDocuments([])
-      savedDraftDocumentsRef.current = []
-      // Crear nuevo trámite
-      if (user?.id) {
-        try {
-          // Obtener token de la sesión
-          const { data: { session } } = await supabase.auth.getSession()
-          const headers: HeadersInit = { 'Content-Type': 'application/json' }
-          if (session?.access_token) {
-            headers['Authorization'] = `Bearer ${session.access_token}`
-          }
-
-          const response = await fetch('/api/expedientes/tramites', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              compradorId: null,
-              userId: user.id,
-              tipo: 'preaviso',
-              datos: {
-                tipoOperacion: null,
-                vendedor: { nombre: '', rfc: '', curp: '', tieneCredito: false },
-                comprador: { nombre: '', rfc: '', curp: '', necesitaCredito: false },
-                inmueble: { direccion: '', folioReal: '', seccion: '', partida: '', superficie: '', valor: '', unidad: '', modulo: '', condominio: '', conjuntoHabitacional: '', lote: '', manzana: '', fraccionamiento: '', colonia: '', tipoPredio: '' },
-                actosNotariales: { cancelacionCreditoVendedor: false, compraventa: false, aperturaCreditoComprador: false }
-              },
-              estado: 'en_proceso',
-            }),
-          })
-
-          if (response.ok) {
-            const tramite = await response.json()
-            setActiveTramiteId(tramite.id)
-            setData({
-              tipoOperacion: null,
-              vendedor: { nombre: '', rfc: '', curp: '', tieneCredito: false },
-              comprador: { nombre: '', rfc: '', curp: '', necesitaCredito: false },
-              inmueble: { direccion: '', folioReal: '', seccion: '', partida: '', superficie: '', valor: '' },
-              actosNotariales: { cancelacionCreditoVendedor: false, compraventa: false, aperturaCreditoComprador: false },
-              documentos: []
-            })
-            // Asegurar que los documentos estén vacíos para nuevo trámite
-            setUploadedDocuments([])
-            savedDraftDocumentsRef.current = []
-          }
-        } catch (error) {
-          console.error('Error creando nuevo trámite:', error)
-        }
-      }
-
-      // Enviar mensajes iniciales
-      for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
-        await new Promise(resolve => setTimeout(resolve, i * 400))
-        const initialMessageId = generateMessageId('initial')
-        setMessages(prev => {
-          const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
-          if (exists) return prev
-          return [...prev, {
-            id: initialMessageId,
-            role: 'assistant',
-            content: INITIAL_MESSAGES[i],
-            timestamp: new Date()
-          }]
-        })
-      }
-      setIsProcessing(false)
-      return
-    }
-
     try {
       // Llamar al agente de IA
       const response = await fetch('/api/ai/preaviso-chat', {
@@ -624,7 +413,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 tipo: d.documentType || 'desconocido',
                 informacionExtraida: d.extractedData
               })),
-            hasDraftTramite: !!activeTramiteId,
             expedienteExistente: expedienteExistente || undefined
           }
         })
@@ -1025,8 +813,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 nombre: d.name,
                 tipo: d.documentType || 'desconocido',
                 informacionExtraida: d.extractedData
-              })),
-            hasDraftTramite: !!activeTramiteId
+              }))
           }
         })
       })
@@ -1073,6 +860,43 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       setIsProcessingDocument(false)
       setProcessingProgress(0)
       setProcessingFileName(null)
+    }
+  }
+
+  // Handlers para drag and drop
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDragging(true)
+    }
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // Solo ocultar el overlay si salimos del contenedor principal
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragging(false)
+    }
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDragging(true)
+    }
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+
+    const files = e.dataTransfer.files
+    if (files && files.length > 0) {
+      handleFileUpload(files)
     }
   }
 
@@ -1411,7 +1235,30 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
   }
 
   return (
-    <div className="h-full flex flex-col gap-4 overflow-hidden">
+    <div 
+      className="h-full flex flex-col gap-4 overflow-hidden relative"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {/* Overlay de drag and drop */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-blue-500/10 border-4 border-dashed border-blue-500 rounded-lg flex items-center justify-center backdrop-blur-sm">
+          <div className="bg-white rounded-2xl p-8 shadow-2xl border border-blue-200">
+            <div className="flex flex-col items-center space-y-4">
+              <div className="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center">
+                <Upload className="h-8 w-8 text-blue-600" />
+              </div>
+              <div className="text-center">
+                <h3 className="text-lg font-semibold text-gray-900 mb-1">Suelta los archivos aquí</h3>
+                <p className="text-sm text-gray-600">Arrastra y suelta documentos para subirlos</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* Layout con panel de información - Parte superior */}
       <div className="flex-1 flex gap-4 min-h-0 overflow-hidden">
         {/* Chat principal */}
