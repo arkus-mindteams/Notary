@@ -188,6 +188,7 @@ IMPORTANTE:
         systemPrompt = `Eres un experto en análisis de documentos registrales (hojas de inscripción, certificados registrales, etc.). Analiza el documento y extrae TODA la información disponible en formato JSON:
 {
   "folioReal": "número del folio real si está visible",
+  "foliosReales": ["lista de folios reales detectados (strings). Si detectas más de uno, inclúyelos todos aquí. Si detectas solo uno, incluye ese único valor. Si no detectas ninguno, usa []"],
   "seccion": "sección registral si está visible",
   "partida": "partida registral si está visible",
   "ubicacion": "dirección completa del inmueble si está visible",
@@ -202,6 +203,7 @@ IMPORTANTE:
 
 IMPORTANTE:
 - Extrae SOLO la información que puedas leer claramente en el documento
+- Si detectas múltiples folios reales, NO elijas uno: ponlos todos en foliosReales[].
 - NO extraigas ni infieras forma de pago o institución de crédito desde la inscripción (eso se confirma con el usuario en el chat).
 - Si algún campo no está disponible o no es legible, usa null`
         userPrompt = "Analiza este documento de inscripción registral y extrae TODA la información disponible que puedas leer claramente, incluyendo folio real, partida, sección, propietario y gravámenes."

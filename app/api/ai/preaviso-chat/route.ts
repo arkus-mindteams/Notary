@@ -732,6 +732,9 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
   const missing: string[] = computed.state.required_missing || []
   const ss: Record<string, string> = computed.state.state_status || {}
   const blocking: string[] = Array.isArray(computed.state.blocking_reasons) ? computed.state.blocking_reasons : []
+  const folioCandidates: string[] = Array.isArray(computed.derived?.foliosRealesCandidates)
+    ? computed.derived.foliosRealesCandidates.map((x: any) => String(x))
+    : []
 
   // Helper: detectar confirmación simple
   const isConfirm = /^(sí|si|confirmo|confirmado|correcto|afirmativo|de acuerdo)\b/i.test(userText) || /\bconfirmo\b/i.test(userText)
@@ -771,6 +774,20 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
         },
       }
       return { compradores }
+    }
+  }
+
+  // 0.6) Selección de folio real cuando se detectan múltiples en inscripción
+  if (blocking.includes('multiple_folio_real_detected') && folioCandidates.length > 1) {
+    // Extraer posible folio del texto (acepta números y separadores comunes)
+    const raw = userText.replace(/[“”"']/g, '').trim()
+    const picked =
+      folioCandidates.find(f => f === raw) ||
+      folioCandidates.find(f => f.replace(/\s+/g, '') === raw.replace(/\s+/g, '')) ||
+      null
+    if (picked) {
+      const inmueble = baseContext?.inmueble || {}
+      return { inmueble: { ...inmueble, folio_real: picked } }
     }
   }
 
@@ -1088,6 +1105,20 @@ function buildDeterministicFollowUp(state: any, context: any): string | null {
 
   // Registro/inmueble (pedir un campo a la vez)
   if (s === 'ESTADO_2') {
+    if (blocking.includes('multiple_folio_real_detected')) {
+      const candidates = Array.isArray(context?.documentosProcesados)
+        ? (() => {
+            const doc = context.documentosProcesados.find((d: any) => d?.tipo === 'inscripcion' || d?.tipo === 'escritura' || d?.tipo === 'titulo')
+            const info = doc?.informacionExtraida || {}
+            const folios = Array.isArray(info?.foliosReales) ? info.foliosReales.filter(Boolean) : []
+            return folios
+          })()
+        : []
+      if (candidates.length > 1) {
+        return askOne(`Detecté más de un folio real en la inscripción: ${candidates.map((f: string) => `"${f}"`).join(', ')}. ¿Cuál folio real debemos usar? (elige uno exactamente)`)
+      }
+      return askOne('Detecté más de un folio real en la inscripción. ¿Cuál folio real debemos usar?')
+    }
     const order = ['inmueble.folio_real', 'inmueble.partidas', 'inmueble.direccion', 'inmueble.superficie']
     const nextMissing = order.find(f => missing.includes(f)) || missing[0]
     if (nextMissing === 'inmueble.partidas') return askOne('Por favor indícame las partidas de inscripción tal como aparecen en la hoja registral (pueden ser una o varias).')

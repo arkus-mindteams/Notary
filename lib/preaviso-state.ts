@@ -20,6 +20,8 @@ export interface PreavisoStateComputation {
     necesitaCredito: boolean | undefined
     inmueble: any
     folioReal: any
+    foliosRealesCandidates: any[]
+    hasMultipleFolios: boolean
     partidas: any[]
     seccion: any
     direccion: any
@@ -85,7 +87,15 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
 
   // Inmueble / registro (usa contexto + extracción)
   const inmueble = context?.inmueble
-  const folioReal = inmueble?.folio_real || infoInscripcion.folioReal
+  const foliosRealesFromDoc = Array.isArray(infoInscripcion.foliosReales)
+    ? infoInscripcion.foliosReales.filter(Boolean)
+    : []
+  const foliosRealesCandidates = foliosRealesFromDoc.length > 0 ? foliosRealesFromDoc : (infoInscripcion.folioReal ? [infoInscripcion.folioReal] : [])
+
+  // Si hay múltiples folios detectados y el usuario aún no eligió uno explícitamente,
+  // NO asumir ninguno como folio_real para completitud de ESTADO_2.
+  const hasMultipleFolios = foliosRealesFromDoc.length > 1
+  const folioReal = inmueble?.folio_real || (hasMultipleFolios ? null : infoInscripcion.folioReal)
   const partidasFromInmueble = Array.isArray(inmueble?.partidas)
     ? inmueble.partidas
     : (inmueble?.partida ? [inmueble.partida] : [])
@@ -268,6 +278,7 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
 
   if (currentState === 'ESTADO_2') {
     if (!folioReal) requiredMissing.push('inmueble.folio_real')
+    if (!folioReal && hasMultipleFolios) blockingReasons.push('multiple_folio_real_detected')
     if ((partidas?.length || 0) === 0) requiredMissing.push('inmueble.partidas')
     if (!direccion) requiredMissing.push('inmueble.direccion')
     if (!superficie) requiredMissing.push('inmueble.superficie')
@@ -342,6 +353,8 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
       necesitaCredito,
       inmueble,
       folioReal,
+      foliosRealesCandidates,
+      hasMultipleFolios,
       partidas: partidas || [],
       seccion,
       direccion,
