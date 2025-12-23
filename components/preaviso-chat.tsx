@@ -29,6 +29,7 @@ import {
   EyeOff,
   FolderOpen
 } from 'lucide-react'
+import { PreavisoExportOptions } from './preaviso-export-options'
 
 export interface ChatMessage {
   id: string
@@ -52,7 +53,7 @@ export interface PreavisoData {
     nombre: string
     rfc: string
     curp: string
-    necesitaCredito: boolean
+    necesitaCredito: boolean | undefined // undefined = no capturado, true/false = capturado
     institucionCredito?: string
     montoCredito?: string
   }
@@ -96,6 +97,7 @@ interface UploadedDocument {
 interface PreavisoChatProps {
   onDataComplete: (data: PreavisoData) => void
   onGenerateDocument: (data: PreavisoData, uploadedDocuments?: UploadedDocument[], activeTramiteId?: string | null) => void
+  onExportReady?: (data: PreavisoData, show: boolean) => void
 }
 
 const INITIAL_MESSAGES = [
@@ -103,7 +105,7 @@ const INITIAL_MESSAGES = [
   "Para comenzar, ¿tienes la hoja de inscripción del inmueble? Necesito folio real, sección y partida. Si no la tienes, puedo capturar los datos manualmente."
 ]
 
-export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoChatProps) {
+export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady }: PreavisoChatProps) {
   const { user } = useAuth()
   const supabase = useMemo(() => createBrowserClient(), [])
   const messageIdCounterRef = useRef(0)
@@ -124,7 +126,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     tramites: Array<{ id: string, tipo: string, estado: string, createdAt: string, updatedAt: string }>
   } | null>(null)
   const [data, setData] = useState<PreavisoData>({
-    tipoOperacion: null,
+    tipoOperacion: 'compraventa', // Siempre es compraventa en este sistema
     vendedor: {
       nombre: '',
       rfc: '',
@@ -135,7 +137,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
       nombre: '',
       rfc: '',
       curp: '',
-      necesitaCredito: false // Se actualizará cuando se capture
+      necesitaCredito: undefined // undefined = pendiente, true/false = capturado
     },
     inmueble: {
       direccion: '',
@@ -187,9 +189,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             userId: user.id,
             tipo: 'preaviso',
             datos: {
-              tipoOperacion: null,
+              tipoOperacion: 'compraventa', // Siempre es compraventa
               vendedor: { nombre: '', rfc: '', curp: '', tieneCredito: false },
-              comprador: { nombre: '', rfc: '', curp: '', necesitaCredito: false },
+              comprador: { nombre: '', rfc: '', curp: '', necesitaCredito: undefined },
               inmueble: { direccion: '', folioReal: '', seccion: '', partida: '', superficie: '', valor: '', unidad: '', modulo: '', condominio: '', conjuntoHabitacional: '', lote: '', manzana: '', fraccionamiento: '', colonia: '', tipoPredio: '' },
               actosNotariales: { cancelacionCreditoVendedor: false, compraventa: false, aperturaCreditoComprador: false }
             },
@@ -303,24 +305,37 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
   const [processingFileName, setProcessingFileName] = useState<string | null>(null)
   const [showDataPanel, setShowDataPanel] = useState(true)
   const [isDragging, setIsDragging] = useState(false)
+  const [showExportOptions, setShowExportOptions] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textInputRef = useRef<HTMLTextAreaElement>(null)
 
   // Verificar si todos los datos críticos están completos
+  // Nota: Para personas morales, CURP no aplica, así que solo requerimos nombre
+  // Para comprador (persona física), requerimos nombre y CURP (RFC es opcional)
   const isDataComplete = (data: PreavisoData): boolean => {
-    return !!(
-      data.vendedor.nombre &&
-      data.vendedor.rfc &&
-      data.vendedor.curp &&
+    const vendedorCompleto = !!(
+      data.vendedor.nombre
+    )
+    
+    const compradorCompleto = !!(
       data.comprador.nombre &&
-      data.comprador.rfc &&
-      data.comprador.curp &&
+      data.comprador.curp // Para comprador, generalmente es persona física, así que sí requerimos CURP (RFC es opcional)
+    )
+    
+    const inmuebleCompleto = !!(
       data.inmueble.direccion &&
       data.inmueble.folioReal &&
       data.inmueble.superficie &&
       data.inmueble.valor
     )
+    
+    const formaPagoCompleta = data.comprador.necesitaCredito !== undefined && (
+      data.comprador.necesitaCredito === false || // Contado
+      (data.comprador.necesitaCredito === true && data.comprador.institucionCredito && data.comprador.montoCredito) // Crédito con institución y monto
+    )
+    
+    return vendedorCompleto && compradorCompleto && inmuebleCompleto && formaPagoCompleta
   }
 
   // Calcular progreso basado en datos completados (6 pasos: PASO 1-6 consolidados)
@@ -329,17 +344,26 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     let total = 6
 
     // PASO 1: Operación y Forma de Pago
-    if (data.tipoOperacion && (data.comprador.institucionCredito || data.comprador.necesitaCredito === false)) completed++
+    // Solo se marca como completo si necesitaCredito está explícitamente capturado (true o false, no undefined)
+    if (data.tipoOperacion && data.comprador.necesitaCredito !== undefined) {
+      // Si es crédito, también debe tener institución; si es contado, ya está completo
+      if (data.comprador.necesitaCredito === false || data.comprador.institucionCredito) {
+        completed++
+      }
+    }
     
     // PASO 2: Inmueble y Registro (consolidado con objeto del acto: incluye dirección, superficie, valor)
     if (data.inmueble.folioReal && data.inmueble.seccion && data.inmueble.partida && 
         data.inmueble.direccion && data.inmueble.superficie && data.inmueble.valor) completed++
     
     // PASO 3: Vendedor(es)
-    if (data.vendedor.nombre && data.vendedor.rfc && data.vendedor.curp) completed++
+    // Según reglas de negocio: solo requiere nombre (y tipoPersona, pero no está en el schema actual)
+    // Para personas morales no hay CURP, así que solo requerimos nombre como mínimo
+    if (data.vendedor.nombre) completed++
     
     // PASO 4: Comprador(es) (consolidado con expediente)
-    if (data.comprador.nombre && data.comprador.rfc && data.comprador.curp) completed++
+    // Para personas físicas: solo requiere nombre y CURP (RFC es opcional)
+    if (data.comprador.nombre && data.comprador.curp) completed++
     
     // PASO 5: Crédito del Comprador (si aplica)
     if (data.tipoOperacion) {
@@ -370,9 +394,42 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
 
   const progress = getProgress()
 
+  // Efecto para notificar cuando los datos estén completos (fuera del render)
+  // Usar useRef para evitar llamadas múltiples
+  const dataCompleteNotifiedRef = useRef(false)
+  useEffect(() => {
+    if (isDataComplete(data) && !dataCompleteNotifiedRef.current) {
+      dataCompleteNotifiedRef.current = true
+      // Usar setTimeout para evitar actualizar durante el render
+      const timer = setTimeout(() => {
+        onDataComplete(data)
+      }, 0)
+      return () => clearTimeout(timer)
+    } else if (!isDataComplete(data)) {
+      // Resetear el flag si los datos ya no están completos
+      dataCompleteNotifiedRef.current = false
+    }
+  }, [data, onDataComplete])
+
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Efecto para mostrar opciones de exportación cuando los datos estén completos
+  useEffect(() => {
+    // Mostrar opciones siempre que los datos estén completos
+    if (isDataComplete(data)) {
+      setShowExportOptions(true)
+      if (onExportReady) {
+        onExportReady(data, true)
+      }
+    } else {
+      setShowExportOptions(false)
+      if (onExportReady) {
+        onExportReady(data, false)
+      }
+    }
+  }, [data, onExportReady])
 
   const handleSend = async () => {
     if (!input.trim() || isProcessing) return
@@ -402,9 +459,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             { role: 'user' as const, content: currentInput }
           ],
           context: {
-            vendedor: data.vendedor.nombre ? data.vendedor : undefined,
-            comprador: data.comprador.nombre ? data.comprador : undefined,
-            inmueble: data.inmueble.direccion ? data.inmueble : undefined,
+            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos
+            // Esto permite que el backend detecte correctamente qué información ya está capturada
+            vendedor: data.vendedor,
+            comprador: data.comprador,
+            inmueble: data.inmueble,
             documentos: data.documentos,
             documentosProcesados: uploadedDocuments
               .filter(d => d.processed && d.extractedData)
@@ -424,6 +483,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
 
       const result = await response.json()
       const messagesToAdd = result.messages || [result.message]
+      
+      // Detectar si el mensaje contiene el resumen final
+      const hasSummary = messagesToAdd.some((msg: string) => 
+        msg.includes('RESUMEN DE INFORMACIÓN CAPTURADA') || 
+        msg.includes('=== RESUMEN DE INFORMACIÓN CAPTURADA ===')
+      )
+      
+      if (hasSummary && isDataComplete(data)) {
+        setShowExportOptions(true)
+      }
       
       // Agregar mensajes con delay para efecto conversacional
       for (let i = 0; i < messagesToAdd.length; i++) {
@@ -480,13 +549,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
           // Determinar actos notariales
           const actos = determineActosNotariales(newData)
           newData.actosNotariales = actos
-          
-          // Verificar si está completo
-          if (isDataComplete(newData)) {
-            onDataComplete(newData)
-            // Llamar a onGenerateDocument con los documentos subidos y el trámite activo
-            onGenerateDocument(newData, uploadedDocuments.filter(d => d.processed), activeTramiteId)
-          }
           
           return newData
         })
@@ -708,8 +770,31 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                   if (extracted.propietario?.nombre) updated.vendedor.nombre = extracted.propietario.nombre
                   if (extracted.propietario?.rfc) updated.vendedor.rfc = extracted.propietario.rfc
                   if (extracted.propietario?.curp) updated.vendedor.curp = extracted.propietario.curp
-                  if (extracted.superficie) updated.inmueble.superficie = extracted.superficie
-                  if (extracted.valor) updated.inmueble.valor = extracted.valor
+                  // Asegurar que superficie sea un string, no un objeto
+                  if (extracted.superficie) {
+                    if (typeof extracted.superficie === 'object') {
+                      // Si es un objeto, intentar extraer el valor total o convertir a string
+                      const superficieObj = extracted.superficie as any
+                      if (superficieObj.superficieEdificada) {
+                        updated.inmueble.superficie = String(superficieObj.superficieEdificada)
+                      } else if (superficieObj.privativa) {
+                        updated.inmueble.superficie = String(superficieObj.privativa)
+                      } else if (superficieObj.total) {
+                        updated.inmueble.superficie = String(superficieObj.total)
+                      } else {
+                        // Convertir objeto a string JSON como fallback
+                        updated.inmueble.superficie = JSON.stringify(superficieObj)
+                      }
+                    } else {
+                      updated.inmueble.superficie = String(extracted.superficie)
+                    }
+                  }
+                  // Asegurar que valor sea un string, no un objeto
+                  if (extracted.valor) {
+                    updated.inmueble.valor = typeof extracted.valor === 'object' 
+                      ? JSON.stringify(extracted.valor) 
+                      : String(extracted.valor)
+                  }
                   // Campos adicionales del inmueble
                   if (extracted.unidad) updated.inmueble.unidad = extracted.unidad
                   if (extracted.modulo) updated.inmueble.modulo = extracted.modulo
@@ -721,7 +806,23 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                   if (extracted.colonia) updated.inmueble.colonia = extracted.colonia
                   if (extracted.tipoPredio) updated.inmueble.tipoPredio = extracted.tipoPredio
                 } else if (docType === 'plano') {
-                  if (extracted.superficie) updated.inmueble.superficie = extracted.superficie
+                  // Asegurar que superficie sea un string, no un objeto
+                  if (extracted.superficie) {
+                    if (typeof extracted.superficie === 'object') {
+                      const superficieObj = extracted.superficie as any
+                      if (superficieObj.superficieEdificada) {
+                        updated.inmueble.superficie = String(superficieObj.superficieEdificada)
+                      } else if (superficieObj.privativa) {
+                        updated.inmueble.superficie = String(superficieObj.privativa)
+                      } else if (superficieObj.total) {
+                        updated.inmueble.superficie = String(superficieObj.total)
+                      } else {
+                        updated.inmueble.superficie = JSON.stringify(superficieObj)
+                      }
+                    } else {
+                      updated.inmueble.superficie = String(extracted.superficie)
+                    }
+                  }
                 } else if (docType === 'identificacion') {
                   // Para identificaciones, intentar determinar si es vendedor o comprador
                   // basándose en el contexto (qué datos faltan) o el campo 'tipo' extraído
@@ -797,15 +898,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             ...messages.filter(m => m.id !== processingMessage.id).map(m => ({ role: m.role, content: m.content })),
             { 
               role: 'user' as const, 
-              content: processedDocsInfo 
-                ? `He subido ${fileNames.length} documento(s) y he procesado la información extraída automáticamente:\n\n${processedDocsInfo}\n\n¿Cuál es el siguiente paso?`
-                : `He subido ${fileNames.length} documento(s). ¿Cuál es el siguiente paso?`
+              content: `He subido el siguiente documento: ${fileNames.join(', ')}`
             }
           ],
           context: {
-            vendedor: data.vendedor.nombre ? data.vendedor : undefined,
-            comprador: data.comprador.nombre ? data.comprador : undefined,
-            inmueble: data.inmueble.direccion ? data.inmueble : undefined,
+            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos
+            vendedor: data.vendedor,
+            comprador: data.comprador,
+            inmueble: data.inmueble,
             documentos: newDocuments,
             documentosProcesados: uploadedDocuments
               .filter(d => d.processed && d.extractedData)
@@ -932,13 +1032,40 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
             compradorUpdates.curp = jsonData.comprador.curp
             hasUpdates = true
           }
+          // Actualizar necesitaCredito siempre que venga en el JSON (permite corregir valores previos)
           if (jsonData.comprador.necesitaCredito !== undefined && jsonData.comprador.necesitaCredito !== null) {
             compradorUpdates.necesitaCredito = jsonData.comprador.necesitaCredito
             hasUpdates = true
           }
           if (jsonData.comprador.institucionCredito !== undefined && jsonData.comprador.institucionCredito !== null) {
-            compradorUpdates.institucionCredito = jsonData.comprador.institucionCredito
-            hasUpdates = true
+            let institucion = String(jsonData.comprador.institucionCredito).trim()
+            
+            // Limpiar: remover cualquier texto que contenga "RFC" o "CURP" y todo lo que sigue
+            institucion = institucion.replace(/\s*(?:RFC|CURP).*$/i, '').trim()
+            // Limpiar: remover punto final y cualquier texto después de un punto seguido de espacio (nueva oración)
+            institucion = institucion.replace(/\s*\.\s+[A-ZÁÉÍÓÚÑ].*$/, '').replace(/[.,]$/, '')
+            // Limpiar: remover "Y" o "AND" seguido de texto (ej: "FOVISSSTE Y CURP...")
+            institucion = institucion.replace(/\s+(?:Y|AND)\s+.*$/i, '').trim()
+            
+            // Validar que tenga al menos 3 caracteres y NO sea un CURP o RFC
+            const esCURP = /^[A-Z]{4}\d{6}[A-Z]{3}\d{2}$/.test(institucion.replace(/\s/g, ''))
+            const esRFC = /^[A-Z]{4}\d{6}[A-Z0-9]{3}$/.test(institucion.replace(/\s/g, ''))
+            const contieneCURP = /\bCURP\b/i.test(institucion)
+            const contieneRFC = /\bRFC\b/i.test(institucion)
+            const empiezaConCURP = /^CURP\s/i.test(institucion)
+            const empiezaConRFC = /^RFC\s/i.test(institucion)
+            const contieneFormatoRFC = /[A-Z]{4}\d{6}[A-Z0-9]{3}/.test(institucion.replace(/\s/g, ''))
+            const contieneFormatoCURP = /[A-Z]{4}\d{6}[A-Z]{3}\d{2}/.test(institucion.replace(/\s/g, ''))
+            
+            // Validar que no contenga frases comunes que no son nombres de instituciones
+            const contieneFraseInvalida = /\b(?:QUE|QUE\s+UTILIZARÁ|UTILIZARÁ|EL\s+COMPRADOR|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA)\b/i.test(institucion)
+            // Validar que no sea solo palabras comunes
+            const esSoloPalabrasComunes = /^(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE)(?:\s+(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE))*$/i.test(institucion)
+            
+            if (institucion && institucion.length >= 3 && !esCURP && !esRFC && !contieneCURP && !contieneRFC && !empiezaConCURP && !empiezaConRFC && !contieneFormatoRFC && !contieneFormatoCURP && !contieneFraseInvalida && !esSoloPalabrasComunes) {
+              compradorUpdates.institucionCredito = institucion.toUpperCase()
+              hasUpdates = true
+            }
           }
           if (jsonData.comprador.montoCredito !== undefined && jsonData.comprador.montoCredito !== null) {
             compradorUpdates.montoCredito = jsonData.comprador.montoCredito
@@ -1060,7 +1187,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     // Fallback: Detectar información básica usando patrones simples si no hay JSON
     if (!hasUpdates) {
       // Detectar confirmaciones: si el usuario responde "sí", "si", "correcto", etc., extraer datos de la pregunta previa de la IA
-      const confirmacionMatch = userInput.match(/^(sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|está correcto|confirmo|confirmado)$/i)
+      // También detectar confirmaciones más largas como "sí, confirmo" o "si, confirmo que son todas"
+      const confirmacionMatch = userInput.match(/^(sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|está correcto|confirmo|confirmado|sí\s*,\s*confirmo|si\s*,\s*confirmo)/i) ||
+                                userInput.match(/(?:sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|está correcto|confirmo|confirmado).*(?:confirmo|son todas|hojas registrales|titular registral)/i)
       if (confirmacionMatch && aiMessage) {
         // Extraer información de la pregunta previa de la IA que contiene los datos a confirmar
         
@@ -1152,43 +1281,220 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
           hasUpdates = true
         }
         
-        // Detectar tipo de operación
-        if (aiMessage.match(/compraventa/i) && !currentData.tipoOperacion) {
-          updates.tipoOperacion = 'compraventa'
-          hasUpdates = true
-        }
+        // Tipo de operación siempre es compraventa (no se detecta, ya está establecido)
         
-        // Detectar forma de pago
-        if (aiMessage.match(/contado/i) && currentData.comprador.necesitaCredito === undefined) {
+        // Detectar forma de pago (permitir actualización incluso si ya tiene valor)
+        // Detectar "contado" explícitamente
+        const contadoDetected = aiMessage.match(/(?:pago|pagar|forma de pago|se paga|se pagará|será pagado|realizada)[\s\w]*?(?:de\s+)?contado/i)
+        if (contadoDetected) {
           if (!updates.comprador) updates.comprador = { ...currentData.comprador }
           updates.comprador.necesitaCredito = false
           hasUpdates = true
-        } else if (aiMessage.match(/crédito|credito/i) && currentData.comprador.necesitaCredito === undefined) {
+        } 
+        // Detectar crédito: "sí necesita crédito", "necesita crédito", "a crédito", "será a crédito", "sera a credito", "crédito FOVISSSTE", etc.
+        const creditoDetected = aiMessage.match(/(?:sí\s+)?necesita\s+(?:crédito|credito)|necesita\s+(?:crédito|credito)|(?:será|sera|es|ser)\s+(?:a|con|mediante|por|totalmente\s+a)\s+(?:crédito|credito)|(?:a|con|mediante|por|totalmente\s+a)\s+(?:crédito|credito)|(?:crédito|credito)\s+[A-ZÁÉÍÓÚÑ]|hipoteca|bancario|financiamiento|préstamo|fovissste|infonavit/i)
+        if (creditoDetected && !contadoDetected) {
           if (!updates.comprador) updates.comprador = { ...currentData.comprador }
           updates.comprador.necesitaCredito = true
           hasUpdates = true
         }
+
+        // Detectar institución de crédito del comprador
+        // PRIMERO: Buscar instituciones comunes directamente (más confiable)
+        const institucionesComunes = ['FOVISSSTE', 'INFONAVIT', 'HSBC', 'BANAMEX', 'BANCOMER', 'BBVA', 'SANTANDER', 'BANORTE', 'SCOTIABANK', 'BANCO AZTECA', 'BANCO DEL BAJIO']
+        let institucionEncontrada = false
+        for (const inst of institucionesComunes) {
+          // Buscar en ambos: mensaje de IA y input del usuario
+          if (aiMessage.match(new RegExp(`\\b${inst}\\b`, 'i')) || userInput.match(new RegExp(`\\b${inst}\\b`, 'i'))) {
+            if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+            updates.comprador.institucionCredito = inst
+            hasUpdates = true
+            institucionEncontrada = true
+            break
+          }
+        }
+        
+        // Si no se encontró una institución común, buscar con patrones más flexibles
+        if (!institucionEncontrada) {
+          // Patrón 1: "crédito FOVISSSTE" o "a crédito FOVISSSTE" (institución después de "crédito")
+          let institucionMatch = (aiMessage + ' ' + userInput).match(/(?:totalmente\s+)?(?:a\s+)?(?:crédito|credito)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{2,})(?:\s|\.|,|$|por|será|es)/i)
+          
+          // Patrón 2: "institución: X" o "banco: X" (más estricto para evitar capturar "qu" o RFC/CURP)
+          // Detenerse antes de encontrar "RFC", "CURP" o un punto seguido de espacio y mayúscula (nueva oración)
+          if (!institucionMatch) {
+            institucionMatch = (aiMessage + ' ' + userInput).match(/(?:institución|institucion|banco|entidad)[\s\w]*?[:\s]+(?:es|será|es\s+)?\*?\*?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,}?)(?:\s*(?:RFC|CURP)|\s*\.\s+[A-ZÁÉÍÓÚÑ]|\s*$)\*?\*?/i)
+          }
+          
+          // Patrón 3: "con FOVISSSTE" o "mediante FOVISSSTE"
+          if (!institucionMatch) {
+            institucionMatch = (aiMessage + ' ' + userInput).match(/(?:con|mediante|por|a través de)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,})(?:\s|\.|,|$)/i)
+          }
+          
+          if (institucionMatch && institucionMatch[1]) {
+            let institucion = institucionMatch[1].trim().replace(/\*\*/g, '')
+            
+            // Limpiar: remover cualquier texto que contenga "RFC" o "CURP" y todo lo que sigue
+            institucion = institucion.replace(/\s*(?:RFC|CURP).*$/i, '').trim()
+            // Limpiar: remover punto final y cualquier texto después de un punto seguido de espacio (nueva oración)
+            institucion = institucion.replace(/\s*\.\s+[A-ZÁÉÍÓÚÑ].*$/, '').replace(/[.,]$/, '')
+            // Limpiar: remover "Y" o "AND" seguido de texto (ej: "FOVISSSTE Y CURP...")
+            institucion = institucion.replace(/\s+(?:Y|AND)\s+.*$/i, '').trim()
+            
+            // Validar que tenga al menos 3 caracteres y NO sea un CURP (formato: 4 letras + 6 dígitos + 3 letras + 2 dígitos)
+            const esCURP = /^[A-Z]{4}\d{6}[A-Z]{3}\d{2}$/.test(institucion.replace(/\s/g, ''))
+            // También validar que no sea un RFC (formato: 4 letras + 6 dígitos + 3 caracteres)
+            const esRFC = /^[A-Z]{4}\d{6}[A-Z0-9]{3}$/.test(institucion.replace(/\s/g, ''))
+            // Validar que no contenga "CURP" o "RFC" en el texto
+            const contieneCURP = /\bCURP\b/i.test(institucion)
+            const contieneRFC = /\bRFC\b/i.test(institucion)
+            // Validar que no empiece con "CURP" o "RFC"
+            const empiezaConCURP = /^CURP\s/i.test(institucion)
+            const empiezaConRFC = /^RFC\s/i.test(institucion)
+            // Validar que no contenga formato de RFC o CURP en cualquier parte
+            const contieneFormatoRFC = /[A-Z]{4}\d{6}[A-Z0-9]{3}/.test(institucion.replace(/\s/g, ''))
+            const contieneFormatoCURP = /[A-Z]{4}\d{6}[A-Z]{3}\d{2}/.test(institucion.replace(/\s/g, ''))
+            // Validar que no contenga frases comunes que no son nombres de instituciones
+            const contieneFraseInvalida = /\b(?:QUE|QUE\s+UTILIZARÁ|UTILIZARÁ|EL\s+COMPRADOR|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA)\b/i.test(institucion)
+            // Validar que no sea solo palabras comunes
+            const esSoloPalabrasComunes = /^(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE)(?:\s+(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE))*$/i.test(institucion)
+            
+            if (institucion && institucion.length >= 3 && !esCURP && !esRFC && !contieneCURP && !contieneRFC && !empiezaConCURP && !empiezaConRFC && !contieneFormatoRFC && !contieneFormatoCURP && !contieneFraseInvalida && !esSoloPalabrasComunes) {
+              if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+              updates.comprador.institucionCredito = institucion.toUpperCase()
+              hasUpdates = true
+            }
+          }
+        }
+
+        // Detectar monto de crédito del comprador en mensaje de IA
+        // Patrón mejorado: busca "monto del crédito será por $X" o "crédito será por $X"
+        const montoAIMatch = aiMessage.match(/(?:monto|cantidad|importe|crédito)[\s\w]*?[:\s]+(?:es|será|es\s+)?(?:por\s+)?\*?\*?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?\*?\*?/i) ||
+                            aiMessage.match(/(?:será|es)\s+(?:por|de)\s+\*?\*?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?/i)
+        if (montoAIMatch && montoAIMatch[1]) {
+          let monto = montoAIMatch[1].trim().replace(/\*\*/g, '').replace(/\s+/g, '')
+          // Formatear monto: agregar $ y mantener comas
+          if (monto && !monto.startsWith('$')) {
+            monto = `$${monto}`
+          }
+          if (monto && monto.length > 1) {
+            if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+            updates.comprador.montoCredito = monto
+            hasUpdates = true
+          }
+        }
       }
 
-      // Detectar tipo de operación
-      const operacionMatch = userInput.match(/(?:operación|tipo)[:\s]+(compraventa|compra-venta)/i)
-      if (operacionMatch && !currentData.tipoOperacion) {
-        updates.tipoOperacion = 'compraventa'
-        hasUpdates = true
-      }
+      // Tipo de operación siempre es compraventa (no se detecta, ya está establecido)
 
-      // Detectar forma de pago
-      const contadoMatch = userInput.match(/(?:pago|pagar|forma de pago)[:\s]+(?:de\s+)?contado/i)
-      const creditoMatch = userInput.match(/(?:pago|pagar|forma de pago|crédito|hipoteca)[:\s]+(?:mediante\s+)?(?:crédito|hipoteca)/i)
-      
-      if (contadoMatch && currentData.comprador.necesitaCredito === undefined) {
+      // Detectar forma de pago (permitir actualización incluso si ya tiene valor)
+      const contadoMatch = userInput.match(/(?:pago|pagar|forma de pago|se paga|se pagará|será pagado|sera pagado)[:\s]+(?:de\s+)?contado/i)
+      // Detectar "será a crédito", "sera a credito", "será con crédito", etc.
+      const seraCreditoMatch = userInput.match(/(?:será|sera|es|ser)\s+(?:a|con|mediante|por|totalmente\s+a)\s+(?:crédito|credito|hipoteca|bancario|financiamiento|préstamo)/i)
+      const creditoMatch = userInput.match(/(?:pago|pagar|forma de pago|se paga|se pagará|será pagado|sera pagado|mediante|con|a través de)[:\s]+(?:mediante\s+)?(?:crédito|credito|hipoteca|bancario|financiamiento|préstamo)/i)
+      const creditoSimpleMatch = userInput.match(/(?:crédito|credito|hipoteca|bancario|financiamiento|préstamo)/i)
+
+      if (contadoMatch) {
         if (!updates.comprador) updates.comprador = { ...currentData.comprador }
         updates.comprador.necesitaCredito = false
         hasUpdates = true
-      } else if (creditoMatch) {
+      } else if (seraCreditoMatch || creditoMatch || (creditoSimpleMatch && userInput.match(/(?:sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|confirmo|confirmado)/i))) {
         if (!updates.comprador) updates.comprador = { ...currentData.comprador }
         updates.comprador.necesitaCredito = true
         hasUpdates = true
+      }
+
+      // Detectar institución de crédito del comprador (fuera del bloque de confirmación)
+      // PRIMERO: Buscar instituciones comunes directamente
+      const institucionesComunes2 = ['FOVISSSTE', 'INFONAVIT', 'HSBC', 'BANAMEX', 'BANCOMER', 'BBVA', 'SANTANDER', 'BANORTE', 'SCOTIABANK', 'BANCO AZTECA', 'BANCO DEL BAJIO']
+      let institucionEncontrada2 = false
+      for (const inst of institucionesComunes2) {
+        if (aiMessage.match(new RegExp(`\\b${inst}\\b`, 'i')) || userInput.match(new RegExp(`\\b${inst}\\b`, 'i'))) {
+          if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+          updates.comprador.institucionCredito = inst
+          hasUpdates = true
+          institucionEncontrada2 = true
+          break
+        }
+      }
+      
+      // Si no se encontró, buscar con patrones más flexibles
+      if (!institucionEncontrada2) {
+        // Patrón 1: "crédito FOVISSSTE" o "a crédito FOVISSSTE"
+        let institucionMatch = (aiMessage + ' ' + userInput).match(/(?:totalmente\s+)?(?:a\s+)?(?:crédito|credito)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{2,})(?:\s|\.|,|$|por|será|es)/i)
+        
+        // Patrón 2: "institución: X" o "banco: X" (mínimo 3 caracteres)
+        // Detenerse antes de encontrar "RFC", "CURP" o un punto seguido de espacio y mayúscula (nueva oración)
+        if (!institucionMatch) {
+          institucionMatch = (aiMessage + ' ' + userInput).match(/(?:institución|institucion|banco|entidad)[\s\w]*?[:\s]+(?:es|será|es\s+)?\*?\*?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,}?)(?:\s*(?:RFC|CURP)|\s*\.\s+[A-ZÁÉÍÓÚÑ]|\s*$)\*?\*?/i)
+        }
+        
+        // Patrón 3: "con FOVISSSTE" o "mediante FOVISSSTE"
+        if (!institucionMatch) {
+          institucionMatch = (aiMessage + ' ' + userInput).match(/(?:con|mediante|por|a través de)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,})(?:\s|\.|,|$)/i)
+        }
+        
+        if (institucionMatch && institucionMatch[1]) {
+          let institucion = institucionMatch[1].trim().replace(/\*\*/g, '')
+          
+          // Limpiar: remover cualquier texto que contenga "RFC" o "CURP" y todo lo que sigue
+          institucion = institucion.replace(/\s*(?:RFC|CURP).*$/i, '').trim()
+          // Limpiar: remover punto final y cualquier texto después de un punto seguido de espacio (nueva oración)
+          institucion = institucion.replace(/\s*\.\s+[A-ZÁÉÍÓÚÑ].*$/, '').replace(/[.,]$/, '')
+          // Limpiar: remover "Y" o "AND" seguido de texto (ej: "FOVISSSTE Y CURP...")
+          institucion = institucion.replace(/\s+(?:Y|AND)\s+.*$/i, '').trim()
+          
+          // Validar que tenga al menos 3 caracteres y NO sea un CURP (formato: 4 letras + 6 dígitos + 3 letras + 2 dígitos)
+          const esCURP = /^[A-Z]{4}\d{6}[A-Z]{3}\d{2}$/.test(institucion.replace(/\s/g, ''))
+          // También validar que no sea un RFC (formato: 4 letras + 6 dígitos + 3 caracteres)
+          const esRFC = /^[A-Z]{4}\d{6}[A-Z0-9]{3}$/.test(institucion.replace(/\s/g, ''))
+          // Validar que no contenga "CURP" o "RFC" en el texto
+          const contieneCURP = /\bCURP\b/i.test(institucion)
+          const contieneRFC = /\bRFC\b/i.test(institucion)
+          // Validar que no empiece con "CURP" o "RFC"
+          const empiezaConCURP = /^CURP\s/i.test(institucion)
+          const empiezaConRFC = /^RFC\s/i.test(institucion)
+          // Validar que no contenga formato de RFC o CURP en cualquier parte
+          const contieneFormatoRFC = /[A-Z]{4}\d{6}[A-Z0-9]{3}/.test(institucion.replace(/\s/g, ''))
+          const contieneFormatoCURP = /[A-Z]{4}\d{6}[A-Z]{3}\d{2}/.test(institucion.replace(/\s/g, ''))
+          // Validar que no contenga frases comunes que no son nombres de instituciones
+          const contieneFraseInvalida = /\b(?:QUE|QUE\s+UTILIZARÁ|UTILIZARÁ|EL\s+COMPRADOR|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA)\b/i.test(institucion)
+          // Validar que no sea solo palabras comunes
+          const esSoloPalabrasComunes = /^(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE)(?:\s+(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE))*$/i.test(institucion)
+          
+          if (institucion && institucion.length >= 3 && !esCURP && !esRFC && !contieneCURP && !contieneRFC && !empiezaConCURP && !empiezaConRFC && !contieneFormatoRFC && !contieneFormatoCURP && !contieneFraseInvalida && !esSoloPalabrasComunes) {
+            if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+            updates.comprador.institucionCredito = institucion.toUpperCase()
+            hasUpdates = true
+          }
+        }
+      }
+
+      // Detectar monto de crédito del comprador
+      // Patrón 1: "el mismo que el valor" o "igual al valor" - usar valor del inmueble
+      const mismoValorMatch = userInput.match(/(?:el\s+mismo|igual|mismo\s+que|igual\s+que|el\s+mismo\s+que)\s+(?:el\s+)?(?:valor|precio|casa|inmueble|operación)/i) ||
+                              userInput.match(/(?:será|es)\s+(?:el\s+mismo|igual)\s+(?:que\s+)?(?:el\s+)?(?:valor|precio)/i)
+      if (mismoValorMatch && currentData.inmueble.valor) {
+        if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+        updates.comprador.montoCredito = currentData.inmueble.valor
+        hasUpdates = true
+      }
+      // Patrón 2: Monto explícito en mensaje de IA o input del usuario
+      else {
+        const montoMatch = aiMessage.match(/(?:monto|cantidad|importe|crédito)[\s\w]*?[:\s]+(?:es|será|es\s+)?(?:por\s+)?\*?\*?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?\*?\*?/i) ||
+                          userInput.match(/(?:monto|cantidad|importe|crédito)[\s\w]*?[:\s]+(?:de\s+)?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?/i) ||
+                          aiMessage.match(/\$\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?/i)
+        if (montoMatch && montoMatch[1]) {
+          let monto = montoMatch[1].trim().replace(/\*\*/g, '').replace(/\s+/g, '')
+          // Formatear monto: agregar $ y mantener comas
+          if (monto && !monto.startsWith('$')) {
+            monto = `$${monto}`
+          }
+          if (monto && monto.length > 1) {
+            if (!updates.comprador) updates.comprador = { ...currentData.comprador }
+            updates.comprador.montoCredito = monto
+            hasUpdates = true
+          }
+        }
       }
 
       // Detectar nombres (patrones comunes)
@@ -1230,7 +1536,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
     return {
       cancelacionCreditoVendedor: data.vendedor.tieneCredito || false,
       compraventa: true,
-      aperturaCreditoComprador: data.comprador.necesitaCredito || false
+      aperturaCreditoComprador: data.comprador.necesitaCredito === true
     }
   }
 
@@ -1406,6 +1712,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                   </div>
                 </div>
               )}
+              
+              
               <div ref={scrollRef} />
             </div>
           </ScrollArea>
@@ -1534,7 +1842,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 {/* PASO 1 – OPERACIÓN Y FORMA DE PAGO */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.tipoOperacion && (data.comprador.institucionCredito || (data.comprador.necesitaCredito === false && data.tipoOperacion)) ? (
+                    {data.tipoOperacion && data.comprador.necesitaCredito !== undefined ? (
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -1548,7 +1856,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     {data.tipoOperacion ? (
                       <>
                         <div><span className="font-medium">Tipo de operación:</span> {data.tipoOperacion}</div>
-                        {data.comprador.institucionCredito || (data.comprador.necesitaCredito === false && data.tipoOperacion) ? (
+                        {data.comprador.necesitaCredito !== undefined ? (
                           <div><span className="font-medium">Forma de pago:</span> {data.comprador.necesitaCredito ? 'Crédito' : 'Contado'}</div>
                         ) : (
                           <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
@@ -1588,10 +1896,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                       <div><span className="font-medium">Dirección:</span> {data.inmueble.direccion}</div>
                     )}
                     {data.inmueble.superficie && (
-                      <div><span className="font-medium">Superficie:</span> {data.inmueble.superficie}</div>
+                      <div><span className="font-medium">Superficie:</span> {
+                        typeof data.inmueble.superficie === 'string' 
+                          ? data.inmueble.superficie 
+                          : typeof data.inmueble.superficie === 'object' && data.inmueble.superficie !== null
+                            ? (data.inmueble.superficie as any).superficieEdificada || (data.inmueble.superficie as any).privativa || (data.inmueble.superficie as any).total || JSON.stringify(data.inmueble.superficie)
+                            : String(data.inmueble.superficie)
+                      }</div>
                     )}
                     {data.inmueble.valor && (
-                      <div><span className="font-medium">Valor:</span> {data.inmueble.valor}</div>
+                      <div><span className="font-medium">Valor:</span> {
+                        typeof data.inmueble.valor === 'string' 
+                          ? data.inmueble.valor 
+                          : String(data.inmueble.valor)
+                      }</div>
                     )}
                     {!data.inmueble.folioReal && !data.inmueble.partida && (
                       <div className="text-gray-400 italic">Pendiente</div>
@@ -1602,7 +1920,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 {/* PASO 3 – VENDEDOR(ES) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.vendedor.nombre && data.vendedor.rfc && data.vendedor.curp ? (
+                    {data.vendedor.nombre ? (
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -1634,7 +1952,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 {/* PASO 4 – COMPRADOR(ES) (CONSOLIDADO CON EXPEDIENTE) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.comprador.nombre && data.comprador.rfc && data.comprador.curp ? (
+                    {data.comprador.nombre && data.comprador.curp ? (
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -1654,7 +1972,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                     {data.comprador.curp && (
                       <div><span className="font-medium">CURP:</span> {data.comprador.curp}</div>
                     )}
-                    {!data.comprador.nombre && !data.comprador.rfc && (
+                    {!data.comprador.nombre && !data.comprador.curp && (
                       <div className="text-gray-400 italic">Pendiente (requiere identificación oficial)</div>
                     )}
                   </div>
@@ -1663,13 +1981,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                 {/* PASO 6 – CRÉDITO DEL COMPRADOR (si aplica) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.tipoOperacion && (data.comprador.institucionCredito || data.comprador.necesitaCredito === false) ? (
+                    {data.tipoOperacion && data.comprador.necesitaCredito !== undefined ? (
                       data.comprador.necesitaCredito && data.comprador.institucionCredito && data.comprador.montoCredito ? (
                         <CheckCircle2 className="h-4 w-4 text-green-500" />
                       ) : data.comprador.necesitaCredito ? (
                         <AlertCircle className="h-4 w-4 text-yellow-500" />
                       ) : (
-                        <CheckCircle2 className="h-4 w-4 text-gray-400" />
+                        <CheckCircle2 className="h-4 w-4 text-green-500" />
                       )
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -1681,7 +1999,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument }: PreavisoCha
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
                     {data.tipoOperacion ? (
-                      data.comprador.institucionCredito || data.comprador.necesitaCredito === false ? (
+                      data.comprador.necesitaCredito !== undefined ? (
                         data.comprador.necesitaCredito ? (
                           <>
                             {data.comprador.institucionCredito && (

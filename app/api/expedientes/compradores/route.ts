@@ -125,14 +125,29 @@ export async function POST(req: Request) {
       )
     }
 
-    // Determinar notaria_id: usar la del usuario si es abogado, null si es superadmin
-    const notariaId = currentUser.rol === 'superadmin' ? null : currentUser.notaria_id
+    // Determinar notaria_id: usar la del usuario si es abogado
+    // Si es superadmin, no se puede crear comprador sin notaria_id (debe especificarse)
+    if (currentUser.rol === 'superadmin' && !currentUser.notaria_id) {
+      return NextResponse.json(
+        { error: 'bad_request', message: 'Los superadmin deben especificar una notaría para crear compradores' },
+        { status: 400 }
+      )
+    }
+    
+    const notariaId = currentUser.notaria_id
+    if (!notariaId) {
+      return NextResponse.json(
+        { error: 'bad_request', message: 'No se puede crear comprador sin notaria_id' },
+        { status: 400 }
+      )
+    }
+    
     const body: CreateCompradorRequest = await req.json()
 
-    // Validar campos requeridos
-    if (!body.nombre || !body.rfc || !body.curp) {
+    // Validar campos requeridos (nombre y curp son obligatorios, rfc es opcional)
+    if (!body.nombre || !body.curp) {
       return NextResponse.json(
-        { error: 'bad_request', message: 'nombre, rfc y curp son requeridos' },
+        { error: 'bad_request', message: 'nombre y curp son requeridos' },
         { status: 400 }
       )
     }

@@ -5,6 +5,8 @@ import { DashboardLayout } from '@/components/dashboard-layout'
 import { ProtectedRoute } from '@/components/protected-route'
 import { PreavisoChat, type PreavisoData } from '@/components/preaviso-chat'
 import { PreavisoGenerator, type PreavisoDocument } from '@/lib/preaviso-generator'
+import { PreavisoTemplateRenderer } from '@/lib/preaviso-template-renderer'
+import { PreavisoExportOptions } from '@/components/preaviso-export-options'
 import { createBrowserClient } from '@/lib/supabase'
 import { useMemo } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -17,8 +19,17 @@ import {
   Edit, 
   CheckCircle2,
   ArrowLeft,
-  Save
+  Save,
+  File,
+  FileText as FileTextIcon,
+  ChevronDown
 } from 'lucide-react'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 
 type AppState = 'chat' | 'document' | 'editing'
 
@@ -28,6 +39,8 @@ export default function PreavisoPage() {
   const [preavisoData, setPreavisoData] = useState<PreavisoData | null>(null)
   const [document, setDocument] = useState<PreavisoDocument | null>(null)
   const [editedDocument, setEditedDocument] = useState<string>('')
+  const [showExportButtons, setShowExportButtons] = useState(false)
+  const [exportData, setExportData] = useState<PreavisoData | null>(null)
 
   const handleDataComplete = (data: PreavisoData) => {
     setPreavisoData(data)
@@ -35,6 +48,9 @@ export default function PreavisoPage() {
 
   const handleGenerateDocument = async (data: PreavisoData, uploadedDocuments?: any[], activeTramiteId?: string | null) => {
     try {
+      // Asegurar que preavisoData esté establecido antes de cambiar el estado
+      setPreavisoData(data)
+      
       // Generar documento
       const generatedDoc = PreavisoGenerator.generatePreavisoDocument(data)
       setDocument(generatedDoc)
@@ -71,37 +87,56 @@ export default function PreavisoPage() {
         headers['Authorization'] = `Bearer ${session.access_token}`
       }
 
+      // Validar que tengamos al menos nombre o CURP para crear/buscar comprador
+      if (!data.comprador.nombre && !data.comprador.curp) {
+        throw new Error('No se puede crear/buscar comprador sin nombre o CURP')
+      }
+
       const createResponse = await fetch('/api/expedientes/compradores', {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          nombre: data.comprador.nombre,
-          rfc: data.comprador.rfc,
-          curp: data.comprador.curp,
+          nombre: data.comprador.nombre || '',
+          rfc: data.comprador.rfc || null,
+          curp: data.comprador.curp || '',
         }),
       })
 
       if (createResponse.ok) {
         comprador = await createResponse.json()
       } else if (createResponse.status === 409) {
-        // Ya existe, buscarlo por RFC
-        // Obtener token para la búsqueda
+        // Ya existe, buscarlo por CURP o nombre
         const { data: { session: searchSession } } = await supabase.auth.getSession()
         const searchHeaders: HeadersInit = {}
         if (searchSession?.access_token) {
           searchHeaders['Authorization'] = `Bearer ${searchSession.access_token}`
         }
 
-        const searchResponse = await fetch(`/api/expedientes/compradores?rfc=${encodeURIComponent(data.comprador.rfc)}`, {
-          headers: searchHeaders,
-        })
-        if (searchResponse.ok) {
+        // Intentar buscar por CURP primero, luego por RFC, luego por nombre
+        let searchResponse
+        if (data.comprador.curp) {
+          searchResponse = await fetch(`/api/expedientes/compradores?curp=${encodeURIComponent(data.comprador.curp)}`, {
+            headers: searchHeaders,
+          })
+        } else if (data.comprador.rfc) {
+          searchResponse = await fetch(`/api/expedientes/compradores?rfc=${encodeURIComponent(data.comprador.rfc)}`, {
+            headers: searchHeaders,
+          })
+        } else if (data.comprador.nombre) {
+          searchResponse = await fetch(`/api/expedientes/compradores?nombre=${encodeURIComponent(data.comprador.nombre)}`, {
+            headers: searchHeaders,
+          })
+        }
+
+        if (searchResponse && searchResponse.ok) {
           comprador = await searchResponse.json()
         } else {
-          throw new Error('No se pudo obtener el comprador')
+          throw new Error('No se pudo obtener el comprador existente')
         }
       } else {
-        throw new Error('Error creando/buscando comprador')
+        const errorText = await createResponse.text()
+        console.error('Error creando comprador:', createResponse.status, errorText)
+        throw new Error(`Error creando/buscando comprador: ${createResponse.status} - ${errorText}`)
       }
     } catch (error) {
       console.error('Error en comprador:', error)
@@ -281,12 +316,25 @@ export default function PreavisoPage() {
   }
 
   const handleDownloadWord = async () => {
-    if (!document || !preavisoData) return
+    if (!preavisoData) return
     
     try {
-      await PreavisoGenerator.exportToWord(document, preavisoData)
+      const simplifiedData = PreavisoTemplateRenderer.convertFromPreavisoData(preavisoData)
+      await PreavisoTemplateRenderer.renderToWord(simplifiedData)
     } catch (error) {
       console.error('Error descargando Word:', error)
+      alert('Error al descargar el documento. Por favor, intenta de nuevo.')
+    }
+  }
+
+  const handleDownloadPDF = async () => {
+    if (!preavisoData) return
+    
+    try {
+      const simplifiedData = PreavisoTemplateRenderer.convertFromPreavisoData(preavisoData)
+      await PreavisoTemplateRenderer.renderToPDF(simplifiedData)
+    } catch (error) {
+      console.error('Error descargando PDF:', error)
       alert('Error al descargar el documento. Por favor, intenta de nuevo.')
     }
   }
@@ -305,16 +353,37 @@ export default function PreavisoPage() {
         <DashboardLayout>
           <div className="p-6 space-y-6 h-full flex flex-col">
             <div className="space-y-2">
-              <h1 className="text-3xl font-bold text-gray-900">Pre-Aviso de Compraventa</h1>
-              <p className="text-gray-600">
-                Sistema interactivo para generar solicitudes de certificado con efecto de pre-aviso
-              </p>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-3xl font-bold text-gray-900">Pre-Aviso de Compraventa</h1>
+                  <p className="text-gray-600">
+                    Sistema interactivo para generar solicitudes de certificado con efecto de pre-aviso
+                  </p>
+                </div>
+                {showExportButtons && exportData && (
+                  <div className="flex gap-2">
+                    <PreavisoExportOptions 
+                      data={exportData}
+                      onExportComplete={() => {
+                        // Opcional: ocultar después de exportar
+                      }}
+                      onViewFullDocument={() => {
+                        handleGenerateDocument(exportData)
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="flex-1 min-h-0">
               <PreavisoChat
                 onDataComplete={handleDataComplete}
                 onGenerateDocument={handleGenerateDocument}
+                onExportReady={(data, show) => {
+                  setShowExportButtons(show)
+                  setExportData(show ? data : null)
+                }}
               />
             </div>
           </div>
@@ -324,7 +393,21 @@ export default function PreavisoPage() {
   }
 
   // Estado: Documento generado
-  if (appState === 'document' && document && preavisoData) {
+  if (appState === 'document') {
+    // Si no hay documento o datos, volver al chat
+    if (!document || !preavisoData) {
+      return (
+        <ProtectedRoute>
+          <DashboardLayout>
+            <div className="p-6 space-y-6">
+              <div className="text-center py-12">
+                <p className="text-gray-600">Generando documento...</p>
+              </div>
+            </div>
+          </DashboardLayout>
+        </ProtectedRoute>
+      )
+    }
     return (
       <ProtectedRoute>
         <DashboardLayout>
@@ -333,7 +416,7 @@ export default function PreavisoPage() {
               <div>
                 <h1 className="text-3xl font-bold text-gray-900">Documento Generado</h1>
                 <p className="text-gray-600 mt-1">
-                  Revisa el documento y descárgalo en formato Word
+                  Revisa el documento y descárgalo en el formato que prefieras
                 </p>
               </div>
               <div className="flex space-x-2">
@@ -345,10 +428,25 @@ export default function PreavisoPage() {
                   <Edit className="h-4 w-4 mr-2" />
                   Editar
                 </Button>
-                <Button onClick={handleDownloadWord}>
-                  <Download className="h-4 w-4 mr-2" />
-                  Descargar Word
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button>
+                      <Download className="h-4 w-4 mr-2" />
+                      Descargar
+                      <ChevronDown className="h-4 w-4 ml-2" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={handleDownloadWord}>
+                      <FileTextIcon className="h-4 w-4 mr-2" />
+                      Descargar Word (.docx)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={handleDownloadPDF}>
+                      <File className="h-4 w-4 mr-2" />
+                      Descargar PDF (.pdf)
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
 

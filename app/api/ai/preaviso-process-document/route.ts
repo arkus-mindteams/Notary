@@ -173,15 +173,41 @@ IMPORTANTE:
         userPrompt = "Analiza este documento de identificación oficial y extrae TODA la información disponible que puedas leer. Sé exhaustivo y preciso."
         break
 
+      case "inscripcion":
+        systemPrompt = `Eres un experto en análisis de documentos registrales (hojas de inscripción, certificados registrales, etc.). Analiza el documento y extrae TODA la información disponible en formato JSON:
+{
+  "folioReal": "número del folio real si está visible",
+  "seccion": "sección registral si está visible",
+  "partida": "partida registral si está visible",
+  "ubicacion": "dirección completa del inmueble si está visible",
+  "propietario": {
+    "nombre": "nombre completo del propietario/titular registral si está visible",
+    "rfc": "RFC si está disponible"
+  },
+  "superficie": "superficie del inmueble si está disponible",
+  "valor": "valor del inmueble si está disponible",
+  "formaPago": "forma de pago mencionada en el documento (por ejemplo: 'contado', 'crédito', 'crédito hipotecario', 'Infonavit', 'Fovissste', etc.) si está mencionada, o null si no se menciona",
+  "institucionCredito": "institución de crédito mencionada (Infonavit, Fovissste, banco, etc.) si está visible, o null si no se menciona",
+  "gravamenes": "información sobre gravámenes o hipotecas si está visible, o null si no hay"
+}
+
+IMPORTANTE:
+- Extrae SOLO la información que puedas leer claramente en el documento
+- Si el documento menciona la forma de pago (contado, crédito, etc.), extráela en el campo "formaPago"
+- Si menciona una institución de crédito específica (Infonavit, Fovissste, banco, etc.), extráela en "institucionCredito"
+- Si algún campo no está disponible o no es legible, usa null`
+        userPrompt = "Analiza este documento de inscripción registral y extrae TODA la información disponible que puedas leer claramente, incluyendo folio real, partida, sección, propietario, y especialmente cualquier mención sobre forma de pago o crédito."
+        break
+
       default:
         systemPrompt = `Eres un experto en análisis de documentos notariales. Analiza el documento y extrae toda la información relevante que puedas identificar relacionada con:
 - Folio real, sección, partida
 - Datos de personas (nombres, RFC, CURP)
 - Información del inmueble (dirección, superficie, valor)
-- Información crediticia si está presente
+- Información crediticia si está presente (forma de pago, institución de crédito)
 
-Devuelve la información en formato JSON estructurado.`
-        userPrompt = "Analiza este documento y extrae toda la información relevante."
+Devuelve la información en formato JSON estructurado, incluyendo un campo "formaPago" si el documento menciona si la operación será de contado o con crédito.`
+        userPrompt = "Analiza este documento y extrae toda la información relevante, incluyendo cualquier mención sobre forma de pago."
     }
 
     // Llamar a OpenAI Vision API
