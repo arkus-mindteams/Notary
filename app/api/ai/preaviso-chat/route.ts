@@ -688,7 +688,14 @@ export async function POST(req: Request) {
 
     const followUp = buildDeterministicFollowUp(next.state, nextContext)
 
-    const assistantAlreadyAsks = /[¿?]/.test(strippedAssistant)
+    // Detectar si el asistente YA está solicitando datos/confirmación aunque no use signos "¿?"
+    // Esto evita duplicar preguntas (ej. "Por favor indícame..." seguido de un follow-up determinista).
+    const assistantAlreadyAsks =
+      /[¿?]/.test(strippedAssistant) ||
+      /\b(por\s+favor|porfavor)\b/i.test(strippedAssistant) ||
+      /\b(ind[ií]ca(me|nos)|dime|confirma(s|r)?|necesito|requiero|responde)\b/i.test(strippedAssistant) ||
+      /:\s*\n-\s+/m.test(strippedAssistant) // lista de campos solicitados
+
     const shouldAddFollowUp = !!followUp && !assistantAlreadyAsks && (mergedUpdate || isAckOnly || isPureDataUpdate)
 
     return NextResponse.json({
@@ -730,6 +737,42 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
   const isConfirm = /^(sí|si|confirmo|confirmado|correcto|afirmativo|de acuerdo)\b/i.test(userText) || /\bconfirmo\b/i.test(userText)
   const mentionsPM = /\bpersona\s+moral\b/i.test(userText) || /\bempresa\b/i.test(userText)
   const mentionsPF = /\bpersona\s+f[ií]sica\b/i.test(userText)
+
+  // Helper: detectar estado civil (persona física)
+  const estadoCivilMatch = userText.match(/\b(solter[oa]|casad[oa]|divorciad[oa]|viud[oa])\b/i)
+  const normalizedEstadoCivil =
+    estadoCivilMatch
+      ? (estadoCivilMatch[1].toLowerCase().startsWith('solter')
+          ? 'soltero'
+          : estadoCivilMatch[1].toLowerCase().startsWith('casad')
+            ? 'casado'
+            : estadoCivilMatch[1].toLowerCase().startsWith('divorc')
+              ? 'divorciado'
+              : 'viudo')
+      : null
+
+  // 0.5) Corrección explícita del comprador: "el comprador debe ser X" / "el comprador es X"
+  // Esto evita que se quede un comprador equivocado en contexto cuando el usuario corrige.
+  const compradorNameMatch =
+    userText.match(/\bel\s+comprador\s+(?:debe\s+de\s+ser|debe\s+ser|es)\s+(.+?)\s*$/i) ||
+    userText.match(/\bcomprador\s*:\s*(.+?)\s*$/i)
+  if (compradorNameMatch && compradorNameMatch[1]) {
+    const nombre = compradorNameMatch[1].trim().replace(/^["“]|["”]$/g, '')
+    if (nombre.length >= 6) {
+      const compradores = Array.isArray(baseContext?.compradores) ? [...baseContext.compradores] : []
+      const c0 = compradores[0] || { party_id: null, tipo_persona: null }
+      compradores[0] = {
+        ...c0,
+        // No forzar tipo_persona aquí si no está ya confirmado; pero si ya es persona_fisica, conservar.
+        tipo_persona: c0?.tipo_persona || 'persona_fisica',
+        persona_fisica: {
+          ...(c0?.persona_fisica || {}),
+          nombre,
+        },
+      }
+      return { compradores }
+    }
+  }
 
   // 0) Confirmación explícita de titular registral (aunque el usuario solo responda "sí")
   // Si el backend está bloqueado por falta/mismatch de titular y el usuario confirma, marcar el vendedor como titular confirmado.
@@ -818,6 +861,35 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
             tipo_credito: null,
           },
         ],
+      }
+    }
+  }
+
+  // 2.6) Estado civil del comprador (persona física) — capturar aunque el modelo no emita <DATA_UPDATE>
+  // Evita loops en ESTADO_4 cuando el usuario ya respondió "soltero/casado/etc.".
+  if (normalizedEstadoCivil) {
+    const compradores = Array.isArray(baseContext?.compradores) ? [...baseContext.compradores] : []
+    const c0 = compradores[0]
+    const tipo = c0?.tipo_persona
+    const nombre = c0?.persona_fisica?.nombre || c0?.persona_moral?.denominacion_social
+    const estadoActual = c0?.persona_fisica?.estado_civil || null
+    const needsEstadoCivil =
+      missing.includes('compradores[0].persona_fisica.estado_civil') ||
+      ss['ESTADO_4'] === 'incomplete' ||
+      currentState === 'ESTADO_4'
+
+    if (needsEstadoCivil && (tipo === 'persona_fisica' || (!tipo && nombre))) {
+      if (!estadoActual || estadoActual.toLowerCase() !== normalizedEstadoCivil) {
+        const base = c0 || { party_id: null, tipo_persona: 'persona_fisica' }
+        compradores[0] = {
+          ...base,
+          tipo_persona: base?.tipo_persona || 'persona_fisica',
+          persona_fisica: {
+            ...(base?.persona_fisica || {}),
+            estado_civil: normalizedEstadoCivil,
+          },
+        }
+        return { compradores }
       }
     }
   }
@@ -1035,7 +1107,7 @@ function buildDeterministicFollowUp(state: any, context: any): string | null {
 
     if (nombre && tipo) {
       // Ya está capturado: no pedirlo de nuevo; pedir lo siguiente.
-      if (tipo === 'persona_fisica' && !comprador0?.persona_fisica?.estado_civil) {
+      if (tipo === 'persona_fisica' && missing.includes('compradores[0].persona_fisica.estado_civil')) {
         return askOne(`¿Me indicas el estado civil de ${nombre}? (soltero, casado, divorciado o viudo)`)
       }
       // Si ya hay estado_civil o es persona moral, continuar a créditos o siguiente paso.

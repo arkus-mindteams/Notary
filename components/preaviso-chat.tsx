@@ -403,9 +403,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
   }, [user?.id])
 
+  // Estado de procesamiento de documentos debe declararse ANTES de cualquier useEffect que lo use
+  const [isProcessingDocument, setIsProcessingDocument] = useState(false)
+  const [processingProgress, setProcessingProgress] = useState(0)
+  const [processingFileName, setProcessingFileName] = useState<string | null>(null)
+
   // Guardar progreso automáticamente cuando cambian los datos
   useEffect(() => {
     const saveProgress = async () => {
+      // Evitar spam de updates mientras se procesan documentos (PDF multi-página dispara muchos merges).
+      // Al terminar el procesamiento, este efecto correrá de nuevo y guardará una sola vez.
+      if (isProcessingDocument) return
+
       // Solo guardar si hay datos significativos y hay un trámite activo o usuario
       const primerVendedor = data.vendedores?.[0]
       const primerComprador = data.compradores?.[0]
@@ -462,7 +471,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Debounce: guardar después de 2 segundos de inactividad
     const timer = setTimeout(saveProgress, 2000)
     return () => clearTimeout(timer)
-  }, [data, activeTramiteId, user?.id])
+  }, [data, activeTramiteId, user?.id, isProcessingDocument])
   const [input, setInput] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const [uploadedDocuments, setUploadedDocuments] = useState<UploadedDocument[]>([])
@@ -470,9 +479,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   useEffect(() => {
     uploadedDocumentsRef.current = uploadedDocuments
   }, [uploadedDocuments])
-  const [isProcessingDocument, setIsProcessingDocument] = useState(false)
-  const [processingProgress, setProcessingProgress] = useState(0)
-  const [processingFileName, setProcessingFileName] = useState<string | null>(null)
   const [showDataPanel, setShowDataPanel] = useState(true)
   const [isDragging, setIsDragging] = useState(false)
   const [showExportOptions, setShowExportOptions] = useState(false)
@@ -821,315 +827,198 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return 'escritura' // default
       }
 
-      // Procesar cada imagen (archivos convertidos)
-      const totalFiles = allImageFiles.length
-      let processedCount = 0
-      // Snapshot mutable para construir contexto correcto durante el flujo (evita usar "data" o "uploadedDocuments" viejos)
-      let workingData: PreavisoData = dataRef.current
-      let workingDocs: UploadedDocument[] = uploadedDocumentsRef.current
-      
+      // Preparar items (imagen → docType) antes de procesar
+      type ImgItem = {
+        index: number
+        imageFile: File
+        originalFile: File
+        docType: string
+        originalKey: string
+      }
+
+      const items: ImgItem[] = []
       for (let i = 0; i < allImageFiles.length; i++) {
         const imageFile = allImageFiles[i]
-        // Usar el nombre del documento original para determinar el tipo
-        const originalFile = Array.from(files).find(f => 
+        const originalFile = Array.from(files).find(f =>
           imageFile.name.includes(f.name.replace(/\.[^.]+$/, ''))
         ) || files[0]
         const docType = await detectDocumentType(originalFile.name, originalFile)
-        
-        setProcessingProgress(50 + (i / totalFiles) * 40) // 50-90% para procesamiento
-        
-        try {
-          // Procesar documento con IA para extraer información
-          const formData = new FormData()
-          formData.append('file', imageFile)
-          formData.append('documentType', docType)
-          // Enviar contexto actual para que el backend pueda devolver state (fuente de verdad)
-          formData.append('context', JSON.stringify({
-            tipoOperacion: workingData.tipoOperacion,
-            vendedores: workingData.vendedores || [],
-            compradores: workingData.compradores || [],
-            creditos: workingData.creditos,
-            gravamenes: workingData.gravamenes || [],
-            inmueble: workingData.inmueble,
-            documentos: workingData.documentos,
-            documentosProcesados: workingDocs
-              .filter(d => d.processed && d.extractedData)
-              .map(d => ({
-                nombre: d.name,
-                tipo: d.documentType || 'desconocido',
-                informacionExtraida: d.extractedData
-              })),
-            expedienteExistente: expedienteExistente || undefined
-          }))
+        const originalKey = `${originalFile.name}:${originalFile.size}:${(originalFile as any).lastModified || ''}`
+        items.push({ index: i, imageFile, originalFile, docType, originalKey })
+      }
 
-          // Obtener token de sesión para autenticación (necesario para buscar expedientes)
-          const { data: { session } } = await supabase.auth.getSession()
-          const headers: HeadersInit = {}
-          if (session?.access_token) {
-            headers['Authorization'] = `Bearer ${session.access_token}`
-          }
+      const totalFiles = items.length
+      let completedCount = 0
 
-          const processResponse = await fetch('/api/ai/preaviso-process-document', {
-            method: 'POST',
-            headers,
-            body: formData
-          })
+      // Snapshot mutable para construir contexto correcto durante el flujo (evita usar "data" o "uploadedDocuments" viejos)
+      let workingData: PreavisoData = dataRef.current
+      let workingDocs: UploadedDocument[] = uploadedDocumentsRef.current
 
-          if (processResponse.ok) {
-            const processResult = await processResponse.json()
-            processedCount++
+      // Upload S3: marcar "in-flight" para evitar duplicados en concurrencia
+      const uploadedOriginalFilesThisBatch = new Set<string>()
 
-            if (processResult?.state) {
-              setServerState(processResult.state as ServerStateSnapshot)
-            }
-            
-            // Si hay información de expediente existente, guardarla
-            if (processResult.expedienteExistente) {
-              setExpedienteExistente(processResult.expedienteExistente)
-            }
-            
-            // Actualizar documento original como procesado
-            setUploadedDocuments(prev => {
-              const next = prev.map(d =>
-                d.name === originalFile.name
-                  ? { ...d, processed: true, extractedData: processResult.extractedData, documentType: docType }
-                  : d
-              )
-              workingDocs = next
-              return next
-            })
+      // Aplicar resultados en orden, aunque se procesen en paralelo
+      const pending = new Map<number, any>()
+      let nextToApply = 0
 
-            // Subir documento a S3 y asociarlo al trámite activo (si existe)
-            // Esto permite que los documentos estén disponibles incluso si el usuario sale
-            if (activeTramiteId) {
-              try {
-                // Obtener token de la sesión para autenticación
-                const { data: { session } } = await supabase.auth.getSession()
-                const headers: HeadersInit = {}
-                if (session?.access_token) {
-                  headers['Authorization'] = `Bearer ${session.access_token}`
-                }
+      const applyResult = async (item: ImgItem, processResult: any) => {
+        if (processResult?.state) setServerState(processResult.state as ServerStateSnapshot)
+        if (processResult?.expedienteExistente) setExpedienteExistente(processResult.expedienteExistente)
 
-                const uploadFormData = new FormData()
-                uploadFormData.append('file', originalFile) // Usar archivo original, no imagen convertida
-                uploadFormData.append('compradorId', '') // Sin comprador aún
-                uploadFormData.append('tipo', docType)
-                uploadFormData.append('tramiteId', activeTramiteId)
-
-                const uploadResponse = await fetch('/api/expedientes/documentos/upload', {
-                  method: 'POST',
-                  headers,
-                  body: uploadFormData,
-                })
-
-                if (uploadResponse.ok) {
-                  console.log(`[PreavisoChat] Documento ${originalFile.name} subido a S3 y asociado al trámite`)
-                }
-              } catch (uploadError) {
-                console.error(`Error subiendo documento ${originalFile.name} a S3:`, uploadError)
-                // No bloquear el flujo si falla la subida
-              }
-            }
-
-            // Actualizar datos con información extraída
-            if (processResult.extractedData) {
-              const extracted = processResult.extractedData
-              setData(prev => {
-                const updated = { ...prev }
-                
-                if (docType === 'escritura' || docType === 'inscripcion') {
-                  // Actualizar inmueble (v1.4)
-                  if (extracted.folioReal) updated.inmueble.folio_real = extracted.folioReal
-                  if (extracted.partida) {
-                    if (!updated.inmueble.partidas) updated.inmueble.partidas = []
-                    if (!updated.inmueble.partidas.includes(extracted.partida)) {
-                      updated.inmueble.partidas = [...updated.inmueble.partidas, extracted.partida]
-                    }
-                  }
-                  // Soportar partidas[] si vienen en array
-                  if (Array.isArray(extracted.partidas) && extracted.partidas.length > 0) {
-                    if (!updated.inmueble.partidas) updated.inmueble.partidas = []
-                    for (const p of extracted.partidas) {
-                      if (p && !updated.inmueble.partidas.includes(p)) {
-                        updated.inmueble.partidas = [...updated.inmueble.partidas, p]
-                      }
-                    }
-                  }
-                  if (extracted.ubicacion) {
-                    // Si viene como string, intentar parsear o usar como calle
-                    if (typeof extracted.ubicacion === 'string') {
-                      updated.inmueble.direccion = {
-                        ...updated.inmueble.direccion,
-                        calle: extracted.ubicacion
-                      }
-                    } else {
-                      updated.inmueble.direccion = {
-                        ...updated.inmueble.direccion,
-                        ...extracted.ubicacion
-                      }
-                    }
-                  }
-                  
-                  // Actualizar vendedor (v1.4 - array)
-                  if (extracted.propietario?.nombre) {
-                    if (!updated.vendedores || updated.vendedores.length === 0) {
-                      updated.vendedores = [{
-                        party_id: null,
-                        tipo_persona: null,
-                        persona_fisica: {
-                          nombre: extracted.propietario.nombre || null,
-                          rfc: extracted.propietario.rfc || null,
-                          // En inscripción puede no venir CURP; conservar si existe
-                          curp: extracted.propietario.curp || null,
-                          estado_civil: null
-                        },
-                        tiene_credito: null
-                      }]
-                    } else {
-                      // Actualizar primer vendedor
-                      updated.vendedores[0] = {
-                        ...updated.vendedores[0],
-                        persona_fisica: {
-                          ...updated.vendedores[0].persona_fisica,
-                          nombre: extracted.propietario.nombre || updated.vendedores[0].persona_fisica?.nombre || null,
-                          rfc: extracted.propietario.rfc || updated.vendedores[0].persona_fisica?.rfc || null,
-                          curp: extracted.propietario.curp || updated.vendedores[0].persona_fisica?.curp || null
-                        }
-                      }
-                    }
-                  }
-                  
-                  // Superficie y valor
-                  if (extracted.superficie) {
-                    if (typeof extracted.superficie === 'object') {
-                      const superficieObj = extracted.superficie as any
-                      updated.inmueble.superficie = superficieObj.superficieEdificada 
-                        ? String(superficieObj.superficieEdificada)
-                        : superficieObj.privativa 
-                          ? String(superficieObj.privativa)
-                          : superficieObj.total 
-                            ? String(superficieObj.total)
-                            : JSON.stringify(superficieObj)
-                    } else {
-                      updated.inmueble.superficie = String(extracted.superficie)
-                    }
-                  }
-                  if (extracted.valor) {
-                    updated.inmueble.valor = typeof extracted.valor === 'object' 
-                      ? JSON.stringify(extracted.valor) 
-                      : String(extracted.valor)
-                  }
-                  
-                  // Datos catastrales (v1.4)
-                  if (extracted.unidad) updated.inmueble.datos_catastrales.unidad = extracted.unidad
-                  if (extracted.modulo) updated.inmueble.datos_catastrales.modulo = extracted.modulo
-                  if (extracted.condominio) updated.inmueble.datos_catastrales.condominio = extracted.condominio
-                  if (extracted.lote) updated.inmueble.datos_catastrales.lote = extracted.lote
-                  if (extracted.manzana) updated.inmueble.datos_catastrales.manzana = extracted.manzana
-                  if (extracted.fraccionamiento) updated.inmueble.datos_catastrales.fraccionamiento = extracted.fraccionamiento
-                  if (extracted.colonia) updated.inmueble.direccion.colonia = extracted.colonia
-                } else if (docType === 'plano') {
-                  // Asegurar que superficie sea un string, no un objeto
-                  if (extracted.superficie) {
-                    if (typeof extracted.superficie === 'object') {
-                      const superficieObj = extracted.superficie as any
-                      if (superficieObj.superficieEdificada) {
-                        updated.inmueble.superficie = String(superficieObj.superficieEdificada)
-                      } else if (superficieObj.privativa) {
-                        updated.inmueble.superficie = String(superficieObj.privativa)
-                      } else if (superficieObj.total) {
-                        updated.inmueble.superficie = String(superficieObj.total)
-                      } else {
-                        updated.inmueble.superficie = JSON.stringify(superficieObj)
-                      }
-                    } else {
-                      updated.inmueble.superficie = String(extracted.superficie)
-                    }
-                  }
-                } else if (docType === 'identificacion') {
-                  // Para identificaciones, intentar determinar si es vendedor o comprador (v1.4)
-                  const primerVendedor = data.vendedores?.[0]
-                  const primerComprador = data.compradores?.[0]
-                  const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
-                  const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
-                  
-                  const isVendedor = extracted.tipo === 'vendedor' || (!vendedorNombre && compradorNombre)
-                  const isComprador = extracted.tipo === 'comprador' || (!compradorNombre && vendedorNombre)
-                  
-                  const targetPerson = isVendedor ? 'vendedor' : (isComprador ? 'comprador' : (!vendedorNombre ? 'vendedor' : 'comprador'))
-                  
-                  if (extracted.nombre) {
-                    if (targetPerson === 'vendedor') {
-                      if (!updated.vendedores || updated.vendedores.length === 0) {
-                        updated.vendedores = [{
-                          party_id: null,
-                          tipo_persona: 'persona_fisica',
-                          persona_fisica: {
-                            nombre: extracted.nombre || null,
-                            rfc: extracted.rfc || null,
-                            curp: extracted.curp || null,
-                            estado_civil: null
-                          },
-                          tiene_credito: null
-                        }]
-                      } else {
-                        updated.vendedores[0] = {
-                          ...updated.vendedores[0],
-                          persona_fisica: {
-                            ...updated.vendedores[0].persona_fisica,
-                            nombre: extracted.nombre || updated.vendedores[0].persona_fisica?.nombre || null,
-                            rfc: extracted.rfc || updated.vendedores[0].persona_fisica?.rfc || null,
-                            curp: extracted.curp || updated.vendedores[0].persona_fisica?.curp || null
-                          }
-                        }
-                      }
-                    } else {
-                      if (!updated.compradores || updated.compradores.length === 0) {
-                        updated.compradores = [{
-                          party_id: null,
-                          tipo_persona: 'persona_fisica',
-                          persona_fisica: {
-                            nombre: extracted.nombre || null,
-                            rfc: extracted.rfc || null,
-                            curp: extracted.curp || null,
-                            estado_civil: null
-                          }
-                        }]
-                      } else {
-                        updated.compradores[0] = {
-                          ...updated.compradores[0],
-                          persona_fisica: {
-                            ...updated.compradores[0].persona_fisica,
-                            nombre: extracted.nombre || updated.compradores[0].persona_fisica?.nombre || null,
-                            rfc: extracted.rfc || updated.compradores[0].persona_fisica?.rfc || null,
-                            curp: extracted.curp || updated.compradores[0].persona_fisica?.curp || null
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-                
-                // Mantener workingData sincronizado para construir contextos correctos durante este flujo
-                workingData = updated
-                return updated
-              })
-            }
-          } else {
-            setUploadedDocuments(prev => prev.map(d => 
-              d.name === originalFile.name
-                ? { ...d, processed: true, error: 'Error al procesar' }
-                : d
-            ))
-          }
-        } catch (error) {
-          console.error(`Error procesando ${originalFile.name}:`, error)
-          setUploadedDocuments(prev => prev.map(d => 
-            d.name === originalFile.name
-              ? { ...d, processed: true, error: 'Error al procesar' }
+        // Marcar documento original como procesado (una vez basta; este setState es idempotente)
+        setUploadedDocuments(prev => {
+          const next = prev.map(d =>
+            d.name === item.originalFile.name
+              ? { ...d, processed: true, extractedData: processResult.extractedData, documentType: item.docType }
               : d
-          ))
+          )
+          workingDocs = next
+          return next
+        })
+
+        // Aplicar `data` canónica desde backend
+        if (processResult?.data) {
+          setData(prev => {
+            const updated = { ...prev }
+            const d = processResult.data
+            if (d.tipoOperacion !== undefined) updated.tipoOperacion = d.tipoOperacion
+            if (d.vendedores !== undefined) updated.vendedores = d.vendedores as any
+            if (d.compradores !== undefined) updated.compradores = d.compradores as any
+            if (Object.prototype.hasOwnProperty.call(d, 'creditos')) updated.creditos = d.creditos as any
+            if (d.gravamenes !== undefined) updated.gravamenes = d.gravamenes as any
+            if (d.inmueble) updated.inmueble = d.inmueble as any
+            if (d.control_impresion) updated.control_impresion = d.control_impresion
+            if (d.validaciones) updated.validaciones = d.validaciones
+            updated.actosNotariales = determineActosNotariales(updated)
+            workingData = updated
+            return updated
+          })
         }
+
+        // S3 upload (solo 1 por archivo original)
+        if (activeTramiteId && !uploadedOriginalFilesThisBatch.has(item.originalKey)) {
+          // marcar antes para evitar carreras
+          uploadedOriginalFilesThisBatch.add(item.originalKey)
+          try {
+            const mapToExpedienteTipo = (t: string, serverData?: any): string => {
+              if (t === 'inscripcion') return 'escritura'
+              if (t === 'escritura') return 'escritura'
+              if (t === 'plano') return 'plano'
+              if (t === 'identificacion') {
+                if (serverData && Object.prototype.hasOwnProperty.call(serverData, 'compradores')) return 'ine_comprador'
+                if (serverData && Object.prototype.hasOwnProperty.call(serverData, 'vendedores')) return 'ine_vendedor'
+                return 'ine_comprador'
+              }
+              return 'escritura'
+            }
+            const expedienteTipo = mapToExpedienteTipo(item.docType, processResult?.data)
+
+            const { data: { session } } = await supabase.auth.getSession()
+            const headers: HeadersInit = {}
+            if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
+
+            const uploadFormData = new FormData()
+            uploadFormData.append('file', item.originalFile)
+            uploadFormData.append('compradorId', '')
+            uploadFormData.append('tipo', expedienteTipo)
+            uploadFormData.append('tramiteId', activeTramiteId)
+
+            await fetch('/api/expedientes/documentos/upload', {
+              method: 'POST',
+              headers,
+              body: uploadFormData,
+            })
+          } catch (uploadError) {
+            console.error(`Error subiendo documento ${item.originalFile.name} a S3:`, uploadError)
+            // No bloquear; no reintentar en este lote
+          }
+        }
+      }
+
+      const onOneDone = async (idx: number, item: ImgItem, result: any) => {
+        pending.set(idx, { item, result })
+        // Aplicar en orden, drenando la cola
+        while (pending.has(nextToApply)) {
+          const { item: it, result: r } = pending.get(nextToApply)
+          pending.delete(nextToApply)
+          await applyResult(it, r)
+          nextToApply++
+        }
+      }
+
+      const processOne = async (item: ImgItem) => {
+        // Contexto actual (snapshot) para que el backend devuelva merge + state.
+        // Para PDFs (inscripción/escritura/plano) la dependencia de contexto es baja.
+        // Para identificaciones dejamos concurrencia=1 (ver pool abajo).
+        const formData = new FormData()
+        formData.append('file', item.imageFile)
+        formData.append('documentType', item.docType)
+        formData.append('context', JSON.stringify({
+          tipoOperacion: workingData.tipoOperacion,
+          vendedores: workingData.vendedores || [],
+          compradores: workingData.compradores || [],
+          creditos: workingData.creditos,
+          gravamenes: workingData.gravamenes || [],
+          inmueble: workingData.inmueble,
+          documentos: workingData.documentos,
+          documentosProcesados: workingDocs
+            .filter(d => d.processed && d.extractedData)
+            .map(d => ({
+              nombre: d.name,
+              tipo: d.documentType || 'desconocido',
+              informacionExtraida: d.extractedData
+            })),
+          expedienteExistente: expedienteExistente || undefined
+        }))
+
+        const { data: { session } } = await supabase.auth.getSession()
+        const headers: HeadersInit = {}
+        if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
+
+        const processResponse = await fetch('/api/ai/preaviso-process-document', {
+          method: 'POST',
+          headers,
+          body: formData
+        })
+
+        if (!processResponse.ok) {
+          return { __error: true, status: processResponse.status, text: await processResponse.text() }
+        }
+        return await processResponse.json()
+      }
+
+      // Pool runner (concurrencia limitada)
+      const runPool = async (poolItems: ImgItem[], concurrency: number) => {
+        let cursor = 0
+        const workers = Array.from({ length: concurrency }).map(async () => {
+          while (cursor < poolItems.length) {
+            const myIdx = cursor++
+            const item = poolItems[myIdx]
+            try {
+              const result = await processOne(item)
+              completedCount++
+              setProcessingProgress(50 + (completedCount / Math.max(1, totalFiles)) * 40)
+              await onOneDone(item.index, item, result)
+            } catch (e) {
+              console.error(`Error procesando ${item.originalFile.name}:`, e)
+              completedCount++
+              setProcessingProgress(50 + (completedCount / Math.max(1, totalFiles)) * 40)
+              await onOneDone(item.index, item, { __error: true })
+            }
+          }
+        })
+        await Promise.all(workers)
+      }
+
+      // Identificaciones: secuencial (context-sensitive). PDFs: concurrencia=2.
+      const idItems = items.filter(it => it.docType === 'identificacion')
+      const otherItems = items.filter(it => it.docType !== 'identificacion')
+
+      if (otherItems.length > 0) {
+        await runPool(otherItems, 2)
+      }
+      if (idItems.length > 0) {
+        await runPool(idItems, 1)
       }
 
       setProcessingProgress(90) // 90% después de procesar todos los archivos

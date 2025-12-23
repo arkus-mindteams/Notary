@@ -138,10 +138,18 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   const primerComprador = compradores[0]
   const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
   const compradorTipoPersona = primerComprador?.tipo_persona
-  // Regla mínima: nombre + tipo_persona; CURP/RFC/CSF no bloqueantes
-  if (compradorNombre && compradorTipoPersona) {
+  // Regla:
+  // - Persona moral: nombre + tipo_persona
+  // - Persona física: nombre + tipo_persona + estado_civil (para decidir rama de cónyuge y para el documento)
+  // CURP/RFC/CSF no bloqueantes.
+  const compradorEstadoCivil = primerComprador?.persona_fisica?.estado_civil || null
+  const compradorFisicaCompleto =
+    compradorTipoPersona === 'persona_fisica' && !!compradorNombre && !!compradorEstadoCivil
+  const compradorMoralCompleto = compradorTipoPersona === 'persona_moral' && !!compradorNombre
+
+  if (compradorFisicaCompleto || compradorMoralCompleto) {
     stateStatus.ESTADO_4 = 'completed'
-  } else if (compradorNombre || compradorTipoPersona) {
+  } else if (compradorNombre || compradorTipoPersona || compradorEstadoCivil) {
     stateStatus.ESTADO_4 = 'incomplete'
   }
 
@@ -280,6 +288,9 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   if (currentState === 'ESTADO_4') {
     if (compradores.length === 0) requiredMissing.push('compradores[]')
     if (!compradorTipoPersona) requiredMissing.push('compradores[].tipo_persona')
+    if (compradorTipoPersona === 'persona_fisica' && !compradorEstadoCivil) {
+      requiredMissing.push('compradores[0].persona_fisica.estado_civil')
+    }
   }
 
   if (currentState === 'ESTADO_5') {
