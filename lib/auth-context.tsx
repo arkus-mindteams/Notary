@@ -22,47 +22,71 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Memoizar la instancia del cliente para evitar recrearla en cada render
   const supabase = useMemo(() => createBrowserClient(), [])
   const fetchingRef = useRef(false) // Ref para evitar llamadas duplicadas
+  const pendingFetchRef = useRef<Promise<void> | null>(null) // Promise compartida para evitar "early return" con loading pegado
 
   const fetchUser = useCallback(async (authUserId: string) => {
-    // Evitar llamadas duplicadas simultáneas
-    if (fetchingRef.current) {
-      return
+    // Evitar llamadas duplicadas simultáneas: si ya hay una en curso, esperar la misma.
+    if (fetchingRef.current && pendingFetchRef.current) {
+      return await pendingFetchRef.current
     }
 
-    try {
-      fetchingRef.current = true
+    const run = async () => {
+      try {
+        fetchingRef.current = true
       
-      // Obtener token de la sesión actual
-      const { data: { session: currentSession } } = await supabase.auth.getSession()
+        // Obtener token de la sesión actual (con timeout defensivo)
+        const sessionPromise = supabase.auth.getSession()
+        const sessionResult = await Promise.race([
+          sessionPromise,
+          new Promise<{ data: { session: Session | null } }>((resolve) =>
+            setTimeout(() => resolve({ data: { session: null } }), 5000)
+          ),
+        ])
+        const currentSession = (sessionResult as any)?.data?.session as Session | null
       
-      if (!currentSession?.access_token) {
+        if (!currentSession?.access_token) {
+          setUser(null)
+          setSession(null)
+          setIsLoading(false)
+          return
+        }
+
+        // Fetch /api/auth/me con timeout (en Vercel a veces puede colgarse por red/cold start)
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 7000)
+        let response: Response | null = null
+        try {
+          response = await fetch('/api/auth/me', {
+            headers: {
+              'Authorization': `Bearer ${currentSession.access_token}`,
+            },
+            signal: controller.signal,
+          })
+        } finally {
+          clearTimeout(timeoutId)
+        }
+      
+        if (response && response.ok) {
+          const data = await response.json()
+          setUser(data.user)
+        } else {
+          // Si el endpoint falla/no responde, no dejar loading pegado
+          setUser(null)
+          // No tumbar sesión automáticamente aquí: puede ser un fallo temporal del backend.
+        }
+      } catch (error) {
+        console.error('Error fetching user:', error)
         setUser(null)
-        setSession(null)
+        // idem: no borrar sesión por default; solo salir de loading
+      } finally {
         setIsLoading(false)
-        return
+        fetchingRef.current = false
+        pendingFetchRef.current = null
       }
-
-      const response = await fetch('/api/auth/me', {
-        headers: {
-          'Authorization': `Bearer ${currentSession.access_token}`,
-        },
-      })
-      
-      if (response.ok) {
-        const data = await response.json()
-        setUser(data.user)
-      } else {
-        setUser(null)
-        setSession(null)
-      }
-    } catch (error) {
-      console.error('Error fetching user:', error)
-      setUser(null)
-      setSession(null)
-    } finally {
-      setIsLoading(false)
-      fetchingRef.current = false
     }
+
+    pendingFetchRef.current = run()
+    return await pendingFetchRef.current
   }, [supabase])
 
   // Verificar sesión al cargar
