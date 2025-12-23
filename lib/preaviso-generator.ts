@@ -114,11 +114,15 @@ A QUIEN CORRESPONDA:
   }
 
   private static generateAntecedentesSection(data: PreavisoData): string {
+    const folioReal = data.inmueble?.folio_real || ''
+    const partidas = data.inmueble?.partidas || []
+    const partidasStr = partidas.length > 0 ? partidas.join(', ') : ''
+    
     return `Por medio del presente documento, me dirijo a ustedes para solicitar la certificación de libertad de gravamen o existencia de afectaciones del inmueble que a continuación se describe, conforme a lo dispuesto en el artículo 2885 del Código Civil del Estado de Baja California y demás disposiciones aplicables.
 
 ANTECEDENTES:
 
-1. El inmueble objeto de la presente solicitud se encuentra inscrito en el Registro Público de la Propiedad y del Comercio del Estado de Baja California bajo el folio real número ${data.inmueble.folioReal}${data.inmueble.seccion ? `, sección ${data.inmueble.seccion}` : ''}${data.inmueble.partida ? `, partida ${data.inmueble.partida}` : ''}.
+1. El inmueble objeto de la presente solicitud se encuentra inscrito en el Registro Público de la Propiedad y del Comercio del Estado de Baja California bajo el folio real número ${folioReal}${partidasStr ? `, partida(s) ${partidasStr}` : ''}.
 
 2. El acto jurídico que motiva la presente solicitud es una COMPRAVENTA DE INMUEBLE, que se pretende celebrar entre las partes que se identifican en el apartado siguiente.
 
@@ -127,18 +131,27 @@ ANTECEDENTES:
   }
 
   private static generatePartesSection(data: PreavisoData): string {
+    const primerVendedor = data.vendedores?.[0]
+    const primerComprador = data.compradores?.[0]
+    const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social || 'No especificado'
+    const vendedorRfc = primerVendedor?.persona_fisica?.rfc || primerVendedor?.persona_moral?.rfc || 'No especificado'
+    const vendedorCurp = primerVendedor?.persona_fisica?.curp || 'No especificado'
+    const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social || 'No especificado'
+    const compradorRfc = primerComprador?.persona_fisica?.rfc || primerComprador?.persona_moral?.rfc || 'No especificado'
+    const compradorCurp = primerComprador?.persona_fisica?.curp || 'No especificado'
+    
     let partes = `IDENTIFICACIÓN DE LAS PARTES:
 
 VENDEDOR:
-- Nombre: ${data.vendedor.nombre}
-- RFC: ${data.vendedor.rfc}
-- CURP: ${data.vendedor.curp}
+- Nombre: ${vendedorNombre}
+- RFC: ${vendedorRfc}
+- CURP: ${vendedorCurp}
 `
 
-    if (data.vendedor.tieneCredito) {
+    if (primerVendedor?.tiene_credito) {
       partes += `- Crédito pendiente: Sí
-- Institución: ${data.vendedor.institucionCredito || 'No especificada'}
-- Número de crédito: ${data.vendedor.numeroCredito || 'No especificado'}
+- Institución: ${primerVendedor.credito_vendedor?.institucion || 'No especificada'}
+- Número de crédito: ${primerVendedor.credito_vendedor?.numero_credito || 'No especificado'}
 `
     } else {
       partes += `- Crédito pendiente: No
@@ -147,16 +160,18 @@ VENDEDOR:
 
     partes += `
 COMPRADOR:
-- Nombre: ${data.comprador.nombre}
-- RFC: ${data.comprador.rfc}
-- CURP: ${data.comprador.curp}
+- Nombre: ${compradorNombre}
+- RFC: ${compradorRfc}
+- CURP: ${compradorCurp}
 `
 
-    if (data.comprador.necesitaCredito) {
-      partes += `- Requiere crédito: Sí
-- Institución: ${data.comprador.institucionCredito || 'No especificada'}
-- Monto del crédito: ${data.comprador.montoCredito || 'No especificado'}
-`
+    const tieneCreditos = data.creditos && data.creditos.length > 0
+    if (tieneCreditos) {
+      partes += `- Requiere crédito: Sí\n`
+      data.creditos.forEach((credito, index) => {
+        partes += `- Crédito ${index + 1} - Institución: ${credito.institucion || 'No especificada'}\n`
+        partes += `- Crédito ${index + 1} - Monto: ${credito.monto || 'No especificado'}\n`
+      })
     } else {
       partes += `- Requiere crédito: No
 `
@@ -166,43 +181,71 @@ COMPRADOR:
   }
 
   private static generateInmuebleSection(data: PreavisoData): string {
+    const direccion = data.inmueble?.direccion
+    const direccionStr = typeof direccion === 'string' 
+      ? direccion 
+      : direccion?.calle 
+        ? `${direccion.calle} ${direccion.numero || ''} ${direccion.colonia || ''}`.trim()
+        : 'No especificada'
+    const folioReal = data.inmueble?.folio_real || ''
+    const partidas = data.inmueble?.partidas || []
+    const partidasStr = partidas.length > 0 ? partidas.join(', ') : ''
+    
     return `IDENTIFICACIÓN DEL INMUEBLE:
 
 El inmueble objeto de la presente solicitud se identifica de la siguiente manera:
 
-1. UBICACIÓN: ${data.inmueble.direccion}
-2. FOLIO REAL: ${data.inmueble.folioReal}${data.inmueble.seccion ? `, Sección ${data.inmueble.seccion}` : ''}${data.inmueble.partida ? `, Partida ${data.inmueble.partida}` : ''}
-3. SUPERFICIE: ${data.inmueble.superficie} metros cuadrados
-4. VALOR DE LA OPERACIÓN: $${data.inmueble.valor}
+1. UBICACIÓN: ${direccionStr}
+2. FOLIO REAL: ${folioReal}${partidasStr ? `, Partida(s) ${partidasStr}` : ''}
+3. SUPERFICIE: ${data.inmueble?.superficie || 'No especificada'} metros cuadrados
+4. VALOR DE LA OPERACIÓN: $${data.inmueble?.valor || 'No especificado'}
 
 El inmueble se encuentra debidamente inscrito en el Registro Público de la Propiedad y del Comercio del Estado de Baja California.
 `
   }
 
   private static generateActosSection(data: PreavisoData): string {
-    const actos = []
+    const primerVendedor = data.vendedores?.[0]
+    const primerComprador = data.compradores?.[0]
+    const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social || 'No especificado'
+    const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social || 'No especificado'
+    const direccion = data.inmueble?.direccion
+    const direccionStr = typeof direccion === 'string' 
+      ? direccion 
+      : direccion?.calle 
+        ? `${direccion.calle} ${direccion.numero || ''} ${direccion.colonia || ''}`.trim()
+        : 'No especificada'
     
-    if (data.actosNotariales.cancelacionCreditoVendedor) {
-      actos.push(`1. CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:
-   - Vendedor: ${data.vendedor.nombre}
-   - Institución crediticia: ${data.vendedor.institucionCredito || 'No especificada'}
-   - Número de crédito: ${data.vendedor.numeroCredito || 'No especificado'}
+    const actos = []
+    let actoNum = 1
+    
+    if (primerVendedor?.tiene_credito || (data.gravamenes && data.gravamenes.length > 0)) {
+      actos.push(`${actoNum}. CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:
+   - Vendedor: ${vendedorNombre}
+   - Institución crediticia: ${primerVendedor?.credito_vendedor?.institucion || 'No especificada'}
+   - Número de crédito: ${primerVendedor?.credito_vendedor?.numero_credito || 'No especificado'}
    - Objeto: Cancelar el crédito o hipoteca que grava el inmueble objeto de la compraventa.`)
+      actoNum++
     }
     
-    actos.push(`2. COMPRAVENTA DE INMUEBLE:
-   - Vendedor: ${data.vendedor.nombre}
-   - Comprador: ${data.comprador.nombre}
-   - Inmueble: ${data.inmueble.direccion}
-   - Valor: $${data.inmueble.valor}
+    actos.push(`${actoNum}. COMPRAVENTA DE INMUEBLE:
+   - Vendedor: ${vendedorNombre}
+   - Comprador: ${compradorNombre}
+   - Inmueble: ${direccionStr}
+   - Valor: $${data.inmueble?.valor || 'No especificado'}
    - Objeto: Transmitir la propiedad del inmueble del vendedor al comprador.`)
+    actoNum++
     
-    if (data.actosNotariales.aperturaCreditoComprador) {
-      actos.push(`3. APERTURA DE CRÉDITO DEL COMPRADOR:
-   - Comprador: ${data.comprador.nombre}
-   - Institución crediticia: ${data.comprador.institucionCredito || 'No especificada'}
-   - Monto: ${data.comprador.montoCredito || 'No especificado'}
+    if (data.creditos && data.creditos.length > 0) {
+      data.creditos.forEach((credito, index) => {
+        actos.push(`${actoNum}. APERTURA DE CRÉDITO ${data.creditos.length > 1 ? `(${index + 1})` : ''}:
+   - Comprador: ${compradorNombre}
+   - Institución crediticia: ${credito.institucion || 'No especificada'}
+   - Monto: ${credito.monto || 'No especificado'}
+   - Tipo: ${credito.tipo_credito || 'No especificado'}
    - Objeto: Constituir hipoteca o garantía sobre el inmueble adquirido para garantizar el crédito otorgado.`)
+        actoNum++
+      })
     }
 
     return `ACTOS JURÍDICOS PROPUESTOS:
@@ -239,11 +282,21 @@ La certificación con efecto de pre-aviso tiene por objeto garantizar que el inm
   }
 
   private static generateSolicitudSection(data: PreavisoData): string {
+    const direccion = data.inmueble?.direccion
+    const direccionStr = typeof direccion === 'string' 
+      ? direccion 
+      : direccion?.calle 
+        ? `${direccion.calle} ${direccion.numero || ''} ${direccion.colonia || ''}`.trim()
+        : 'No especificada'
+    const folioReal = data.inmueble?.folio_real || ''
+    const partidas = data.inmueble?.partidas || []
+    const partidasStr = partidas.length > 0 ? partidas.join(', ') : ''
+    
     return `SOLICITUD:
 
 Por lo anteriormente expuesto, respetuosamente SOLICITO a ustedes:
 
-1. Certificar la libertad de gravamen o existencia de afectaciones del inmueble identificado como ${data.inmueble.direccion}, inscrito en el folio real número ${data.inmueble.folioReal}${data.inmueble.seccion ? `, sección ${data.inmueble.seccion}` : ''}${data.inmueble.partida ? `, partida ${data.inmueble.partida}` : ''}.
+1. Certificar la libertad de gravamen o existencia de afectaciones del inmueble identificado como ${direccionStr}, inscrito en el folio real número ${folioReal}${partidasStr ? `, partida(s) ${partidasStr}` : ''}.
 
 2. Emitir el certificado correspondiente con efecto de pre-aviso, conforme a lo establecido en el artículo 2885 del Código Civil del Estado de Baja California.
 

@@ -387,42 +387,68 @@ export class PreavisoTemplateRenderer {
    * Convierte PreavisoData (formato actual) a PreavisoSimplifiedJSON
    */
   static convertFromPreavisoData(data: PreavisoData): PreavisoSimplifiedJSON {
+    // Convertir v1.4 (arrays) a PreavisoSimplifiedJSON
+    const primerVendedor = data.vendedores?.[0]
+    const primerComprador = data.compradores?.[0]
+    
+    // Construir direccion como string
+    const direccion = data.inmueble?.direccion
+    const direccionStr = typeof direccion === 'string' 
+      ? direccion 
+      : direccion?.calle 
+        ? `${direccion.calle} ${direccion.numero || ''} ${direccion.colonia || ''}`.trim()
+        : null
+    
     return {
       tipoOperacion: data.tipoOperacion,
-      vendedor: data.vendedor ? {
-        nombre: data.vendedor.nombre || null,
-        rfc: data.vendedor.rfc || null,
-        curp: data.vendedor.curp || null,
-        tipoPersona: null, // No está en PreavisoData actual
-        tieneCredito: data.vendedor.tieneCredito,
-        institucionCredito: data.vendedor.institucionCredito || null,
-        numeroCredito: data.vendedor.numeroCredito || null
-      } : null,
-      comprador: data.comprador ? {
-        nombre: data.comprador.nombre || null,
-        rfc: data.comprador.rfc || null,
-        curp: data.comprador.curp || null,
-        tipoPersona: null, // No está en PreavisoData actual
-        necesitaCredito: data.comprador.necesitaCredito,
-        institucionCredito: data.comprador.institucionCredito || null,
-        montoCredito: data.comprador.montoCredito || null
-      } : null,
+      vendedores: data.vendedores?.map(v => ({
+        nombre: v.persona_fisica?.nombre || v.persona_moral?.denominacion_social || null,
+        rfc: v.persona_fisica?.rfc || v.persona_moral?.rfc || null,
+        curp: v.persona_fisica?.curp || null,
+        tipoPersona: v.tipo_persona || null,
+        denominacion_social: v.persona_moral?.denominacion_social || null,
+        estado_civil: v.persona_fisica?.estado_civil || null,
+        tieneCredito: v.tiene_credito !== null ? v.tiene_credito : null,
+        institucionCredito: v.credito_vendedor?.institucion || null,
+        numeroCredito: v.credito_vendedor?.numero_credito || null
+      })) || [],
+      compradores: data.compradores?.map(c => ({
+        nombre: c.persona_fisica?.nombre || c.persona_moral?.denominacion_social || null,
+        rfc: c.persona_fisica?.rfc || c.persona_moral?.rfc || null,
+        curp: c.persona_fisica?.curp || null,
+        tipoPersona: c.tipo_persona || null,
+        denominacion_social: c.persona_moral?.denominacion_social || null,
+        estado_civil: c.persona_fisica?.estado_civil || null,
+        necesitaCredito: data.creditos && data.creditos.length > 0 ? true : null,
+        institucionCredito: data.creditos?.[0]?.institucion || null,
+        montoCredito: data.creditos?.[0]?.monto || null
+      })) || [],
+      creditos: data.creditos?.map(c => ({
+        institucion: c.institucion || null,
+        monto: c.monto || null,
+        tipo_credito: c.tipo_credito || null,
+        participantes: c.participantes || []
+      })) || [],
       inmueble: data.inmueble ? {
-        direccion: data.inmueble.direccion || null,
-        folioReal: data.inmueble.folioReal || null,
-        seccion: data.inmueble.seccion || null,
-        partida: data.inmueble.partida || null,
+        direccion: direccionStr,
+        folioReal: data.inmueble.folio_real || null,
+        partidas: data.inmueble.partidas || [],
+        seccion: null, // No está en v1.4 directamente
         superficie: data.inmueble.superficie || null,
         valor: data.inmueble.valor || null,
-        unidad: data.inmueble.unidad || null,
-        modulo: data.inmueble.modulo || null,
-        condominio: data.inmueble.condominio || null,
-        lote: data.inmueble.lote || null,
-        manzana: data.inmueble.manzana || null,
-        fraccionamiento: data.inmueble.fraccionamiento || null,
-        colonia: data.inmueble.colonia || null
+        unidad: data.inmueble.datos_catastrales?.unidad || null,
+        modulo: data.inmueble.datos_catastrales?.modulo || null,
+        condominio: data.inmueble.datos_catastrales?.condominio || null,
+        lote: data.inmueble.datos_catastrales?.lote || null,
+        manzana: data.inmueble.datos_catastrales?.manzana || null,
+        fraccionamiento: data.inmueble.datos_catastrales?.fraccionamiento || null,
+        colonia: data.inmueble.direccion?.colonia || null
       } : null,
-      actos: data.actosNotariales
+      actos: data.actosNotariales || {
+        cancelacionCreditoVendedor: false,
+        compraventa: false,
+        aperturaCreditoComprador: false
+      }
     }
   }
 }

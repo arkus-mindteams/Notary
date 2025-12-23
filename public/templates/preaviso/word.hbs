@@ -1,87 +1,75 @@
 {{! Template para generar Pre-Aviso en formato Word }}
-{{! Estructura según PROMPT 2: ESTRUCTURA FIJA DEL PRE-AVISO }}
+{{! Estructura según formato oficial de la Notaría No. 3 }}
 
 {{! 1. Encabezado del notario }}
-NOTARÍA PÚBLICA NÚMERO {{notaria.numero}}
-{{notaria.nombre}}
-{{notaria.ciudad}}, {{notaria.estado}}
+LIC. XAVIER IBÁÑEZ VERAMENDI
+NOTARIO TITULAR DE LA NOTARÍA NO. 3 DE ESTA CIUDAD.
+CALLE ANTONIO CASO # 2040, SEGUNDO PISO, ZONA RIO, TIJUANA B.C.
+TEL: 200-24-27
 
 {{! 2. Título del documento }}
-SOLICITUD DE CERTIFICADO CON EFECTO DE PRE-AVISO
+SOLICITUD DE CERTIFICADO CON
+EFECTO DE PRE-AVISO Y DE INFORME DE EXISTENCIA O INEXISTENCIA DECLARATORIAS DE USO O DESTINO, MANIFESTACIONES O RESERVAS
 
 {{! 3. ANTECEDENTES REGISTRALES }}
-En {{notaria.ciudad}}, {{notaria.estado}}, a los {{fecha.dia}} días del mes de {{fecha.mes}} de {{fecha.ano}}.
+ANTECEDENTES REGISTRALES
+{{#if inmueble.numero_expediente}}                                               No. {{inmueble.numero_expediente}}{{#if inmueble.seccion}} SECCION {{inmueble.seccion}}{{/if}}{{/if}}
+         	FOLIO REAL: {{inmueble.folioReal}}{{#if inmueble.partidas}}{{#each inmueble.partidas}}{{#if @first}}{{else}}, {{/if}}{{this}}{{/each}}{{/if}}
 
 C. DIRECTOR DEL REGISTRO PÚBLICO
 DE LA PROPIEDAD Y DEL COMERCIO.
 P R E S E N T E.
 
 {{! 4. Párrafo legal del art. 2885 }}
-Con fundamento en lo dispuesto en el artículo 2,885 del Código Civil del Estado de Baja California, ante mi fe se pretenden otorgar LOS SIGUIENTES ACTOS JURÍDICOS:
+LIC. XAVIER IBÁÑEZ VERAMENDI, Notario Titular de la Notaría No. 3 de esta ciudad, para los efectos de lo dispuesto por el artículo 2,885 del Código Civil del Estado, hace de su conocimiento que ante mi fe se pretenden otorgar LOS SIGUIENTES ACTOS JURIDICOS:
 
-{{! 5. Actos jurídicos numerados (romanos) }}
+{{! 5. Actos jurídicos numerados (romanos con guión) }}
 {{#if actos.cancelacionCreditoVendedor}}
-I. CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:
-   - Vendedor: {{vendedor.nombre}}{{#if vendedor.denominacion_social}} ({{vendedor.denominacion_social}}){{/if}}
-   {{#if vendedor.institucionCredito}}- Institución crediticia: {{vendedor.institucionCredito}}{{/if}}
-   {{#if vendedor.numeroCredito}}- Número de crédito: {{vendedor.numeroCredito}}{{/if}}
-   - Objeto: Cancelar el crédito o hipoteca que grava el inmueble objeto de la compraventa.
+I.- CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:
+
+VENDEDOR: {{vendedor.nombre}}{{#if vendedor.denominacion_social}}, {{vendedor.denominacion_social}}{{/if}}.
+{{#if vendedor.institucionCredito}}ACREEDOR: {{vendedor.institucionCredito}}{{#if vendedor.numeroCredito}}, NÚMERO DE CRÉDITO: {{vendedor.numeroCredito}}{{/if}}.
+{{/if}}
 {{/if}}
 
 {{#if actos.compraventa}}
-{{#if actos.cancelacionCreditoVendedor}}II{{else}}I{{/if}}. COMPRAVENTA DE INMUEBLE:
-   - Vendedor: {{vendedor.nombre}}{{#if vendedor.denominacion_social}} ({{vendedor.denominacion_social}}){{/if}}
-   - Comprador: {{comprador.nombre}}{{#if comprador.denominacion_social}} ({{comprador.denominacion_social}}){{/if}}
-   - Inmueble: {{inmueble.direccion}}
-   - Valor: ${{inmueble.valor}}
-   - Objeto: Transmitir la propiedad del inmueble del vendedor al comprador.
+{{#if actos.cancelacionCreditoVendedor}}II{{else}}I{{/if}}.- CONTRATO DE TRANSMISION DE PROPIEDAD:
+
+{{#if vendedor.denominacion_social}}TRANSMITENTE: {{vendedor.denominacion_social}}.
+{{else}}TRANSMITENTE: {{vendedor.nombre}}.
+{{/if}}
+ADQUIRIENTE: {{comprador.nombre}}{{#if comprador.denominacion_social}}, {{comprador.denominacion_social}}{{/if}}.
 {{/if}}
 
 {{#if actos.aperturaCreditoComprador}}
-{{#if actos.cancelacionCreditoVendedor}}{{#if actos.compraventa}}III{{else}}II{{/if}}{{else}}{{#if actos.compraventa}}II{{else}}I{{/if}}{{/if}}. APERTURA DE CRÉDITO DEL COMPRADOR:
-   - Comprador: {{comprador.nombre}}{{#if comprador.denominacion_social}} ({{comprador.denominacion_social}}){{/if}}
-   {{#if comprador.institucionCredito}}- Institución crediticia: {{comprador.institucionCredito}}{{/if}}
-   {{#if comprador.montoCredito}}- Monto: {{comprador.montoCredito}}{{/if}}
-   - Objeto: Constituir hipoteca o garantía sobre el inmueble adquirido para garantizar el crédito otorgado.
+{{#if actos.cancelacionCreditoVendedor}}{{#if actos.compraventa}}III{{else}}II{{/if}}{{else}}{{#if actos.compraventa}}II{{else}}I{{/if}}{{/if}}.- CONTRATO DE APERTURA DE CRÉDITO CON GARANTÍA HIPOTECARIA:
+
+DEUDOR: {{comprador.nombre}}{{#if comprador.denominacion_social}}, {{comprador.denominacion_social}}{{/if}}.
+{{#if comprador.institucionCredito}}ACREEDOR: {{comprador.institucionCredito}}.
+{{/if}}
 {{/if}}
 
-{{! 6. OBJETO DE LA COMPRAVENTA / TRANSMISIÓN Y GARANTÍA }}
+{{! 6. OBJETO DE LA TRANSMISIÓN Y GARANTÍA }}
 {{#if actos.aperturaCreditoComprador}}
-OBJETO DE LA COMPRAVENTA Y GARANTÍA
+OBJETO DE LA TRANSMISION Y GARANTIA: 
 {{else}}
-OBJETO DE LA COMPRAVENTA
+OBJETO DE LA TRANSMISION: 
 {{/if}}
 
-{{! 7. Descripción del inmueble (factual, sin interpretar) }}
-El inmueble objeto de la presente solicitud se identifica de la siguiente manera:
+{{! 7. Descripción del inmueble (formato específico) }}
+{{#if inmueble.unidad}}{{inmueble.unidad}}{{#if inmueble.condominio}}, DEL {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}}, CONSTRUIDO SOBRE EL LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, DEL {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
+{{else}}{{#if inmueble.direccion}}{{inmueble.direccion}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
+{{else}}INMUEBLE UBICADO EN {{inmueble.colonia}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
+{{/if}}{{/if}}
 
-1. UBICACIÓN: {{inmueble.direccion}}
-2. FOLIO REAL: {{inmueble.folioReal}}{{#if inmueble.seccion}}, Sección {{inmueble.seccion}}{{/if}}{{#if inmueble.partida}}, Partida {{inmueble.partida}}{{/if}}
-3. SUPERFICIE: {{inmueble.superficie}} metros cuadrados
-4. VALOR DE LA OPERACIÓN: ${{inmueble.valor}}
-{{#if inmueble.lote}}5. LOTE: {{inmueble.lote}}{{/if}}
-{{#if inmueble.manzana}}6. MANZANA: {{inmueble.manzana}}{{/if}}
-{{#if inmueble.fraccionamiento}}7. FRACCIONAMIENTO: {{inmueble.fraccionamiento}}{{/if}}
-{{#if inmueble.colonia}}8. COLONIA: {{inmueble.colonia}}{{/if}}
-{{#if inmueble.condominio}}9. CONDOMINIO: {{inmueble.condominio}}{{/if}}
-{{#if inmueble.unidad}}10. UNIDAD: {{inmueble.unidad}}{{/if}}
-{{#if inmueble.modulo}}11. MÓDULO: {{inmueble.modulo}}{{/if}}
-
-El inmueble se encuentra debidamente inscrito en el Registro Público de la Propiedad y del Comercio del Estado de Baja California.
+Asimismo, en los términos del Artículo 139 de la Ley de Desarrollo Urbano para el Estado, solicitó la certificación de inscripción de existencia o inexistencia de declaratorias de uso o destino, avisos, manifestaciones o reservas del inmueble materia de (los) acto (s) antes referido (s).
 
 {{! 8. Cierre }}
-TIJUANA, B. C., AL MOMENTO DE SU PRESENTACIÓN.
+TIJUANA, B. C., A LA FECHA DE SU PRESENTACION.
+
+
+
 
 {{! 9. Firma del notario }}
-_________________________________
-{{notaria.nombre}}
-NOTARIO PÚBLICO NÚMERO {{notaria.numero}}
-{{notaria.ciudad}}, {{notaria.estado}}
-
-CERTIFICO: Que la presente solicitud ha sido debidamente autorizada y firmada en mi presencia, en la fecha y lugar antes señalados.
-
-_________________________________
-{{notaria.nombre}}
-NOTARIO PÚBLICO NÚMERO {{notaria.numero}}
-{{notaria.ciudad}}, {{notaria.estado}}
+LIC. XAVIER IBÁÑEZ VERAMENDI
 

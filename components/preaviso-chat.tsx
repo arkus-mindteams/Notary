@@ -39,47 +39,143 @@ export interface ChatMessage {
   attachments?: File[]
 }
 
+// Interfaces alineadas con Canonical JSON v1.4
+export interface PersonaFisica {
+  nombre: string | null
+  rfc: string | null
+  curp: string | null
+  estado_civil: string | null
+  conyuge?: {
+    nombre: string | null
+    participa: boolean
+  }
+}
+
+export interface PersonaMoral {
+  denominacion_social: string | null
+  rfc: string | null
+  csf_provided: boolean
+  csf_reference: string | null
+  name_confirmed_exact: boolean
+}
+
+export interface CompradorElement {
+  party_id: string | null
+  tipo_persona: 'persona_fisica' | 'persona_moral' | null
+  persona_fisica?: PersonaFisica
+  persona_moral?: PersonaMoral
+}
+
+export interface VendedorElement {
+  party_id: string | null
+  tipo_persona: 'persona_fisica' | 'persona_moral' | null
+  persona_fisica?: PersonaFisica
+  persona_moral?: PersonaMoral
+  tiene_credito: boolean | null
+  credito_vendedor?: {
+    institucion: string | null
+    numero_credito: string | null
+  }
+}
+
+export interface ParticipanteCredito {
+  party_id: string | null
+  rol: 'acreditado' | 'coacreditado' | null
+}
+
+export interface CreditoElement {
+  credito_id: string | null
+  institucion: string | null
+  monto: string | null
+  participantes: ParticipanteCredito[]
+  tipo_credito: string | null
+}
+
+export interface GravamenElement {
+  gravamen_id: string | null
+  tipo: string | null
+  institucion: string | null
+  numero_credito: string | null
+  cancelacion_confirmada: boolean
+}
+
+export interface DireccionInmueble {
+  calle: string | null
+  numero: string | null
+  colonia: string | null
+  municipio: string | null
+  estado: string | null
+  codigo_postal: string | null
+}
+
+export interface DatosCatastrales {
+  lote: string | null
+  manzana: string | null
+  fraccionamiento: string | null
+  condominio: string | null
+  unidad: string | null
+  modulo: string | null
+}
+
+export interface InmuebleV14 {
+  folio_real: string | null
+  partidas: string[]
+  all_registry_pages_confirmed: boolean
+  direccion: DireccionInmueble
+  superficie: string | null
+  valor: string | null
+  datos_catastrales: DatosCatastrales
+}
+
 export interface PreavisoData {
+  // Meta (opcional, se puede agregar después)
   tipoOperacion: 'compraventa' | null
-  vendedor: {
-    nombre: string
-    rfc: string
-    curp: string
-    tieneCredito: boolean
-    institucionCredito?: string
-    numeroCredito?: string
+  
+  // Arrays según v1.4
+  vendedores: VendedorElement[]
+  compradores: CompradorElement[]
+  // creditos:
+  // - undefined => forma de pago DESCONOCIDA (aún no confirmada por el usuario)
+  // - []        => CONTADO confirmado
+  // - [..]      => CRÉDITO(s) (deben estar completos)
+  creditos?: CreditoElement[]
+  gravamenes: GravamenElement[]
+  
+  // Inmueble según v1.4
+  inmueble: InmuebleV14
+  
+  // Control de impresión
+  control_impresion?: {
+    imprimir_conyuges: boolean
+    imprimir_coacreditados: boolean
+    imprimir_creditos: boolean
   }
-  comprador: {
-    nombre: string
-    rfc: string
-    curp: string
-    necesitaCredito: boolean | undefined // undefined = no capturado, true/false = capturado
-    institucionCredito?: string
-    montoCredito?: string
+  
+  // Validaciones
+  validaciones?: {
+    expediente_existente: boolean
+    datos_completos: boolean
+    bloqueado: boolean
   }
-  inmueble: {
-    direccion: string
-    folioReal: string
-    seccion: string
-    partida: string
-    superficie: string
-    valor: string
-    unidad?: string
-    modulo?: string
-    condominio?: string
-    conjuntoHabitacional?: string
-    lote?: string
-    manzana?: string
-    fraccionamiento?: string
-    colonia?: string
-    tipoPredio?: string
-  }
-  actosNotariales: {
+  
+  // Actos notariales (mantener por compatibilidad con generador)
+  actosNotariales?: {
     cancelacionCreditoVendedor: boolean
     compraventa: boolean
     aperturaCreditoComprador: boolean
   }
+  
+  // Documentos (mantener por compatibilidad)
   documentos: string[]
+}
+
+// Estado "fuente de verdad" calculado por el backend
+export interface ServerStateSnapshot {
+  current_state: string | null
+  state_status: Record<string, string>
+  required_missing: string[]
+  blocking_reasons: string[]
+  allowed_actions: string[]
 }
 
 interface UploadedDocument {
@@ -106,6 +202,19 @@ const INITIAL_MESSAGES = [
 ]
 
 export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady }: PreavisoChatProps) {
+  const stripDataUpdateBlocksForDisplay = (text: string): string => {
+    if (!text) return ''
+    // Ocultar SIEMPRE el bloque técnico del usuario final
+    const cleaned = text.replace(/<DATA_UPDATE>[\s\S]*?<\/DATA_UPDATE>/g, '').trim()
+    return cleaned
+  }
+
+  const toUserFacingAssistantText = (raw: string): string => {
+    const cleaned = stripDataUpdateBlocksForDisplay(raw)
+    // Si el modelo solo mandó <DATA_UPDATE>, no mostramos el bloque técnico.
+    // Mostramos una confirmación neutra y corta para no “desaparecer” el mensaje.
+    return cleaned.length > 0 ? cleaned : 'Información registrada.'
+  }
   const { user } = useAuth()
   const supabase = useMemo(() => createBrowserClient(), [])
   const messageIdCounterRef = useRef(0)
@@ -127,34 +236,42 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   } | null>(null)
   const [data, setData] = useState<PreavisoData>({
     tipoOperacion: 'compraventa', // Siempre es compraventa en este sistema
-    vendedor: {
-      nombre: '',
-      rfc: '',
-      curp: '',
-      tieneCredito: false
-    },
-    comprador: {
-      nombre: '',
-      rfc: '',
-      curp: '',
-      necesitaCredito: undefined // undefined = pendiente, true/false = capturado
-    },
+    vendedores: [],
+    compradores: [],
+    creditos: undefined,
+    gravamenes: [],
     inmueble: {
-      direccion: '',
-      folioReal: '',
-      seccion: '',
-      partida: '',
-      superficie: '',
-      valor: '',
-      unidad: '',
-      modulo: '',
-      condominio: '',
-      conjuntoHabitacional: '',
-      lote: '',
-      manzana: '',
-      fraccionamiento: '',
-      colonia: '',
-      tipoPredio: ''
+      folio_real: null,
+      partidas: [],
+      all_registry_pages_confirmed: false,
+      direccion: {
+        calle: null,
+        numero: null,
+        colonia: null,
+        municipio: null,
+        estado: null,
+        codigo_postal: null
+      },
+      superficie: null,
+      valor: null,
+      datos_catastrales: {
+        lote: null,
+        manzana: null,
+        fraccionamiento: null,
+        condominio: null,
+        unidad: null,
+        modulo: null
+      }
+    },
+    control_impresion: {
+      imprimir_conyuges: false,
+      imprimir_coacreditados: false,
+      imprimir_creditos: false
+    },
+    validaciones: {
+      expediente_existente: false,
+      datos_completos: false,
+      bloqueado: true
     },
     actosNotariales: {
       cancelacionCreditoVendedor: false,
@@ -163,6 +280,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     },
     documentos: []
   })
+
+  // Evitar "stale closures" en flujos async (subida de documentos / chat)
+  const dataRef = useRef<PreavisoData>(data)
+  useEffect(() => {
+    dataRef.current = data
+  }, [data])
+
+  // Fuente de verdad del progreso/estado (viene del backend)
+  const [serverState, setServerState] = useState<ServerStateSnapshot | null>(null)
 
   // Enviar mensajes iniciales y crear nuevo trámite al iniciar
   useEffect(() => {
@@ -190,9 +316,43 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             tipo: 'preaviso',
             datos: {
               tipoOperacion: 'compraventa', // Siempre es compraventa
-              vendedor: { nombre: '', rfc: '', curp: '', tieneCredito: false },
-              comprador: { nombre: '', rfc: '', curp: '', necesitaCredito: undefined },
-              inmueble: { direccion: '', folioReal: '', seccion: '', partida: '', superficie: '', valor: '', unidad: '', modulo: '', condominio: '', conjuntoHabitacional: '', lote: '', manzana: '', fraccionamiento: '', colonia: '', tipoPredio: '' },
+              vendedores: [],
+              compradores: [],
+              creditos: undefined,
+              gravamenes: [],
+              inmueble: {
+                folio_real: null,
+                partidas: [],
+                all_registry_pages_confirmed: false,
+                direccion: {
+                  calle: null,
+                  numero: null,
+                  colonia: null,
+                  municipio: null,
+                  estado: null,
+                  codigo_postal: null
+                },
+                superficie: null,
+                valor: null,
+                datos_catastrales: {
+                  lote: null,
+                  manzana: null,
+                  fraccionamiento: null,
+                  condominio: null,
+                  unidad: null,
+                  modulo: null
+                }
+              },
+              control_impresion: {
+                imprimir_conyuges: false,
+                imprimir_coacreditados: false,
+                imprimir_creditos: false
+              },
+              validaciones: {
+                expediente_existente: false,
+                datos_completos: false,
+                bloqueado: true
+              },
               actosNotariales: { cancelacionCreditoVendedor: false, compraventa: false, aperturaCreditoComprador: false }
             },
             estado: 'en_proceso',
@@ -247,7 +407,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   useEffect(() => {
     const saveProgress = async () => {
       // Solo guardar si hay datos significativos y hay un trámite activo o usuario
-      if (!user?.id || (!data.vendedor.nombre && !data.inmueble.direccion && !data.comprador.nombre)) {
+      const primerVendedor = data.vendedores?.[0]
+      const primerComprador = data.compradores?.[0]
+      const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
+      const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
+      const direccion = data.inmueble?.direccion?.calle || (data.inmueble?.direccion as any)
+      
+      if (!user?.id || (!vendedorNombre && !direccion && !compradorNombre)) {
         return
       }
 
@@ -300,6 +466,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const [input, setInput] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const [uploadedDocuments, setUploadedDocuments] = useState<UploadedDocument[]>([])
+  const uploadedDocumentsRef = useRef<UploadedDocument[]>([])
+  useEffect(() => {
+    uploadedDocumentsRef.current = uploadedDocuments
+  }, [uploadedDocuments])
   const [isProcessingDocument, setIsProcessingDocument] = useState(false)
   const [processingProgress, setProcessingProgress] = useState(0)
   const [processingFileName, setProcessingFileName] = useState<string | null>(null)
@@ -310,106 +480,46 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textInputRef = useRef<HTMLTextAreaElement>(null)
 
-  // Verificar si todos los datos críticos están completos
-  // Nota: Para personas morales, CURP no aplica, así que solo requerimos nombre
-  // Para comprador (persona física), requerimos nombre y CURP (RFC es opcional)
-  const isDataComplete = (data: PreavisoData): boolean => {
-    const vendedorCompleto = !!(
-      data.vendedor.nombre
-    )
-    
-    const compradorCompleto = !!(
-      data.comprador.nombre &&
-      data.comprador.curp // Para comprador, generalmente es persona física, así que sí requerimos CURP (RFC es opcional)
-    )
-    
-    const inmuebleCompleto = !!(
-      data.inmueble.direccion &&
-      data.inmueble.folioReal &&
-      data.inmueble.superficie &&
-      data.inmueble.valor
-    )
-    
-    const formaPagoCompleta = data.comprador.necesitaCredito !== undefined && (
-      data.comprador.necesitaCredito === false || // Contado
-      (data.comprador.necesitaCredito === true && data.comprador.institucionCredito && data.comprador.montoCredito) // Crédito con institución y monto
-    )
-    
-    return vendedorCompleto && compradorCompleto && inmuebleCompleto && formaPagoCompleta
-  }
+  // Back-end es la fuente de verdad para "completo"
+  const isCompleteByServer = useMemo(() => {
+    if (!serverState) return false
+    if (serverState.current_state === 'ESTADO_8') return true
+    const ss = serverState.state_status || {}
+    const ok = (k: string) => ss[k] === 'completed' || ss[k] === 'not_applicable'
+    return ok('ESTADO_1') && ok('ESTADO_2') && ok('ESTADO_3') && ok('ESTADO_4') && ok('ESTADO_5') && ok('ESTADO_6')
+  }, [serverState])
 
-  // Calcular progreso basado en datos completados (6 pasos: PASO 1-6 consolidados)
-  const getProgress = () => {
-    let completed = 0
-    let total = 6
-
-    // PASO 1: Operación y Forma de Pago
-    // Solo se marca como completo si necesitaCredito está explícitamente capturado (true o false, no undefined)
-    if (data.tipoOperacion && data.comprador.necesitaCredito !== undefined) {
-      // Si es crédito, también debe tener institución; si es contado, ya está completo
-      if (data.comprador.necesitaCredito === false || data.comprador.institucionCredito) {
-        completed++
-      }
-    }
-    
-    // PASO 2: Inmueble y Registro (consolidado con objeto del acto: incluye dirección, superficie, valor)
-    if (data.inmueble.folioReal && data.inmueble.seccion && data.inmueble.partida && 
-        data.inmueble.direccion && data.inmueble.superficie && data.inmueble.valor) completed++
-    
-    // PASO 3: Vendedor(es)
-    // Según reglas de negocio: solo requiere nombre (y tipoPersona, pero no está en el schema actual)
-    // Para personas morales no hay CURP, así que solo requerimos nombre como mínimo
-    if (data.vendedor.nombre) completed++
-    
-    // PASO 4: Comprador(es) (consolidado con expediente)
-    // Para personas físicas: solo requiere nombre y CURP (RFC es opcional)
-    if (data.comprador.nombre && data.comprador.curp) completed++
-    
-    // PASO 5: Crédito del Comprador (si aplica)
-    if (data.tipoOperacion) {
-      if (data.comprador.necesitaCredito) {
-        // Si necesita crédito, debe tener institución y monto
-        if (data.comprador.institucionCredito && data.comprador.montoCredito) completed++
-      } else if (data.comprador.necesitaCredito === false) {
-        // Si no necesita crédito (pago de contado), el paso está completo
-        completed++
-      }
-    }
-    
-    // PASO 6: Cancelación de Hipoteca (si aplica)
-    if (data.vendedor.nombre) {
-      if (data.vendedor.tieneCredito !== undefined || data.vendedor.institucionCredito) {
-        // Si tiene crédito, debe tener institución y número
-        if (data.vendedor.tieneCredito) {
-          if (data.vendedor.institucionCredito && data.vendedor.numeroCredito) completed++
-        } else {
-          // Si no tiene crédito, el paso está completo
-          completed++
-        }
-      }
-    }
-
+  // Calcular progreso basado en datos completados (v1.4 - arrays)
+  const progress = useMemo(() => {
+    const total = 6
+    const ss = serverState?.state_status || {}
+    const ok = (k: string) => ss[k] === 'completed' || ss[k] === 'not_applicable'
+    const completed =
+      (ok('ESTADO_1') ? 1 : 0) +
+      (ok('ESTADO_2') ? 1 : 0) +
+      (ok('ESTADO_3') ? 1 : 0) +
+      (ok('ESTADO_4') ? 1 : 0) +
+      (ok('ESTADO_5') ? 1 : 0) +
+      (ok('ESTADO_6') ? 1 : 0)
     return { completed, total, percentage: Math.round((completed / total) * 100) }
-  }
-
-  const progress = getProgress()
+  }, [serverState])
 
   // Efecto para notificar cuando los datos estén completos (fuera del render)
   // Usar useRef para evitar llamadas múltiples
   const dataCompleteNotifiedRef = useRef(false)
   useEffect(() => {
-    if (isDataComplete(data) && !dataCompleteNotifiedRef.current) {
+    if (isCompleteByServer && !dataCompleteNotifiedRef.current) {
       dataCompleteNotifiedRef.current = true
       // Usar setTimeout para evitar actualizar durante el render
       const timer = setTimeout(() => {
         onDataComplete(data)
       }, 0)
       return () => clearTimeout(timer)
-    } else if (!isDataComplete(data)) {
+    } else if (!isCompleteByServer) {
       // Resetear el flag si los datos ya no están completos
       dataCompleteNotifiedRef.current = false
     }
-  }, [data, onDataComplete])
+  }, [data, onDataComplete, isCompleteByServer])
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -418,7 +528,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   // Efecto para mostrar opciones de exportación cuando los datos estén completos
   useEffect(() => {
     // Mostrar opciones siempre que los datos estén completos
-    if (isDataComplete(data)) {
+    if (isCompleteByServer) {
       setShowExportOptions(true)
       if (onExportReady) {
         onExportReady(data, true)
@@ -429,7 +539,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         onExportReady(data, false)
       }
     }
-  }, [data, onExportReady])
+  }, [data, onExportReady, isCompleteByServer])
 
   const handleSend = async () => {
     if (!input.trim() || isProcessing) return
@@ -459,10 +569,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             { role: 'user' as const, content: currentInput }
           ],
           context: {
-            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos
+            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
             // Esto permite que el backend detecte correctamente qué información ya está capturada
-            vendedor: data.vendedor,
-            comprador: data.comprador,
+            vendedores: data.vendedores || [],
+            compradores: data.compradores || [],
+            // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
+            creditos: data.creditos,
+            gravamenes: data.gravamenes || [],
             inmueble: data.inmueble,
             documentos: data.documentos,
             documentosProcesados: uploadedDocuments
@@ -483,6 +596,31 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       const result = await response.json()
       const messagesToAdd = result.messages || [result.message]
+      if (result?.state) {
+        setServerState(result.state as ServerStateSnapshot)
+      }
+
+      // Fuente de verdad de datos estructurados: si el backend ya pudo parsear <DATA_UPDATE>,
+      // aplicarlo directo al estado para que el panel "Información Capturada" refleje confirmaciones.
+      const hasServerData = !!result?.data
+      if (hasServerData) {
+        setData(prevData => {
+          const nextData = { ...prevData }
+          const d = result.data
+
+          if (d.tipoOperacion !== undefined) nextData.tipoOperacion = d.tipoOperacion
+          if (d.vendedores !== undefined) nextData.vendedores = d.vendedores as any
+          if (d.compradores !== undefined) nextData.compradores = d.compradores as any
+          if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
+          if (d.gravamenes !== undefined) nextData.gravamenes = d.gravamenes as any
+          if (d.inmueble) nextData.inmueble = d.inmueble as any
+          if (d.control_impresion) nextData.control_impresion = d.control_impresion
+          if (d.validaciones) nextData.validaciones = d.validaciones
+
+          nextData.actosNotariales = determineActosNotariales(nextData)
+          return nextData
+        })
+      }
       
       // Detectar si el mensaje contiene el resumen final
       const hasSummary = messagesToAdd.some((msg: string) => 
@@ -490,7 +628,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         msg.includes('=== RESUMEN DE INFORMACIÓN CAPTURADA ===')
       )
       
-      if (hasSummary && isDataComplete(data)) {
+      if (hasSummary && isCompleteByServer) {
         setShowExportOptions(true)
       }
       
@@ -500,7 +638,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         const assistantMessage: ChatMessage = {
           id: generateMessageId('ai'),
           role: 'assistant',
-          content: messagesToAdd[i],
+          content: toUserFacingAssistantText(messagesToAdd[i]),
           timestamp: new Date()
         }
         setMessages(prev => {
@@ -520,38 +658,45 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         .slice(-3) // Últimos 3 mensajes de la IA
         .map(m => m.content)
         .join('\n\n')
-      const allAIMessages = (previousAIMessages ? previousAIMessages + '\n\n' : '') + messagesToAdd.join('\n\n')
-      const extractedData = extractDataFromMessage(allAIMessages, currentInput, data)
-      if (extractedData) {
-        setData(prevData => {
-          const newData = { ...prevData }
-          
-          // Actualizar tipoOperacion
-          if (extractedData.tipoOperacion !== undefined) {
-            newData.tipoOperacion = extractedData.tipoOperacion
-          }
-          
-          // Actualizar comprador (merge profundo)
-          if (extractedData.comprador) {
-            newData.comprador = { ...prevData.comprador, ...extractedData.comprador }
-          }
-          
-          // Actualizar vendedor (merge profundo)
-          if (extractedData.vendedor) {
-            newData.vendedor = { ...prevData.vendedor, ...extractedData.vendedor }
-          }
-          
-          // Actualizar inmueble (merge profundo)
-          if (extractedData.inmueble) {
-            newData.inmueble = { ...prevData.inmueble, ...extractedData.inmueble }
-          }
-          
-          // Determinar actos notariales
-          const actos = determineActosNotariales(newData)
-          newData.actosNotariales = actos
-          
-          return newData
-        })
+      // IMPORTANTE: No re-extraer/reescribir datos en frontend si el backend ya entregó `data`.
+      // El extractor local no conserva banderas internas (ej. titular_registral_confirmado) y puede revertir pasos.
+      if (!hasServerData) {
+        const allAIMessages = (previousAIMessages ? previousAIMessages + '\n\n' : '') + messagesToAdd.join('\n\n')
+        const extractedData = extractDataFromMessage(allAIMessages, currentInput, data)
+        if (extractedData) {
+          setData(prevData => {
+            const newData = { ...prevData }
+            
+            // Actualizar tipoOperacion
+            if (extractedData.tipoOperacion !== undefined) {
+              newData.tipoOperacion = extractedData.tipoOperacion
+            }
+
+            // v1.4: arrays y estructura de inmueble
+            if (extractedData.vendedores !== undefined) {
+              newData.vendedores = extractedData.vendedores as any
+            }
+            if (extractedData.compradores !== undefined) {
+              newData.compradores = extractedData.compradores as any
+            }
+            // creditos puede ser [] (contado) o [..] (crédito) o undefined (no confirmado)
+            if (Object.prototype.hasOwnProperty.call(extractedData, 'creditos')) {
+              newData.creditos = extractedData.creditos as any
+            }
+            if (extractedData.gravamenes !== undefined) {
+              newData.gravamenes = extractedData.gravamenes as any
+            }
+            if (extractedData.inmueble) {
+              newData.inmueble = extractedData.inmueble as any
+            }
+            
+            // Determinar actos notariales
+            const actos = determineActosNotariales(newData)
+            newData.actosNotariales = actos
+            
+            return newData
+          })
+        }
       }
 
     } catch (error) {
@@ -660,6 +805,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       const detectDocumentType = async (fileName: string, file: File): Promise<string> => {
         const name = fileName.toLowerCase()
         // Detección por nombre
+        if (name.includes('inscripcion') || name.includes('inscripción') || name.includes('hoja de inscripcion') || name.includes('folio real')) return 'inscripcion'
         if (name.includes('escritura') || name.includes('titulo') || name.includes('propiedad')) return 'escritura'
         if (name.includes('plano') || name.includes('croquis') || name.includes('catastral')) return 'plano'
         if (name.includes('ine') || name.includes('ife') || name.includes('identificacion') || 
@@ -678,6 +824,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Procesar cada imagen (archivos convertidos)
       const totalFiles = allImageFiles.length
       let processedCount = 0
+      // Snapshot mutable para construir contexto correcto durante el flujo (evita usar "data" o "uploadedDocuments" viejos)
+      let workingData: PreavisoData = dataRef.current
+      let workingDocs: UploadedDocument[] = uploadedDocumentsRef.current
       
       for (let i = 0; i < allImageFiles.length; i++) {
         const imageFile = allImageFiles[i]
@@ -694,6 +843,24 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           const formData = new FormData()
           formData.append('file', imageFile)
           formData.append('documentType', docType)
+          // Enviar contexto actual para que el backend pueda devolver state (fuente de verdad)
+          formData.append('context', JSON.stringify({
+            tipoOperacion: workingData.tipoOperacion,
+            vendedores: workingData.vendedores || [],
+            compradores: workingData.compradores || [],
+            creditos: workingData.creditos,
+            gravamenes: workingData.gravamenes || [],
+            inmueble: workingData.inmueble,
+            documentos: workingData.documentos,
+            documentosProcesados: workingDocs
+              .filter(d => d.processed && d.extractedData)
+              .map(d => ({
+                nombre: d.name,
+                tipo: d.documentType || 'desconocido',
+                informacionExtraida: d.extractedData
+              })),
+            expedienteExistente: expedienteExistente || undefined
+          }))
 
           // Obtener token de sesión para autenticación (necesario para buscar expedientes)
           const { data: { session } } = await supabase.auth.getSession()
@@ -711,6 +878,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           if (processResponse.ok) {
             const processResult = await processResponse.json()
             processedCount++
+
+            if (processResult?.state) {
+              setServerState(processResult.state as ServerStateSnapshot)
+            }
             
             // Si hay información de expediente existente, guardarla
             if (processResult.expedienteExistente) {
@@ -718,11 +889,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             }
             
             // Actualizar documento original como procesado
-            setUploadedDocuments(prev => prev.map(d => 
-              d.name === originalFile.name
-                ? { ...d, processed: true, extractedData: processResult.extractedData, documentType: docType }
-                : d
-            ))
+            setUploadedDocuments(prev => {
+              const next = prev.map(d =>
+                d.name === originalFile.name
+                  ? { ...d, processed: true, extractedData: processResult.extractedData, documentType: docType }
+                  : d
+              )
+              workingDocs = next
+              return next
+            })
 
             // Subir documento a S3 y asociarlo al trámite activo (si existe)
             // Esto permite que los documentos estén disponibles incluso si el usuario sale
@@ -762,49 +937,97 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               setData(prev => {
                 const updated = { ...prev }
                 
-                if (docType === 'escritura') {
-                  if (extracted.folioReal) updated.inmueble.folioReal = extracted.folioReal
-                  if (extracted.seccion) updated.inmueble.seccion = extracted.seccion
-                  if (extracted.partida) updated.inmueble.partida = extracted.partida
-                  if (extracted.ubicacion) updated.inmueble.direccion = extracted.ubicacion
-                  if (extracted.propietario?.nombre) updated.vendedor.nombre = extracted.propietario.nombre
-                  if (extracted.propietario?.rfc) updated.vendedor.rfc = extracted.propietario.rfc
-                  if (extracted.propietario?.curp) updated.vendedor.curp = extracted.propietario.curp
-                  // Asegurar que superficie sea un string, no un objeto
+                if (docType === 'escritura' || docType === 'inscripcion') {
+                  // Actualizar inmueble (v1.4)
+                  if (extracted.folioReal) updated.inmueble.folio_real = extracted.folioReal
+                  if (extracted.partida) {
+                    if (!updated.inmueble.partidas) updated.inmueble.partidas = []
+                    if (!updated.inmueble.partidas.includes(extracted.partida)) {
+                      updated.inmueble.partidas = [...updated.inmueble.partidas, extracted.partida]
+                    }
+                  }
+                  // Soportar partidas[] si vienen en array
+                  if (Array.isArray(extracted.partidas) && extracted.partidas.length > 0) {
+                    if (!updated.inmueble.partidas) updated.inmueble.partidas = []
+                    for (const p of extracted.partidas) {
+                      if (p && !updated.inmueble.partidas.includes(p)) {
+                        updated.inmueble.partidas = [...updated.inmueble.partidas, p]
+                      }
+                    }
+                  }
+                  if (extracted.ubicacion) {
+                    // Si viene como string, intentar parsear o usar como calle
+                    if (typeof extracted.ubicacion === 'string') {
+                      updated.inmueble.direccion = {
+                        ...updated.inmueble.direccion,
+                        calle: extracted.ubicacion
+                      }
+                    } else {
+                      updated.inmueble.direccion = {
+                        ...updated.inmueble.direccion,
+                        ...extracted.ubicacion
+                      }
+                    }
+                  }
+                  
+                  // Actualizar vendedor (v1.4 - array)
+                  if (extracted.propietario?.nombre) {
+                    if (!updated.vendedores || updated.vendedores.length === 0) {
+                      updated.vendedores = [{
+                        party_id: null,
+                        tipo_persona: null,
+                        persona_fisica: {
+                          nombre: extracted.propietario.nombre || null,
+                          rfc: extracted.propietario.rfc || null,
+                          // En inscripción puede no venir CURP; conservar si existe
+                          curp: extracted.propietario.curp || null,
+                          estado_civil: null
+                        },
+                        tiene_credito: null
+                      }]
+                    } else {
+                      // Actualizar primer vendedor
+                      updated.vendedores[0] = {
+                        ...updated.vendedores[0],
+                        persona_fisica: {
+                          ...updated.vendedores[0].persona_fisica,
+                          nombre: extracted.propietario.nombre || updated.vendedores[0].persona_fisica?.nombre || null,
+                          rfc: extracted.propietario.rfc || updated.vendedores[0].persona_fisica?.rfc || null,
+                          curp: extracted.propietario.curp || updated.vendedores[0].persona_fisica?.curp || null
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Superficie y valor
                   if (extracted.superficie) {
                     if (typeof extracted.superficie === 'object') {
-                      // Si es un objeto, intentar extraer el valor total o convertir a string
                       const superficieObj = extracted.superficie as any
-                      if (superficieObj.superficieEdificada) {
-                        updated.inmueble.superficie = String(superficieObj.superficieEdificada)
-                      } else if (superficieObj.privativa) {
-                        updated.inmueble.superficie = String(superficieObj.privativa)
-                      } else if (superficieObj.total) {
-                        updated.inmueble.superficie = String(superficieObj.total)
-                      } else {
-                        // Convertir objeto a string JSON como fallback
-                        updated.inmueble.superficie = JSON.stringify(superficieObj)
-                      }
+                      updated.inmueble.superficie = superficieObj.superficieEdificada 
+                        ? String(superficieObj.superficieEdificada)
+                        : superficieObj.privativa 
+                          ? String(superficieObj.privativa)
+                          : superficieObj.total 
+                            ? String(superficieObj.total)
+                            : JSON.stringify(superficieObj)
                     } else {
                       updated.inmueble.superficie = String(extracted.superficie)
                     }
                   }
-                  // Asegurar que valor sea un string, no un objeto
                   if (extracted.valor) {
                     updated.inmueble.valor = typeof extracted.valor === 'object' 
                       ? JSON.stringify(extracted.valor) 
                       : String(extracted.valor)
                   }
-                  // Campos adicionales del inmueble
-                  if (extracted.unidad) updated.inmueble.unidad = extracted.unidad
-                  if (extracted.modulo) updated.inmueble.modulo = extracted.modulo
-                  if (extracted.condominio) updated.inmueble.condominio = extracted.condominio
-                  if (extracted.conjuntoHabitacional) updated.inmueble.conjuntoHabitacional = extracted.conjuntoHabitacional
-                  if (extracted.lote) updated.inmueble.lote = extracted.lote
-                  if (extracted.manzana) updated.inmueble.manzana = extracted.manzana
-                  if (extracted.fraccionamiento) updated.inmueble.fraccionamiento = extracted.fraccionamiento
-                  if (extracted.colonia) updated.inmueble.colonia = extracted.colonia
-                  if (extracted.tipoPredio) updated.inmueble.tipoPredio = extracted.tipoPredio
+                  
+                  // Datos catastrales (v1.4)
+                  if (extracted.unidad) updated.inmueble.datos_catastrales.unidad = extracted.unidad
+                  if (extracted.modulo) updated.inmueble.datos_catastrales.modulo = extracted.modulo
+                  if (extracted.condominio) updated.inmueble.datos_catastrales.condominio = extracted.condominio
+                  if (extracted.lote) updated.inmueble.datos_catastrales.lote = extracted.lote
+                  if (extracted.manzana) updated.inmueble.datos_catastrales.manzana = extracted.manzana
+                  if (extracted.fraccionamiento) updated.inmueble.datos_catastrales.fraccionamiento = extracted.fraccionamiento
+                  if (extracted.colonia) updated.inmueble.direccion.colonia = extracted.colonia
                 } else if (docType === 'plano') {
                   // Asegurar que superficie sea un string, no un objeto
                   if (extracted.superficie) {
@@ -824,27 +1047,71 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     }
                   }
                 } else if (docType === 'identificacion') {
-                  // Para identificaciones, intentar determinar si es vendedor o comprador
-                  // basándose en el contexto (qué datos faltan) o el campo 'tipo' extraído
-                  const isVendedor = extracted.tipo === 'vendedor' || (!data.vendedor.nombre && data.comprador.nombre)
-                  const isComprador = extracted.tipo === 'comprador' || (!data.comprador.nombre && data.vendedor.nombre)
+                  // Para identificaciones, intentar determinar si es vendedor o comprador (v1.4)
+                  const primerVendedor = data.vendedores?.[0]
+                  const primerComprador = data.compradores?.[0]
+                  const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
+                  const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
                   
-                  // Si no se puede determinar, usar el primero que falte (vendedor primero)
-                  const targetPerson = isVendedor ? 'vendedor' : (isComprador ? 'comprador' : (!data.vendedor.nombre ? 'vendedor' : 'comprador'))
+                  const isVendedor = extracted.tipo === 'vendedor' || (!vendedorNombre && compradorNombre)
+                  const isComprador = extracted.tipo === 'comprador' || (!compradorNombre && vendedorNombre)
+                  
+                  const targetPerson = isVendedor ? 'vendedor' : (isComprador ? 'comprador' : (!vendedorNombre ? 'vendedor' : 'comprador'))
                   
                   if (extracted.nombre) {
                     if (targetPerson === 'vendedor') {
-                      updated.vendedor.nombre = extracted.nombre
-                      if (extracted.rfc) updated.vendedor.rfc = extracted.rfc
-                      if (extracted.curp) updated.vendedor.curp = extracted.curp
+                      if (!updated.vendedores || updated.vendedores.length === 0) {
+                        updated.vendedores = [{
+                          party_id: null,
+                          tipo_persona: 'persona_fisica',
+                          persona_fisica: {
+                            nombre: extracted.nombre || null,
+                            rfc: extracted.rfc || null,
+                            curp: extracted.curp || null,
+                            estado_civil: null
+                          },
+                          tiene_credito: null
+                        }]
+                      } else {
+                        updated.vendedores[0] = {
+                          ...updated.vendedores[0],
+                          persona_fisica: {
+                            ...updated.vendedores[0].persona_fisica,
+                            nombre: extracted.nombre || updated.vendedores[0].persona_fisica?.nombre || null,
+                            rfc: extracted.rfc || updated.vendedores[0].persona_fisica?.rfc || null,
+                            curp: extracted.curp || updated.vendedores[0].persona_fisica?.curp || null
+                          }
+                        }
+                      }
                     } else {
-                      updated.comprador.nombre = extracted.nombre
-                      if (extracted.rfc) updated.comprador.rfc = extracted.rfc
-                      if (extracted.curp) updated.comprador.curp = extracted.curp
+                      if (!updated.compradores || updated.compradores.length === 0) {
+                        updated.compradores = [{
+                          party_id: null,
+                          tipo_persona: 'persona_fisica',
+                          persona_fisica: {
+                            nombre: extracted.nombre || null,
+                            rfc: extracted.rfc || null,
+                            curp: extracted.curp || null,
+                            estado_civil: null
+                          }
+                        }]
+                      } else {
+                        updated.compradores[0] = {
+                          ...updated.compradores[0],
+                          persona_fisica: {
+                            ...updated.compradores[0].persona_fisica,
+                            nombre: extracted.nombre || updated.compradores[0].persona_fisica?.nombre || null,
+                            rfc: extracted.rfc || updated.compradores[0].persona_fisica?.rfc || null,
+                            curp: extracted.curp || updated.compradores[0].persona_fisica?.curp || null
+                          }
+                        }
+                      }
                     }
                   }
                 }
                 
+                // Mantener workingData sincronizado para construir contextos correctos durante este flujo
+                workingData = updated
                 return updated
               })
             }
@@ -870,10 +1137,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       setProcessingProgress(95) // 95% consultando al agente
 
       // Después de procesar, consultar al agente de IA para determinar siguientes pasos
-      const newDocuments = [...data.documentos, ...fileNames]
+      const newDocuments = [...workingData.documentos, ...fileNames]
       
       // Recopilar información extraída de los documentos procesados
-      const processedDocsInfo = uploadedDocuments
+      const processedDocsInfo = workingDocs
         .filter(d => d.processed && d.extractedData)
         .map(d => {
           const extracted = d.extractedData
@@ -902,12 +1169,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             }
           ],
           context: {
-            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos
-            vendedor: data.vendedor,
-            comprador: data.comprador,
-            inmueble: data.inmueble,
+            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
+            vendedores: workingData.vendedores || [],
+            compradores: workingData.compradores || [],
+            // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
+            creditos: workingData.creditos,
+            gravamenes: workingData.gravamenes || [],
+            inmueble: workingData.inmueble,
             documentos: newDocuments,
-            documentosProcesados: uploadedDocuments
+            documentosProcesados: workingDocs
               .filter(d => d.processed && d.extractedData)
               .map(d => ({
                 nombre: d.name,
@@ -922,6 +1192,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       if (chatResponse.ok) {
         const result = await chatResponse.json()
+        if (result?.state) {
+          setServerState(result.state as ServerStateSnapshot)
+        }
         const messagesToAdd = result.messages || [result.message]
         
         // Remover mensaje de procesamiento y agregar respuesta del agente
@@ -933,7 +1206,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           const assistantMessage: ChatMessage = {
             id: `file-${baseTimestamp}-${i}`,
             role: 'assistant',
-            content: messagesToAdd[i],
+            content: toUserFacingAssistantText(messagesToAdd[i]),
             timestamp: new Date()
           }
           setMessages(prev => {
@@ -1004,7 +1277,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     const updates: Partial<PreavisoData> = {}
     let hasUpdates = false
 
-    // Intentar extraer JSON estructurado del mensaje de la IA
+    // Intentar extraer JSON estructurado del mensaje de la IA (v1.4 compatible)
     const dataUpdateMatch = aiMessage.match(/<DATA_UPDATE>([\s\S]*?)<\/DATA_UPDATE>/)
     
     if (dataUpdateMatch) {
@@ -1017,165 +1290,180 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           hasUpdates = true
         }
 
-        // Actualizar comprador
-        if (jsonData.comprador) {
-          const compradorUpdates: Partial<PreavisoData['comprador']> = {}
-          if (jsonData.comprador.nombre !== undefined && jsonData.comprador.nombre !== null) {
-            compradorUpdates.nombre = jsonData.comprador.nombre
-            hasUpdates = true
+        // Procesar compradores (array v1.4)
+        if (jsonData.compradores && Array.isArray(jsonData.compradores)) {
+          // Agregar nuevos compradores al array existente
+          updates.compradores = [...(currentData.compradores || []), ...jsonData.compradores]
+          hasUpdates = true
+        } else if (jsonData.comprador) {
+          // Compatibilidad: convertir formato antiguo (singular) a array
+          const compradorElement: CompradorElement = {
+            party_id: null,
+            tipo_persona: jsonData.comprador.tipoPersona || null,
+            persona_fisica: jsonData.comprador.tipoPersona === 'persona_fisica' ? {
+              nombre: jsonData.comprador.nombre || null,
+              rfc: jsonData.comprador.rfc || null,
+              curp: jsonData.comprador.curp || null,
+              estado_civil: jsonData.comprador.estado_civil || null
+            } : undefined,
+            persona_moral: jsonData.comprador.tipoPersona === 'persona_moral' ? {
+              denominacion_social: jsonData.comprador.denominacion_social || null,
+              rfc: jsonData.comprador.rfc || null,
+              csf_provided: false,
+              csf_reference: null,
+              name_confirmed_exact: false
+            } : undefined
           }
-          if (jsonData.comprador.rfc !== undefined && jsonData.comprador.rfc !== null) {
-            compradorUpdates.rfc = jsonData.comprador.rfc
-            hasUpdates = true
+          updates.compradores = [...(currentData.compradores || []), compradorElement]
+          hasUpdates = true
+        }
+
+        // Procesar vendedores (array v1.4)
+        if (jsonData.vendedores && Array.isArray(jsonData.vendedores)) {
+          updates.vendedores = [...(currentData.vendedores || []), ...jsonData.vendedores]
+          hasUpdates = true
+        } else if (jsonData.vendedor) {
+          // Compatibilidad: convertir formato antiguo (singular) a array
+          const vendedorElement: VendedorElement = {
+            party_id: null,
+            tipo_persona: jsonData.vendedor.tipoPersona || null,
+            persona_fisica: jsonData.vendedor.tipoPersona === 'persona_fisica' ? {
+              nombre: jsonData.vendedor.nombre || null,
+              rfc: jsonData.vendedor.rfc || null,
+              curp: jsonData.vendedor.curp || null,
+              estado_civil: null
+            } : undefined,
+            persona_moral: jsonData.vendedor.tipoPersona === 'persona_moral' ? {
+              denominacion_social: jsonData.vendedor.denominacion_social || null,
+              rfc: jsonData.vendedor.rfc || null,
+              csf_provided: false,
+              csf_reference: null,
+              name_confirmed_exact: false
+            } : undefined,
+            tiene_credito: jsonData.vendedor.tieneCredito !== undefined ? jsonData.vendedor.tieneCredito : null,
+            credito_vendedor: jsonData.vendedor.institucionCredito ? {
+              institucion: jsonData.vendedor.institucionCredito,
+              numero_credito: jsonData.vendedor.numeroCredito || null
+            } : undefined
           }
-          if (jsonData.comprador.curp !== undefined && jsonData.comprador.curp !== null) {
-            compradorUpdates.curp = jsonData.comprador.curp
-            hasUpdates = true
-          }
-          // Actualizar necesitaCredito siempre que venga en el JSON (permite corregir valores previos)
-          if (jsonData.comprador.necesitaCredito !== undefined && jsonData.comprador.necesitaCredito !== null) {
-            compradorUpdates.necesitaCredito = jsonData.comprador.necesitaCredito
-            hasUpdates = true
-          }
-          if (jsonData.comprador.institucionCredito !== undefined && jsonData.comprador.institucionCredito !== null) {
-            let institucion = String(jsonData.comprador.institucionCredito).trim()
-            
-            // Limpiar: remover cualquier texto que contenga "RFC" o "CURP" y todo lo que sigue
-            institucion = institucion.replace(/\s*(?:RFC|CURP).*$/i, '').trim()
-            // Limpiar: remover punto final y cualquier texto después de un punto seguido de espacio (nueva oración)
-            institucion = institucion.replace(/\s*\.\s+[A-ZÁÉÍÓÚÑ].*$/, '').replace(/[.,]$/, '')
-            // Limpiar: remover "Y" o "AND" seguido de texto (ej: "FOVISSSTE Y CURP...")
-            institucion = institucion.replace(/\s+(?:Y|AND)\s+.*$/i, '').trim()
-            
-            // Validar que tenga al menos 3 caracteres y NO sea un CURP o RFC
-            const esCURP = /^[A-Z]{4}\d{6}[A-Z]{3}\d{2}$/.test(institucion.replace(/\s/g, ''))
-            const esRFC = /^[A-Z]{4}\d{6}[A-Z0-9]{3}$/.test(institucion.replace(/\s/g, ''))
-            const contieneCURP = /\bCURP\b/i.test(institucion)
-            const contieneRFC = /\bRFC\b/i.test(institucion)
-            const empiezaConCURP = /^CURP\s/i.test(institucion)
-            const empiezaConRFC = /^RFC\s/i.test(institucion)
-            const contieneFormatoRFC = /[A-Z]{4}\d{6}[A-Z0-9]{3}/.test(institucion.replace(/\s/g, ''))
-            const contieneFormatoCURP = /[A-Z]{4}\d{6}[A-Z]{3}\d{2}/.test(institucion.replace(/\s/g, ''))
-            
-            // Validar que no contenga frases comunes que no son nombres de instituciones
-            const contieneFraseInvalida = /\b(?:QUE|QUE\s+UTILIZARÁ|UTILIZARÁ|EL\s+COMPRADOR|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA)\b/i.test(institucion)
-            // Validar que no sea solo palabras comunes
-            const esSoloPalabrasComunes = /^(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE)(?:\s+(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE))*$/i.test(institucion)
-            
-            if (institucion && institucion.length >= 3 && !esCURP && !esRFC && !contieneCURP && !contieneRFC && !empiezaConCURP && !empiezaConRFC && !contieneFormatoRFC && !contieneFormatoCURP && !contieneFraseInvalida && !esSoloPalabrasComunes) {
-              compradorUpdates.institucionCredito = institucion.toUpperCase()
-              hasUpdates = true
+          updates.vendedores = [...(currentData.vendedores || []), vendedorElement]
+          hasUpdates = true
+        }
+
+        // Procesar créditos (array v1.4)
+        if (jsonData.creditos && Array.isArray(jsonData.creditos)) {
+          const normalizedCreditos: CreditoElement[] = jsonData.creditos.map((c: any) => ({
+            credito_id: c?.credito_id ?? null,
+            institucion: c?.institucion ?? null,
+            monto: c?.monto ?? null,
+            participantes: Array.isArray(c?.participantes) ? c.participantes : [],
+            tipo_credito: c?.tipo_credito ?? null
+          }))
+
+          updates.creditos = [...(currentData.creditos || []), ...normalizedCreditos]
+          hasUpdates = true
+        }
+
+        // Procesar gravámenes (array v1.4)
+        if (jsonData.gravamenes && Array.isArray(jsonData.gravamenes)) {
+          updates.gravamenes = [...(currentData.gravamenes || []), ...jsonData.gravamenes]
+          hasUpdates = true
+        }
+
+        // Procesar inmueble (estructura v1.4)
+        if (jsonData.inmueble) {
+          const inmuebleBase = currentData.inmueble || {
+            folio_real: null,
+            partidas: [],
+            all_registry_pages_confirmed: false,
+            direccion: {
+              calle: null,
+              numero: null,
+              colonia: null,
+              municipio: null,
+              estado: null,
+              codigo_postal: null
+            },
+            superficie: null,
+            valor: null,
+            datos_catastrales: {
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
             }
           }
-          if (jsonData.comprador.montoCredito !== undefined && jsonData.comprador.montoCredito !== null) {
-            compradorUpdates.montoCredito = jsonData.comprador.montoCredito
-            hasUpdates = true
+
+          const inmuebleUpdates: InmuebleV14 = {
+            ...inmuebleBase,
+            folio_real: jsonData.inmueble.folio_real !== undefined ? jsonData.inmueble.folio_real : inmuebleBase.folio_real,
+            partidas: jsonData.inmueble.partidas ? [...inmuebleBase.partidas, ...jsonData.inmueble.partidas] : inmuebleBase.partidas,
+            all_registry_pages_confirmed: jsonData.inmueble.all_registry_pages_confirmed !== undefined 
+              ? jsonData.inmueble.all_registry_pages_confirmed 
+              : inmuebleBase.all_registry_pages_confirmed,
+            direccion: jsonData.inmueble.direccion 
+              ? { ...inmuebleBase.direccion, ...jsonData.inmueble.direccion }
+              : inmuebleBase.direccion,
+            superficie: jsonData.inmueble.superficie !== undefined 
+              ? (typeof jsonData.inmueble.superficie === 'string' ? jsonData.inmueble.superficie : String(jsonData.inmueble.superficie))
+              : inmuebleBase.superficie,
+            valor: jsonData.inmueble.valor !== undefined
+              ? (typeof jsonData.inmueble.valor === 'string' ? jsonData.inmueble.valor : String(jsonData.inmueble.valor))
+              : inmuebleBase.valor,
+            datos_catastrales: jsonData.inmueble.datos_catastrales
+              ? { ...inmuebleBase.datos_catastrales, ...jsonData.inmueble.datos_catastrales }
+              : inmuebleBase.datos_catastrales
           }
-          if (Object.keys(compradorUpdates).length > 0) {
-            updates.comprador = { ...currentData.comprador, ...compradorUpdates }
+
+          // Compatibilidad: si viene en formato antiguo, convertir
+          if (jsonData.inmueble.folioReal) {
+            inmuebleUpdates.folio_real = jsonData.inmueble.folioReal
           }
+          if (jsonData.inmueble.partida) {
+            inmuebleUpdates.partidas = [...inmuebleUpdates.partidas, jsonData.inmueble.partida]
+          }
+          if (jsonData.inmueble.direccion && typeof jsonData.inmueble.direccion === 'string') {
+            // Si viene como string, intentar parsear o usar como calle
+            inmuebleUpdates.direccion.calle = jsonData.inmueble.direccion
+          }
+          if (jsonData.inmueble.lote) inmuebleUpdates.datos_catastrales.lote = jsonData.inmueble.lote
+          if (jsonData.inmueble.manzana) inmuebleUpdates.datos_catastrales.manzana = jsonData.inmueble.manzana
+          if (jsonData.inmueble.fraccionamiento) inmuebleUpdates.datos_catastrales.fraccionamiento = jsonData.inmueble.fraccionamiento
+          if (jsonData.inmueble.condominio) inmuebleUpdates.datos_catastrales.condominio = jsonData.inmueble.condominio
+          if (jsonData.inmueble.unidad) inmuebleUpdates.datos_catastrales.unidad = jsonData.inmueble.unidad
+          if (jsonData.inmueble.modulo) inmuebleUpdates.datos_catastrales.modulo = jsonData.inmueble.modulo
+          if (jsonData.inmueble.colonia) inmuebleUpdates.direccion.colonia = jsonData.inmueble.colonia
+
+          updates.inmueble = inmuebleUpdates
+          hasUpdates = true
         }
 
-        // Actualizar vendedor
-        if (jsonData.vendedor) {
-          const vendedorUpdates: Partial<PreavisoData['vendedor']> = {}
-          if (jsonData.vendedor.nombre !== undefined && jsonData.vendedor.nombre !== null) {
-            vendedorUpdates.nombre = jsonData.vendedor.nombre
-            hasUpdates = true
+        // Procesar control_impresion
+        if (jsonData.control_impresion) {
+          updates.control_impresion = {
+            ...(currentData.control_impresion || {
+              imprimir_conyuges: false,
+              imprimir_coacreditados: false,
+              imprimir_creditos: false
+            }),
+            ...jsonData.control_impresion
           }
-          if (jsonData.vendedor.rfc !== undefined && jsonData.vendedor.rfc !== null) {
-            vendedorUpdates.rfc = jsonData.vendedor.rfc
-            hasUpdates = true
-          }
-          if (jsonData.vendedor.curp !== undefined && jsonData.vendedor.curp !== null) {
-            vendedorUpdates.curp = jsonData.vendedor.curp
-            hasUpdates = true
-          }
-          if (jsonData.vendedor.tieneCredito !== undefined && jsonData.vendedor.tieneCredito !== null) {
-            vendedorUpdates.tieneCredito = jsonData.vendedor.tieneCredito
-            hasUpdates = true
-          }
-          if (jsonData.vendedor.institucionCredito !== undefined && jsonData.vendedor.institucionCredito !== null) {
-            vendedorUpdates.institucionCredito = jsonData.vendedor.institucionCredito
-            hasUpdates = true
-          }
-          if (jsonData.vendedor.numeroCredito !== undefined && jsonData.vendedor.numeroCredito !== null) {
-            vendedorUpdates.numeroCredito = jsonData.vendedor.numeroCredito
-            hasUpdates = true
-          }
-          if (Object.keys(vendedorUpdates).length > 0) {
-            updates.vendedor = { ...currentData.vendedor, ...vendedorUpdates }
-          }
+          hasUpdates = true
         }
 
-        // Actualizar inmueble
-        if (jsonData.inmueble) {
-          const inmuebleUpdates: Partial<PreavisoData['inmueble']> = {}
-          if (jsonData.inmueble.direccion !== undefined && jsonData.inmueble.direccion !== null) {
-            inmuebleUpdates.direccion = jsonData.inmueble.direccion
-            hasUpdates = true
+        // Procesar validaciones
+        if (jsonData.validaciones) {
+          updates.validaciones = {
+            ...(currentData.validaciones || {
+              expediente_existente: false,
+              datos_completos: false,
+              bloqueado: true
+            }),
+            ...jsonData.validaciones
           }
-          if (jsonData.inmueble.folioReal !== undefined && jsonData.inmueble.folioReal !== null) {
-            inmuebleUpdates.folioReal = jsonData.inmueble.folioReal
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.seccion !== undefined && jsonData.inmueble.seccion !== null) {
-            inmuebleUpdates.seccion = jsonData.inmueble.seccion
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.partida !== undefined && jsonData.inmueble.partida !== null) {
-            inmuebleUpdates.partida = jsonData.inmueble.partida
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.superficie !== undefined && jsonData.inmueble.superficie !== null) {
-            // Asegurar que superficie sea un string, no un objeto
-            inmuebleUpdates.superficie = typeof jsonData.inmueble.superficie === 'string' 
-              ? jsonData.inmueble.superficie 
-              : String(jsonData.inmueble.superficie)
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.valor !== undefined && jsonData.inmueble.valor !== null) {
-            // Asegurar que valor sea un string, no un objeto
-            inmuebleUpdates.valor = typeof jsonData.inmueble.valor === 'string' 
-              ? jsonData.inmueble.valor 
-              : String(jsonData.inmueble.valor)
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.unidad !== undefined && jsonData.inmueble.unidad !== null) {
-            inmuebleUpdates.unidad = jsonData.inmueble.unidad
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.modulo !== undefined && jsonData.inmueble.modulo !== null) {
-            inmuebleUpdates.modulo = jsonData.inmueble.modulo
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.condominio !== undefined && jsonData.inmueble.condominio !== null) {
-            inmuebleUpdates.condominio = jsonData.inmueble.condominio
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.conjuntoHabitacional !== undefined && jsonData.inmueble.conjuntoHabitacional !== null) {
-            inmuebleUpdates.conjuntoHabitacional = jsonData.inmueble.conjuntoHabitacional
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.lote !== undefined && jsonData.inmueble.lote !== null) {
-            inmuebleUpdates.lote = jsonData.inmueble.lote
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.manzana !== undefined && jsonData.inmueble.manzana !== null) {
-            inmuebleUpdates.manzana = jsonData.inmueble.manzana
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.fraccionamiento !== undefined && jsonData.inmueble.fraccionamiento !== null) {
-            inmuebleUpdates.fraccionamiento = jsonData.inmueble.fraccionamiento
-            hasUpdates = true
-          }
-          if (jsonData.inmueble.colonia !== undefined && jsonData.inmueble.colonia !== null) {
-            inmuebleUpdates.colonia = jsonData.inmueble.colonia
-            hasUpdates = true
-          }
-          if (Object.keys(inmuebleUpdates).length > 0) {
-            updates.inmueble = { ...currentData.inmueble, ...inmuebleUpdates }
-          }
+          hasUpdates = true
         }
 
       } catch (error) {
@@ -1193,27 +1481,55 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       if (confirmacionMatch && aiMessage) {
         // Extraer información de la pregunta previa de la IA que contiene los datos a confirmar
         
-        // Detectar Folio Real
+        // Detectar Folio Real (v1.4)
         const folioMatch = aiMessage.match(/folio\s+real\s+(\d+)/i)
-        if (folioMatch && !currentData.inmueble.folioReal) {
-          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
-          updates.inmueble.folioReal = folioMatch[1]
+        if (folioMatch && !currentData.inmueble?.folio_real) {
+          if (!updates.inmueble) {
+            updates.inmueble = {
+              ...currentData.inmueble,
+              folio_real: null,
+              partidas: currentData.inmueble?.partidas || [],
+              all_registry_pages_confirmed: currentData.inmueble?.all_registry_pages_confirmed || false,
+              direccion: currentData.inmueble?.direccion || {
+                calle: null,
+                numero: null,
+                colonia: null,
+                municipio: null,
+                estado: null,
+                codigo_postal: null
+              },
+              superficie: currentData.inmueble?.superficie || null,
+              valor: currentData.inmueble?.valor || null,
+              datos_catastrales: currentData.inmueble?.datos_catastrales || {
+                lote: null,
+                manzana: null,
+                fraccionamiento: null,
+                condominio: null,
+                unidad: null,
+                modulo: null
+              }
+            }
+          }
+          updates.inmueble.folio_real = folioMatch[1]
           hasUpdates = true
         }
         
-        // Detectar Partida
+        // Detectar Partida (v1.4)
         const partidaMatch = aiMessage.match(/partida\s+(\d+)/i)
-        if (partidaMatch && !currentData.inmueble.partida) {
-          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
-          updates.inmueble.partida = partidaMatch[1]
-          hasUpdates = true
+        if (partidaMatch) {
+          const partida = partidaMatch[1]
+          const partidasActuales = currentData.inmueble?.partidas || []
+          if (!partidasActuales.includes(partida)) {
+            if (!updates.inmueble) {
+              updates.inmueble = {
+                ...currentData.inmueble,
+                partidas: [...partidasActuales]
+              }
+            }
+            updates.inmueble.partidas = [...(updates.inmueble.partidas || partidasActuales), partida]
+            hasUpdates = true
+          }
         }
-        
-        // Detectar Sección
-        const seccionMatch = aiMessage.match(/sección\s+([A-ZÁÉÍÓÚÑ]+)/i)
-        if (seccionMatch && !currentData.inmueble.seccion) {
-          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
-          updates.inmueble.seccion = seccionMatch[1].toUpperCase()
           hasUpdates = true
         }
         
@@ -1258,56 +1574,129 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           }
         }
         
-        // Extraer LOTE y MANZANA específicos
+        // Extraer LOTE y MANZANA específicos (v1.4)
         const loteMatch = aiMessage.match(/lote\s+(\d+)/i)
-        if (loteMatch && !currentData.inmueble.lote) {
-          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
-          updates.inmueble.lote = loteMatch[1]
+        if (loteMatch && !currentData.inmueble?.datos_catastrales?.lote) {
+          if (!updates.inmueble) {
+            updates.inmueble = {
+              ...currentData.inmueble,
+              datos_catastrales: {
+                ...currentData.inmueble?.datos_catastrales,
+                lote: null,
+                manzana: null,
+                fraccionamiento: null,
+                condominio: null,
+                unidad: null,
+                modulo: null
+              }
+            }
+          }
+          if (!updates.inmueble.datos_catastrales) {
+            updates.inmueble.datos_catastrales = {
+              ...currentData.inmueble?.datos_catastrales,
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          }
+          updates.inmueble.datos_catastrales.lote = loteMatch[1]
           hasUpdates = true
         }
         
         const manzanaMatch = aiMessage.match(/manzana\s+(\d+)/i)
-        if (manzanaMatch && !currentData.inmueble.manzana) {
-          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
-          updates.inmueble.manzana = manzanaMatch[1]
+        if (manzanaMatch && !currentData.inmueble?.datos_catastrales?.manzana) {
+          if (!updates.inmueble) {
+            updates.inmueble = {
+              ...currentData.inmueble,
+              datos_catastrales: {
+                ...currentData.inmueble?.datos_catastrales,
+                lote: null,
+                manzana: null,
+                fraccionamiento: null,
+                condominio: null,
+                unidad: null,
+                modulo: null
+              }
+            }
+          }
+          if (!updates.inmueble.datos_catastrales) {
+            updates.inmueble.datos_catastrales = {
+              ...currentData.inmueble?.datos_catastrales,
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          }
+          updates.inmueble.datos_catastrales.manzana = manzanaMatch[1]
           hasUpdates = true
         }
         
-        // Extraer fraccionamiento
+        // Extraer fraccionamiento (v1.4)
         const fraccionamientoMatch = aiMessage.match(/(?:desarrollo|fraccionamiento)\s+([A-ZÁÉÍÓÚÑ0-9\s]+?)(?:,|\.|municipio|$)/i)
-        if (fraccionamientoMatch && !currentData.inmueble.fraccionamiento) {
-          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
-          updates.inmueble.fraccionamiento = fraccionamientoMatch[1].trim()
+        if (fraccionamientoMatch && !currentData.inmueble?.datos_catastrales?.fraccionamiento) {
+          if (!updates.inmueble) {
+            updates.inmueble = {
+              ...currentData.inmueble,
+              datos_catastrales: {
+                ...currentData.inmueble?.datos_catastrales,
+                lote: null,
+                manzana: null,
+                fraccionamiento: null,
+                condominio: null,
+                unidad: null,
+                modulo: null
+              }
+            }
+          }
+          if (!updates.inmueble.datos_catastrales) {
+            updates.inmueble.datos_catastrales = {
+              ...currentData.inmueble?.datos_catastrales,
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          }
+          updates.inmueble.datos_catastrales.fraccionamiento = fraccionamientoMatch[1].trim()
           hasUpdates = true
         }
         
         // Tipo de operación siempre es compraventa (no se detecta, ya está establecido)
         
-        // Detectar forma de pago (permitir actualización incluso si ya tiene valor)
-        // Detectar "contado" explícitamente
-        const contadoDetected = aiMessage.match(/(?:pago|pagar|forma de pago|se paga|se pagará|será pagado|realizada)[\s\w]*?(?:de\s+)?contado/i)
-        if (contadoDetected) {
-          if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-          updates.comprador.necesitaCredito = false
-          hasUpdates = true
-        } 
-        // Detectar crédito: "sí necesita crédito", "necesita crédito", "a crédito", "será a crédito", "sera a credito", "crédito FOVISSSTE", etc.
-        const creditoDetected = aiMessage.match(/(?:sí\s+)?necesita\s+(?:crédito|credito)|necesita\s+(?:crédito|credito)|(?:será|sera|es|ser)\s+(?:a|con|mediante|por|totalmente\s+a)\s+(?:crédito|credito)|(?:a|con|mediante|por|totalmente\s+a)\s+(?:crédito|credito)|(?:crédito|credito)\s+[A-ZÁÉÍÓÚÑ]|hipoteca|bancario|financiamiento|préstamo|fovissste|infonavit/i)
-        if (creditoDetected && !contadoDetected) {
-          if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-          updates.comprador.necesitaCredito = true
-          hasUpdates = true
-        }
+        // Detectar forma de pago:
+        // IMPORTANTE: NO inferir del texto del asistente (aiMessage), solo del userInput confirmado.
+        // La detección basada en aiMessage causaba falsos positivos ("contado" por pregunta tipo "¿contado o crédito?").
 
         // Detectar institución de crédito del comprador
         // PRIMERO: Buscar instituciones comunes directamente (más confiable)
         const institucionesComunes = ['FOVISSSTE', 'INFONAVIT', 'HSBC', 'BANAMEX', 'BANCOMER', 'BBVA', 'SANTANDER', 'BANORTE', 'SCOTIABANK', 'BANCO AZTECA', 'BANCO DEL BAJIO']
         let institucionEncontrada = false
         for (const inst of institucionesComunes) {
-          // Buscar en ambos: mensaje de IA y input del usuario
-          if (aiMessage.match(new RegExp(`\\b${inst}\\b`, 'i')) || userInput.match(new RegExp(`\\b${inst}\\b`, 'i'))) {
-            if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-            updates.comprador.institucionCredito = inst
+          // Buscar en ambos: mensaje de IA y input del usuario (v1.4 - arrays)
+          if (userInput.match(new RegExp(`\\b${inst}\\b`, 'i'))) {
+            // Actualizar o crear crédito con institución
+            const creditosActuales = currentData.creditos || []
+            if (creditosActuales.length === 0) {
+              updates.creditos = [{
+                credito_id: null,
+                institucion: inst,
+                monto: null,
+                participantes: [],
+                tipo_credito: null
+              }]
+            } else {
+              updates.creditos = creditosActuales.map((c, i) => 
+                i === 0 ? { ...c, institucion: inst } : c
+              )
+            }
             hasUpdates = true
             institucionEncontrada = true
             break
@@ -1317,17 +1706,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         // Si no se encontró una institución común, buscar con patrones más flexibles
         if (!institucionEncontrada) {
           // Patrón 1: "crédito FOVISSSTE" o "a crédito FOVISSSTE" (institución después de "crédito")
-          let institucionMatch = (aiMessage + ' ' + userInput).match(/(?:totalmente\s+)?(?:a\s+)?(?:crédito|credito)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{2,})(?:\s|\.|,|$|por|será|es)/i)
+          let institucionMatch = userInput.match(/(?:totalmente\s+)?(?:a\s+)?(?:crédito|credito)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{2,})(?:\s|\.|,|$|por|será|es)/i)
           
           // Patrón 2: "institución: X" o "banco: X" (más estricto para evitar capturar "qu" o RFC/CURP)
           // Detenerse antes de encontrar "RFC", "CURP" o un punto seguido de espacio y mayúscula (nueva oración)
           if (!institucionMatch) {
-            institucionMatch = (aiMessage + ' ' + userInput).match(/(?:institución|institucion|banco|entidad)[\s\w]*?[:\s]+(?:es|será|es\s+)?\*?\*?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,}?)(?:\s*(?:RFC|CURP)|\s*\.\s+[A-ZÁÉÍÓÚÑ]|\s*$)\*?\*?/i)
+            institucionMatch = userInput.match(/(?:institución|institucion|banco|entidad)[\s\w]*?[:\s]+(?:es|será|es\s+)?\*?\*?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,}?)(?:\s*(?:RFC|CURP)|\s*\.\s+[A-ZÁÉÍÓÚÑ]|\s*$)\*?\*?/i)
           }
           
           // Patrón 3: "con FOVISSSTE" o "mediante FOVISSSTE"
           if (!institucionMatch) {
-            institucionMatch = (aiMessage + ' ' + userInput).match(/(?:con|mediante|por|a través de)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,})(?:\s|\.|,|$)/i)
+            institucionMatch = userInput.match(/(?:con|mediante|por|a través de)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,})(?:\s|\.|,|$)/i)
           }
           
           if (institucionMatch && institucionMatch[1]) {
@@ -1359,8 +1748,21 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             const esSoloPalabrasComunes = /^(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE)(?:\s+(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE))*$/i.test(institucion)
             
             if (institucion && institucion.length >= 3 && !esCURP && !esRFC && !contieneCURP && !contieneRFC && !empiezaConCURP && !empiezaConRFC && !contieneFormatoRFC && !contieneFormatoCURP && !contieneFraseInvalida && !esSoloPalabrasComunes) {
-              if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-              updates.comprador.institucionCredito = institucion.toUpperCase()
+              // Actualizar o crear crédito con institución (v1.4)
+              const creditosActuales = currentData.creditos || []
+              if (creditosActuales.length === 0) {
+                updates.creditos = [{
+                  credito_id: null,
+                  institucion: institucion.toUpperCase(),
+                  monto: null,
+                  participantes: [],
+                  tipo_credito: null
+                }]
+              } else {
+                updates.creditos = creditosActuales.map((c, i) => 
+                  i === 0 ? { ...c, institucion: institucion.toUpperCase() } : c
+                )
+              }
               hasUpdates = true
             }
           }
@@ -1368,20 +1770,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
         // Detectar monto de crédito del comprador en mensaje de IA
         // Patrón mejorado: busca "monto del crédito será por $X" o "crédito será por $X"
-        const montoAIMatch = aiMessage.match(/(?:monto|cantidad|importe|crédito)[\s\w]*?[:\s]+(?:es|será|es\s+)?(?:por\s+)?\*?\*?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?\*?\*?/i) ||
-                            aiMessage.match(/(?:será|es)\s+(?:por|de)\s+\*?\*?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?/i)
-        if (montoAIMatch && montoAIMatch[1]) {
-          let monto = montoAIMatch[1].trim().replace(/\*\*/g, '').replace(/\s+/g, '')
-          // Formatear monto: agregar $ y mantener comas
-          if (monto && !monto.startsWith('$')) {
-            monto = `$${monto}`
-          }
-          if (monto && monto.length > 1) {
-            if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-            updates.comprador.montoCredito = monto
-            hasUpdates = true
-          }
-        }
+        // NOTA: el monto/institución deben venir del usuario o de <DATA_UPDATE>.
       }
 
       // Tipo de operación siempre es compraventa (no se detecta, ya está establecido)
@@ -1394,13 +1783,23 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       const creditoSimpleMatch = userInput.match(/(?:crédito|credito|hipoteca|bancario|financiamiento|préstamo)/i)
 
       if (contadoMatch) {
-        if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-        updates.comprador.necesitaCredito = false
-        hasUpdates = true
+        // Contado = sin créditos (v1.4)
+        if (currentData.creditos && currentData.creditos.length > 0) {
+          updates.creditos = []
+          hasUpdates = true
+        }
       } else if (seraCreditoMatch || creditoMatch || (creditoSimpleMatch && userInput.match(/(?:sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|confirmo|confirmado)/i))) {
-        if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-        updates.comprador.necesitaCredito = true
-        hasUpdates = true
+        // Crédito detectado (v1.4)
+        if (!currentData.creditos || currentData.creditos.length === 0) {
+          updates.creditos = [{
+            credito_id: null,
+            institucion: null,
+            monto: null,
+            participantes: [],
+            tipo_credito: null
+          }]
+          hasUpdates = true
+        }
       }
 
       // Detectar institución de crédito del comprador (fuera del bloque de confirmación)
@@ -1409,8 +1808,21 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       let institucionEncontrada2 = false
       for (const inst of institucionesComunes2) {
         if (aiMessage.match(new RegExp(`\\b${inst}\\b`, 'i')) || userInput.match(new RegExp(`\\b${inst}\\b`, 'i'))) {
-          if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-          updates.comprador.institucionCredito = inst
+          // Actualizar o crear crédito con institución (v1.4)
+          const creditosActuales = currentData.creditos || []
+          if (creditosActuales.length === 0) {
+            updates.creditos = [{
+              credito_id: null,
+              institucion: inst,
+              monto: null,
+              participantes: [],
+              tipo_credito: null
+            }]
+          } else {
+            updates.creditos = creditosActuales.map((c, i) => 
+              i === 0 ? { ...c, institucion: inst } : c
+            )
+          }
           hasUpdates = true
           institucionEncontrada2 = true
           break
@@ -1462,24 +1874,49 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           const esSoloPalabrasComunes = /^(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE)(?:\s+(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE))*$/i.test(institucion)
           
           if (institucion && institucion.length >= 3 && !esCURP && !esRFC && !contieneCURP && !contieneRFC && !empiezaConCURP && !empiezaConRFC && !contieneFormatoRFC && !contieneFormatoCURP && !contieneFraseInvalida && !esSoloPalabrasComunes) {
-            if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-            updates.comprador.institucionCredito = institucion.toUpperCase()
+            // Actualizar o crear crédito con institución (v1.4)
+            const creditosActuales = currentData.creditos || []
+            if (creditosActuales.length === 0) {
+              updates.creditos = [{
+                credito_id: null,
+                institucion: institucion.toUpperCase(),
+                monto: null,
+                participantes: [],
+                tipo_credito: null
+              }]
+            } else {
+              updates.creditos = creditosActuales.map((c, i) => 
+                i === 0 ? { ...c, institucion: institucion.toUpperCase() } : c
+              )
+            }
             hasUpdates = true
           }
         }
       }
 
-      // Detectar monto de crédito del comprador
+      // Detectar monto de crédito del comprador (v1.4)
       // Patrón 1: "el mismo que el valor" o "igual al valor" - usar valor del inmueble
       const mismoValorMatch = userInput.match(/(?:el\s+mismo|igual|mismo\s+que|igual\s+que|el\s+mismo\s+que)\s+(?:el\s+)?(?:valor|precio|casa|inmueble|operación)/i) ||
                               userInput.match(/(?:será|es)\s+(?:el\s+mismo|igual)\s+(?:que\s+)?(?:el\s+)?(?:valor|precio)/i)
-      if (mismoValorMatch && currentData.inmueble.valor) {
-        if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-        updates.comprador.montoCredito = currentData.inmueble.valor
+      if (mismoValorMatch && currentData.inmueble?.valor) {
+        const creditosActuales = currentData.creditos || []
+        if (creditosActuales.length === 0) {
+          updates.creditos = [{
+            credito_id: null,
+            institucion: null,
+            monto: currentData.inmueble.valor,
+            participantes: [],
+            tipo_credito: null
+          }]
+        } else {
+          updates.creditos = creditosActuales.map((c, i) => 
+            i === 0 ? { ...c, monto: currentData.inmueble?.valor || null } : c
+          )
+        }
         hasUpdates = true
       }
       // Patrón 2: Monto explícito en mensaje de IA o input del usuario
-      else {
+      if (!mismoValorMatch || !currentData.inmueble?.valor) {
         const montoMatch = aiMessage.match(/(?:monto|cantidad|importe|crédito)[\s\w]*?[:\s]+(?:es|será|es\s+)?(?:por\s+)?\*?\*?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?\*?\*?/i) ||
                           userInput.match(/(?:monto|cantidad|importe|crédito)[\s\w]*?[:\s]+(?:de\s+)?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?/i) ||
                           aiMessage.match(/\$\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?/i)
@@ -1490,14 +1927,27 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             monto = `$${monto}`
           }
           if (monto && monto.length > 1) {
-            if (!updates.comprador) updates.comprador = { ...currentData.comprador }
-            updates.comprador.montoCredito = monto
+            // Actualizar monto en crédito (v1.4)
+            const creditosActuales = currentData.creditos || []
+            if (creditosActuales.length === 0) {
+              updates.creditos = [{
+                credito_id: null,
+                institucion: null,
+                monto: monto,
+                participantes: [],
+                tipo_credito: null
+              }]
+            } else {
+              updates.creditos = creditosActuales.map((c, i) => 
+                i === 0 ? { ...c, monto: monto } : c
+              )
+            }
             hasUpdates = true
           }
         }
       }
 
-      // Detectar nombres (patrones comunes)
+      // Detectar nombres (patrones comunes) - v1.4
       const nombrePattern = /(?:nombre|vendedor|comprador)[:\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)+)/gi
       const nombres = [...userInput.matchAll(nombrePattern)]
       
@@ -1509,34 +1959,105 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       const curpPattern = /CURP[:\s]+([A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d)/gi
       const curpMatch = userInput.match(curpPattern)
 
-      // Actualizar datos si se encuentran
-      if (nombres.length > 0 && !currentData.vendedor.nombre) {
-        if (!updates.vendedor) updates.vendedor = { ...currentData.vendedor }
-        updates.vendedor.nombre = nombres[0][1]
+      // Actualizar datos si se encuentran (v1.4 - arrays)
+      const primerVendedor = currentData.vendedores?.[0]
+      const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
+      
+      if (nombres.length > 0 && !vendedorNombre) {
+        if (!updates.vendedores) {
+          updates.vendedores = currentData.vendedores ? [...currentData.vendedores] : []
+        }
+        if (updates.vendedores.length === 0) {
+          updates.vendedores = [{
+            party_id: null,
+            tipo_persona: 'persona_fisica',
+            persona_fisica: {
+              nombre: nombres[0][1] || null,
+              rfc: null,
+              curp: null,
+              estado_civil: null
+            },
+            tiene_credito: null
+          }]
+        } else {
+          updates.vendedores[0] = {
+            ...updates.vendedores[0],
+            persona_fisica: {
+              ...updates.vendedores[0].persona_fisica,
+              nombre: nombres[0][1] || updates.vendedores[0].persona_fisica?.nombre || null
+            }
+          }
+        }
         hasUpdates = true
       }
 
-      if (rfcMatch && !currentData.vendedor.rfc) {
-        if (!updates.vendedor) updates.vendedor = { ...currentData.vendedor }
-        updates.vendedor.rfc = rfcMatch[1]
+      if (rfcMatch && !primerVendedor?.persona_fisica?.rfc && !primerVendedor?.persona_moral?.rfc) {
+        if (!updates.vendedores) {
+          updates.vendedores = currentData.vendedores ? [...currentData.vendedores] : []
+        }
+        if (updates.vendedores.length === 0) {
+          updates.vendedores = [{
+            party_id: null,
+            tipo_persona: 'persona_fisica',
+            persona_fisica: {
+              nombre: null,
+              rfc: rfcMatch[1] || null,
+              curp: null,
+              estado_civil: null
+            },
+            tiene_credito: null
+          }]
+        } else {
+          updates.vendedores[0] = {
+            ...updates.vendedores[0],
+            persona_fisica: {
+              ...updates.vendedores[0].persona_fisica,
+              rfc: rfcMatch[1] || updates.vendedores[0].persona_fisica?.rfc || null
+            }
+          }
+        }
         hasUpdates = true
       }
 
-      if (curpMatch && !currentData.vendedor.curp) {
-        if (!updates.vendedor) updates.vendedor = { ...currentData.vendedor }
-        updates.vendedor.curp = curpMatch[1]
+      if (curpMatch && !primerVendedor?.persona_fisica?.curp) {
+        if (!updates.vendedores) {
+          updates.vendedores = currentData.vendedores ? [...currentData.vendedores] : []
+        }
+        if (updates.vendedores.length === 0) {
+          updates.vendedores = [{
+            party_id: null,
+            tipo_persona: 'persona_fisica',
+            persona_fisica: {
+              nombre: null,
+              rfc: null,
+              curp: curpMatch[1] || null,
+              estado_civil: null
+            },
+            tiene_credito: null
+          }]
+        } else {
+          updates.vendedores[0] = {
+            ...updates.vendedores[0],
+            persona_fisica: {
+              ...updates.vendedores[0].persona_fisica,
+              curp: curpMatch[1] || updates.vendedores[0].persona_fisica?.curp || null
+            }
+          }
+        }
         hasUpdates = true
       }
-    }
 
     return hasUpdates ? updates : null
   }
 
   const determineActosNotariales = (data: PreavisoData) => {
+    const primerVendedor = data.vendedores?.[0]
+    const tieneCreditos = data.creditos && data.creditos.length > 0
+    
     return {
-      cancelacionCreditoVendedor: data.vendedor.tieneCredito || false,
+      cancelacionCreditoVendedor: primerVendedor?.tiene_credito === true || false,
       compraventa: true,
-      aperturaCreditoComprador: data.comprador.necesitaCredito === true
+      aperturaCreditoComprador: tieneCreditos
     }
   }
 
@@ -1842,7 +2363,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 {/* PASO 1 – OPERACIÓN Y FORMA DE PAGO */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.tipoOperacion && data.comprador.necesitaCredito !== undefined ? (
+                    {serverState?.state_status?.ESTADO_1 === 'completed' ? (
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -1856,8 +2377,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     {data.tipoOperacion ? (
                       <>
                         <div><span className="font-medium">Tipo de operación:</span> {data.tipoOperacion}</div>
-                        {data.comprador.necesitaCredito !== undefined ? (
-                          <div><span className="font-medium">Forma de pago:</span> {data.comprador.necesitaCredito ? 'Crédito' : 'Contado'}</div>
+                        {data.creditos && data.creditos.length > 0 ? (
+                          <div><span className="font-medium">Forma de pago:</span> Crédito</div>
+                        ) : data.creditos && data.creditos.length === 0 ? (
+                          <div><span className="font-medium">Forma de pago:</span> Contado</div>
                         ) : (
                           <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
                         )}
@@ -1871,8 +2394,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 {/* PASO 2 – INMUEBLE Y REGISTRO (CONSOLIDADO) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.inmueble.folioReal && data.inmueble.seccion && data.inmueble.partida && 
-                     data.inmueble.direccion && data.inmueble.superficie && data.inmueble.valor ? (
+                    {serverState?.state_status?.ESTADO_2 === 'completed' ? (
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -1883,35 +2405,34 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.inmueble.folioReal && (
-                      <div><span className="font-medium">Folio Real:</span> {data.inmueble.folioReal}</div>
+                    {data.inmueble?.folio_real && (
+                      <div><span className="font-medium">Folio Real:</span> {data.inmueble.folio_real}</div>
                     )}
-                    {data.inmueble.partida && (
-                      <div><span className="font-medium">Partida(s):</span> {data.inmueble.partida}</div>
+                    {data.inmueble?.partidas && data.inmueble.partidas.length > 0 && (
+                      <div><span className="font-medium">Partida(s):</span> {data.inmueble.partidas.join(', ')}</div>
                     )}
-                    {data.inmueble.seccion && (
-                      <div><span className="font-medium">Sección:</span> {data.inmueble.seccion}</div>
+                    {data.inmueble?.direccion?.calle && (
+                      <div><span className="font-medium">Dirección:</span> {
+                        typeof data.inmueble.direccion === 'string' 
+                          ? data.inmueble.direccion 
+                          : `${data.inmueble.direccion.calle || ''} ${data.inmueble.direccion.numero || ''} ${data.inmueble.direccion.colonia || ''}`.trim()
+                      }</div>
                     )}
-                    {data.inmueble.direccion && (
-                      <div><span className="font-medium">Dirección:</span> {data.inmueble.direccion}</div>
-                    )}
-                    {data.inmueble.superficie && (
+                    {data.inmueble?.superficie && (
                       <div><span className="font-medium">Superficie:</span> {
                         typeof data.inmueble.superficie === 'string' 
                           ? data.inmueble.superficie 
-                          : typeof data.inmueble.superficie === 'object' && data.inmueble.superficie !== null
-                            ? (data.inmueble.superficie as any).superficieEdificada || (data.inmueble.superficie as any).privativa || (data.inmueble.superficie as any).total || JSON.stringify(data.inmueble.superficie)
-                            : String(data.inmueble.superficie)
+                          : String(data.inmueble.superficie)
                       }</div>
                     )}
-                    {data.inmueble.valor && (
+                    {data.inmueble?.valor && (
                       <div><span className="font-medium">Valor:</span> {
                         typeof data.inmueble.valor === 'string' 
                           ? data.inmueble.valor 
                           : String(data.inmueble.valor)
                       }</div>
                     )}
-                    {!data.inmueble.folioReal && !data.inmueble.partida && (
+                    {!data.inmueble?.folio_real && (!data.inmueble?.partidas || data.inmueble.partidas.length === 0) && (
                       <div className="text-gray-400 italic">Pendiente</div>
                     )}
                   </div>
@@ -1920,7 +2441,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 {/* PASO 3 – VENDEDOR(ES) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.vendedor.nombre ? (
+                    {serverState?.state_status?.ESTADO_3 === 'completed' ? (
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -1931,19 +2452,26 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.vendedor.nombre && (
-                      <div><span className="font-medium">Nombre:</span> {data.vendedor.nombre}</div>
+                    {data.vendedores && data.vendedores.length > 0 && (
+                      <>
+                        {data.vendedores[0].persona_fisica?.nombre && (
+                          <div><span className="font-medium">Nombre:</span> {data.vendedores[0].persona_fisica.nombre}</div>
+                        )}
+                        {data.vendedores[0].persona_moral?.denominacion_social && (
+                          <div><span className="font-medium">Denominación Social:</span> {data.vendedores[0].persona_moral.denominacion_social}</div>
+                        )}
+                        {(data.vendedores[0].persona_fisica?.rfc || data.vendedores[0].persona_moral?.rfc) && (
+                          <div><span className="font-medium">RFC:</span> {data.vendedores[0].persona_fisica?.rfc || data.vendedores[0].persona_moral?.rfc}</div>
+                        )}
+                        {data.vendedores[0].persona_fisica?.curp && (
+                          <div><span className="font-medium">CURP:</span> {data.vendedores[0].persona_fisica.curp}</div>
+                        )}
+                        {data.vendedores[0].tiene_credito !== null && (
+                          <div><span className="font-medium">Crédito pendiente:</span> {data.vendedores[0].tiene_credito ? 'Sí' : 'No'}</div>
+                        )}
+                      </>
                     )}
-                    {data.vendedor.rfc && (
-                      <div><span className="font-medium">RFC:</span> {data.vendedor.rfc}</div>
-                    )}
-                    {data.vendedor.curp && (
-                      <div><span className="font-medium">CURP:</span> {data.vendedor.curp}</div>
-                    )}
-                    {data.vendedor.tieneCredito !== undefined && (
-                      <div><span className="font-medium">Crédito pendiente:</span> {data.vendedor.tieneCredito ? 'Sí' : 'No'}</div>
-                    )}
-                    {!data.vendedor.nombre && !data.vendedor.rfc && (
+                    {(!data.vendedores || data.vendedores.length === 0 || (!data.vendedores[0].persona_fisica?.nombre && !data.vendedores[0].persona_moral?.denominacion_social)) && (
                       <div className="text-gray-400 italic">Pendiente</div>
                     )}
                   </div>
@@ -1952,7 +2480,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 {/* PASO 4 – COMPRADOR(ES) (CONSOLIDADO CON EXPEDIENTE) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.comprador.nombre && data.comprador.curp ? (
+                    {serverState?.state_status?.ESTADO_4 === 'completed' ? (
                       <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -1963,32 +2491,35 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.comprador.nombre && (
-                      <div><span className="font-medium">Nombre:</span> {data.comprador.nombre}</div>
+                    {data.compradores && data.compradores.length > 0 && (
+                      <>
+                        {data.compradores[0].persona_fisica?.nombre && (
+                          <div><span className="font-medium">Nombre:</span> {data.compradores[0].persona_fisica.nombre}</div>
+                        )}
+                        {data.compradores[0].persona_moral?.denominacion_social && (
+                          <div><span className="font-medium">Denominación Social:</span> {data.compradores[0].persona_moral.denominacion_social}</div>
+                        )}
+                        {(data.compradores[0].persona_fisica?.rfc || data.compradores[0].persona_moral?.rfc) && (
+                          <div><span className="font-medium">RFC:</span> {data.compradores[0].persona_fisica?.rfc || data.compradores[0].persona_moral?.rfc}</div>
+                        )}
+                        {data.compradores[0].persona_fisica?.curp && (
+                          <div><span className="font-medium">CURP:</span> {data.compradores[0].persona_fisica.curp}</div>
+                        )}
+                      </>
                     )}
-                    {data.comprador.rfc && (
-                      <div><span className="font-medium">RFC:</span> {data.comprador.rfc}</div>
-                    )}
-                    {data.comprador.curp && (
-                      <div><span className="font-medium">CURP:</span> {data.comprador.curp}</div>
-                    )}
-                    {!data.comprador.nombre && !data.comprador.curp && (
+                    {(!data.compradores || data.compradores.length === 0 || (!data.compradores[0].persona_fisica?.nombre && !data.compradores[0].persona_moral?.denominacion_social)) && (
                       <div className="text-gray-400 italic">Pendiente (requiere identificación oficial)</div>
                     )}
                   </div>
                 </div>
 
-                {/* PASO 6 – CRÉDITO DEL COMPRADOR (si aplica) */}
+                {/* PASO 5 – CRÉDITO DEL COMPRADOR (si aplica) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.tipoOperacion && data.comprador.necesitaCredito !== undefined ? (
-                      data.comprador.necesitaCredito && data.comprador.institucionCredito && data.comprador.montoCredito ? (
-                        <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      ) : data.comprador.necesitaCredito ? (
-                        <AlertCircle className="h-4 w-4 text-yellow-500" />
-                      ) : (
-                        <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      )
+                    {serverState?.state_status?.ESTADO_5 === 'completed' || serverState?.state_status?.ESTADO_5 === 'not_applicable' ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : serverState?.state_status?.ESTADO_5 === 'incomplete' ? (
+                      <AlertCircle className="h-4 w-4 text-yellow-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
                     )}
@@ -1999,24 +2530,24 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
                     {data.tipoOperacion ? (
-                      data.comprador.necesitaCredito !== undefined ? (
-                        data.comprador.necesitaCredito ? (
-                          <>
-                            {data.comprador.institucionCredito && (
-                              <div><span className="font-medium">Institución:</span> {data.comprador.institucionCredito}</div>
-                            )}
-                            {data.comprador.montoCredito && (
-                              <div><span className="font-medium">Monto:</span> {data.comprador.montoCredito}</div>
-                            )}
-                            {!data.comprador.institucionCredito && (
-                              <div className="text-yellow-600 italic">Información pendiente</div>
-                            )}
-                          </>
-                        ) : (
-                          <div className="text-gray-500">No aplica (pago de contado)</div>
-                        )
+                      data.creditos && data.creditos.length > 0 ? (
+                        <>
+                          {data.creditos.map((credito, idx) => (
+                            <div key={idx} className="mb-2">
+                              {credito.institucion && (
+                                <div><span className="font-medium">Institución {data.creditos.length > 1 ? `(${idx + 1})` : ''}:</span> {credito.institucion}</div>
+                              )}
+                              {credito.monto && (
+                                <div><span className="font-medium">Monto {data.creditos.length > 1 ? `(${idx + 1})` : ''}:</span> {credito.monto}</div>
+                              )}
+                              {!credito.institucion && (
+                                <div className="text-yellow-600 italic">Información pendiente</div>
+                              )}
+                            </div>
+                          ))}
+                        </>
                       ) : (
-                        <div className="text-gray-400 italic">Pendiente (definir forma de pago primero)</div>
+                        <div className="text-gray-500">No aplica (pago de contado)</div>
                       )
                     ) : (
                       <div className="text-gray-400 italic">Pendiente</div>
@@ -2024,19 +2555,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   </div>
                 </div>
 
-                {/* PASO 7 – CANCELACIÓN DE HIPOTECA (si existe) */}
+                {/* PASO 6 – CANCELACIÓN DE HIPOTECA (si existe) */}
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
-                    {data.vendedor.nombre && (data.vendedor.tieneCredito !== undefined || data.vendedor.institucionCredito) ? (
-                      data.vendedor.tieneCredito ? (
-                        data.vendedor.institucionCredito && data.vendedor.numeroCredito ? (
-                          <CheckCircle2 className="h-4 w-4 text-green-500" />
-                        ) : (
-                          <AlertCircle className="h-4 w-4 text-yellow-500" />
-                        )
-                      ) : (
-                        <CheckCircle2 className="h-4 w-4 text-gray-400" />
-                      )
+                    {serverState?.state_status?.ESTADO_6 === 'completed' || serverState?.state_status?.ESTADO_6 === 'not_applicable' ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : serverState?.state_status?.ESTADO_6 === 'incomplete' ? (
+                      <AlertCircle className="h-4 w-4 text-yellow-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
                     )}
@@ -2046,27 +2571,28 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.vendedor.nombre ? (
-                      data.vendedor.tieneCredito !== undefined || data.vendedor.institucionCredito ? (
-                        data.vendedor.tieneCredito ? (
-                          <>
-                            {data.vendedor.institucionCredito && (
-                              <div><span className="font-medium">Institución:</span> {data.vendedor.institucionCredito}</div>
-                            )}
-                            {data.vendedor.numeroCredito && (
-                              <div><span className="font-medium">Número de crédito:</span> {data.vendedor.numeroCredito}</div>
-                            )}
-                            {!data.vendedor.institucionCredito && (
-                              <div className="text-yellow-600 italic">Pendiente confirmación</div>
-                            )}
-                          </>
-                        ) : (
-                          <div className="text-gray-500">No aplica (sin hipoteca)</div>
-                        )
+                    {data.vendedores && data.vendedores.length > 0 && (
+                      data.vendedores[0].tiene_credito !== null || data.vendedores[0].credito_vendedor
+                    ) ? (
+                      data.vendedores[0].tiene_credito === true ? (
+                        <>
+                          {data.vendedores[0].credito_vendedor?.institucion && (
+                            <div><span className="font-medium">Institución:</span> {data.vendedores[0].credito_vendedor.institucion}</div>
+                          )}
+                          {data.vendedores[0].credito_vendedor?.numero_credito && (
+                            <div><span className="font-medium">Número de crédito:</span> {data.vendedores[0].credito_vendedor.numero_credito}</div>
+                          )}
+                          {!data.vendedores[0].credito_vendedor?.institucion && (
+                            <div className="text-yellow-600 italic">Pendiente confirmación</div>
+                          )}
+                        </>
                       ) : (
-                        <div className="text-gray-400 italic">Pendiente (verificar en escritura)</div>
+                        <div className="text-gray-500">No aplica (sin hipoteca)</div>
                       )
                     ) : (
+                      <div className="text-gray-400 italic">Pendiente (verificar en escritura)</div>
+                    )}
+                    {(!data.vendedores || data.vendedores.length === 0) && (
                       <div className="text-gray-400 italic">Pendiente (requiere información del vendedor)</div>
                     )}
                   </div>

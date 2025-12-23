@@ -2,12 +2,23 @@ import { NextResponse } from "next/server"
 import { CompradorService } from '@/lib/services/comprador-service'
 import { TramiteService } from '@/lib/services/tramite-service'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
+import { computePreavisoState } from '@/lib/preaviso-state'
 
 export async function POST(req: Request) {
   try {
     const formData = await req.formData()
     const file = formData.get("file") as File | null
     const documentType = formData.get("documentType") as string | null
+    const contextRaw = formData.get("context") as string | null
+
+    let context: any = null
+    if (contextRaw) {
+      try {
+        context = JSON.parse(contextRaw)
+      } catch {
+        context = null
+      }
+    }
 
     if (!file) {
       return NextResponse.json(
@@ -309,6 +320,48 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
       )
     }
 
+    // Normalización defensiva (evita regresiones por variaciones del OCR/LLM)
+    // Garantiza que, cuando aplique, exista extractedData.propietario.nombre (titular registral)
+    const normalizePropietario = (data: any) => {
+      if (!data || typeof data !== 'object') return data
+
+      // Caso: propietario como string
+      if (typeof data.propietario === 'string') {
+        data.propietario = { nombre: data.propietario, rfc: null, curp: null }
+      }
+
+      // Caso: propietario como objeto pero con llave alternativa para nombre
+      if (data.propietario && typeof data.propietario === 'object') {
+        const nombreAlt =
+          data.propietario.nombre ||
+          data.propietario.nombre_completo ||
+          data.propietario.nombreCompleto ||
+          data.propietario.titular ||
+          null
+        if (!data.propietario.nombre && nombreAlt) data.propietario.nombre = nombreAlt
+      }
+
+      // Fallbacks comunes fuera de "propietario"
+      const nombreFallback =
+        data.titularRegistral ||
+        data.titular_registral ||
+        data.titular ||
+        data.propietarioNombre ||
+        data.nombreTitular ||
+        data.nombre_titular ||
+        null
+
+      if (!data.propietario && nombreFallback) {
+        data.propietario = { nombre: nombreFallback, rfc: null, curp: null }
+      } else if (data.propietario && typeof data.propietario === 'object' && !data.propietario.nombre && nombreFallback) {
+        data.propietario.nombre = nombreFallback
+      }
+
+      return data
+    }
+
+    extractedData = normalizePropietario(extractedData)
+
     // Si es una identificación del comprador, buscar expedientes existentes
     let expedienteExistente = null
     if (documentType === "identificacion" && extractedData?.tipo === "comprador") {
@@ -357,12 +410,29 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
       }
     }
 
+    // Si el cliente envía contexto, devolver también el estado calculado por backend (fuente de verdad)
+    let state: any = null
+    if (context) {
+      const prevDocs = Array.isArray(context.documentosProcesados) ? context.documentosProcesados : []
+      const nextDocs = [
+        ...prevDocs,
+        {
+          nombre: file.name,
+          tipo: documentType || 'desconocido',
+          informacionExtraida: extractedData
+        }
+      ]
+      const mergedContext = { ...context, documentosProcesados: nextDocs }
+      state = computePreavisoState(mergedContext).state
+    }
+
     return NextResponse.json({
       success: true,
       extractedData,
       fileName: file.name,
       fileType: documentType,
       ...(expedienteExistente && { expedienteExistente }),
+      ...(state && { state }),
     })
 
   } catch (error: any) {

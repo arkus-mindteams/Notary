@@ -201,15 +201,15 @@ export class S3Service {
     const body = new Uint8Array(arrayBuffer)
 
     try {
-      await s3Client.send(
-        new PutObjectCommand({
-          Bucket: BUCKET,
-          Key: key,
-          Body: body,
-          ContentType: contentType || (file instanceof File ? file.type : 'application/octet-stream'),
-          Metadata: metadata,
-        })
-      )
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: key,
+        Body: body,
+        ContentType: contentType || (file instanceof File ? file.type : 'application/octet-stream'),
+        Metadata: metadata,
+      })
+    )
     } catch (error: any) {
       if (error.name === 'NoSuchBucket' || error.name === 'NotFound') {
         throw new Error(

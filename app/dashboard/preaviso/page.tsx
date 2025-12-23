@@ -87,8 +87,13 @@ export default function PreavisoPage() {
         headers['Authorization'] = `Bearer ${session.access_token}`
       }
 
-      // Validar que tengamos al menos nombre o CURP para crear/buscar comprador
-      if (!data.comprador.nombre && !data.comprador.curp) {
+      // Validar que tengamos al menos nombre o CURP para crear/buscar comprador (v1.4)
+      const primerComprador = data.compradores?.[0]
+      const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
+      const compradorCurp = primerComprador?.persona_fisica?.curp
+      const compradorRfc = primerComprador?.persona_fisica?.rfc || primerComprador?.persona_moral?.rfc
+      
+      if (!compradorNombre && !compradorCurp) {
         throw new Error('No se puede crear/buscar comprador sin nombre o CURP')
       }
 
@@ -96,9 +101,9 @@ export default function PreavisoPage() {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          nombre: data.comprador.nombre || '',
-          rfc: data.comprador.rfc || null,
-          curp: data.comprador.curp || '',
+          nombre: compradorNombre || '',
+          rfc: compradorRfc || null,
+          curp: compradorCurp || '',
         }),
       })
 
@@ -114,16 +119,16 @@ export default function PreavisoPage() {
 
         // Intentar buscar por CURP primero, luego por RFC, luego por nombre
         let searchResponse
-        if (data.comprador.curp) {
-          searchResponse = await fetch(`/api/expedientes/compradores?curp=${encodeURIComponent(data.comprador.curp)}`, {
+        if (compradorCurp) {
+          searchResponse = await fetch(`/api/expedientes/compradores?curp=${encodeURIComponent(compradorCurp)}`, {
             headers: searchHeaders,
           })
-        } else if (data.comprador.rfc) {
-          searchResponse = await fetch(`/api/expedientes/compradores?rfc=${encodeURIComponent(data.comprador.rfc)}`, {
+        } else if (compradorRfc) {
+          searchResponse = await fetch(`/api/expedientes/compradores?rfc=${encodeURIComponent(compradorRfc)}`, {
             headers: searchHeaders,
           })
-        } else if (data.comprador.nombre) {
-          searchResponse = await fetch(`/api/expedientes/compradores?nombre=${encodeURIComponent(data.comprador.nombre)}`, {
+        } else if (compradorNombre) {
+          searchResponse = await fetch(`/api/expedientes/compradores?nombre=${encodeURIComponent(compradorNombre)}`, {
             headers: searchHeaders,
           })
         }
@@ -161,7 +166,10 @@ export default function PreavisoPage() {
           compradorId: comprador.id,
           datos: {
             tipoOperacion: data.tipoOperacion,
-            vendedor: data.vendedor,
+            vendedores: data.vendedores,
+            compradores: data.compradores,
+            creditos: data.creditos,
+            gravamenes: data.gravamenes,
             inmueble: data.inmueble,
             actosNotariales: data.actosNotariales,
           },
@@ -191,7 +199,10 @@ export default function PreavisoPage() {
           tipo: 'preaviso',
           datos: {
             tipoOperacion: data.tipoOperacion,
-            vendedor: data.vendedor,
+            vendedores: data.vendedores,
+            compradores: data.compradores,
+            creditos: data.creditos,
+            gravamenes: data.gravamenes,
             inmueble: data.inmueble,
             actosNotariales: data.actosNotariales,
           },
