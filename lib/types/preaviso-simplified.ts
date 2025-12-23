@@ -1,5 +1,5 @@
 /**
- * Schema simplificado para JSON de Pre-Aviso
+ * Schema simplificado para JSON de Pre-Aviso (v1.4 compatible)
  * Solo contiene los campos necesarios para generar el documento
  */
 
@@ -7,38 +7,47 @@ export interface PreavisoSimplifiedJSON {
   // Información básica
   tipoOperacion: "compraventa" | null
   
-  // Vendedor
-  vendedor: {
+  // Arrays según v1.4 (para compatibilidad, se toma el primer elemento)
+  vendedores: Array<{
     nombre: string | null
     rfc: string | null
     curp: string | null
     tipoPersona: "persona_fisica" | "persona_moral" | null
-    denominacion_social?: string | null // solo si persona_moral
-    estado_civil?: string | null // solo si persona_fisica
+    denominacion_social?: string | null
+    estado_civil?: string | null
     tieneCredito: boolean | null
     institucionCredito?: string | null
     numeroCredito?: string | null
-  } | null
+  }>
   
-  // Comprador
-  comprador: {
+  compradores: Array<{
     nombre: string | null
     rfc: string | null
     curp: string | null
     tipoPersona: "persona_fisica" | "persona_moral" | null
-    denominacion_social?: string | null // solo si persona_moral
-    estado_civil?: string | null // solo si persona_fisica
+    denominacion_social?: string | null
+    estado_civil?: string | null
     necesitaCredito: boolean | null
     institucionCredito?: string | null
     montoCredito?: string | null
-  } | null
+  }>
   
-  // Inmueble
+  creditos: Array<{
+    institucion: string | null
+    monto: string | null
+    tipo_credito: string | null
+    participantes: Array<{
+      party_id: string | null
+      rol: string | null
+    }>
+  }>
+  
+  // Inmueble (v1.4)
   inmueble: {
-    direccion: string | null
+    direccion: string | null // Dirección completa como string para compatibilidad
     folioReal: string | null
+    partidas: string[]
     seccion: string | null
-    partida: string | null // o partidas: string[] si múltiples
     superficie: string | null
     valor: string | null
     unidad?: string | null
@@ -58,7 +67,7 @@ export interface PreavisoSimplifiedJSON {
   }
   
   // Metadata (se agrega en el generador, no viene del agente)
-  fecha?: string // fecha actual formateada
+  fecha?: string
   notaria?: {
     numero: string
     nombre: string

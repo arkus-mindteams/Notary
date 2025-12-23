@@ -2,12 +2,23 @@ import { NextResponse } from "next/server"
 import { CompradorService } from '@/lib/services/comprador-service'
 import { TramiteService } from '@/lib/services/tramite-service'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
+import { computePreavisoState } from '@/lib/preaviso-state'
 
 export async function POST(req: Request) {
   try {
     const formData = await req.formData()
     const file = formData.get("file") as File | null
     const documentType = formData.get("documentType") as string | null
+    const contextRaw = formData.get("context") as string | null
+
+    let context: any = null
+    if (contextRaw) {
+      try {
+        context = JSON.parse(contextRaw)
+      } catch {
+        context = null
+      }
+    }
 
     if (!file) {
       return NextResponse.json(
@@ -159,8 +170,7 @@ Extrae SOLO la información que puedas leer claramente.`
   "direccion": "dirección completa si está visible",
   "fechaNacimiento": "fecha de nacimiento si está visible",
   "tipoDocumento": "INE/IFE, Pasaporte, Licencia, CURP, etc.",
-  "numeroDocumento": "número de credencial/pasaporte/etc si está visible",
-  "tipo": "vendedor o comprador según el contexto del flujo (si no está claro, puedes inferirlo o dejar null)"
+  "numeroDocumento": "número de credencial/pasaporte/etc si está visible"
 }
 
 IMPORTANTE:
@@ -169,7 +179,8 @@ IMPORTANTE:
 - Si es un pasaporte, extrae nombre, fecha de nacimiento, número de pasaporte
 - Si es una CURP, extrae nombre, CURP, fecha de nacimiento
 - Si es una licencia, extrae nombre, dirección, número de licencia
-- Lee cuidadosamente todos los campos visibles en el documento`
+- Lee cuidadosamente todos los campos visibles en el documento
+- NO infieras si esta identificación corresponde a comprador o vendedor. No incluyas ese campo.`
         userPrompt = "Analiza este documento de identificación oficial y extrae TODA la información disponible que puedas leer. Sé exhaustivo y preciso."
         break
 
@@ -186,17 +197,14 @@ IMPORTANTE:
   },
   "superficie": "superficie del inmueble si está disponible",
   "valor": "valor del inmueble si está disponible",
-  "formaPago": "forma de pago mencionada en el documento (por ejemplo: 'contado', 'crédito', 'crédito hipotecario', 'Infonavit', 'Fovissste', etc.) si está mencionada, o null si no se menciona",
-  "institucionCredito": "institución de crédito mencionada (Infonavit, Fovissste, banco, etc.) si está visible, o null si no se menciona",
   "gravamenes": "información sobre gravámenes o hipotecas si está visible, o null si no hay"
 }
 
 IMPORTANTE:
 - Extrae SOLO la información que puedas leer claramente en el documento
-- Si el documento menciona la forma de pago (contado, crédito, etc.), extráela en el campo "formaPago"
-- Si menciona una institución de crédito específica (Infonavit, Fovissste, banco, etc.), extráela en "institucionCredito"
+- NO extraigas ni infieras forma de pago o institución de crédito desde la inscripción (eso se confirma con el usuario en el chat).
 - Si algún campo no está disponible o no es legible, usa null`
-        userPrompt = "Analiza este documento de inscripción registral y extrae TODA la información disponible que puedas leer claramente, incluyendo folio real, partida, sección, propietario, y especialmente cualquier mención sobre forma de pago o crédito."
+        userPrompt = "Analiza este documento de inscripción registral y extrae TODA la información disponible que puedas leer claramente, incluyendo folio real, partida, sección, propietario y gravámenes."
         break
 
       default:
@@ -309,32 +317,265 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
       )
     }
 
-    // Si es una identificación del comprador, buscar expedientes existentes
+    // Normalización defensiva (evita regresiones por variaciones del OCR/LLM)
+    // Garantiza que, cuando aplique, exista extractedData.propietario.nombre (titular registral)
+    const normalizePropietario = (data: any) => {
+      if (!data || typeof data !== 'object') return data
+
+      // Caso: propietario como string
+      if (typeof data.propietario === 'string') {
+        data.propietario = { nombre: data.propietario, rfc: null, curp: null }
+      }
+
+      // Caso: propietario como objeto pero con llave alternativa para nombre
+      if (data.propietario && typeof data.propietario === 'object') {
+        const nombreAlt =
+          data.propietario.nombre ||
+          data.propietario.nombre_completo ||
+          data.propietario.nombreCompleto ||
+          data.propietario.titular ||
+          null
+        if (!data.propietario.nombre && nombreAlt) data.propietario.nombre = nombreAlt
+      }
+
+      // Fallbacks comunes fuera de "propietario"
+      const nombreFallback =
+        data.titularRegistral ||
+        data.titular_registral ||
+        data.titular ||
+        data.propietarioNombre ||
+        data.nombreTitular ||
+        data.nombre_titular ||
+        null
+
+      if (!data.propietario && nombreFallback) {
+        data.propietario = { nombre: nombreFallback, rfc: null, curp: null }
+      } else if (data.propietario && typeof data.propietario === 'object' && !data.propietario.nombre && nombreFallback) {
+        data.propietario.nombre = nombreFallback
+      }
+
+      return data
+    }
+
+    extractedData = normalizePropietario(extractedData)
+
+    // Helper: merge canónico (v1.4) en backend para que state y data siempre estén alineados.
+    const safeArray = (v: any): any[] => (Array.isArray(v) ? v : [])
+    const safeObj = (v: any): any => (v && typeof v === 'object' ? v : {})
+    const asStringOrNull = (v: any): string | null => (v === undefined || v === null ? null : String(v))
+    const uniq = (arr: any[]) => Array.from(new Set(arr.filter(Boolean)))
+
+    const mergeExtractedIntoContext = (docType: string | null, extracted: any, baseContext: any) => {
+      const update: any = {}
+      const ctx = baseContext || {}
+
+      // Base inmueble (asegurar estructura v1.4 mínima)
+      const inmueble = safeObj(ctx.inmueble)
+      const direccion = safeObj(inmueble.direccion)
+      const datosCatastrales = safeObj(inmueble.datos_catastrales)
+
+      const ensureInmueble = () => {
+        update.inmueble = {
+          folio_real: inmueble?.folio_real ?? null,
+          partidas: safeArray(inmueble?.partidas),
+          all_registry_pages_confirmed: inmueble?.all_registry_pages_confirmed === true,
+          direccion: {
+            calle: direccion?.calle ?? null,
+            numero: direccion?.numero ?? null,
+            colonia: direccion?.colonia ?? null,
+            municipio: direccion?.municipio ?? null,
+            estado: direccion?.estado ?? null,
+            codigo_postal: direccion?.codigo_postal ?? null,
+          },
+          superficie: inmueble?.superficie ?? null,
+          valor: inmueble?.valor ?? null,
+          datos_catastrales: {
+            lote: datosCatastrales?.lote ?? null,
+            manzana: datosCatastrales?.manzana ?? null,
+            fraccionamiento: datosCatastrales?.fraccionamiento ?? null,
+            condominio: datosCatastrales?.condominio ?? null,
+            unidad: datosCatastrales?.unidad ?? null,
+            modulo: datosCatastrales?.modulo ?? null,
+          },
+        }
+      }
+
+      // === ESCRITURA / INSCRIPCIÓN ===
+      if (docType === 'escritura' || docType === 'inscripcion') {
+        ensureInmueble()
+        if (extracted?.folioReal) update.inmueble.folio_real = String(extracted.folioReal)
+
+        // Partidas: soportar partida (string) y partidas (array)
+        const partidas = safeArray(update.inmueble.partidas)
+        if (extracted?.partida) partidas.push(String(extracted.partida))
+        if (Array.isArray(extracted?.partidas)) {
+          for (const p of extracted.partidas) if (p) partidas.push(String(p))
+        }
+        update.inmueble.partidas = uniq(partidas)
+
+        // Ubicación → dirección (sin parseo agresivo)
+        if (extracted?.ubicacion) {
+          if (typeof extracted.ubicacion === 'string') {
+            update.inmueble.direccion = { ...update.inmueble.direccion, calle: extracted.ubicacion }
+          } else if (typeof extracted.ubicacion === 'object') {
+            update.inmueble.direccion = { ...update.inmueble.direccion, ...extracted.ubicacion }
+          }
+        }
+
+        // Superficie/valor (stringificar defensivo)
+        if (extracted?.superficie) update.inmueble.superficie = asStringOrNull(extracted.superficie)
+        if (extracted?.valor) update.inmueble.valor = asStringOrNull(extracted.valor)
+
+        // Titular registral → vendedores[0] (NO asumir tipo_persona)
+        const propietarioNombre = extracted?.propietario?.nombre
+        const propietarioRfc = extracted?.propietario?.rfc
+        const propietarioCurp = extracted?.propietario?.curp
+        if (propietarioNombre) {
+          const vendedores = safeArray(ctx.vendedores)
+          const v0 = vendedores[0] || { party_id: null, tipo_persona: null, tiene_credito: null }
+
+          // Si ya está como persona moral, actualizar denominación/rfc; si no, dejar placeholder en persona_fisica sin asumir tipo_persona.
+          if (v0?.tipo_persona === 'persona_moral' || v0?.persona_moral) {
+            vendedores[0] = {
+              ...v0,
+              persona_moral: {
+                ...(v0.persona_moral || {}),
+                denominacion_social: propietarioNombre || v0?.persona_moral?.denominacion_social || null,
+                rfc: propietarioRfc || v0?.persona_moral?.rfc || null,
+              },
+            }
+          } else {
+            vendedores[0] = {
+              ...v0,
+              tipo_persona: v0?.tipo_persona ?? null,
+              persona_fisica: {
+                ...(v0.persona_fisica || {}),
+                nombre: propietarioNombre || v0?.persona_fisica?.nombre || null,
+                rfc: propietarioRfc || v0?.persona_fisica?.rfc || null,
+                curp: propietarioCurp || v0?.persona_fisica?.curp || null,
+              },
+            }
+          }
+
+          update.vendedores = vendedores
+        }
+      }
+
+      // === PLANO ===
+      if (docType === 'plano') {
+        ensureInmueble()
+        if (extracted?.superficie) update.inmueble.superficie = asStringOrNull(extracted.superficie)
+        if (extracted?.lote) update.inmueble.datos_catastrales.lote = asStringOrNull(extracted.lote)
+        if (extracted?.manzana) update.inmueble.datos_catastrales.manzana = asStringOrNull(extracted.manzana)
+        if (extracted?.fraccionamiento) update.inmueble.datos_catastrales.fraccionamiento = asStringOrNull(extracted.fraccionamiento)
+      }
+
+      // === IDENTIFICACIÓN ===
+      if (docType === 'identificacion') {
+        const nombre = extracted?.nombre
+        if (nombre) {
+          const vendedores = safeArray(ctx.vendedores)
+          const compradores = safeArray(ctx.compradores)
+
+          const v0 = vendedores[0]
+          const c0 = compradores[0]
+          const vendedorNombre = v0?.persona_fisica?.nombre || v0?.persona_moral?.denominacion_social || null
+          const compradorNombre = c0?.persona_fisica?.nombre || c0?.persona_moral?.denominacion_social || null
+
+          // Heurística (sin inferencia del modelo): si falta comprador → asignar a comprador; si comprador ya existe pero falta vendedor → asignar a vendedor; si ambos existen → asignar a comprador.
+          const target = !compradorNombre ? 'comprador' : (!vendedorNombre ? 'vendedor' : 'comprador')
+
+          // Si el documento es INE/IFE/Pasaporte/Licencia/CURP, es persona física (clasificación por tipo de documento, no por suposición).
+          const tipoDoc = String(extracted?.tipoDocumento || '').toLowerCase()
+          const esPersonaFisicaPorDoc = /(ine|ife|pasaporte|licencia|curp)/i.test(tipoDoc)
+          const tipo_persona = esPersonaFisicaPorDoc ? 'persona_fisica' : null
+
+          const personaFisica = {
+            nombre: String(nombre),
+            rfc: extracted?.rfc ? String(extracted.rfc) : null,
+            curp: extracted?.curp ? String(extracted.curp) : null,
+            estado_civil: null,
+          }
+
+          if (target === 'comprador') {
+            const next = compradores.length > 0 ? [...compradores] : [{ party_id: null, tipo_persona: null, persona_fisica: {}, persona_moral: undefined }]
+            const base = next[0] || { party_id: null, tipo_persona: null }
+            next[0] = {
+              ...base,
+              tipo_persona: base?.tipo_persona ?? tipo_persona,
+              persona_fisica: { ...(base?.persona_fisica || {}), ...personaFisica },
+            }
+            update.compradores = next
+          } else {
+            const next = vendedores.length > 0 ? [...vendedores] : [{ party_id: null, tipo_persona: null, tiene_credito: null, persona_fisica: {}, persona_moral: undefined }]
+            const base = next[0] || { party_id: null, tipo_persona: null, tiene_credito: null }
+            next[0] = {
+              ...base,
+              tipo_persona: base?.tipo_persona ?? tipo_persona,
+              persona_fisica: { ...(base?.persona_fisica || {}), ...personaFisica },
+            }
+            update.vendedores = next
+          }
+
+          // Retornar target para que el caller pueda decidir expediente lookup
+          update.__targetPerson = target
+        }
+      }
+
+      return update
+    }
+
+    // Si hay contexto, aplicamos merge canónico y devolvemos `data` + `state` ya alineados.
+    let dataUpdate: any = null
+    let state: any = null
+    let mergedContextForState: any = null
+    if (context) {
+      dataUpdate = mergeExtractedIntoContext(documentType, extractedData, context)
+
+      const prevDocs = Array.isArray(context.documentosProcesados) ? context.documentosProcesados : []
+      const nextDocs = [
+        ...prevDocs,
+        {
+          nombre: file.name,
+          tipo: documentType || 'desconocido',
+          informacionExtraida: extractedData,
+        },
+      ]
+
+      // No exponer campos internos (__targetPerson) fuera del backend
+      const { __targetPerson, ...cleanDataUpdate } = dataUpdate || {}
+      mergedContextForState = { ...context, ...cleanDataUpdate, documentosProcesados: nextDocs }
+      state = computePreavisoState(mergedContextForState).state
+      dataUpdate = cleanDataUpdate
+    }
+
+    // Expediente existente: ahora se decide por target inferido por contexto (no por inferencia del modelo).
     let expedienteExistente = null
-    if (documentType === "identificacion" && extractedData?.tipo === "comprador") {
+    const shouldLookupExpediente =
+      documentType === "identificacion" &&
+      !!context &&
+      !!dataUpdate &&
+      // si el merge impactó compradores, interpretamos que era identificación del comprador
+      Object.prototype.hasOwnProperty.call(dataUpdate, 'compradores')
+
+    if (shouldLookupExpediente) {
       try {
-        // Obtener usuario actual para filtrar por notaría si es necesario
         const currentUser = await getCurrentUserFromRequest(req)
         const notariaId = currentUser?.rol === 'superadmin' ? null : currentUser?.notaria_id
 
-        // Buscar comprador por RFC o CURP
         let comprador = null
-        if (extractedData.rfc) {
+        if (extractedData?.rfc) {
           comprador = await CompradorService.findCompradorByRFC(extractedData.rfc)
         }
-        if (!comprador && extractedData.curp) {
+        if (!comprador && extractedData?.curp) {
           comprador = await CompradorService.findCompradorByCURP(extractedData.curp)
         }
 
         if (comprador) {
-          // Verificar que el comprador pertenece a la notaría del usuario (si es abogado)
           if (currentUser?.rol === 'abogado' && comprador.notaria_id !== currentUser.notaria_id) {
-            // El comprador no pertenece a la notaría del abogado, no retornar expedientes
             expedienteExistente = null
           } else {
-            // Buscar trámites relacionados al comprador
             const tramites = await TramiteService.findTramitesByCompradorId(comprador.id, notariaId || undefined)
-            
             expedienteExistente = {
               compradorId: comprador.id,
               compradorNombre: comprador.nombre,
@@ -351,8 +592,6 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
           }
         }
       } catch (error: any) {
-        // Si hay error al buscar expedientes, no fallar el procesamiento del documento
-        // Solo loguear el error
         console.error("[preaviso-process-document] Error buscando expedientes:", error)
       }
     }
@@ -362,7 +601,9 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
       extractedData,
       fileName: file.name,
       fileType: documentType,
+      ...(dataUpdate && { data: dataUpdate }),
       ...(expedienteExistente && { expedienteExistente }),
+      ...(state && { state }),
     })
 
   } catch (error: any) {
