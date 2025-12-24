@@ -199,6 +199,12 @@ CREDITOS:
 - A single person may appear in multiple credits ONLY if explicitly stated.
 - participantes MUST be explicitly defined by the user (no assumptions).
 - DO NOT infer coacreditados, conyugal relationships, or shared liability.
+- CRITICAL: The institucion field MUST be a REAL, SPECIFIC institution name.
+  PROHIBITED values (DO NOT use these):
+  - Generic terms: "credito", "crédito", "el credito", "el crédito", "hipoteca", "banco", "institucion", "institución", "entidad", "financiamiento"
+  - Phrases: "el credito del comprador", "el crédito que", "institución crediticia"
+  - If the user says only "crédito" or "el crédito" without specifying the institution name, DO NOT extract it. Ask the user for the specific institution name instead.
+  - Valid examples: "FOVISSSTE", "INFONAVIT", "BBVA", "SANTANDER", "BANORTE", "HSBC", "BANAMEX"
 
 GRAVAMENES:
 - Emit ONLY if explicitly mentioned or confirmed.
@@ -466,26 +472,22 @@ STEP 4 — BUYERS
 
 buyers_count: ${compradores.length}
 
-If buyers_count > 0 and buyer[0] already has a detected name and tipo_persona in CAPTURED INFORMATION:
-- DO NOT ask the user to type the name again.
-- Ask the user to CONFIRM the detected buyer (yes/no) and (if missing) confirm tipo_persona.
-- If confirmed and tipo_persona == persona_fisica, ask estado_civil next.
+CAPTURED INFORMATION:
+${compradores.length > 0 ? compradores.map((c: any, idx: number) => {
+  const nombre = c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social || null
+  const tipo = c?.tipo_persona || null
+  const estadoCivil = c?.persona_fisica?.estado_civil || null
+  return `- Buyer[${idx}]: ${nombre ? `name="${nombre}"` : 'name=missing'}, tipo_persona=${tipo || 'missing'}, ${tipo === 'persona_fisica' ? `estado_civil=${estadoCivil || 'missing'}` : 'N/A'}`
+}).join('\n') : '- No buyers captured yet'}
 
-If buyers_count == 0:
-- Capture buyers ONE BY ONE.
-
-For EACH buyer:
-- Ask full name as per official ID
-- Ask tipo_persona (persona_fisica / persona_moral)
-
-If persona_fisica:
-- Ask estado_civil
-
-After first buyer ask explicitly:
-"¿Habrá otro comprador o participante?"
+MISSING INFORMATION:
+${requiredMissing.filter((m: string) => m.startsWith('compradores')).length > 0 
+  ? requiredMissing.filter((m: string) => m.startsWith('compradores')).map((m: string) => `- ${m}`).join('\n')
+  : '- All required buyer information is captured'}
 
 BLOCKING:
-- Do NOT proceed without at least one buyer.
+- Cannot proceed without at least one buyer with name and tipo_persona.
+- For persona_fisica: estado_civil is required.
 
 ────────────────────────────────────────
 STEP 5 — MARITAL DECISION (CRITICAL BRANCH)
@@ -610,8 +612,15 @@ export async function POST(req: Request) {
       )
     }
 
+    // PRE-LLM deterministic update:
+    // Aplica actualizaciones deterministas basadas SOLO en el input del usuario y el contexto actual.
+    // Ej: selección de folio_real con múltiples folios -> copiar superficie/datos asociados desde foliosConInfo.
+    // Esto debe ocurrir ANTES de construir PROMPT 3 / llamar al modelo, para que el modelo no pregunte lo que ya existe.
+    const preDeterministicUpdate = applyDeterministicUserInputUpdate(lastUserMessage, context, null)
+    const contextForLLM = preDeterministicUpdate ? { ...(context || {}), ...(preDeterministicUpdate || {}) } : (context || {})
+
     // Construir prompts separados por responsabilidad
-    const prompts = await buildSystemPrompts(context)
+    const prompts = await buildSystemPrompts(contextForLLM)
 
     // Construir mensajes para OpenAI con prompts separados
     const systemMessages: ChatMessage[] = [
@@ -666,14 +675,16 @@ export async function POST(req: Request) {
     const assistantMessage = data.choices[0]?.message?.content || ''
 
     // Extraer datos actualizados del mensaje del asistente
-    const updatedData = extractDataFromMessage(assistantMessage, context)
+    const updatedData = extractDataFromMessage(assistantMessage, contextForLLM)
 
     // Aplicar actualizaciones deterministas basadas en el input del usuario (para evitar loops cuando el LLM no emite DATA_UPDATE)
-    const deterministicUpdate = applyDeterministicUserInputUpdate(lastUserMessage, context, updatedData)
-    const mergedUpdate = mergeContextUpdates(updatedData, deterministicUpdate)
+    const deterministicUpdate = applyDeterministicUserInputUpdate(lastUserMessage, contextForLLM, updatedData)
+    const postMerged = mergeContextUpdates(updatedData, deterministicUpdate)
+    // Incluir también el update determinista aplicado pre-LLM (sin perder lo que el modelo confirmó)
+    const mergedUpdate = mergeContextUpdates(preDeterministicUpdate, postMerged)
 
     // Recalcular estado "server-truth" con el contexto actualizado (si hay cambios)
-    const nextContext = mergedUpdate ? { ...(context || {}), ...(mergedUpdate || {}) } : (context || {})
+    const nextContext = mergedUpdate ? { ...(context || {}), ...(mergedUpdate || {}) } : (contextForLLM || {})
     const next = await buildSystemPrompts(nextContext)
 
     const strippedAssistant = assistantMessage.replace(/<DATA_UPDATE>[\s\S]*<\/DATA_UPDATE>/g, '').trim()
@@ -696,11 +707,25 @@ export async function POST(req: Request) {
       /\b(ind[ií]ca(me|nos)|dime|confirma(s|r)?|necesito|requiero|responde)\b/i.test(strippedAssistant) ||
       /:\s*\n-\s+/m.test(strippedAssistant) // lista de campos solicitados
 
-    const shouldAddFollowUp = !!followUp && !assistantAlreadyAsks && (mergedUpdate || isAckOnly || isPureDataUpdate)
+    const blockingReasons: string[] = Array.isArray(next.state?.blocking_reasons) ? next.state.blocking_reasons : []
+    const isMultipleFolioBlock = blockingReasons.includes('multiple_folio_real_detected')
+
+    // Caso CRÍTICO: múltiples folios reales detectados.
+    // Queremos SIEMPRE mostrar el listado y pedir selección, aunque el LLM ya haya "preguntado" genérico,
+    // porque la pregunta determinista incluye la info de `foliosConInfo` (JSON temporal en documentosProcesados).
+    const shouldForceDeterministicFolioPrompt = isMultipleFolioBlock && !!followUp
+
+    const shouldAddFollowUp =
+      !!followUp &&
+      !assistantAlreadyAsks &&
+      (mergedUpdate || isAckOnly || isPureDataUpdate)
 
     return NextResponse.json({
-      message: assistantMessage,
-      messages: shouldAddFollowUp ? [assistantMessage, followUp] : undefined,
+      // Si estamos bloqueados por múltiples folios, devolvemos directamente el prompt determinista con listado.
+      message: shouldForceDeterministicFolioPrompt ? followUp : assistantMessage,
+      messages: shouldForceDeterministicFolioPrompt
+        ? undefined
+        : (shouldAddFollowUp ? [assistantMessage, followUp] : undefined),
       data: mergedUpdate,
       state: next.state
     })
@@ -781,13 +806,60 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
   if (blocking.includes('multiple_folio_real_detected') && folioCandidates.length > 1) {
     // Extraer posible folio del texto (acepta números y separadores comunes)
     const raw = userText.replace(/[“”"']/g, '').trim()
+    const rawDigits = (raw.match(/\d{6,}/g) || [])[0] || null
     const picked =
       folioCandidates.find(f => f === raw) ||
       folioCandidates.find(f => f.replace(/\s+/g, '') === raw.replace(/\s+/g, '')) ||
+      (rawDigits ? folioCandidates.find(f => String(f).replace(/\D/g, '') === String(rawDigits)) : null) ||
       null
     if (picked) {
       const inmueble = baseContext?.inmueble || {}
-      return { inmueble: { ...inmueble, folio_real: picked } }
+      
+      // Buscar información asociada al folio seleccionado en documentos procesados
+      const doc = Array.isArray(baseContext?.documentosProcesados)
+        ? baseContext.documentosProcesados.find((d: any) => d?.tipo === 'inscripcion' || d?.tipo === 'escritura')
+        : null
+      const info = doc?.informacionExtraida || {}
+      const foliosConInfo = Array.isArray(info?.foliosConInfo) ? info.foliosConInfo : []
+      const folioInfo = foliosConInfo.find((f: any) => String(f?.folio) === String(picked))
+      
+      // Actualizar inmueble con información asociada al folio seleccionado
+      const updatedInmueble: any = { ...inmueble, folio_real: picked }
+      
+      if (folioInfo) {
+        // Actualizar dirección si está disponible
+        if (folioInfo.ubicacion && typeof folioInfo.ubicacion === 'string') {
+          updatedInmueble.direccion = { ...inmueble.direccion, calle: folioInfo.ubicacion }
+        }
+        
+        // Actualizar superficie si está disponible
+        if (folioInfo.superficie) {
+          updatedInmueble.superficie = String(folioInfo.superficie)
+        }
+        
+        // Actualizar datos catastrales si están disponibles
+        if (folioInfo.unidad || folioInfo.condominio || folioInfo.lote || folioInfo.manzana || folioInfo.fraccionamiento) {
+          updatedInmueble.datos_catastrales = {
+            ...inmueble.datos_catastrales,
+            unidad: folioInfo.unidad ? String(folioInfo.unidad) : inmueble.datos_catastrales?.unidad,
+            condominio: folioInfo.condominio ? String(folioInfo.condominio) : inmueble.datos_catastrales?.condominio,
+            lote: folioInfo.lote ? String(folioInfo.lote) : inmueble.datos_catastrales?.lote,
+            manzana: folioInfo.manzana ? String(folioInfo.manzana) : inmueble.datos_catastrales?.manzana,
+            fraccionamiento: folioInfo.fraccionamiento ? String(folioInfo.fraccionamiento) : inmueble.datos_catastrales?.fraccionamiento,
+          }
+        }
+        
+        // Actualizar partida si está disponible
+        if (folioInfo.partida) {
+          const partidas = Array.isArray(inmueble.partidas) ? [...inmueble.partidas] : []
+          if (!partidas.includes(String(folioInfo.partida))) {
+            partidas.push(String(folioInfo.partida))
+          }
+          updatedInmueble.partidas = partidas
+        }
+      }
+      
+      return { inmueble: updatedInmueble }
     }
   }
 
@@ -913,8 +985,42 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
 
   // 2.1) Institución de crédito (si ya existe un crédito placeholder)
   if (Array.isArray(baseContext?.creditos) && baseContext.creditos.length > 0) {
-    const institucionesComunes = ['FOVISSSTE', 'INFONAVIT', 'BBVA', 'BANCOMER', 'SANTANDER', 'BANORTE', 'HSBC', 'SCOTIABANK', 'BANAMEX']
+    // Lista expandida de instituciones válidas
+    const institucionesComunes = [
+      'FOVISSSTE', 'INFONAVIT', 'BBVA', 'BANCOMER', 'SANTANDER', 'BANORTE', 'HSBC', 
+      'SCOTIABANK', 'BANAMEX', 'BANCO AZTECA', 'BANCO DEL BAJIO', 'BANCOPPEL',
+      'BANCO REGIONAL', 'BANCO SABADELL', 'BANCO BASE', 'BANCO MULTIVA',
+      'BANCO INBURSA', 'BANCO VE POR MAS', 'BANCO AUTOFIN', 'BANCO FORTALEZA',
+      'BANCO CREDIT SUISSE', 'BANCO MIFEL', 'BANCO INTERACCIONES', 'BANCO AFIRME',
+      'BANCO BANJERCITO', 'BANCO BANSEFI', 'BANCO COMPARTAMOS', 'BANCO FAMSA',
+      'BANCO WALMART', 'BANCO INMOBILIARIO MEXICANO', 'BANCO CONSERVA', 'BANCO PAGATODO'
+    ]
+    
+    // Valores genéricos que NO deben ser aceptados como institución
+    const valoresInvalidos = [
+      'credito', 'crédito', 'el credito', 'el crédito', 'un credito', 'un crédito',
+      'hipoteca', 'la hipoteca', 'un hipoteca', 'financiamiento', 'el financiamiento',
+      'prestamo', 'préstamo', 'el prestamo', 'el préstamo', 'banco', 'el banco',
+      'institucion', 'institución', 'la institucion', 'la institución'
+    ]
+    
+    // Buscar institución válida en el texto
     const found = institucionesComunes.find(i => new RegExp(`\\b${i}\\b`, 'i').test(userText))
+    
+    // Si no se encontró una institución válida, verificar si el texto contiene valores inválidos
+    if (!found) {
+      const textoNormalizado = userText.toLowerCase().trim()
+      const esInvalido = valoresInvalidos.some(invalido => 
+        new RegExp(`\\b${invalido}\\b`, 'i').test(textoNormalizado)
+      )
+      
+      // Si el texto contiene solo valores genéricos, NO actualizar la institución
+      if (esInvalido) {
+        // No hacer nada, dejar que el LLM pregunte específicamente
+        return null
+      }
+    }
+    
     if (found) {
       const c0 = baseContext.creditos[0]
       return { creditos: [{ ...c0, institucion: found }, ...baseContext.creditos.slice(1)] }
@@ -1106,16 +1212,54 @@ function buildDeterministicFollowUp(state: any, context: any): string | null {
   // Registro/inmueble (pedir un campo a la vez)
   if (s === 'ESTADO_2') {
     if (blocking.includes('multiple_folio_real_detected')) {
-      const candidates = Array.isArray(context?.documentosProcesados)
-        ? (() => {
-            const doc = context.documentosProcesados.find((d: any) => d?.tipo === 'inscripcion' || d?.tipo === 'escritura' || d?.tipo === 'titulo')
-            const info = doc?.informacionExtraida || {}
-            const folios = Array.isArray(info?.foliosReales) ? info.foliosReales.filter(Boolean) : []
-            return folios
-          })()
-        : []
-      if (candidates.length > 1) {
-        return askOne(`Detecté más de un folio real en la inscripción: ${candidates.map((f: string) => `"${f}"`).join(', ')}. ¿Cuál folio real debemos usar? (elige uno exactamente)`)
+      const doc = Array.isArray(context?.documentosProcesados)
+        ? context.documentosProcesados.find((d: any) => d?.tipo === 'inscripcion' || d?.tipo === 'escritura' || d?.tipo === 'titulo')
+        : null
+      const info = doc?.informacionExtraida || {}
+      const folios = Array.isArray(info?.foliosReales) ? info.foliosReales.filter(Boolean) : []
+      const foliosConInfo = Array.isArray(info?.foliosConInfo) ? info.foliosConInfo.filter((f: any) => f?.folio) : []
+      
+      if (folios.length > 1) {
+        // Si hay información asociada a cada folio, mostrarla
+        if (foliosConInfo.length > 0) {
+          const foliosList = foliosConInfo.map((f: any) => {
+            // Construir información descriptiva del inmueble
+            const partes: string[] = []
+            
+            // Priorizar unidad/condominio (más específico)
+            if (f.unidad) {
+              partes.push(`Unidad ${f.unidad}`)
+            }
+            if (f.condominio) {
+              partes.push(f.condominio)
+            }
+            
+            // Si no hay unidad/condominio, usar otros datos catastrales
+            if (partes.length === 0) {
+              if (f.lote) partes.push(`Lote ${f.lote}`)
+              if (f.manzana) partes.push(`Manzana ${f.manzana}`)
+              if (f.fraccionamiento) partes.push(f.fraccionamiento)
+            }
+            
+            // Agregar ubicación si está disponible y no hay datos catastrales
+            if (partes.length === 0 && f.ubicacion) {
+              partes.push(f.ubicacion)
+            }
+            
+            // Agregar superficie si está disponible
+            if (f.superficie) {
+              partes.push(`Superficie: ${f.superficie}`)
+            }
+            
+            const info = partes.length > 0 ? partes.join(', ') : null
+            return `Folio ${f.folio}${info ? `: ${info}` : ''}`
+          }).join('\n')
+          
+          return askOne(`En la hoja de inscripción detecté más de un folio real. Por favor, indícame exactamente cuál es el folio real que vamos a utilizar para este trámite:\n\n${foliosList}\n\n¿Cuál de estos folios corresponde al inmueble de este trámite? (responde con el número del folio exactamente)`)
+        } else {
+          // Si no hay información asociada, solo mostrar los folios
+          return askOne(`En la hoja de inscripción detecté más de un folio real: ${folios.map((f: string) => `"${f}"`).join(', ')}. Por favor, indícame exactamente cuál es el folio real que vamos a utilizar para este trámite (elige uno exactamente).`)
+        }
       }
       return askOne('Detecté más de un folio real en la inscripción. ¿Cuál folio real debemos usar?')
     }
@@ -1136,8 +1280,8 @@ function buildDeterministicFollowUp(state: any, context: any): string | null {
       null
     const tipo = comprador0?.tipo_persona || null
 
+    // Si ya hay nombre y tipo, solo pedir estado_civil si falta (persona física)
     if (nombre && tipo) {
-      // Ya está capturado: no pedirlo de nuevo; pedir lo siguiente.
       if (tipo === 'persona_fisica' && missing.includes('compradores[0].persona_fisica.estado_civil')) {
         return askOne(`¿Me indicas el estado civil de ${nombre}? (soltero, casado, divorciado o viudo)`)
       }
@@ -1145,10 +1289,24 @@ function buildDeterministicFollowUp(state: any, context: any): string | null {
       return askOne('Continuamos. ¿La compraventa será de contado o con crédito?')
     }
 
-    // Falta algo esencial del comprador: pedir confirmación si hay nombre pero falta tipo, si no pedir ambos.
+    // Si hay nombre pero falta tipo: pedir confirmar tipo (NO pedir nombre de nuevo)
     if (nombre && !tipo) {
       return askOne(`Tengo capturado como comprador: "${nombre}". ¿Confirmas si es persona física o persona moral?`)
     }
+
+    // Si no hay nombre: pedir nombre y tipo
+    // PERO primero verificar si hay información en documentos procesados
+    const docInfo = context?.documentosProcesados || []
+    const identificacionDoc = docInfo.find((d: any) => 
+      d.tipo === 'identificacion' && 
+      d.informacionExtraida?.nombre
+    )
+    
+    if (identificacionDoc?.informacionExtraida?.nombre) {
+      const nombreDoc = identificacionDoc.informacionExtraida.nombre
+      return askOne(`He detectado el nombre "${nombreDoc}" en el documento subido. ¿Confirmas que este es el comprador y si es persona física o persona moral?`)
+    }
+
     return askOne('Ahora, por favor indícame el nombre completo del comprador (adquirente) tal como aparece en su identificación oficial y si es persona física o persona moral.')
   }
 
@@ -1441,8 +1599,42 @@ function extractDataFromMessage(message: string, currentContext?: ChatRequest['c
     // Procesar créditos (array)
     // IMPORTANTE: si el usuario (o el sistema) envía explícitamente creditos (incluso []),
     // debe REEMPLAZAR el arreglo (no append), para evitar quedarse con placeholders.
+    // Función helper para validar institución (rechazar valores genéricos)
+    const esInstitucionValida = (institucion: string | null | undefined): boolean => {
+      if (!institucion || typeof institucion !== 'string') return false
+      
+      const valoresInvalidos = [
+        'credito', 'crédito', 'el credito', 'el crédito', 'un credito', 'un crédito',
+        'hipoteca', 'la hipoteca', 'un hipoteca', 'financiamiento', 'el financiamiento',
+        'prestamo', 'préstamo', 'el prestamo', 'el préstamo', 'banco', 'el banco',
+        'institucion', 'institución', 'la institucion', 'la institución', 'una institucion',
+        'una institución', 'institución crediticia', 'institucion crediticia',
+        'entidad', 'la entidad', 'una entidad', 'entidad financiera',
+        'el credito del comprador', 'el crédito del comprador', 'credito del comprador',
+        'crédito del comprador', 'el credito que', 'el crédito que', 'credito que', 'crédito que'
+      ]
+      
+      const institucionNormalizada = institucion.toLowerCase().trim()
+      const esInvalido = valoresInvalidos.some(invalido => {
+        const regex = new RegExp(`^${invalido.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$|[.,;:])`, 'i')
+        return regex.test(institucionNormalizada)
+      })
+      
+      // También validar si contiene solo palabras genéricas
+      const palabrasGenericas = /\b(el|la|un|una|del|de|los|las|que|con|por|para|mediante|a través de)\b/gi
+      const textoSinGenericos = institucionNormalizada.replace(palabrasGenericas, '').trim()
+      const esSoloGenerico = textoSinGenericos.length === 0 || 
+                             ['credito', 'crédito', 'hipoteca', 'banco', 'institucion', 'institución', 'entidad', 'financiamiento'].includes(textoSinGenericos)
+      
+      return !esInvalido && !esSoloGenerico && institucion.length >= 3
+    }
+    
     if (Object.prototype.hasOwnProperty.call(parsed, 'creditos') && Array.isArray(parsed.creditos)) {
-      result.creditos = parsed.creditos
+      // Validar y filtrar créditos con instituciones inválidas
+      result.creditos = parsed.creditos.map((c: any) => ({
+        ...c,
+        institucion: esInstitucionValida(c.institucion) ? c.institucion : null
+      })).filter((c: any) => c.institucion !== null) // Filtrar créditos sin institución válida
     }
 
     // Procesar gravámenes (array)

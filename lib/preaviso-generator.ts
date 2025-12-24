@@ -304,7 +304,7 @@ Por lo anteriormente expuesto, respetuosamente SOLICITO a ustedes:
    - Folio real: ${data.inmueble.folioReal}${data.inmueble.seccion ? `, Sección ${data.inmueble.seccion}` : ''}${data.inmueble.partida ? `, Partida ${data.inmueble.partida}` : ''}
    - Ubicación del inmueble: ${data.inmueble.direccion}
    - Actos jurídicos propuestos: ${this.getActosList(data)}
-   - Partes involucradas: ${data.vendedor.nombre} (vendedor) y ${data.comprador.nombre} (comprador)
+   - Partes involucradas: ${data.vendedores?.[0]?.persona_fisica?.nombre || data.vendedores?.[0]?.persona_moral?.denominacion_social || 'N/A'} (vendedor) y ${data.compradores?.[0]?.persona_fisica?.nombre || data.compradores?.[0]?.persona_moral?.denominacion_social || 'N/A'} (comprador)
 
 4. Entregar el certificado en las oficinas de esta Notaría Pública, ubicadas en Tijuana, Baja California.
 
@@ -465,7 +465,11 @@ Tijuana, Baja California
 
       // Generar y descargar
       const blob = await Packer.toBlob(doc)
-      const fileName = `Pre-Aviso_Compraventa_${data.vendedor.nombre.split(' ')[0]}_${data.comprador.nombre.split(' ')[0]}_${new Date().toISOString().split('T')[0]}.docx`
+      const primerVendedor = data.vendedores?.[0]
+      const primerComprador = data.compradores?.[0]
+      const vendedorName = (primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social || 'Vendedor').split(' ')[0]
+      const compradorName = (primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social || 'Comprador').split(' ')[0]
+      const fileName = `Pre-Aviso_Compraventa_${vendedorName}_${compradorName}_${new Date().toISOString().split('T')[0]}.docx`
       saveAs(blob, fileName)
     } catch (error) {
       console.error('Error exportando a Word:', error)

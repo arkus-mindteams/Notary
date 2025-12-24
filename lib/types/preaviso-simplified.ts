@@ -9,6 +9,7 @@ export interface PreavisoSimplifiedJSON {
   
   // Arrays según v1.4 (para compatibilidad, se toma el primer elemento)
   vendedores: Array<{
+    party_id?: string | null
     nombre: string | null
     rfc: string | null
     curp: string | null
@@ -21,6 +22,7 @@ export interface PreavisoSimplifiedJSON {
   }>
   
   compradores: Array<{
+    party_id?: string | null
     nombre: string | null
     rfc: string | null
     curp: string | null
@@ -48,6 +50,7 @@ export interface PreavisoSimplifiedJSON {
     folioReal: string | null
     partidas: string[]
     seccion: string | null
+    numero_expediente?: string | null
     superficie: string | null
     valor: string | null
     unidad?: string | null
@@ -57,7 +60,16 @@ export interface PreavisoSimplifiedJSON {
     manzana?: string | null
     fraccionamiento?: string | null
     colonia?: string | null
+    all_registry_pages_confirmed?: boolean
   } | null
+  
+  // Gravámenes
+  gravamenes?: Array<{
+    tipo: string | null
+    institucion: string | null
+    numero_credito: string | null
+    cancelacion_confirmada: boolean
+  }>
   
   // Actos notariales
   actos: {
@@ -65,6 +77,9 @@ export interface PreavisoSimplifiedJSON {
     compraventa: boolean
     aperturaCreditoComprador: boolean
   }
+  
+  // Flag para Artículo 139
+  include_urban_dev_article_139?: boolean
   
   // Metadata (se agrega en el generador, no viene del agente)
   fecha?: string
