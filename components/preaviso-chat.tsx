@@ -120,6 +120,8 @@ export interface DatosCatastrales {
 export interface InmuebleV14 {
   folio_real: string | null
   partidas: string[]
+  seccion?: string | null
+  numero_expediente?: string | null
   all_registry_pages_confirmed: boolean
   direccion: DireccionInmueble
   superficie: string | null
@@ -815,7 +817,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (name.includes('escritura') || name.includes('titulo') || name.includes('propiedad')) return 'escritura'
         if (name.includes('plano') || name.includes('croquis') || name.includes('catastral')) return 'plano'
         if (name.includes('ine') || name.includes('ife') || name.includes('identificacion') || 
-            name.includes('pasaporte') || name.includes('licencia') || name.includes('curp')) return 'identificacion'
+            name.includes('pasaporte') || name.includes('licencia') || name.includes('curp') ||
+            name.includes('generales') || name.includes('identidad') || name.includes('credencial')) return 'identificacion'
         
         // Si no se puede determinar por nombre, intentar detectar visualmente
         // Para imágenes pequeñas o genéricas, asumir que puede ser identificación
@@ -1241,13 +1244,48 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
         // Procesar créditos (array v1.4)
         if (jsonData.creditos && Array.isArray(jsonData.creditos)) {
-          const normalizedCreditos: CreditoElement[] = jsonData.creditos.map((c: any) => ({
-            credito_id: c?.credito_id ?? null,
-            institucion: c?.institucion ?? null,
-            monto: c?.monto ?? null,
-            participantes: Array.isArray(c?.participantes) ? c.participantes : [],
-            tipo_credito: c?.tipo_credito ?? null
-          }))
+          // Función helper para validar institución
+          const esInstitucionValida = (institucion: string | null | undefined): boolean => {
+            if (!institucion || typeof institucion !== 'string') return false
+            
+            const valoresInvalidos = [
+              'credito', 'crédito', 'el credito', 'el crédito', 'un credito', 'un crédito',
+              'hipoteca', 'la hipoteca', 'un hipoteca', 'financiamiento', 'el financiamiento',
+              'prestamo', 'préstamo', 'el prestamo', 'el préstamo', 'banco', 'el banco',
+              'institucion', 'institución', 'la institucion', 'la institución', 'una institucion',
+              'una institución', 'institución crediticia', 'institucion crediticia',
+              'entidad', 'la entidad', 'una entidad', 'entidad financiera',
+              'el credito del comprador', 'el crédito del comprador', 'credito del comprador',
+              'crédito del comprador', 'el credito que', 'el crédito que', 'credito que', 'crédito que'
+            ]
+            
+            const institucionNormalizada = institucion.toLowerCase().trim()
+            const esInvalido = valoresInvalidos.some(invalido => {
+              const regex = new RegExp(`^${invalido.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$|[.,;:])`, 'i')
+              return regex.test(institucionNormalizada)
+            })
+            
+            // También validar si contiene solo palabras genéricas
+            const palabrasGenericas = /\b(el|la|un|una|del|de|los|las|que|con|por|para|mediante|a través de)\b/gi
+            const textoSinGenericos = institucionNormalizada.replace(palabrasGenericas, '').trim()
+            const esSoloGenerico = textoSinGenericos.length === 0 || 
+                                   ['credito', 'crédito', 'hipoteca', 'banco', 'institucion', 'institución', 'entidad', 'financiamiento'].includes(textoSinGenericos)
+            
+            return !esInvalido && !esSoloGenerico && institucion.length >= 3
+          }
+          
+          const normalizedCreditos: CreditoElement[] = jsonData.creditos.map((c: any) => {
+            // Validar institución antes de agregar - rechazar valores genéricos
+            const institucionValida = esInstitucionValida(c.institucion) ? c.institucion : null
+            
+            return {
+              credito_id: c?.credito_id ?? null,
+              institucion: institucionValida,
+              monto: c?.monto ?? null,
+              participantes: Array.isArray(c?.participantes) ? c.participantes : [],
+              tipo_credito: c?.tipo_credito ?? null
+            }
+          }).filter(c => c.institucion !== null) // Filtrar créditos sin institución válida
 
           updates.creditos = [...(currentData.creditos || []), ...normalizedCreditos]
           hasUpdates = true
@@ -1741,6 +1779,36 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           institucion = institucion.replace(/\s*(?:RFC|CURP).*$/i, '').trim()
           // Limpiar: remover punto final y cualquier texto después de un punto seguido de espacio (nueva oración)
           institucion = institucion.replace(/\s*\.\s+[A-ZÁÉÍÓÚÑ].*$/, '').replace(/[.,]$/, '')
+          
+          // VALIDACIÓN: Rechazar valores genéricos que NO son instituciones reales
+          const valoresInvalidos = [
+            'credito', 'crédito', 'el credito', 'el crédito', 'un credito', 'un crédito',
+            'hipoteca', 'la hipoteca', 'un hipoteca', 'financiamiento', 'el financiamiento',
+            'prestamo', 'préstamo', 'el prestamo', 'el préstamo', 'banco', 'el banco',
+            'institucion', 'institución', 'la institucion', 'la institución', 'una institucion',
+            'una institución', 'institución crediticia', 'institucion crediticia',
+            'entidad', 'la entidad', 'una entidad', 'entidad financiera',
+            'el credito del comprador', 'el crédito del comprador', 'credito del comprador',
+            'crédito del comprador', 'el credito que', 'el crédito que', 'credito que', 'crédito que'
+          ]
+          
+          const institucionNormalizada = institucion.toLowerCase().trim()
+          const esInvalido = valoresInvalidos.some(invalido => {
+            // Comparación exacta o que empiece con el valor inválido seguido de espacio/puntuación
+            const regex = new RegExp(`^${invalido.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$|[.,;:])`, 'i')
+            return regex.test(institucionNormalizada)
+          })
+          
+          // También validar si contiene solo palabras genéricas
+          const palabrasGenericas = /\b(el|la|un|una|del|de|los|las|que|con|por|para|mediante|a través de)\b/gi
+          const textoSinGenericos = institucionNormalizada.replace(palabrasGenericas, '').trim()
+          const esSoloGenerico = textoSinGenericos.length === 0 || 
+                                 ['credito', 'crédito', 'hipoteca', 'banco', 'institucion', 'institución', 'entidad', 'financiamiento'].includes(textoSinGenericos)
+          
+          // Si es un valor inválido o solo genérico, NO actualizar
+          if (esInvalido || esSoloGenerico) {
+            institucionMatch = null
+          }
           // Limpiar: remover "Y" o "AND" seguido de texto (ej: "FOVISSSTE Y CURP...")
           institucion = institucion.replace(/\s+(?:Y|AND)\s+.*$/i, '').trim()
           

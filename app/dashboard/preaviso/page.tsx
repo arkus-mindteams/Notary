@@ -4,11 +4,12 @@ import { useState } from 'react'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { ProtectedRoute } from '@/components/protected-route'
 import { PreavisoChat, type PreavisoData } from '@/components/preaviso-chat'
-import { PreavisoGenerator, type PreavisoDocument } from '@/lib/preaviso-generator'
+import type { PreavisoDocument } from '@/lib/preaviso-generator'
 import { PreavisoTemplateRenderer } from '@/lib/preaviso-template-renderer'
 import { PreavisoExportOptions } from '@/components/preaviso-export-options'
 import { createBrowserClient } from '@/lib/supabase'
 import { useMemo } from 'react'
+import { useAuth } from '@/lib/auth-context'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -35,6 +36,7 @@ type AppState = 'chat' | 'document' | 'editing'
 
 export default function PreavisoPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
+  const { user: authUser } = useAuth()
   const [appState, setAppState] = useState<AppState>('chat')
   const [preavisoData, setPreavisoData] = useState<PreavisoData | null>(null)
   const [document, setDocument] = useState<PreavisoDocument | null>(null)
@@ -51,10 +53,29 @@ export default function PreavisoPage() {
       // Asegurar que preavisoData esté establecido antes de cambiar el estado
       setPreavisoData(data)
       
-      // Generar documento
-      const generatedDoc = PreavisoGenerator.generatePreavisoDocument(data)
+      // Generar documento usando los mismos templates que Word/PDF
+      const simplifiedData = PreavisoTemplateRenderer.convertFromPreavisoData(data)
+      const text = await PreavisoTemplateRenderer.renderToText(simplifiedData)
+      const html = await PreavisoTemplateRenderer.renderToHTML(simplifiedData)
+      
+      // Crear documento compatible con PreavisoDocument usando el texto generado
+      const generatedDoc: PreavisoDocument = {
+        title: 'SOLICITUD DE CERTIFICADO CON EFECTO DE PRE-AVISO',
+        sections: [
+          {
+            id: 'documento',
+            title: 'Documento Completo',
+            content: text,
+            type: 'body',
+            order: 1
+          }
+        ],
+        html: html,
+        text: text
+      }
+      
       setDocument(generatedDoc)
-      setEditedDocument(generatedDoc.text)
+      setEditedDocument(text)
       setAppState('document')
 
       // Guardar en expedientes (async, no bloquea la UI)
@@ -140,6 +161,17 @@ export default function PreavisoPage() {
         }
       } else {
         const errorText = await createResponse.text()
+        // Caso conocido (mientras no se aplique la migración que hace RFC nullable en Supabase):
+        // Evitar que la vista previa falle/ensucie consola si el RFC aún es NOT NULL en la BD.
+        if (
+          createResponse.status >= 500 &&
+          /violates not-null constraint/i.test(errorText) &&
+          /column\s+\\"rfc\\"/i.test(errorText)
+        ) {
+          console.warn('[preaviso] No se pudo crear comprador porque RFC aún es NOT NULL en BD. Omitiendo guardado en expedientes para no bloquear vista previa.')
+          return
+        }
+
         console.error('Error creando comprador:', createResponse.status, errorText)
         throw new Error(`Error creando/buscando comprador: ${createResponse.status} - ${errorText}`)
       }

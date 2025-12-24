@@ -6,6 +6,10 @@ import { TramiteDocumentoService } from '@/lib/services/tramite-documento-servic
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import type { CreateCompradorRequest, ExpedienteCompleto } from '@/lib/types/expediente-types'
 
+// En este proyecto operamos con una sola notaría (Notaría Pública #3).
+// Esta notaría se crea en la migración `003_create_auth_tables.sql` con este ID fijo.
+const DEFAULT_NOTARIA_ID = '00000000-0000-0000-0000-000000000001'
+
 export async function GET(req: Request) {
   try {
     // Obtener usuario actual para aplicar filtros
@@ -23,8 +27,8 @@ export async function GET(req: Request) {
     const rfc = searchParams.get('rfc')
     const curp = searchParams.get('curp')
 
-    // Determinar notariaId para filtros (null para superadmin, notaria_id para abogado)
-    const notariaId = currentUser.rol === 'superadmin' ? null : currentUser.notaria_id
+    // Determinar notariaId para filtros (fallback determinista a Notaría #3)
+    const notariaId = currentUser.notaria_id || DEFAULT_NOTARIA_ID
 
     // Si hay ID, obtener expediente completo
     if (id) {
@@ -125,16 +129,8 @@ export async function POST(req: Request) {
       )
     }
 
-    // Determinar notaria_id: usar la del usuario si es abogado
-    // Si es superadmin, no se puede crear comprador sin notaria_id (debe especificarse)
-    if (currentUser.rol === 'superadmin' && !currentUser.notaria_id) {
-      return NextResponse.json(
-        { error: 'bad_request', message: 'Los superadmin deben especificar una notaría para crear compradores' },
-        { status: 400 }
-      )
-    }
-    
-    const notariaId = currentUser.notaria_id
+    // Determinar notaria_id (fallback determinista a Notaría #3)
+    const notariaId = currentUser.notaria_id || DEFAULT_NOTARIA_ID
     if (!notariaId) {
       return NextResponse.json(
         { error: 'bad_request', message: 'No se puede crear comprador sin notaria_id' },

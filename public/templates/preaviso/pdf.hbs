@@ -101,8 +101,9 @@
   {{! 3. ANTECEDENTES REGISTRALES }}
   <div class="date">
     ANTECEDENTES REGISTRALES<br>
-    {{#if inmueble.numero_expediente}}No. {{inmueble.numero_expediente}}{{#if inmueble.seccion}} SECCION {{inmueble.seccion}}{{/if}}<br>{{/if}}
-    FOLIO REAL: {{inmueble.folioReal}}{{#if inmueble.partidas}}{{#each inmueble.partidas}}{{#if @first}}{{else}}, {{/if}}{{this}}{{/each}}{{/if}}
+    {{#if inmueble.partidas}}No. PARTIDA: {{#each inmueble.partidas}}{{#if @first}}{{this}}{{else}}, {{this}}{{/if}}{{/each}}{{#if inmueble.seccion}} SECCION: {{inmueble.seccion}}{{/if}}<br>
+    {{else}}{{#if inmueble.numero_expediente}}No. {{inmueble.numero_expediente}}{{#if inmueble.seccion}} SECCION: {{inmueble.seccion}}{{/if}}<br>
+    {{/if}}{{/if}}FOLIO REAL: {{inmueble.folioReal}}
   </div>
 
   <div class="addressee">
@@ -118,37 +119,32 @@
 
   {{! 5. Actos jurídicos numerados (romanos con guión) }}
   <div class="acts">
-    {{#if actos.cancelacionCreditoVendedor}}
+    {{#each actosNumerados}}
     <div class="act-item">
-      <span class="act-number">I.-</span> CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:<br><br>
-      VENDEDOR: {{vendedor.nombre}}{{#if vendedor.denominacion_social}}, {{vendedor.denominacion_social}}{{/if}}.<br>
-      {{#if vendedor.institucionCredito}}ACREEDOR: {{vendedor.institucionCredito}}{{#if vendedor.numeroCredito}}, NÚMERO DE CRÉDITO: {{vendedor.numeroCredito}}{{/if}}.<br>{{/if}}
-    </div>
-    {{/if}}
-
-    {{#if actos.compraventa}}
-    <div class="act-item">
-      <span class="act-number">{{#if actos.cancelacionCreditoVendedor}}II{{else}}I{{/if}}.-</span> CONTRATO DE TRANSMISION DE PROPIEDAD:<br><br>
-      {{#if vendedor.denominacion_social}}TRANSMITENTE: {{vendedor.denominacion_social}}.<br>
-      {{else}}TRANSMITENTE: {{vendedor.nombre}}.<br>
+      <span class="act-number">{{this.numeroRomano}}.-</span> {{#if (eq this.tipo 'cancelacionCreditoVendedor')}}CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:<br><br>
+      VENDEDOR: {{../vendedor.nombre}}{{#if ../vendedor.denominacion_social}}, {{../vendedor.denominacion_social}}{{/if}}<br>
+      {{#if ../vendedor.institucionCredito}}ACREEDOR: {{../vendedor.institucionCredito}}{{#if ../vendedor.numeroCredito}}<br>NÚMERO DE CRÉDITO: {{../vendedor.numeroCredito}}{{/if}}<br>{{/if}}
+      {{else}}{{#if (eq this.tipo 'compraventa')}}CONTRATO DE TRANSMISION DE PROPIEDAD:<br><br>
+      {{#if ../vendedor.denominacion_social}}TRANSMITENTE: {{../vendedor.denominacion_social}}<br>
+      {{else}}TRANSMITENTE: {{../vendedor.nombre}}<br>
       {{/if}}
-      ADQUIRIENTE: {{comprador.nombre}}{{#if comprador.denominacion_social}}, {{comprador.denominacion_social}}{{/if}}.<br>
+      ADQUIRIENTE: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}<br>
+      {{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CRÉDITO CON GARANTÍA HIPOTECARIA:<br><br>
+      DEUDOR: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}<br>
+      {{#if this.credito.institucion}}ACREEDOR: {{this.credito.institucion}}<br>
+      {{else}}{{#if ../comprador.institucionCredito}}ACREEDOR: {{../comprador.institucionCredito}}<br>{{/if}}{{/if}}
+      {{#if this.credito.participantes}}{{#each this.credito.participantes}}{{#if this.nombre}}{{#if (eq this.rol 'acreditado')}}ACREDITADO: {{this.nombre}}<br>
+      {{else}}{{#if (eq this.rol 'coacreditado')}}COACREDITADO: {{this.nombre}}<br>
+      {{/if}}{{/if}}{{/if}}{{/each}}{{/if}}
+      {{/if}}{{/if}}{{/if}}
     </div>
-    {{/if}}
-
-    {{#if actos.aperturaCreditoComprador}}
-    <div class="act-item">
-      <span class="act-number">{{#if actos.cancelacionCreditoVendedor}}{{#if actos.compraventa}}III{{else}}II{{/if}}{{else}}{{#if actos.compraventa}}II{{else}}I{{/if}}{{/if}}.-</span> CONTRATO DE APERTURA DE CRÉDITO CON GARANTÍA HIPOTECARIA:<br><br>
-      DEUDOR: {{comprador.nombre}}{{#if comprador.denominacion_social}}, {{comprador.denominacion_social}}{{/if}}.<br>
-      {{#if comprador.institucionCredito}}ACREEDOR: {{comprador.institucionCredito}}.<br>{{/if}}
-    </div>
-    {{/if}}
+    {{/each}}
   </div>
 
   {{! 6. OBJETO DE LA TRANSMISIÓN Y GARANTÍA }}
   <div class="property-object">
     <div class="title">
-      {{#if actos.aperturaCreditoComprador}}
+      {{#if (hasItems creditos)}}
       OBJETO DE LA TRANSMISION Y GARANTIA: 
       {{else}}
       OBJETO DE LA TRANSMISION: 
@@ -163,7 +159,10 @@
       {{/if}}{{/if}}
     </p>
 
+    {{! 8. Artículo 139 (condicional) }}
+    {{#if include_urban_dev_article_139}}
     <p>Asimismo, en los términos del Artículo 139 de la Ley de Desarrollo Urbano para el Estado, solicitó la certificación de inscripción de existencia o inexistencia de declaratorias de uso o destino, avisos, manifestaciones o reservas del inmueble materia de (los) acto (s) antes referido (s).</p>
+    {{/if}}
   </div>
 
   {{! 8. Cierre }}

@@ -185,28 +185,67 @@ IMPORTANTE:
         break
 
       case "inscripcion":
-        systemPrompt = `Eres un experto en análisis de documentos registrales (hojas de inscripción, certificados registrales, etc.). Analiza el documento y extrae TODA la información disponible en formato JSON:
+        systemPrompt = `Eres un experto en análisis de documentos registrales (hojas de inscripción, certificados registrales, etc.). Analiza el documento METICULOSAMENTE y extrae TODA la información disponible en formato JSON:
+
 {
-  "folioReal": "número del folio real si está visible",
-  "foliosReales": ["lista de folios reales detectados (strings). Si detectas más de uno, inclúyelos todos aquí. Si detectas solo uno, incluye ese único valor. Si no detectas ninguno, usa []"],
-  "seccion": "sección registral si está visible",
-  "partida": "partida registral si está visible",
-  "ubicacion": "dirección completa del inmueble si está visible",
-  "propietario": {
-    "nombre": "nombre completo del propietario/titular registral si está visible",
-    "rfc": "RFC si está disponible"
+  "folioReal": "número del folio real si está visible (solo si hay un único folio)",
+  "foliosReales": ["lista de TODOS los folios reales detectados (strings). Si detectas más de uno, inclúyelos todos aquí. Si detectas solo uno, incluye ese único valor. Si no detectas ninguno, usa []"],
+  "foliosConInfo": [
+    {
+      "folio": "número del folio real (OBLIGATORIO si hay múltiples folios)",
+      "unidad": "número o identificador de unidad/condominio asociado a este folio si está visible",
+      "condominio": "nombre del condominio asociado a este folio si está visible",
+      "partida": "partida registral asociada a este folio si está visible",
+      "ubicacion": "dirección completa del inmueble asociado a este folio si está visible",
+      "superficie": "superficie del inmueble asociado a este folio si está disponible (con unidad: m², m2, metros, etc.)",
+      "lote": "número de lote asociado a este folio si está visible",
+      "manzana": "número de manzana asociado a este folio si está visible",
+      "fraccionamiento": "nombre del fraccionamiento asociado a este folio si está visible",
+      "colonia": "nombre de la colonia asociado a este folio si está visible"
+    }
+  ],
+  "seccion": "sección registral si está visible (CIVIL, MIXTA, etc.)",
+  "partidas": ["lista de TODAS las partidas registrales detectadas (strings). Si hay múltiples, inclúyelas todas. Si hay una sola, inclúyela. Si no hay, usa []"],
+  "partida": "partida registral si está visible (para folio único, usar solo si partidas[] está vacío)",
+  "ubicacion": "dirección completa del inmueble si está visible (para folio único)",
+  "direccion": {
+    "calle": "nombre de la calle si está visible",
+    "numero": "número exterior si está visible",
+    "colonia": "nombre de la colonia si está visible",
+    "municipio": "municipio si está visible",
+    "estado": "estado si está visible",
+    "codigo_postal": "código postal si está visible"
   },
-  "superficie": "superficie del inmueble si está disponible",
+  "datosCatastrales": {
+    "lote": "número de lote si está visible",
+    "manzana": "número de manzana si está visible",
+    "fraccionamiento": "nombre del fraccionamiento si está visible",
+    "condominio": "nombre del condominio si está visible",
+    "unidad": "número de unidad si está visible",
+    "modulo": "módulo si está visible"
+  },
+  "propietario": {
+    "nombre": "nombre completo del propietario/titular registral si está visible (exactamente como aparece)",
+    "rfc": "RFC si está disponible",
+    "curp": "CURP si está disponible"
+  },
+  "superficie": "superficie del inmueble si está disponible (para folio único, con unidad: m², m2, metros, etc.)",
   "valor": "valor del inmueble si está disponible",
-  "gravamenes": "información sobre gravámenes o hipotecas si está visible, o null si no hay"
+  "gravamenes": "información sobre gravámenes o hipotecas si está visible, o null si no hay",
+  "numeroExpediente": "número de expediente registral si está visible"
 }
 
-IMPORTANTE:
-- Extrae SOLO la información que puedas leer claramente en el documento
-- Si detectas múltiples folios reales, NO elijas uno: ponlos todos en foliosReales[].
-- NO extraigas ni infieras forma de pago o institución de crédito desde la inscripción (eso se confirma con el usuario en el chat).
-- Si algún campo no está disponible o no es legible, usa null`
-        userPrompt = "Analiza este documento de inscripción registral y extrae TODA la información disponible que puedas leer claramente, incluyendo folio real, partida, sección, propietario y gravámenes."
+INSTRUCCIONES CRÍTICAS:
+1. Extrae SOLO la información que puedas leer CLARAMENTE en el documento. Si no estás seguro, usa null.
+2. Si detectas múltiples folios reales, NO elijas uno: ponlos TODOS en foliosReales[].
+3. Si detectas múltiples folios, intenta extraer información del inmueble asociada a cada folio en foliosConInfo[].
+   - Si el documento muestra claramente qué información corresponde a cada folio, asóciala correctamente.
+   - Si no puedes asociar información específica a cada folio, usa los campos generales (ubicacion, superficie, partida, datosCatastrales).
+4. Para partidas: si hay múltiples partidas, inclúyelas TODAS en partidas[] (array). Si hay una sola, también inclúyela en partidas[].
+5. Para dirección: si está disponible como objeto estructurado, usa direccion{}. Si solo está como texto, usa ubicacion.
+6. NO extraigas ni infieras forma de pago o institución de crédito desde la inscripción (eso se confirma con el usuario en el chat).
+7. Si algún campo no está disponible o no es legible, usa null (no inventes valores).`
+        userPrompt = "Analiza este documento de inscripción registral METICULOSAMENTE. Extrae TODA la información que puedas leer claramente, incluyendo: folios reales (todos si hay múltiples), partidas registrales (todas si hay múltiples), sección, dirección completa del inmueble, datos catastrales (lote, manzana, fraccionamiento, condominio, unidad), superficie, propietario/titular registral, y cualquier gravamen o hipoteca visible. Si hay múltiples folios, intenta asociar la información del inmueble a cada folio según cómo aparezca en el documento."
         break
 
       default:
@@ -405,22 +444,56 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
       // === ESCRITURA / INSCRIPCIÓN ===
       if (docType === 'escritura' || docType === 'inscripcion') {
         ensureInmueble()
-        if (extracted?.folioReal) update.inmueble.folio_real = String(extracted.folioReal)
+        
+        // Folio real: priorizar folioReal único, luego foliosReales[0] si solo hay uno
+        if (extracted?.folioReal) {
+          update.inmueble.folio_real = String(extracted.folioReal)
+        } else if (Array.isArray(extracted?.foliosReales) && extracted.foliosReales.length === 1) {
+          update.inmueble.folio_real = String(extracted.foliosReales[0])
+        }
 
-        // Partidas: soportar partida (string) y partidas (array)
+        // Partidas: soportar partida (string) y partidas (array) - priorizar array
         const partidas = safeArray(update.inmueble.partidas)
-        if (extracted?.partida) partidas.push(String(extracted.partida))
-        if (Array.isArray(extracted?.partidas)) {
+        if (Array.isArray(extracted?.partidas) && extracted.partidas.length > 0) {
           for (const p of extracted.partidas) if (p) partidas.push(String(p))
+        } else if (extracted?.partida) {
+          partidas.push(String(extracted.partida))
         }
         update.inmueble.partidas = uniq(partidas)
 
-        // Ubicación → dirección (sin parseo agresivo)
-        if (extracted?.ubicacion) {
+        // Sección registral
+        if (extracted?.seccion) {
+          // Almacenar sección en el contexto (aunque no esté en v1.4, puede ser útil)
+          update.inmueble = { ...update.inmueble, seccion: asStringOrNull(extracted.seccion) } as any
+        }
+
+        // Dirección: priorizar objeto estructurado, luego string
+        if (extracted?.direccion && typeof extracted.direccion === 'object') {
+          update.inmueble.direccion = {
+            calle: asStringOrNull(extracted.direccion.calle) || update.inmueble.direccion.calle,
+            numero: asStringOrNull(extracted.direccion.numero) || update.inmueble.direccion.numero,
+            colonia: asStringOrNull(extracted.direccion.colonia) || update.inmueble.direccion.colonia,
+            municipio: asStringOrNull(extracted.direccion.municipio) || update.inmueble.direccion.municipio,
+            estado: asStringOrNull(extracted.direccion.estado) || update.inmueble.direccion.estado,
+            codigo_postal: asStringOrNull(extracted.direccion.codigo_postal) || update.inmueble.direccion.codigo_postal,
+          }
+        } else if (extracted?.ubicacion) {
           if (typeof extracted.ubicacion === 'string') {
             update.inmueble.direccion = { ...update.inmueble.direccion, calle: extracted.ubicacion }
           } else if (typeof extracted.ubicacion === 'object') {
             update.inmueble.direccion = { ...update.inmueble.direccion, ...extracted.ubicacion }
+          }
+        }
+
+        // Datos catastrales: procesar objeto completo si está disponible
+        if (extracted?.datosCatastrales && typeof extracted.datosCatastrales === 'object') {
+          update.inmueble.datos_catastrales = {
+            lote: asStringOrNull(extracted.datosCatastrales.lote) || update.inmueble.datos_catastrales.lote,
+            manzana: asStringOrNull(extracted.datosCatastrales.manzana) || update.inmueble.datos_catastrales.manzana,
+            fraccionamiento: asStringOrNull(extracted.datosCatastrales.fraccionamiento) || update.inmueble.datos_catastrales.fraccionamiento,
+            condominio: asStringOrNull(extracted.datosCatastrales.condominio) || update.inmueble.datos_catastrales.condominio,
+            unidad: asStringOrNull(extracted.datosCatastrales.unidad) || update.inmueble.datos_catastrales.unidad,
+            modulo: asStringOrNull(extracted.datosCatastrales.modulo) || update.inmueble.datos_catastrales.modulo,
           }
         }
 
