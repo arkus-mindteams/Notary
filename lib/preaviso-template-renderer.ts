@@ -481,25 +481,54 @@ export class PreavisoTemplateRenderer {
       const template = await this.loadTemplate('pdf')
       const renderedHTML = template(templateData)
 
-      // Crear elemento temporal para renderizar HTML
-      const tempDiv = document.createElement('div')
-      tempDiv.innerHTML = renderedHTML
-      tempDiv.style.position = 'absolute'
-      tempDiv.style.left = '-9999px'
-      tempDiv.style.width = '8.5in' // Letter size
-      document.body.appendChild(tempDiv)
+      // Renderizar en un iframe aislado para evitar que html2canvas herede estilos globales del app
+      // (Tailwind v4 / oklch puede serializarse como lab() en estilos computados, lo que html2canvas no soporta).
+      const iframe = document.createElement('iframe')
+      iframe.style.position = 'absolute'
+      iframe.style.left = '-9999px'
+      iframe.style.top = '0'
+      iframe.style.width = '900px'
+      iframe.style.height = '10px'
+      iframe.style.border = '0'
+      // Aislar del CSS del sitio
+      ;(iframe as any).sandbox = 'allow-same-origin'
+      document.body.appendChild(iframe)
 
-      // Capturar como canvas
-      const canvas = await html2canvas(tempDiv, {
+      const loadIframe = async () => {
+        return await new Promise<void>((resolve) => {
+          // srcdoc dispara onload en la mayoría de navegadores
+          iframe.onload = () => resolve()
+          // Asegurar background blanco dentro del HTML (por si el template no lo define)
+          const safeHTML = renderedHTML.replace(
+            /<body([^>]*)>/i,
+            (_m, attrs) => `<body${attrs} style="background:#ffffff;color:#000;">`
+          )
+          iframe.srcdoc = safeHTML
+          // Fallback: por si onload no dispara
+          setTimeout(() => resolve(), 50)
+        })
+      }
+
+      await loadIframe()
+
+      const doc = iframe.contentDocument
+      if (!doc?.body) {
+        document.body.removeChild(iframe)
+        throw new Error('No se pudo inicializar el iframe para generar PDF')
+      }
+
+      // Capturar como canvas desde el documento aislado
+      const canvas = await html2canvas(doc.body, {
         scale: 2,
         useCORS: true,
         allowTaint: true,
+        backgroundColor: '#ffffff',
         width: 816, // 8.5in * 96 DPI
-        height: tempDiv.scrollHeight
+        height: doc.body.scrollHeight
       })
 
-      // Limpiar elemento temporal
-      document.body.removeChild(tempDiv)
+      // Limpiar iframe temporal
+      document.body.removeChild(iframe)
 
       // Crear PDF
       const pdf = new jsPDF({

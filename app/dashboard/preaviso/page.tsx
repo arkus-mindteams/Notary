@@ -363,7 +363,7 @@ export default function PreavisoPage() {
     
     try {
       const simplifiedData = PreavisoTemplateRenderer.convertFromPreavisoData(preavisoData)
-      await PreavisoTemplateRenderer.renderToWord(simplifiedData)
+      await PreavisoTemplateRenderer.renderToWordAndDownload(simplifiedData)
     } catch (error) {
       console.error('Error descargando Word:', error)
       alert('Error al descargar el documento. Por favor, intenta de nuevo.')
@@ -375,7 +375,7 @@ export default function PreavisoPage() {
     
     try {
       const simplifiedData = PreavisoTemplateRenderer.convertFromPreavisoData(preavisoData)
-      await PreavisoTemplateRenderer.renderToPDF(simplifiedData)
+      await PreavisoTemplateRenderer.renderToPDFAndDownload(simplifiedData)
     } catch (error) {
       console.error('Error descargando PDF:', error)
       alert('Error al descargar el documento. Por favor, intenta de nuevo.')
