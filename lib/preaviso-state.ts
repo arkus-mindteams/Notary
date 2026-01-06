@@ -22,6 +22,17 @@ export interface PreavisoStateComputation {
     folioReal: any
     foliosRealesCandidates: any[]
     hasMultipleFolios: boolean
+    foliosRealesUnidades: string[]
+    foliosRealesInmueblesAfectados: string[]
+    folioRealScope: 'unidades' | 'inmuebles_afectados' | null
+    hasMultipleFolioScopes: boolean
+    folioSelection: {
+      selected_folio: string | null
+      selected_scope: 'unidades' | 'inmuebles_afectados' | 'otros' | null
+      confirmed_by_user: boolean
+    }
+    partidasCandidates: any[]
+    hasMultiplePartidas: boolean
     partidas: any[]
     seccion: any
     direccion: any
@@ -44,6 +55,7 @@ export interface PreavisoStateComputation {
  * - Decide únicamente completitud / faltantes / bloqueo para control de flujo
  */
 export function computePreavisoState(context?: any): PreavisoStateComputation {
+  const PREAVISO_DEBUG = process.env.PREAVISO_DEBUG === '1'
   const normalizeForMatch = (value: any): string => {
     const s = String(value || '')
       .normalize('NFD')
@@ -56,9 +68,130 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     return s
   }
   const documentosProcesados = context?.documentosProcesados || []
+  const inscripcionDocs = Array.isArray(documentosProcesados)
+    ? documentosProcesados.filter((d: any) => d?.tipo === 'inscripcion' || d?.tipo === 'escritura' || d?.tipo === 'titulo')
+    : []
+  // Preferir inscripción si existe (en vez de tomar el primer doc cualquiera).
   const docInscripcion =
-    documentosProcesados.find((d: any) => d.tipo === 'inscripcion' || d.tipo === 'escritura' || d.tipo === 'titulo') || null
-  const infoInscripcion = docInscripcion?.informacionExtraida || {}
+    inscripcionDocs.find((d: any) => d?.tipo === 'inscripcion') ||
+    inscripcionDocs[0] ||
+    null
+
+  // Agregar y deduplicar info de inscripción a través de TODAS las páginas/documentos procesados.
+  // Esto evita que a veces solo se muestren "2 folios" (cuando la primera página trae 2) y luego cambien las opciones.
+  const mergeFolioKey = (folio: any): string | null => {
+    if (folio === undefined || folio === null) return null
+    const s = String(folio).trim()
+    if (!s) return null
+    // Normalizar por dígitos para dedupe estable
+    const digits = s.replace(/\D/g, '')
+    return digits || s
+  }
+
+  const uniqueStrings = (values: any[]): string[] => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const v of values) {
+      if (v === undefined || v === null) continue
+      const s = String(v).trim()
+      if (!s) continue
+      const k = s
+      if (seen.has(k)) continue
+      seen.add(k)
+      out.push(s)
+    }
+    return out
+  }
+
+  const infos = inscripcionDocs.map((d: any) => d?.informacionExtraida || {})
+  const baseInfo = docInscripcion?.informacionExtraida || {}
+
+  const extractFoliosFromLooseValue = (v: any): string[] => {
+    if (v === undefined || v === null) return []
+    const s = String(v).trim()
+    if (!s) return []
+    // Caso común: "1764668, 1764669" o "Folio Real: 1764668 1764669"
+    const matches = s.match(/\d{6,}/g) || []
+    const uniq = Array.from(new Set(matches.map(m => m.replace(/\D/g, '')).filter(Boolean)))
+    // Si se detecta al menos un folio por dígitos, usar eso.
+    if (uniq.length > 0) return uniq
+    // Si no, devolver el string tal cual (fallback conservador)
+    return [s]
+  }
+
+  const foliosRealesAgg = uniqueStrings(
+    infos.flatMap((info: any) => {
+      const arr = Array.isArray(info?.foliosReales) ? info.foliosReales : []
+      // Expandir elementos de foliosReales[] por si vienen como "1782480, 1782481"
+      const fromFoliosRealesArr = arr.flatMap((v: any) => extractFoliosFromLooseValue(v))
+      const fromFolioReal = extractFoliosFromLooseValue(info?.folioReal)
+      // Algunos modelos llenan folios SOLO en foliosConInfo[].folio
+      const foliosConInfo = Array.isArray((info as any)?.foliosConInfo) ? (info as any).foliosConInfo : []
+      const fromFoliosConInfo = foliosConInfo.flatMap((f: any) => extractFoliosFromLooseValue(f?.folio))
+      return [...fromFoliosRealesArr, ...fromFolioReal, ...fromFoliosConInfo]
+    })
+  )
+
+  const foliosConInfoMap = new Map<string, any>()
+  for (const info of infos) {
+    const arr = Array.isArray((info as any)?.foliosConInfo) ? (info as any).foliosConInfo : []
+    for (const f of arr) {
+      const key = mergeFolioKey(f?.folio)
+      if (!key) continue
+      const prev = foliosConInfoMap.get(key) || {}
+      // Merge simple: preferir valores no vacíos
+      foliosConInfoMap.set(key, {
+        ...prev,
+        ...Object.fromEntries(
+          Object.entries(f || {}).filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '')
+        ),
+      })
+    }
+  }
+  const foliosConInfoAgg = Array.from(foliosConInfoMap.values())
+
+  const partidasAgg = uniqueStrings(
+    infos.flatMap((info: any) => {
+      const tituloArr = Array.isArray(info?.partidasTitulo) ? info.partidasTitulo : []
+      const arr = Array.isArray(info?.partidas) ? info.partidas : []
+      const one = info?.partida ? [info.partida] : []
+      return [...tituloArr, ...arr, ...one]
+    })
+  )
+
+  const pickFirstNonEmpty = (getter: (info: any) => any): any => {
+    for (const info of infos) {
+      const v = getter(info)
+      if (v === undefined || v === null) continue
+      const s = typeof v === 'string' ? v.trim() : v
+      if (typeof v === 'string' && !s) continue
+      return v
+    }
+    return null
+  }
+
+  const infoInscripcion = {
+    ...baseInfo,
+    foliosReales: foliosRealesAgg,
+    foliosConInfo: foliosConInfoAgg,
+    foliosRealesUnidades: uniqueStrings(
+      infos.flatMap((info: any) => (Array.isArray(info?.foliosRealesUnidades) ? info.foliosRealesUnidades : []))
+    ),
+    foliosRealesInmueblesAfectados: uniqueStrings(
+      infos.flatMap((info: any) => (Array.isArray(info?.foliosRealesInmueblesAfectados) ? info.foliosRealesInmueblesAfectados : []))
+    ),
+    partidas: partidasAgg.length > 0 ? partidasAgg : (baseInfo as any).partidas,
+    partidasTitulo: uniqueStrings(
+      infos.flatMap((info: any) => (Array.isArray(info?.partidasTitulo) ? info.partidasTitulo : []))
+    ),
+    partidasAntecedentes: uniqueStrings(
+      infos.flatMap((info: any) => (Array.isArray(info?.partidasAntecedentes) ? info.partidasAntecedentes : []))
+    ),
+    seccion: (baseInfo as any).seccion ?? pickFirstNonEmpty((i: any) => i?.seccion),
+    ubicacion: (baseInfo as any).ubicacion ?? pickFirstNonEmpty((i: any) => i?.ubicacion),
+    direccion: (baseInfo as any).direccion ?? pickFirstNonEmpty((i: any) => i?.direccion),
+    superficie: (baseInfo as any).superficie ?? pickFirstNonEmpty((i: any) => i?.superficie),
+  }
 
   // Determinar estado actual y completitud de cada estado (v1.4)
   let currentState = 'ESTADO_0'
@@ -87,15 +220,94 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
 
   // Inmueble / registro (usa contexto + extracción)
   const inmueble = context?.inmueble
+  const normalizeDigits = (v: any): string | null => {
+    if (v === undefined || v === null) return null
+    const digits = String(v).replace(/\D/g, '')
+    return digits ? digits : null
+  }
   const foliosRealesFromDoc = Array.isArray(infoInscripcion.foliosReales)
     ? infoInscripcion.foliosReales.filter(Boolean)
     : []
-  const foliosRealesCandidates = foliosRealesFromDoc.length > 0 ? foliosRealesFromDoc : (infoInscripcion.folioReal ? [infoInscripcion.folioReal] : [])
+  const foliosFromFolioReal = extractFoliosFromLooseValue(infoInscripcion.folioReal)
+  const foliosModel = (context as any)?.folios || {}
+  const selectionRaw = foliosModel?.selection || {}
+  const folioSelection = {
+    selected_folio: selectionRaw?.selected_folio ? String(selectionRaw.selected_folio) : null,
+    selected_scope:
+      selectionRaw?.selected_scope === 'unidades' ||
+      selectionRaw?.selected_scope === 'inmuebles_afectados' ||
+      selectionRaw?.selected_scope === 'otros'
+        ? selectionRaw.selected_scope
+        : null,
+    confirmed_by_user: selectionRaw?.confirmed_by_user === true,
+  }
+
+  const folioRealScope: 'unidades' | 'inmuebles_afectados' | null =
+    folioSelection.selected_scope === 'unidades' || folioSelection.selected_scope === 'inmuebles_afectados'
+      ? folioSelection.selected_scope
+      : null
+
+  const foliosRealesUnidades = Array.isArray((infoInscripcion as any).foliosRealesUnidades)
+    ? (infoInscripcion as any).foliosRealesUnidades.filter(Boolean).map((x: any) => String(x))
+    : []
+  const foliosRealesInmueblesAfectados = Array.isArray((infoInscripcion as any).foliosRealesInmueblesAfectados)
+    ? (infoInscripcion as any).foliosRealesInmueblesAfectados.filter(Boolean).map((x: any) => String(x))
+    : []
+  const hasMultipleFolioScopes = foliosRealesUnidades.length > 0 && foliosRealesInmueblesAfectados.length > 0
+
+  const candidatesFromModel = Array.isArray(foliosModel?.candidates) ? foliosModel.candidates : []
+  const candidatesFromModelForScope = (scope: 'unidades' | 'inmuebles_afectados' | 'otros') =>
+    candidatesFromModel.filter((c: any) => (c?.scope || 'otros') === scope).map((c: any) => String(c?.folio || '').replace(/\D/g, '')).filter(Boolean)
+
+  const fromModelUnidades = candidatesFromModelForScope('unidades')
+  const fromModelAfectados = candidatesFromModelForScope('inmuebles_afectados')
+  const fromModelOtros = candidatesFromModelForScope('otros')
+
+  const baseCandidates = (fromModelUnidades.length + fromModelAfectados.length + fromModelOtros.length) > 0
+    ? uniqueStrings([...fromModelUnidades, ...fromModelAfectados, ...fromModelOtros])
+    : (foliosRealesFromDoc.length > 0 ? foliosRealesFromDoc : foliosFromFolioReal)
+  const scopedCandidates =
+    folioRealScope === 'unidades'
+      ? (foliosRealesUnidades.length > 0 ? foliosRealesUnidades : baseCandidates)
+      : folioRealScope === 'inmuebles_afectados'
+        ? (foliosRealesInmueblesAfectados.length > 0 ? foliosRealesInmueblesAfectados : baseCandidates)
+        : baseCandidates
+  const foliosRealesCandidates = scopedCandidates
 
   // Si hay múltiples folios detectados y el usuario aún no eligió uno explícitamente,
   // NO asumir ninguno como folio_real para completitud de ESTADO_2.
-  const hasMultipleFolios = foliosRealesFromDoc.length > 1
-  const folioReal = inmueble?.folio_real || (hasMultipleFolios ? null : infoInscripcion.folioReal)
+  const hasMultipleFolios = foliosRealesCandidates.length > 1
+  const selectedFolio = folioSelection.selected_folio
+  const folioConfirmed = folioSelection.confirmed_by_user === true
+  const selectedFolioDigits = normalizeDigits(selectedFolio)
+  const folioInCandidates =
+    !!selectedFolio &&
+    foliosRealesCandidates.some((c: any) => {
+      const cd = normalizeDigits(c)
+      return cd && selectedFolioDigits ? cd === selectedFolioDigits : String(c) === String(selectedFolio)
+    })
+
+  // Folio efectivo:
+  // - Si hay múltiples candidatos: solo aceptar folio si fue confirmado por el usuario y pertenece a los candidatos actuales.
+  // - Si no hay múltiples: aceptar folio del contexto o el del documento (si existe).
+  // Sin default de folio del trámite:
+  // - Si hay candidatos y no está confirmado => folioReal = null (siempre pedir confirmación/selección)
+  // - Si no hay candidatos => mantener null y pedir al usuario que lo indique
+  const hasAnyCandidates = foliosRealesCandidates.length > 0
+  const folioReal = hasAnyCandidates
+    ? (folioConfirmed && folioInCandidates ? selectedFolio : null)
+    : null
+
+  if (PREAVISO_DEBUG) {
+    console.info('[preaviso-state] folios detectados', {
+      foliosRealesFromDoc,
+      foliosRealesCandidates,
+      selectedFolio,
+      folioConfirmed,
+      folioInCandidates,
+      effectiveFolioReal: folioReal,
+    })
+  }
   const partidasFromInmueble = Array.isArray(inmueble?.partidas)
     ? inmueble.partidas
     : (inmueble?.partida ? [inmueble.partida] : [])
@@ -103,6 +315,11 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     ? infoInscripcion.partidas
     : (infoInscripcion.partida ? [infoInscripcion.partida] : [])
   const partidas = [...partidasFromInmueble, ...partidasFromDoc].filter(Boolean)
+  const partidasTituloFromDoc = Array.isArray((infoInscripcion as any).partidasTitulo)
+    ? (infoInscripcion as any).partidasTitulo.filter(Boolean)
+    : []
+  const partidasCandidates = (partidasTituloFromDoc.length > 0 ? partidasTituloFromDoc : partidasFromDoc).filter(Boolean)
+  const hasMultiplePartidas = partidasCandidates.length > 1
   // La "sección" puede venir del documento, pero NO bloquea
   const seccion = inmueble?.seccion || infoInscripcion.seccion
   const direccionCompleta = inmueble?.direccion
@@ -181,24 +398,42 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
 
   // Gravámenes/hipoteca (aplica si registro indica o vendedor declara o ya hay gravámenes)
   const gravamenes = context?.gravamenes || []
-  const vendedorDeclaraHipoteca = primerVendedor?.tiene_credito
-  const registroIndicaGravamen = !!infoInscripcion.gravamenes
+  const registroIndicaGravamen = (() => {
+    const v = (infoInscripcion as any)?.gravamenes
+    if (v === null || v === undefined) return false
+    if (v === true) return true
+    if (v === false) return false
+    const s = String(v).trim().toLowerCase()
+    if (!s) return false
+    // Si el extractor devolvió "null" como string o texto equivalente, no tomarlo como positivo.
+    if (s === 'null' || s === 'ninguno' || s === 'ninguna') return false
+    // Negaciones típicas
+    if (/\b(sin|no)\b/.test(s) && /\b(gravamen|grav[aá]menes|hipoteca|embargo)\b/.test(s)) return false
+    // Señales positivas
+    if (/\b(gravamen|grav[aá]menes|hipoteca|embargo)\b/.test(s)) return true
+    // Conservador: si no es claro, no afirmarlo (se pregunta al usuario en PASO 6)
+    return false
+  })()
   const hayGravamenesCapturados = Array.isArray(gravamenes) && gravamenes.length > 0
+  const inmuebleDeclaraHipoteca = (context?.inmueble as any)?.existe_hipoteca
 
   // existeHipoteca tri-state: true | false | null (desconocido)
+  // NOTA: Si el usuario ya contestó explícitamente (true/false), eso es autoridad para el flujo (no defaults).
   const existeHipoteca =
-    registroIndicaGravamen || hayGravamenesCapturados || vendedorDeclaraHipoteca === true
+    inmuebleDeclaraHipoteca === true
       ? true
-      : (vendedorDeclaraHipoteca === false ? false : null)
+      : inmuebleDeclaraHipoteca === false
+        ? false
+        : (registroIndicaGravamen || hayGravamenesCapturados ? true : null)
 
   if (existeHipoteca === true) {
     // No marcar "completo" solo porque el vendedor dijo que sí hay hipoteca.
-    // Se completa cuando la cancelación está confirmada para cada gravamen capturado.
-    // Si aún no hay gravámenes capturados, queda INCOMPLETE (porque aplica pero falta capturar/confirmar).
+    // Se completa cuando ya sabemos "cómo se cancelará" (cancelacion_confirmada true/false) para cada gravamen capturado.
+    // Si aún no hay gravámenes capturados, queda INCOMPLETE (porque aplica pero falta capturar).
     if (!hayGravamenesCapturados) {
       stateStatus.ESTADO_6 = 'incomplete'
     } else {
-      const gravamenesCompletos = gravamenes.every((g: any) => g.cancelacion_confirmada === true)
+      const gravamenesCompletos = gravamenes.every((g: any) => g.cancelacion_confirmada === true || g.cancelacion_confirmada === false)
       stateStatus.ESTADO_6 = gravamenesCompletos ? 'completed' : 'incomplete'
     }
   } else if (existeHipoteca === false) {
@@ -228,8 +463,9 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     else if (stateStatus.ESTADO_3 !== 'completed') currentState = 'ESTADO_3'
     else if (stateStatus.ESTADO_1 !== 'completed') currentState = 'ESTADO_1'
     else if (stateStatus.ESTADO_4 !== 'completed') currentState = 'ESTADO_4'
-    else if (stateStatus.ESTADO_5 === 'incomplete') currentState = 'ESTADO_5'
-    else if (stateStatus.ESTADO_6 === 'incomplete') currentState = 'ESTADO_6'
+    // PASOS 5/6: si están "pending" significa que falta hacer la pregunta (no asumir no aplica).
+    else if (stateStatus.ESTADO_5 === 'incomplete' || stateStatus.ESTADO_5 === 'pending') currentState = 'ESTADO_5'
+    else if (stateStatus.ESTADO_6 === 'incomplete' || stateStatus.ESTADO_6 === 'pending') currentState = 'ESTADO_6'
   }
 
   // Snapshot de datos capturados (para prompt3 / debug interno)
@@ -245,6 +481,7 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   if (folioReal || (partidas?.length || 0) > 0 || seccion || direccion || superficie || valor) {
     capturedData.inmueble = {
       folio_real: folioReal || null,
+      folio_real_confirmed: inmueble?.folio_real_confirmed === true,
       partidas: partidas || [],
       all_registry_pages_confirmed: inmueble?.all_registry_pages_confirmed || false,
       direccion: inmueble?.direccion || {
@@ -279,6 +516,10 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   if (currentState === 'ESTADO_2') {
     if (!folioReal) requiredMissing.push('inmueble.folio_real')
     if (!folioReal && hasMultipleFolios) blockingReasons.push('multiple_folio_real_detected')
+    if (!folioReal && hasMultipleFolioScopes && !folioRealScope) blockingReasons.push('folio_real_scope_selection_required')
+    if (!folioReal && hasAnyCandidates && !hasMultipleFolios && foliosRealesCandidates.length === 1) blockingReasons.push('folio_real_confirmation_required')
+    const partidasSeleccionadas = Array.isArray(inmueble?.partidas) ? inmueble.partidas.filter(Boolean) : []
+    if (hasMultiplePartidas && partidasSeleccionadas.length !== 1) blockingReasons.push('multiple_partida_detected')
     if ((partidas?.length || 0) === 0) requiredMissing.push('inmueble.partidas')
     if (!direccion) requiredMissing.push('inmueble.direccion')
     if (!superficie) requiredMissing.push('inmueble.superficie')
@@ -320,7 +561,9 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
       requiredMissing.push('gravamenes[]')
     } else if (gravamenes.length > 0) {
       gravamenes.forEach((gravamen: any, index: number) => {
-        if (!gravamen.cancelacion_confirmada) requiredMissing.push(`gravamenes[${index}].cancelacion_confirmada`)
+        if (gravamen.cancelacion_confirmada !== true && gravamen.cancelacion_confirmada !== false) {
+          requiredMissing.push(`gravamenes[${index}].cancelacion_confirmada`)
+        }
       })
     }
   }
@@ -355,6 +598,13 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
       folioReal,
       foliosRealesCandidates,
       hasMultipleFolios,
+      foliosRealesUnidades,
+      foliosRealesInmueblesAfectados,
+      folioRealScope,
+      hasMultipleFolioScopes,
+      folioSelection,
+      partidasCandidates: partidasCandidates || [],
+      hasMultiplePartidas,
       partidas: partidas || [],
       seccion,
       direccion,

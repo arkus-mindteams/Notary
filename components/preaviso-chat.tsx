@@ -81,6 +81,8 @@ export interface VendedorElement {
 export interface ParticipanteCredito {
   party_id: string | null
   rol: 'acreditado' | 'coacreditado' | null
+  // Opcional: se usa para impresión cuando no hay party_id resoluble (ej. cónyuge/coacreditado capturado por texto)
+  nombre?: string | null
 }
 
 export interface CreditoElement {
@@ -120,6 +122,8 @@ export interface DatosCatastrales {
 export interface InmuebleV14 {
   folio_real: string | null
   partidas: string[]
+  // Flag interno: solo true cuando el usuario eligió explícitamente el folio
+  folio_real_confirmed?: boolean
   seccion?: string | null
   numero_expediente?: string | null
   all_registry_pages_confirmed: boolean
@@ -165,6 +169,41 @@ export interface PreavisoData {
     cancelacionCreditoVendedor: boolean
     compraventa: boolean
     aperturaCreditoComprador: boolean
+  }
+
+  // Documentos procesados (para acumulación determinista entre páginas)
+  documentosProcesados?: Array<{
+    nombre: string
+    tipo: string
+    informacionExtraida: any
+  }>
+
+  // Folios (modelo canónico para detección + selección sin defaults)
+  folios?: {
+    candidates: Array<{
+      folio: string
+      scope: 'unidades' | 'inmuebles_afectados' | 'otros'
+      attrs?: {
+        unidad?: string | null
+        condominio?: string | null
+        lote?: string | null
+        manzana?: string | null
+        fraccionamiento?: string | null
+        colonia?: string | null
+        superficie?: string | null
+        ubicacion?: string | null
+        partida?: string | null
+      }
+      sources?: Array<{
+        docName?: string
+        docType?: string
+      }>
+    }>
+    selection: {
+      selected_folio: string | null
+      selected_scope: 'unidades' | 'inmuebles_afectados' | 'otros' | null
+      confirmed_by_user: boolean
+    }
   }
   
   // Documentos (mantener por compatibilidad)
@@ -585,6 +624,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             creditos: data.creditos,
             gravamenes: data.gravamenes || [],
             inmueble: data.inmueble,
+            folios: data.folios,
             documentos: data.documentos,
             documentosProcesados: uploadedDocuments
               .filter(d => d.processed && d.extractedData)
@@ -622,6 +662,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
           if (d.gravamenes !== undefined) nextData.gravamenes = d.gravamenes as any
           if (d.inmueble) nextData.inmueble = d.inmueble as any
+          if (d.folios !== undefined) nextData.folios = d.folios as any
           if (d.control_impresion) nextData.control_impresion = d.control_impresion
           if (d.validaciones) nextData.validaciones = d.validaciones
 
@@ -811,9 +852,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     try {
       // Determinar tipo de documento basado en el nombre original o contenido visual
       const detectDocumentType = async (fileName: string, file: File): Promise<string> => {
-        const name = fileName.toLowerCase()
+        const name = fileName
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
         // Detección por nombre
-        if (name.includes('inscripcion') || name.includes('inscripción') || name.includes('hoja de inscripcion') || name.includes('folio real')) return 'inscripcion'
+        if (name.includes('inscripcion') || name.includes('hoja de inscripcion') || name.includes('folio real')) return 'inscripcion'
         if (name.includes('escritura') || name.includes('titulo') || name.includes('propiedad')) return 'escritura'
         if (name.includes('plano') || name.includes('croquis') || name.includes('catastral')) return 'plano'
         if (name.includes('ine') || name.includes('ife') || name.includes('identificacion') || 
@@ -892,6 +936,45 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             if (d.inmueble) updated.inmueble = d.inmueble as any
             if (d.control_impresion) updated.control_impresion = d.control_impresion
             if (d.validaciones) updated.validaciones = d.validaciones
+            // IMPORTANTE: no sobrescribir ciegamente `documentosProcesados` porque pueden llegar respuestas
+            // con contexto parcial (si hubo concurrencia). Siempre acumulamos y deduplicamos por tipo+nombre.
+            if (d.documentosProcesados) {
+              const prevDocs = Array.isArray(updated.documentosProcesados) ? updated.documentosProcesados : []
+              const nextDocs = Array.isArray(d.documentosProcesados) ? d.documentosProcesados : []
+              const map = new Map<string, any>()
+              for (const doc of [...prevDocs, ...nextDocs]) {
+                const key = `${String(doc?.tipo || '')}:${String(doc?.nombre || '')}`
+                if (!key || key === ':') continue
+                map.set(key, doc)
+              }
+              updated.documentosProcesados = Array.from(map.values())
+            }
+            if (d.folios) {
+              // Merge estable de candidatos: dedupe por scope+folio, preferir attrs no vacíos.
+              const prevF = updated.folios || { candidates: [], selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false } }
+              const nextF = d.folios
+              const map = new Map<string, any>()
+              for (const c of [...(prevF.candidates || []), ...(nextF.candidates || [])]) {
+                const folio = String(c?.folio || '').replace(/\D/g, '')
+                const scope = c?.scope || 'otros'
+                if (!folio) continue
+                const key = `${scope}:${folio}`
+                const prevC = map.get(key) || {}
+                map.set(key, {
+                  ...prevC,
+                  ...c,
+                  folio,
+                  scope,
+                  attrs: { ...(prevC.attrs || {}), ...(c.attrs || {}) },
+                  sources: [...(prevC.sources || []), ...(c.sources || [])],
+                })
+              }
+              updated.folios = {
+                candidates: Array.from(map.values()),
+                // selection: el backend es autoridad (pero si no viene, conservar la previa)
+                selection: nextF.selection || prevF.selection,
+              }
+            }
             updated.actosNotariales = determineActosNotariales(updated)
             workingData = updated
             return updated
@@ -903,6 +986,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           // marcar antes para evitar carreras
           uploadedOriginalFilesThisBatch.add(item.originalKey)
           try {
+            const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number) => {
+              const controller = new AbortController()
+              const timer = setTimeout(() => controller.abort(), timeoutMs)
+              try {
+                return await fetch(input, { ...init, signal: controller.signal })
+              } finally {
+                clearTimeout(timer)
+              }
+            }
+
             const mapToExpedienteTipo = (t: string, serverData?: any): string => {
               if (t === 'inscripcion') return 'escritura'
               if (t === 'escritura') return 'escritura'
@@ -926,11 +1019,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             uploadFormData.append('tipo', expedienteTipo)
             uploadFormData.append('tramiteId', activeTramiteId)
 
-            await fetch('/api/expedientes/documentos/upload', {
+            // Timeout para evitar que el pipeline se quede colgado si S3/upload se bloquea.
+            await fetchWithTimeout('/api/expedientes/documentos/upload', {
               method: 'POST',
               headers,
               body: uploadFormData,
-            })
+            }, 45_000)
           } catch (uploadError) {
             console.error(`Error subiendo documento ${item.originalFile.name} a S3:`, uploadError)
             // No bloquear; no reintentar en este lote
@@ -963,8 +1057,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           creditos: workingData.creditos,
           gravamenes: workingData.gravamenes || [],
           inmueble: workingData.inmueble,
+          folios: workingData.folios,
           documentos: workingData.documentos,
-          documentosProcesados: workingDocs
+          documentosProcesados: workingData.documentosProcesados || workingDocs
             .filter(d => d.processed && d.extractedData)
             .map(d => ({
               nombre: d.name,
@@ -978,11 +1073,29 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         const headers: HeadersInit = {}
         if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
 
-        const processResponse = await fetch('/api/ai/preaviso-process-document', {
-          method: 'POST',
-          headers,
-          body: formData
-        })
+        const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number) => {
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), timeoutMs)
+          try {
+            return await fetch(input, { ...init, signal: controller.signal })
+          } finally {
+            clearTimeout(timer)
+          }
+        }
+
+        let processResponse: Response
+        try {
+          processResponse = await fetchWithTimeout('/api/ai/preaviso-process-document', {
+            method: 'POST',
+            headers,
+            body: formData
+          }, 120_000)
+        } catch (e: any) {
+          const msg = (e?.name === 'AbortError')
+            ? 'Timeout procesando esta página (120s).'
+            : (e?.message || 'Error desconocido procesando documento.')
+          return { __error: true, status: 408, text: msg }
+        }
 
         if (!processResponse.ok) {
           return { __error: true, status: processResponse.status, text: await processResponse.text() }
@@ -1017,8 +1130,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       const idItems = items.filter(it => it.docType === 'identificacion')
       const otherItems = items.filter(it => it.docType !== 'identificacion')
 
-      if (otherItems.length > 0) {
-        await runPool(otherItems, 2)
+      // Inscripción/Escritura: secuencial para garantizar acumulación de `documentosProcesados` página a página.
+      const sequentialItems = otherItems.filter(it => it.docType === 'inscripcion' || it.docType === 'escritura')
+      const parallelItems = otherItems.filter(it => it.docType !== 'inscripcion' && it.docType !== 'escritura')
+
+      if (parallelItems.length > 0) {
+        await runPool(parallelItems, 2)
+      }
+      if (sequentialItems.length > 0) {
+        // Ya hacemos merge estable de `documentosProcesados`/`folios` al aplicar resultados,
+        // así que podemos procesar en paralelo para mejorar performance.
+        await runPool(sequentialItems, 2)
       }
       if (idItems.length > 0) {
         await runPool(idItems, 1)
@@ -1068,8 +1190,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             creditos: workingData.creditos,
             gravamenes: workingData.gravamenes || [],
             inmueble: workingData.inmueble,
+            folios: workingData.folios,
             documentos: newDocuments,
-            documentosProcesados: workingDocs
+            documentosProcesados: workingData.documentosProcesados || workingDocs
               .filter(d => d.processed && d.extractedData)
               .map(d => ({
                 nombre: d.name,
@@ -2528,29 +2651,21 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     </h4>
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.vendedores && data.vendedores.length > 0 && (
-                      data.vendedores[0].tiene_credito !== null || data.vendedores[0].credito_vendedor
-                    ) ? (
-                      data.vendedores[0].tiene_credito === true ? (
-                        <>
-                          {data.vendedores[0].credito_vendedor?.institucion && (
-                            <div><span className="font-medium">Institución:</span> {data.vendedores[0].credito_vendedor.institucion}</div>
-                          )}
-                          {data.vendedores[0].credito_vendedor?.numero_credito && (
-                            <div><span className="font-medium">Número de crédito:</span> {data.vendedores[0].credito_vendedor.numero_credito}</div>
-                          )}
-                          {!data.vendedores[0].credito_vendedor?.institucion && (
-                            <div className="text-yellow-600 italic">Pendiente confirmación</div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="text-gray-500">No aplica (sin hipoteca)</div>
-                      )
+                    {data.inmueble?.existe_hipoteca === false ? (
+                      <div className="text-gray-500">Libre de gravamen/hipoteca (confirmado)</div>
+                    ) : Array.isArray(data.gravamenes) && data.gravamenes.length > 0 ? (
+                      (() => {
+                        const g0: any = data.gravamenes[0]
+                        if (g0?.cancelacion_confirmada === true) {
+                          return <div className="text-green-700">Existe gravamen/hipoteca: cancelación ya inscrita (confirmado)</div>
+                        }
+                        if (g0?.cancelacion_confirmada === false) {
+                          return <div className="text-yellow-700 italic">Existe gravamen/hipoteca: se cancelará en la escritura/trámite (pendiente de verificación)</div>
+                        }
+                        return <div className="text-gray-400 italic">Pendiente: confirmar si la cancelación ya está inscrita (sí/no)</div>
+                      })()
                     ) : (
-                      <div className="text-gray-400 italic">Pendiente (verificar en escritura)</div>
-                    )}
-                    {(!data.vendedores || data.vendedores.length === 0) && (
-                      <div className="text-gray-400 italic">Pendiente (requiere información del vendedor)</div>
+                      <div className="text-gray-400 italic">Pendiente: confirmar si está libre de gravamen/hipoteca (sí/no)</div>
                     )}
                   </div>
                 </div>

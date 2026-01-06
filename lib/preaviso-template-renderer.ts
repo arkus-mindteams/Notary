@@ -32,6 +32,12 @@ Handlebars.registerHelper('hasItems', function(array: any) {
   return Array.isArray(array) && array.length > 0
 })
 
+// Helper para incrementar (útil para @index en templates)
+Handlebars.registerHelper('inc', function(value: any) {
+  const n = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(n) ? n + 1 : value
+})
+
 // Helper para formatear fecha
 Handlebars.registerHelper('formatDate', function(date: Date, format: string) {
   const day = date.getDate()
@@ -60,6 +66,7 @@ export interface PreavisoTemplateData extends PreavisoSimplifiedJSON {
     estado: string
   }
   include_urban_dev_article_139: boolean
+  gravamenPrincipal?: PreavisoSimplifiedJSON['gravamenes'] extends Array<infer T> ? T : any
 }
 
 export class PreavisoTemplateRenderer {
@@ -109,10 +116,13 @@ export class PreavisoTemplateRenderer {
     }
     
     // Validar que los actos tienen los datos necesarios
-    if (data.actos.cancelacionCreditoVendedor) {
-      const vendedor = data.vendedores?.[0]
-      if (!vendedor?.institucionCredito) {
-        errors.push('Acto de cancelación de crédito requiere institución crediticia del vendedor')
+    if (data.actos.cancelacionHipoteca) {
+      const g0 = data.gravamenes?.[0]
+      if (!g0) {
+        errors.push('Acto de cancelación de hipoteca requiere al menos un gravamen capturado')
+      }
+      if (g0 && g0.cancelacion_confirmada !== false) {
+        errors.push('Acto de cancelación de hipoteca requiere que la cancelación esté pendiente (cancelacion_confirmada=false)')
       }
     }
     
@@ -147,14 +157,14 @@ export class PreavisoTemplateRenderer {
     actosNumerados: Array<{
       numero: number
       numeroRomano: string
-      tipo: 'cancelacionCreditoVendedor' | 'compraventa' | 'aperturaCreditoComprador'
-      credito?: PreavisoSimplifiedJSON['creditos'][0] & {
+      tipo: 'cancelacionHipoteca' | 'compraventa' | 'aperturaCreditoComprador'
+      creditos?: Array<PreavisoSimplifiedJSON['creditos'][0] & {
         participantes?: Array<{
           party_id: string | null
           rol: string | null
           nombre?: string | null
         }>
-      }
+      }>
     }>
   } {
     const now = new Date()
@@ -167,8 +177,8 @@ export class PreavisoTemplateRenderer {
     const actosNumerados: Array<{
       numero: number
       numeroRomano: string
-      tipo: 'cancelacionCreditoVendedor' | 'compraventa' | 'aperturaCreditoComprador'
-      credito?: PreavisoSimplifiedJSON['creditos'][0]
+      tipo: 'cancelacionHipoteca' | 'compraventa' | 'aperturaCreditoComprador'
+      creditos?: Array<PreavisoSimplifiedJSON['creditos'][0]>
     }> = []
     
     let actoNum = 1
@@ -177,12 +187,12 @@ export class PreavisoTemplateRenderer {
       6: 'VI', 7: 'VII', 8: 'VIII', 9: 'IX', 10: 'X'
     }
     
-    // Acto 1: Cancelación del crédito del vendedor (si aplica)
-    if (data.actos.cancelacionCreditoVendedor) {
+    // Acto 1: Cancelación de hipoteca (si aplica)
+    if (data.actos.cancelacionHipoteca) {
       actosNumerados.push({
         numero: actoNum,
         numeroRomano: romanNumerals[actoNum] || actoNum.toString(),
-        tipo: 'cancelacionCreditoVendedor'
+        tipo: 'cancelacionHipoteca'
       })
       actoNum++
     }
@@ -197,50 +207,49 @@ export class PreavisoTemplateRenderer {
       actoNum++
     }
     
-    // Actos 3+: Múltiples créditos del comprador
-    // SOLO agregar acto de apertura de crédito si realmente hay créditos en el array
-    if (data.creditos && data.creditos.length > 0) {
-      for (const credito of data.creditos) {
-        // Solo agregar si el crédito tiene al menos institución (información mínima)
-        if (credito && credito.institucion) {
-          // Resolver party_id a nombres en participantes
-          const participantesConNombres = (credito.participantes || []).map(p => {
-            // Buscar en compradores
-            const comprador = data.compradores.find(c => {
-              // Si party_id es null o undefined, asumir que es el primer comprador
-              if (!p.party_id && data.compradores.length === 1) return true
-              // Comparar party_id si existe
-              return c.party_id === p.party_id
-            })
-            if (comprador) {
-              return {
-                ...p,
-                nombre: comprador.nombre || comprador.denominacion_social || null
-              }
-            }
-            // Buscar en vendedores si no está en compradores
-            const vendedor = data.vendedores.find(v => v.party_id === p.party_id)
-            if (vendedor) {
-              return {
-                ...p,
-                nombre: vendedor.nombre || vendedor.denominacion_social || null
-              }
-            }
-            return p
+    // Acto 3: Apertura de crédito (UN SOLO ACTO) con listado de créditos y participantes
+    // Requisito: no generar múltiples actos, sino un solo contrato con varios créditos dentro.
+    if (data.actos.aperturaCreditoComprador && data.creditos && data.creditos.length > 0) {
+      const creditosConParticipantes = data.creditos.map(credito => {
+        const participantesConNombres = (credito.participantes || []).map(p => {
+          // Si ya tenemos nombre explícito (ej. coacreditado capturado por texto), respetarlo.
+          if ((p as any)?.nombre) return p
+
+          // Buscar en compradores
+          const comprador = data.compradores.find(c => {
+            // NO asumir comprador cuando party_id es null: esto rompía coacreditados (se imprimía el nombre del comprador).
+            if (!p.party_id) return false
+            return c.party_id === p.party_id
           })
-          
-          actosNumerados.push({
-            numero: actoNum,
-            numeroRomano: romanNumerals[actoNum] || actoNum.toString(),
-            tipo: 'aperturaCreditoComprador',
-            credito: {
-              ...credito,
-              participantes: participantesConNombres
+          if (comprador) {
+            return {
+              ...p,
+              nombre: comprador.nombre || comprador.denominacion_social || null
             }
-          })
-          actoNum++
+          }
+          // Buscar en vendedores si no está en compradores
+          const vendedor = data.vendedores.find(v => v.party_id === p.party_id)
+          if (vendedor) {
+            return {
+              ...p,
+              nombre: vendedor.nombre || vendedor.denominacion_social || null
+            }
+          }
+          return p
+        })
+        return {
+          ...credito,
+          participantes: participantesConNombres
         }
-      }
+      })
+
+      actosNumerados.push({
+        numero: actoNum,
+        numeroRomano: romanNumerals[actoNum] || actoNum.toString(),
+        tipo: 'aperturaCreditoComprador',
+        creditos: creditosConParticipantes
+      })
+      actoNum++
     }
     // NOTA: No hay fallback - si no hay créditos en el array, no se muestra el acto
     
@@ -253,6 +262,7 @@ export class PreavisoTemplateRenderer {
       comprador,
       actosNumerados,
       include_urban_dev_article_139: includeArticle139,
+      gravamenPrincipal: data.gravamenes?.[0] || null,
       fecha: {
         dia: now.getDate().toString(),
         mes: now.toLocaleDateString('es-MX', { month: 'long' }),
@@ -656,12 +666,22 @@ export class PreavisoTemplateRenderer {
     const primerVendedor = data.vendedores?.[0]
     const primerComprador = data.compradores?.[0]
     const tieneCreditos = data.creditos && data.creditos.length > 0
+    const gravamenesArr = Array.isArray(data.gravamenes) ? data.gravamenes : []
+    const cancelacionPendiente =
+      gravamenesArr.length > 0 &&
+      gravamenesArr.some((g: any) => g?.cancelacion_confirmada === false)
+    // Nota: `inmueble.existe_hipoteca` es tri-state y puede no existir en objetos legacy.
+    // Para efectos de impresión, la fuente de verdad es: si hay gravamen con cancelación pendiente, se imprime el acto.
+    // Si hay un gravamen con cancelación pendiente, se imprime el acto de cancelación.
+    // `existe_hipoteca` puede estar null/undefined por compatibilidad, pero no debe bloquear la impresión.
+    const necesitaCancelacionHipoteca = cancelacionPendiente
     
-    // Calcular actos notariales si no están definidos
-    const actos = data.actosNotariales || {
-      cancelacionCreditoVendedor: primerVendedor?.tiene_credito === true,
+    // Calcular actos notariales para el renderer (NO usar data.actosNotariales directo,
+    // porque ese objeto legacy no incluye cancelacionHipoteca y causaba omitir el acto).
+    const actos = {
       compraventa: true, // Siempre presente en pre-aviso
-      aperturaCreditoComprador: tieneCreditos
+      aperturaCreditoComprador: !!tieneCreditos,
+      cancelacionHipoteca: !!necesitaCancelacionHipoteca
     }
     
     // Construir direccion como string

@@ -20,7 +20,7 @@ P R E S E N T E.
 Con fundamento en lo dispuesto en el artículo 2,885 del Código Civil del Estado de Baja California, ante mi fe se pretenden otorgar LOS SIGUIENTES ACTOS JURÍDICOS:
 
 {{! 5. Actos jurídicos numerados (romanos) }}
-{{#if actos.cancelacionCreditoVendedor}}
+{{#if actos.cancelacionHipoteca}}
 I. CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:
    - Vendedor: {{vendedor.nombre}}{{#if vendedor.denominacion_social}} ({{vendedor.denominacion_social}}){{/if}}
    {{#if vendedor.institucionCredito}}- Institución crediticia: {{vendedor.institucionCredito}}{{/if}}
@@ -29,7 +29,7 @@ I. CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:
 {{/if}}
 
 {{#if actos.compraventa}}
-{{#if actos.cancelacionCreditoVendedor}}II{{else}}I{{/if}}. COMPRAVENTA DE INMUEBLE:
+{{#if actos.cancelacionHipoteca}}II{{else}}I{{/if}}. COMPRAVENTA DE INMUEBLE:
    - Vendedor: {{vendedor.nombre}}{{#if vendedor.denominacion_social}} ({{vendedor.denominacion_social}}){{/if}}
    - Comprador: {{comprador.nombre}}{{#if comprador.denominacion_social}} ({{comprador.denominacion_social}}){{/if}}
    - Inmueble: {{inmueble.direccion}}
@@ -38,7 +38,7 @@ I. CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:
 {{/if}}
 
 {{#if actos.aperturaCreditoComprador}}
-{{#if actos.cancelacionCreditoVendedor}}{{#if actos.compraventa}}III{{else}}II{{/if}}{{else}}{{#if actos.compraventa}}II{{else}}I{{/if}}{{/if}}. APERTURA DE CRÉDITO DEL COMPRADOR:
+{{#if actos.cancelacionHipoteca}}{{#if actos.compraventa}}III{{else}}II{{/if}}{{else}}{{#if actos.compraventa}}II{{else}}I{{/if}}{{/if}}. APERTURA DE CRÉDITO DEL COMPRADOR:
    - Comprador: {{comprador.nombre}}{{#if comprador.denominacion_social}} ({{comprador.denominacion_social}}){{/if}}
    {{#if comprador.institucionCredito}}- Institución crediticia: {{comprador.institucionCredito}}{{/if}}
    {{#if comprador.montoCredito}}- Monto: {{comprador.montoCredito}}{{/if}}

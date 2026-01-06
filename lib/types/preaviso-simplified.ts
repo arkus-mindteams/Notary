@@ -41,6 +41,7 @@ export interface PreavisoSimplifiedJSON {
     participantes: Array<{
       party_id: string | null
       rol: string | null
+      nombre?: string | null
     }>
   }>
   
@@ -73,7 +74,7 @@ export interface PreavisoSimplifiedJSON {
   
   // Actos notariales
   actos: {
-    cancelacionCreditoVendedor: boolean
+    cancelacionHipoteca: boolean
     compraventa: boolean
     aperturaCreditoComprador: boolean
   }

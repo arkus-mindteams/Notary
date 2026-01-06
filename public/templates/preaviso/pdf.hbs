@@ -121,21 +121,32 @@
   <div class="acts">
     {{#each actosNumerados}}
     <div class="act-item">
-      <span class="act-number">{{this.numeroRomano}}.-</span> {{#if (eq this.tipo 'cancelacionCreditoVendedor')}}CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:<br><br>
-      VENDEDOR: {{../vendedor.nombre}}{{#if ../vendedor.denominacion_social}}, {{../vendedor.denominacion_social}}{{/if}}<br>
-      {{#if ../vendedor.institucionCredito}}ACREEDOR: {{../vendedor.institucionCredito}}{{#if ../vendedor.numeroCredito}}<br>NÚMERO DE CRÉDITO: {{../vendedor.numeroCredito}}{{/if}}<br>{{/if}}
-      {{else}}{{#if (eq this.tipo 'compraventa')}}CONTRATO DE TRANSMISION DE PROPIEDAD:<br><br>
+      <span class="act-number">{{this.numeroRomano}}.-</span> {{#if (eq this.tipo 'cancelacionHipoteca')}}CANCELACIÓN DE HIPOTECA:<br><br>
+      {{#if ../vendedor.denominacion_social}}DEUDOR: {{../vendedor.denominacion_social}}<br>
+      {{else}}DEUDOR: {{../vendedor.nombre}}<br>
+      {{/if}}
+      {{#if ../gravamenPrincipal.institucion}}ACREEDOR: {{../gravamenPrincipal.institucion}}<br>{{/if}}
+      {{#if ../gravamenPrincipal.numero_credito}}NÚMERO DE CRÉDITO: {{../gravamenPrincipal.numero_credito}}<br>{{/if}}
+      CANCELACIÓN: SE CANCELARÁ EN LA ESCRITURA/TRÁMITE ACTUAL.<br><br>
+      {{else}}{{#if (eq this.tipo 'compraventa')}}CONTRATO DE COMPRAVENTA:<br><br>
       {{#if ../vendedor.denominacion_social}}TRANSMITENTE: {{../vendedor.denominacion_social}}<br>
       {{else}}TRANSMITENTE: {{../vendedor.nombre}}<br>
-      {{/if}}
+    {{/if}}
       ADQUIRIENTE: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}<br>
       {{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CRÉDITO CON GARANTÍA HIPOTECARIA:<br><br>
       DEUDOR: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}<br>
-      {{#if this.credito.institucion}}ACREEDOR: {{this.credito.institucion}}<br>
-      {{else}}{{#if ../comprador.institucionCredito}}ACREEDOR: {{../comprador.institucionCredito}}<br>{{/if}}{{/if}}
-      {{#if this.credito.participantes}}{{#each this.credito.participantes}}{{#if this.nombre}}{{#if (eq this.rol 'acreditado')}}ACREDITADO: {{this.nombre}}<br>
+      {{#if (hasItems this.creditos)}}CRÉDITOS:<br>
+      {{#each this.creditos}}
+      - CRÉDITO {{inc @index}}<br>
+      {{#if this.institucion}}ACREEDOR: {{this.institucion}}<br>{{/if}}
+      {{#if this.monto}}MONTO: {{this.monto}}<br>{{/if}}
+      {{#if this.tipo_credito}}TIPO: {{this.tipo_credito}}<br>{{/if}}
+      {{#if this.participantes}}{{#each this.participantes}}{{#if this.nombre}}{{#if (eq this.rol 'acreditado')}}ACREDITADO: {{this.nombre}}<br>
       {{else}}{{#if (eq this.rol 'coacreditado')}}COACREDITADO: {{this.nombre}}<br>
       {{/if}}{{/if}}{{/if}}{{/each}}{{/if}}
+      <br>
+      {{/each}}
+      {{else}}{{#if ../comprador.institucionCredito}}ACREEDOR: {{../comprador.institucionCredito}}<br>{{/if}}{{/if}}
       {{/if}}{{/if}}{{/if}}
     </div>
     {{/each}}

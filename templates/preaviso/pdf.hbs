@@ -114,7 +114,7 @@
 
   {{! 5. Actos jurídicos numerados (romanos) }}
   <div class="acts">
-    {{#if actos.cancelacionCreditoVendedor}}
+    {{#if actos.cancelacionHipoteca}}
     <div class="act-item">
       <span class="act-number">I.</span> CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:<br>
       &nbsp;&nbsp;&nbsp;&nbsp;- Vendedor: {{vendedor.nombre}}{{#if vendedor.denominacion_social}} ({{vendedor.denominacion_social}}){{/if}}<br>
@@ -126,7 +126,7 @@
 
     {{#if actos.compraventa}}
     <div class="act-item">
-      <span class="act-number">{{#if actos.cancelacionCreditoVendedor}}II{{else}}I{{/if}}.</span> COMPRAVENTA DE INMUEBLE:<br>
+      <span class="act-number">{{#if actos.cancelacionHipoteca}}II{{else}}I{{/if}}.</span> COMPRAVENTA DE INMUEBLE:<br>
       &nbsp;&nbsp;&nbsp;&nbsp;- Vendedor: {{vendedor.nombre}}{{#if vendedor.denominacion_social}} ({{vendedor.denominacion_social}}){{/if}}<br>
       &nbsp;&nbsp;&nbsp;&nbsp;- Comprador: {{comprador.nombre}}{{#if comprador.denominacion_social}} ({{comprador.denominacion_social}}){{/if}}<br>
       &nbsp;&nbsp;&nbsp;&nbsp;- Inmueble: {{inmueble.direccion}}<br>
@@ -137,7 +137,7 @@
 
     {{#if actos.aperturaCreditoComprador}}
     <div class="act-item">
-      <span class="act-number">{{#if actos.cancelacionCreditoVendedor}}{{#if actos.compraventa}}III{{else}}II{{/if}}{{else}}{{#if actos.compraventa}}II{{else}}I{{/if}}{{/if}}.</span> APERTURA DE CRÉDITO DEL COMPRADOR:<br>
+      <span class="act-number">{{#if actos.cancelacionHipoteca}}{{#if actos.compraventa}}III{{else}}II{{/if}}{{else}}{{#if actos.compraventa}}II{{else}}I{{/if}}{{/if}}.</span> APERTURA DE CRÉDITO DEL COMPRADOR:<br>
       &nbsp;&nbsp;&nbsp;&nbsp;- Comprador: {{comprador.nombre}}{{#if comprador.denominacion_social}} ({{comprador.denominacion_social}}){{/if}}<br>
       {{#if comprador.institucionCredito}}&nbsp;&nbsp;&nbsp;&nbsp;- Institución crediticia: {{comprador.institucionCredito}}<br>{{/if}}
       {{#if comprador.montoCredito}}&nbsp;&nbsp;&nbsp;&nbsp;- Monto: {{comprador.montoCredito}}<br>{{/if}}

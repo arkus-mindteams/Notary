@@ -594,6 +594,7 @@ export async function POST(req: Request) {
     const body: ChatRequest = await req.json()
     const { messages, context } = body
     const lastUserMessage = [...messages].reverse().find(m => m.role === 'user')?.content || ''
+    const lastAssistantMessage = [...messages].reverse().find(m => m.role === 'assistant')?.content || ''
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return NextResponse.json(
@@ -616,7 +617,7 @@ export async function POST(req: Request) {
     // Aplica actualizaciones deterministas basadas SOLO en el input del usuario y el contexto actual.
     // Ej: selección de folio_real con múltiples folios -> copiar superficie/datos asociados desde foliosConInfo.
     // Esto debe ocurrir ANTES de construir PROMPT 3 / llamar al modelo, para que el modelo no pregunte lo que ya existe.
-    const preDeterministicUpdate = applyDeterministicUserInputUpdate(lastUserMessage, context, null)
+    const preDeterministicUpdate = applyDeterministicUserInputUpdate(lastUserMessage, context, null, lastAssistantMessage)
     const contextForLLM = preDeterministicUpdate ? { ...(context || {}), ...(preDeterministicUpdate || {}) } : (context || {})
 
     // Construir prompts separados por responsabilidad
@@ -677,8 +678,27 @@ export async function POST(req: Request) {
     // Extraer datos actualizados del mensaje del asistente
     const updatedData = extractDataFromMessage(assistantMessage, contextForLLM)
 
+    // Guard determinista: NO permitir que el modelo "invente" gravámenes/hipoteca
+    // fuera de PASO 6, a menos que el usuario haya mencionado explícitamente el tema.
+    // Esto evita marcar el PASO 6 como completo sin haberlo preguntado/confirmado.
+    try {
+      const currentState = prompts?.state?.current_state || ''
+      const userMentionsEncumbrance = /\b(gravamen(?:es)?|hipoteca(?:s)?|embargo(?:s)?)\b/i.test(lastUserMessage || '')
+
+      if (!userMentionsEncumbrance && currentState !== 'ESTADO_6') {
+        if (updatedData?.gravamenes) delete (updatedData as any).gravamenes
+        if ((updatedData as any)?.inmueble?.existe_hipoteca !== undefined) {
+          const inmueble = (updatedData as any).inmueble
+          delete inmueble.existe_hipoteca
+          if (Object.keys(inmueble).length === 0) delete (updatedData as any).inmueble
+        }
+      }
+    } catch (e) {
+      console.warn('[api/ai/preaviso-chat] gravamen guard failed (non-fatal):', e)
+    }
+
     // Aplicar actualizaciones deterministas basadas en el input del usuario (para evitar loops cuando el LLM no emite DATA_UPDATE)
-    const deterministicUpdate = applyDeterministicUserInputUpdate(lastUserMessage, contextForLLM, updatedData)
+    const deterministicUpdate = applyDeterministicUserInputUpdate(lastUserMessage, contextForLLM, updatedData, lastAssistantMessage)
     const postMerged = mergeContextUpdates(updatedData, deterministicUpdate)
     // Incluir también el update determinista aplicado pre-LLM (sin perder lo que el modelo confirmó)
     const mergedUpdate = mergeContextUpdates(preDeterministicUpdate, postMerged)
@@ -714,6 +734,10 @@ export async function POST(req: Request) {
     // Queremos SIEMPRE mostrar el listado y pedir selección, aunque el LLM ya haya "preguntado" genérico,
     // porque la pregunta determinista incluye la info de `foliosConInfo` (JSON temporal en documentosProcesados).
     const shouldForceDeterministicFolioPrompt = isMultipleFolioBlock && !!followUp
+    const shouldForceDeterministicPaso6Prompt =
+      next.state?.current_state === 'ESTADO_6' &&
+      !!followUp &&
+      !/\b(gravamen|hipoteca)\b/i.test(strippedAssistant)
 
     const shouldAddFollowUp =
       !!followUp &&
@@ -722,7 +746,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       // Si estamos bloqueados por múltiples folios, devolvemos directamente el prompt determinista con listado.
-      message: shouldForceDeterministicFolioPrompt ? followUp : assistantMessage,
+      message: (shouldForceDeterministicFolioPrompt || shouldForceDeterministicPaso6Prompt) ? followUp : assistantMessage,
       messages: shouldForceDeterministicFolioPrompt
         ? undefined
         : (shouldAddFollowUp ? [assistantMessage, followUp] : undefined),
@@ -746,7 +770,7 @@ function mergeContextUpdates(a: any, b: any): any {
   return { ...a, ...b }
 }
 
-function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, parsedUpdate: any): any | null {
+function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, parsedUpdate: any, lastAssistantMessage?: string): any | null {
   const userText = (userTextRaw || '').trim()
   if (!userText) return null
 
@@ -760,11 +784,22 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
   const folioCandidates: string[] = Array.isArray(computed.derived?.foliosRealesCandidates)
     ? computed.derived.foliosRealesCandidates.map((x: any) => String(x))
     : []
+  const partidasCandidates: string[] = Array.isArray(computed.derived?.partidasCandidates)
+    ? computed.derived.partidasCandidates.map((x: any) => String(x))
+    : []
+  const hasMultipleScopes = computed.derived?.hasMultipleFolioScopes === true
+  const foliosUnidades: string[] = Array.isArray(computed.derived?.foliosRealesUnidades)
+    ? computed.derived.foliosRealesUnidades.map((x: any) => String(x)).filter(Boolean)
+    : []
+  const foliosAfectados: string[] = Array.isArray(computed.derived?.foliosRealesInmueblesAfectados)
+    ? computed.derived.foliosRealesInmueblesAfectados.map((x: any) => String(x)).filter(Boolean)
+    : []
 
   // Helper: detectar confirmación simple
   const isConfirm = /^(sí|si|confirmo|confirmado|correcto|afirmativo|de acuerdo)\b/i.test(userText) || /\bconfirmo\b/i.test(userText)
-  const mentionsPM = /\bpersona\s+moral\b/i.test(userText) || /\bempresa\b/i.test(userText)
-  const mentionsPF = /\bpersona\s+f[ií]sica\b/i.test(userText)
+  // Aceptar respuestas cortas "moral"/"física" en pasos de tipo_persona (evita loops).
+  const mentionsPM = /\bpersona\s+moral\b/i.test(userText) || /\bempresa\b/i.test(userText) || /\bmoral\b/i.test(userText)
+  const mentionsPF = /\bpersona\s+f[ií]sica\b/i.test(userText) || /\bf[ií]sica\b/i.test(userText)
 
   // Helper: detectar estado civil (persona física)
   const estadoCivilMatch = userText.match(/\b(solter[oa]|casad[oa]|divorciad[oa]|viud[oa])\b/i)
@@ -778,6 +813,88 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
               ? 'divorciado'
               : 'viudo')
       : null
+
+  // 0.45) Captura determinista de cónyuge (cuando el comprador está casado y el usuario proporciona nombre + rol).
+  // Ejemplos:
+  // - "MARGARITA LOPEZ como coacreditado"
+  // - "Juan Pérez comprador y coacreditado"
+  // Objetivo: NO pisar al comprador principal (`compradores[0]`) y NO disparar estado civil del cónyuge.
+  const conyugeRoleMatch = userText.match(/^\s*([^,]+?)\s+(?:como|es)\s+(comprador(?:\s+y\s+coacreditado)?|coacreditado|comprador)\s*$/i)
+  if (conyugeRoleMatch && conyugeRoleMatch[1] && conyugeRoleMatch[2]) {
+    const nombreConyuge = conyugeRoleMatch[1].trim().replace(/^["“]|["”]$/g, '')
+    const rolRaw = conyugeRoleMatch[2].toLowerCase()
+    const rol = rolRaw.includes('comprador') && rolRaw.includes('coacreditado')
+      ? 'comprador_y_coacreditado'
+      : (rolRaw.includes('comprador') ? 'comprador' : 'coacreditado')
+
+    const anyBuyerCasado = computed.derived?.anyBuyerCasado === true
+    const compradores = Array.isArray(baseContext?.compradores) ? [...baseContext.compradores] : []
+    const comprador0 = compradores[0]
+    const comprador0Nombre = comprador0?.persona_fisica?.nombre || comprador0?.persona_moral?.denominacion_social || null
+
+    if (anyBuyerCasado && comprador0 && comprador0Nombre && nombreConyuge.length >= 6) {
+      const updated: any = {}
+
+      // 1) Guardar conyuge dentro del comprador principal (schema v1.4)
+      if (comprador0?.tipo_persona === 'persona_fisica' || comprador0?.persona_fisica) {
+        compradores[0] = {
+          ...comprador0,
+          tipo_persona: comprador0?.tipo_persona || 'persona_fisica',
+          persona_fisica: {
+            ...(comprador0?.persona_fisica || {}),
+            conyuge: {
+              nombre: nombreConyuge,
+              participa: true,
+            },
+          },
+        }
+        updated.compradores = compradores
+      }
+
+      // 2) Control de impresión: imprimir conyuge siempre que participa
+      const control = baseContext?.control_impresion || {}
+      updated.control_impresion = {
+        imprimir_conyuges: true,
+        imprimir_coacreditados: rol === 'coacreditado' || rol === 'comprador_y_coacreditado' ? true : (control?.imprimir_coacreditados === true),
+        imprimir_creditos: control?.imprimir_creditos === true,
+      }
+
+      // 3) Si el rol incluye coacreditado y hay crédito, añadir participante (para templates) sin tocar compradores[0]
+      if (rol === 'coacreditado' || rol === 'comprador_y_coacreditado') {
+        const creditos = Array.isArray(baseContext?.creditos) ? [...baseContext.creditos] : []
+        if (creditos.length > 0) {
+          const c0 = creditos[0] || {}
+          const participantes = Array.isArray(c0?.participantes) ? [...c0.participantes] : []
+          const hasSame = participantes.some((p: any) => (p?.rol === 'coacreditado' && (p?.nombre || '').toLowerCase() === nombreConyuge.toLowerCase()))
+          if (!hasSame) {
+            participantes.push({ party_id: null, rol: 'coacreditado', nombre: nombreConyuge })
+          }
+          creditos[0] = { ...c0, participantes }
+          updated.creditos = creditos
+          // también marcar imprimir_creditos si hay crédito
+          updated.control_impresion = { ...(updated.control_impresion || {}), imprimir_creditos: true }
+        }
+      }
+
+      // 4) Si el rol incluye comprador, crear segundo comprador (sin pedir estado civil automáticamente)
+      if (rol === 'comprador' || rol === 'comprador_y_coacreditado') {
+        const existingNames = compradores
+          .map((c: any) => c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social || null)
+          .filter(Boolean)
+          .map((s: any) => String(s).toLowerCase())
+        if (!existingNames.includes(nombreConyuge.toLowerCase())) {
+          compradores.push({
+            party_id: null,
+            tipo_persona: 'persona_fisica',
+            persona_fisica: { nombre: nombreConyuge, rfc: null, curp: null, estado_civil: null },
+          } as any)
+          updated.compradores = compradores
+        }
+      }
+
+      return updated
+    }
+  }
 
   // 0.5) Corrección explícita del comprador: "el comprador debe ser X" / "el comprador es X"
   // Esto evita que se quede un comprador equivocado en contexto cuando el usuario corrige.
@@ -802,29 +919,169 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
     }
   }
 
+  // 0.52) Titular registral / vendedor: captura explícita del nombre cuando el usuario lo dicta
+  const titularNameMatch =
+    userText.match(/\btitular\s+registral\s*:\s*(.+?)\s*$/i) ||
+    userText.match(/\bel\s+titular\s+registral\s+es\s+(.+?)\s*$/i) ||
+    userText.match(/\btitular\s+registral\s+es\s+(.+?)\s*$/i)
+
+  const looksLikeJustName = (() => {
+    const t = userText.replace(/[“”"']/g, '').trim()
+    if (t.length < 6) return false
+    if (/\d{3,}/.test(t)) return false
+    if (/^(no|nel|nop)\b/i.test(t)) return false
+    if (/^(moral|fisica|f[ií]sica)\b/i.test(t)) return false
+    // Evitar capturar frases de confirmación como nombre ("sí, es persona moral", etc.)
+    if (/^s[ií]\b/i.test(t)) return false
+    if (/\bpersona\s+moral\b/i.test(t) || /\bpersona\s+f[ií]sica\b/i.test(t) || /\bmoral\b/i.test(t) || /\bf[ií]sica\b/i.test(t)) return false
+    return true
+  })()
+
+  if (
+    currentState === 'ESTADO_3' &&
+    (blocking.includes('titular_registral_missing') || blocking.includes('vendedor_titular_mismatch')) &&
+    (titularNameMatch?.[1] || looksLikeJustName)
+  ) {
+    const nombre = (titularNameMatch?.[1] || userText).trim().replace(/^["“]|["”]$/g, '')
+    if (nombre.length >= 6) {
+      const vendedores = Array.isArray(baseContext?.vendedores) ? [...baseContext.vendedores] : []
+      const v0 = vendedores[0] || { party_id: null, tipo_persona: null, tiene_credito: null }
+      vendedores[0] = {
+        ...v0,
+        titular_registral_confirmado: true,
+        tipo_persona: v0?.tipo_persona ?? null,
+        // Guardar el nombre en ambos contenedores hasta que el usuario confirme tipo_persona.
+        persona_fisica: { ...(v0?.persona_fisica || {}), nombre },
+        persona_moral: { ...(v0?.persona_moral || {}), denominacion_social: nombre },
+      }
+      return { vendedores }
+    }
+  }
+
+  // 0.53) Respuesta negativa explícita a "¿Confirmas que X es el titular registral?"
+  if (currentState === 'ESTADO_3' && /^no\b/i.test(userText) && missing.includes('vendedores[].tipo_persona')) {
+    const vendedores = Array.isArray(baseContext?.vendedores) ? [...baseContext.vendedores] : []
+    const v0 = vendedores[0]
+    if (v0) {
+      vendedores[0] = {
+        ...v0,
+        titular_registral_confirmado: false,
+        persona_fisica: { ...(v0?.persona_fisica || {}), nombre: null },
+        persona_moral: { ...(v0?.persona_moral || {}), denominacion_social: null },
+      }
+      return { vendedores }
+    }
+  }
+
+  // 0.55) Selección del "alcance" del folio real (UNIDADES vs INMUEBLE(S) AFECTADO(S))
+  if (blocking.includes('folio_real_scope_selection_required') && hasMultipleScopes) {
+    const raw = userText.replace(/[“”"']/g, '').trim().toLowerCase()
+    if (/^\s*a\s*$/.test(raw)) {
+      return { inmueble: { ...(baseContext?.inmueble || {}), folio_real_scope: 'inmuebles_afectados' } }
+    }
+    if (/^\s*b\s*$/.test(raw)) {
+      return { inmueble: { ...(baseContext?.inmueble || {}), folio_real_scope: 'unidades' } }
+    }
+    const mentionsAfectado =
+      /\bafectad(o|a)s?\b/.test(raw) ||
+      /\binmueble(s)?\b/.test(raw) ||
+      /\binmueble\(s\)\s+afectado\(s\)\b/.test(raw)
+    const mentionsUnidades =
+      /\bunidad(es)?\b/.test(raw) ||
+      /\bdepartamento(s)?\b/.test(raw) ||
+      /\blocal(es)?\b/.test(raw) ||
+      /\bestacionamiento(s)?\b/.test(raw)
+
+    // Si el usuario escribió un folio, intentar inferir el scope por pertenencia a listas.
+    const normalizeDigits = (v: any): string | null => {
+      if (v === undefined || v === null) return null
+      const digits = String(v).replace(/\D/g, '')
+      return digits ? digits : null
+    }
+    const rawDigitsAll = (raw.match(/\d{6,}/g) || []).map(s => String(s))
+    const matchesUnidades = rawDigitsAll
+      .map(d => foliosUnidades.find(f => normalizeDigits(f) === String(d)) || null)
+      .filter(Boolean) as string[]
+    const matchesAfectados = rawDigitsAll
+      .map(d => foliosAfectados.find(f => normalizeDigits(f) === String(d)) || null)
+      .filter(Boolean) as string[]
+
+    const uniqU = Array.from(new Set(matchesUnidades))
+    const uniqA = Array.from(new Set(matchesAfectados))
+
+    if (mentionsAfectado && !mentionsUnidades) {
+      return { folios: { ...(baseContext?.folios || {}), selection: { selected_folio: null, selected_scope: 'inmuebles_afectados', confirmed_by_user: false } } }
+    }
+    if (mentionsUnidades && !mentionsAfectado) {
+      return { folios: { ...(baseContext?.folios || {}), selection: { selected_folio: null, selected_scope: 'unidades', confirmed_by_user: false } } }
+    }
+    if (uniqU.length === 1 && uniqA.length === 0) {
+      // scope + folio en un solo mensaje (confirmado)
+      return {
+        folios: { ...(baseContext?.folios || {}), selection: { selected_folio: uniqU[0], selected_scope: 'unidades', confirmed_by_user: true } },
+        inmueble: { ...(baseContext?.inmueble || {}), folio_real: uniqU[0], folio_real_confirmed: true },
+      }
+    }
+    if (uniqA.length === 1 && uniqU.length === 0) {
+      return {
+        folios: { ...(baseContext?.folios || {}), selection: { selected_folio: uniqA[0], selected_scope: 'inmuebles_afectados', confirmed_by_user: true } },
+        inmueble: { ...(baseContext?.inmueble || {}), folio_real: uniqA[0], folio_real_confirmed: true },
+      }
+    }
+  }
+
+  // 0.56) Confirmación cuando hay un único candidato y NO hay default
+  if (blocking.includes('folio_real_confirmation_required') && folioCandidates.length === 1) {
+    if (isConfirm) {
+      const picked = folioCandidates[0]
+      return {
+        folios: { ...(baseContext?.folios || {}), selection: { selected_folio: picked, selected_scope: (computed.derived?.folioRealScope || 'otros'), confirmed_by_user: true } },
+        inmueble: { ...(baseContext?.inmueble || {}), folio_real: picked, folio_real_confirmed: true },
+      }
+    }
+  }
+
   // 0.6) Selección de folio real cuando se detectan múltiples en inscripción
   if (blocking.includes('multiple_folio_real_detected') && folioCandidates.length > 1) {
     // Extraer posible folio del texto (acepta números y separadores comunes)
     const raw = userText.replace(/[“”"']/g, '').trim()
-    const rawDigits = (raw.match(/\d{6,}/g) || [])[0] || null
+    const normalizeDigits = (v: any): string | null => {
+      if (v === undefined || v === null) return null
+      const digits = String(v).replace(/\D/g, '')
+      return digits ? digits : null
+    }
+
+    // Aceptar respuestas como:
+    // - "1767006"
+    // - "Folio 1767006"
+    // - "folio real: 1767006"
+    // - "El folio es 1767006 (unidad ...)"
+    // Si el texto trae múltiples números, solo aplicar si hay un match ÚNICO contra candidatos.
+    const rawDigitsAll = (raw.match(/\d{6,}/g) || []).map(s => String(s))
+    const digitMatches = rawDigitsAll
+      .map(d => {
+        const match = folioCandidates.find(f => normalizeDigits(f) === String(d))
+        return match || null
+      })
+      .filter(Boolean) as string[]
+    const uniqueDigitMatches = Array.from(new Set(digitMatches))
+
     const picked =
       folioCandidates.find(f => f === raw) ||
       folioCandidates.find(f => f.replace(/\s+/g, '') === raw.replace(/\s+/g, '')) ||
-      (rawDigits ? folioCandidates.find(f => String(f).replace(/\D/g, '') === String(rawDigits)) : null) ||
-      null
+      (uniqueDigitMatches.length === 1 ? uniqueDigitMatches[0] : null)
     if (picked) {
       const inmueble = baseContext?.inmueble || {}
       
-      // Buscar información asociada al folio seleccionado en documentos procesados
-      const doc = Array.isArray(baseContext?.documentosProcesados)
-        ? baseContext.documentosProcesados.find((d: any) => d?.tipo === 'inscripcion' || d?.tipo === 'escritura')
-        : null
-      const info = doc?.informacionExtraida || {}
+      // Buscar información asociada al folio seleccionado en el JSON temporal agregado (infoInscripcion)
+      // (agrega y deduplica foliosConInfo a través de todas las páginas procesadas).
+      const info = computed.derived?.infoInscripcion || {}
       const foliosConInfo = Array.isArray(info?.foliosConInfo) ? info.foliosConInfo : []
       const folioInfo = foliosConInfo.find((f: any) => String(f?.folio) === String(picked))
       
       // Actualizar inmueble con información asociada al folio seleccionado
-      const updatedInmueble: any = { ...inmueble, folio_real: picked }
+      // Marcar explícitamente que el folio fue confirmado por el usuario (no por extracción).
+      const updatedInmueble: any = { ...inmueble, folio_real: picked, folio_real_confirmed: true }
       
       if (folioInfo) {
         // Actualizar dirección si está disponible
@@ -858,7 +1115,69 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
           updatedInmueble.partidas = partidas
         }
       }
+
+      // Fallback: si no encontramos folioInfo en infoInscripcion, usar el modelo canónico `context.folios.candidates`
+      // (que viene del procesamiento de documentos) para auto-popular datos y evitar preguntas redundantes.
+      if (!folioInfo) {
+        const candidates = Array.isArray(baseContext?.folios?.candidates) ? baseContext.folios.candidates : []
+        const norm = (v: any) => String(v || '').replace(/\D/g, '')
+        const cand = candidates.find((c: any) => norm(c?.folio) === norm(picked)) || null
+        const attrs = cand?.attrs || {}
+        if (attrs?.ubicacion) {
+          updatedInmueble.direccion = { ...inmueble.direccion, calle: String(attrs.ubicacion) }
+        }
+        if (attrs?.superficie) {
+          updatedInmueble.superficie = String(attrs.superficie)
+        }
+        if (attrs?.unidad || attrs?.condominio || attrs?.lote || attrs?.manzana || attrs?.fraccionamiento) {
+          updatedInmueble.datos_catastrales = {
+            ...inmueble.datos_catastrales,
+            unidad: attrs?.unidad ? String(attrs.unidad) : inmueble.datos_catastrales?.unidad,
+            condominio: attrs?.condominio ? String(attrs.condominio) : inmueble.datos_catastrales?.condominio,
+            lote: attrs?.lote ? String(attrs.lote) : inmueble.datos_catastrales?.lote,
+            manzana: attrs?.manzana ? String(attrs.manzana) : inmueble.datos_catastrales?.manzana,
+            fraccionamiento: attrs?.fraccionamiento ? String(attrs.fraccionamiento) : inmueble.datos_catastrales?.fraccionamiento,
+          }
+        }
+        if (attrs?.partida) {
+          const partidas = Array.isArray(inmueble.partidas) ? [...inmueble.partidas] : []
+          if (!partidas.includes(String(attrs.partida))) partidas.push(String(attrs.partida))
+          updatedInmueble.partidas = partidas
+        }
+      }
       
+      return {
+        folios: { ...(baseContext?.folios || {}), selection: { selected_folio: picked, selected_scope: (computed.derived?.folioRealScope || 'otros'), confirmed_by_user: true } },
+        inmueble: updatedInmueble,
+      }
+    }
+  }
+
+  // 0.7) Selección de PARTIDA cuando se detectan múltiples candidatas (priorizando sección TÍTULO)
+  if (blocking.includes('multiple_partida_detected') && partidasCandidates.length > 1) {
+    const raw = userText.replace(/[“”"']/g, '').trim()
+    const normalizeDigits = (v: any): string | null => {
+      if (v === undefined || v === null) return null
+      const digits = String(v).replace(/\D/g, '')
+      return digits ? digits : null
+    }
+    const rawDigitsAll = (raw.match(/\d{3,}/g) || []).map(s => String(s))
+    const digitMatches = rawDigitsAll
+      .map(d => {
+        const match = partidasCandidates.find(p => normalizeDigits(p) === String(d)) || null
+        return match
+      })
+      .filter(Boolean) as string[]
+    const uniqueDigitMatches = Array.from(new Set(digitMatches))
+
+    const picked =
+      partidasCandidates.find(p => p === raw) ||
+      partidasCandidates.find(p => p.replace(/\s+/g, '') === raw.replace(/\s+/g, '')) ||
+      (uniqueDigitMatches.length === 1 ? uniqueDigitMatches[0] : null)
+
+    if (picked) {
+      const inmueble = baseContext?.inmueble || {}
+      const updatedInmueble: any = { ...inmueble, partidas: [String(picked)] }
       return { inmueble: updatedInmueble }
     }
   }
@@ -896,7 +1215,8 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
     ss['ESTADO_3'] === 'incomplete' ||
     currentState === 'ESTADO_3'
 
-  if (sellerNeedsTipoPersona && isConfirm && (mentionsPM || mentionsPF)) {
+  // Aceptar "moral"/"física" sin requerir "sí" para no estancar el flujo.
+  if (sellerNeedsTipoPersona && (mentionsPM || mentionsPF)) {
     const isPM = mentionsPM
     const isPF = mentionsPF
 
@@ -1043,6 +1363,65 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
     }
   }
 
+  // 2.2.b) Participantes del crédito: listado con nombres y rol
+  // Ejemplos:
+  // - "LOPEZ GARCIA PRIMITIVO ADRIAN – acreditado"
+  // - "- ALICIA LOPEZ HERNANDEZ - coacreditado"
+  // Objetivo: guardar también `nombre` para poder imprimir en el documento aunque no haya party_id.
+  if (Array.isArray(baseContext?.creditos) && baseContext.creditos.length > 0 && /\b(acreditado|coacreditado)\b/i.test(userText)) {
+    const lines = userText.split('\n').map(l => l.trim()).filter(Boolean)
+    const parsed: Array<{ nombre: string, rol: 'acreditado' | 'coacreditado' }> = []
+
+    for (const line of lines) {
+      const cleaned = line.replace(/^\s*[-•]\s*/g, '').trim()
+      const m1 = cleaned.match(/^(.+?)\s*[–—-]\s*(acreditado|coacreditado)\s*$/i)
+      const m2 = cleaned.match(/^(.+?)\s+(acreditado|coacreditado)\s*$/i)
+      const m = m1 || m2
+      if (!m) continue
+      const nombre = String(m[1] || '').trim().replace(/^["“]|["”]$/g, '')
+      const rol = String(m[2] || '').toLowerCase() as any
+      if (!nombre || nombre.length < 6) continue
+      if (rol !== 'acreditado' && rol !== 'coacreditado') continue
+      parsed.push({ nombre, rol })
+    }
+
+    if (parsed.length > 0) {
+      const compradores = Array.isArray(baseContext?.compradores) ? baseContext.compradores : []
+      const vendedores = Array.isArray(baseContext?.vendedores) ? baseContext.vendedores : []
+      const norm = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim()
+
+      const resolvePartyId = (nombre: string): string | null => {
+        const n = norm(nombre)
+        for (const c of compradores) {
+          const nm = c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social || null
+          if (nm && norm(String(nm)) === n) return c.party_id || null
+        }
+        for (const v of vendedores) {
+          const nm = v?.persona_fisica?.nombre || v?.persona_moral?.denominacion_social || null
+          if (nm && norm(String(nm)) === n) return v.party_id || null
+        }
+        return null
+      }
+
+      const c0 = baseContext.creditos[0] || {}
+      const participantes = parsed.map(p => ({
+        party_id: resolvePartyId(p.nombre),
+        rol: p.rol,
+        nombre: p.nombre,
+      }))
+
+      const control = baseContext?.control_impresion || {}
+      return {
+        creditos: [{ ...c0, participantes }, ...baseContext.creditos.slice(1)],
+        control_impresion: {
+          imprimir_conyuges: control?.imprimir_conyuges === true,
+          imprimir_coacreditados: participantes.some((p: any) => p?.rol === 'coacreditado') ? true : (control?.imprimir_coacreditados === true),
+          imprimir_creditos: true,
+        },
+      }
+    }
+  }
+
   // 2.3) Rol en crédito: "titular" => acreditado
   if (/\btitular\b/i.test(userText) && Array.isArray(baseContext?.creditos) && baseContext.creditos.length > 0) {
     const c0 = baseContext.creditos[0]
@@ -1085,23 +1464,38 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
     return { inmueble: { ...inmueble, all_registry_pages_confirmed: true } }
   }
 
-  // 5) Gravámenes / hipoteca (PASO 6): evitar reinicios capturando respuestas típicas aunque el LLM no emita DATA_UPDATE
-  const inEncumbrancePhase =
-    currentState === 'ESTADO_6' || (ss['ESTADO_6'] === 'pending' || ss['ESTADO_6'] === 'incomplete')
+  // 5) Gravámenes / hipoteca (PASO 6):
+  // IMPORTANTE: NO interpretar "sí/no" de otras preguntas como respuesta de gravamen.
+  // Solo capturar si estamos exactamente en ESTADO_6 o si el último mensaje del asistente preguntó gravamen/hipoteca.
+  const assistantAsksEncumbrance =
+    /\bPASO\s*6\b/i.test(String(lastAssistantMessage || '')) ||
+    /\b(gravamen|hipoteca)\b/i.test(String(lastAssistantMessage || ''))
+  const inEncumbrancePhase = currentState === 'ESTADO_6' || assistantAsksEncumbrance
 
   if (inEncumbrancePhase) {
     const vendedores = Array.isArray(baseContext?.vendedores) ? [...baseContext.vendedores] : []
     const vendedor0 = vendedores[0]
-    const saysNo = /^(no|no\.?)$/i.test(userText) || /\bno\b/i.test(userText)
+    const inmueble = baseContext?.inmueble || {}
+    // MUY IMPORTANTE: no capturar "no" dentro de frases largas (p.ej. "no es el titular") como respuesta de PASO 6.
+    // Solo aceptar respuestas cortas para sí/no.
+    const saysNo = /^(no|no\.?)$/i.test(userText)
     const saysCancelada = /\bcancelad[ao]\b/i.test(userText)
     const saysVigente = /\bvigent[ea]\b/i.test(userText)
-    const saysYes = /^(sí|si)\b/i.test(userText)
+    const saysYes = /^(sí|si|sí\.|si\.)$/i.test(userText)
+    const mentionsEncumbrance = /\b(gravamen|hipoteca)\b/i.test(userText)
+    const isShortRelevantAnswer = saysNo || saysYes || saysCancelada || saysVigente || mentionsEncumbrance
+
+    // Si NO estamos exactamente en ESTADO_6, solo aplicar actualizaciones si el mensaje parece claramente de PASO 6.
+    if (currentState !== 'ESTADO_6' && !isShortRelevantAnswer) {
+      // Evita inferencias erróneas (ej. "no" a otra pregunta) que marcarían existe_hipoteca=false.
+      return null
+    }
 
     // Caso: "no" => no hay hipoteca/gravamen por cancelar
     if (saysNo && !saysCancelada && !saysVigente) {
       return {
         gravamenes: [],
-        vendedores: vendedor0 ? [{ ...vendedor0, tiene_credito: false }, ...vendedores.slice(1)] : vendedores,
+        inmueble: { ...inmueble, existe_hipoteca: false },
       }
     }
 
@@ -1117,36 +1511,49 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
             cancelacion_confirmada: true,
           },
         ],
-        vendedores: vendedor0 ? [{ ...vendedor0, tiene_credito: true }, ...vendedores.slice(1)] : vendedores,
+        inmueble: { ...inmueble, existe_hipoteca: true },
+      }
+    }
+
+    // Caso: "sí" / "vigente" => existe hipoteca/gravamen. Si aún no hay gravámenes, crear uno para capturar cómo se cancelará.
+    if ((saysYes || saysVigente || mentionsEncumbrance) && (!Array.isArray(baseContext?.gravamenes) || baseContext.gravamenes.length === 0)) {
+      return {
+        gravamenes: [
+          {
+            gravamen_id: null,
+            tipo: 'hipoteca',
+            institucion: null,
+            numero_credito: null,
+            // null => aún no sabemos si ya está inscrita o se cancelará en escritura
+            cancelacion_confirmada: null,
+          },
+        ],
+        inmueble: { ...inmueble, existe_hipoteca: true },
       }
     }
 
     // Caso: confirmación simple "sí" cuando está pendiente cancelacion_confirmada
+    // Interpretación: "sí" => SE CANCELARÁ EN LA ESCRITURA/TRÁMITE ACTUAL (no está inscrita todavía)
     if (saysYes && Array.isArray(baseContext?.gravamenes) && baseContext.gravamenes.length > 0) {
+      const g0 = baseContext.gravamenes[0]
+      if (g0?.cancelacion_confirmada !== false) {
+        const nextG = [{ ...g0, cancelacion_confirmada: false }, ...baseContext.gravamenes.slice(1)]
+        return { gravamenes: nextG, inmueble: { ...inmueble, existe_hipoteca: true } }
+      }
+    }
+
+    // Caso: "no" cuando ya existe gravamen => cancelación YA INSCRITA en el Registro
+    if (saysNo && Array.isArray(baseContext?.gravamenes) && baseContext.gravamenes.length > 0) {
       const g0 = baseContext.gravamenes[0]
       if (g0?.cancelacion_confirmada !== true) {
         const nextG = [{ ...g0, cancelacion_confirmada: true }, ...baseContext.gravamenes.slice(1)]
-        return { gravamenes: nextG }
+        return { gravamenes: nextG, inmueble: { ...inmueble, existe_hipoteca: true } }
       }
     }
   }
 
-  // 3) Crédito del vendedor (tiene_credito) — si el usuario contesta explícitamente
-  // Ej: "no tiene ninguno", "no tiene crédito", "sí tiene crédito puente"
-  if (Array.isArray(baseContext?.vendedores) && baseContext.vendedores.length > 0) {
-    const vendedor0 = baseContext.vendedores[0]
-    const asksCreditoVendedor = /\bcr[eé]dito\b/i.test(userText) || /\bcr[eé]dito puente\b/i.test(userText) || /\bhipoteca\b/i.test(userText) || /\bno tiene ninguno\b/i.test(userText)
-    if (asksCreditoVendedor) {
-      const saysNo = /\bno\b/i.test(userText) && (/\btiene\b/i.test(userText) || /\bcr[eé]dito\b/i.test(userText) || /\bningun[oa]?\b/i.test(userText))
-      const saysYes = /\bs[ií]\b/i.test(userText) && /\btiene\b/i.test(userText)
-      if (saysNo || /no tiene ninguno/i.test(userText)) {
-        return { vendedores: [{ ...vendedor0, tiene_credito: false }, ...baseContext.vendedores.slice(1)] }
-      }
-      if (saysYes) {
-        return { vendedores: [{ ...vendedor0, tiene_credito: true }, ...baseContext.vendedores.slice(1)] }
-      }
-    }
-  }
+  // Nota: ya no inferimos hipoteca a partir de `vendedores[].tiene_credito`.
+  // La confirmación de hipoteca/gravamen vive en `inmueble.existe_hipoteca` (PASO 6).
 
   return null
 }
@@ -1211,55 +1618,60 @@ function buildDeterministicFollowUp(state: any, context: any): string | null {
 
   // Registro/inmueble (pedir un campo a la vez)
   if (s === 'ESTADO_2') {
+    if (blocking.includes('folio_real_scope_selection_required')) {
+      const computed = computePreavisoState(context)
+      const unidades = Array.isArray(computed.derived?.foliosRealesUnidades)
+        ? computed.derived.foliosRealesUnidades.map((x: any) => String(x)).filter(Boolean)
+        : []
+      const afectados = Array.isArray(computed.derived?.foliosRealesInmueblesAfectados)
+        ? computed.derived.foliosRealesInmueblesAfectados.map((x: any) => String(x)).filter(Boolean)
+        : []
+
+      if (unidades.length > 0 && afectados.length > 0) {
+        const listU = unidades.map(f => `- Folio ${f}`).join('\n')
+        const listA = afectados.map(f => `- Folio ${f}`).join('\n')
+        return askOne(
+          `Detecté folios reales en dos secciones distintas del documento. Antes de elegir un folio, dime cuál sección aplica para ESTE trámite:\n\n` +
+          `A) INMUEBLE(S) AFECTADO(S)\n${listA}\n\n` +
+          `B) UNIDADES (DEPARTAMENTO/LOCAL/ESTACIONAMIENTO)\n${listU}\n\n` +
+          `Responde con "A" o "B" (o escribe "inmueble afectado" / "unidades").`
+        )
+      }
+    }
+    if (blocking.includes('folio_real_confirmation_required')) {
+      const computed = computePreavisoState(context)
+      const candidates = Array.isArray(computed.derived?.foliosRealesCandidates)
+        ? computed.derived.foliosRealesCandidates.map((x: any) => String(x)).filter(Boolean)
+        : []
+      if (candidates.length === 1) {
+        return askOne(`Detecté un único folio real posible: "${candidates[0]}". ¿Confirmas que ESTE es el folio real que vamos a utilizar para este trámite? (responde "sí" o "no")`)
+      }
+    }
+    if (blocking.includes('multiple_partida_detected')) {
+      const computed = computePreavisoState(context)
+      const candidates = Array.isArray(computed.derived?.partidasCandidates)
+        ? computed.derived.partidasCandidates.map((x: any) => String(x)).filter(Boolean)
+        : []
+      if (candidates.length > 1) {
+        const list = candidates.map(p => `- Partida ${p}`).join('\n')
+        return askOne(
+          `Detecté más de una partida posible en la sección TÍTULO/INSCRIPCIÓN. Por favor, indícame cuál partida vamos a utilizar para este trámite (responde con el número exactamente):\n\n${list}`
+        )
+      }
+    }
     if (blocking.includes('multiple_folio_real_detected')) {
-      const doc = Array.isArray(context?.documentosProcesados)
-        ? context.documentosProcesados.find((d: any) => d?.tipo === 'inscripcion' || d?.tipo === 'escritura' || d?.tipo === 'titulo')
-        : null
-      const info = doc?.informacionExtraida || {}
-      const folios = Array.isArray(info?.foliosReales) ? info.foliosReales.filter(Boolean) : []
-      const foliosConInfo = Array.isArray(info?.foliosConInfo) ? info.foliosConInfo.filter((f: any) => f?.folio) : []
+      // Usar candidatos deterministas (incluye el modelo canónico `context.folios`).
+      const computed = computePreavisoState(context)
+      const folios = Array.isArray(computed.derived?.foliosRealesCandidates)
+        ? computed.derived.foliosRealesCandidates.map((x: any) => String(x)).filter(Boolean)
+        : []
+      const foliosConInfo: any[] = []
       
       if (folios.length > 1) {
-        // Si hay información asociada a cada folio, mostrarla
-        if (foliosConInfo.length > 0) {
-          const foliosList = foliosConInfo.map((f: any) => {
-            // Construir información descriptiva del inmueble
-            const partes: string[] = []
-            
-            // Priorizar unidad/condominio (más específico)
-            if (f.unidad) {
-              partes.push(`Unidad ${f.unidad}`)
-            }
-            if (f.condominio) {
-              partes.push(f.condominio)
-            }
-            
-            // Si no hay unidad/condominio, usar otros datos catastrales
-            if (partes.length === 0) {
-              if (f.lote) partes.push(`Lote ${f.lote}`)
-              if (f.manzana) partes.push(`Manzana ${f.manzana}`)
-              if (f.fraccionamiento) partes.push(f.fraccionamiento)
-            }
-            
-            // Agregar ubicación si está disponible y no hay datos catastrales
-            if (partes.length === 0 && f.ubicacion) {
-              partes.push(f.ubicacion)
-            }
-            
-            // Agregar superficie si está disponible
-            if (f.superficie) {
-              partes.push(`Superficie: ${f.superficie}`)
-            }
-            
-            const info = partes.length > 0 ? partes.join(', ') : null
-            return `Folio ${f.folio}${info ? `: ${info}` : ''}`
-          }).join('\n')
-          
-          return askOne(`En la hoja de inscripción detecté más de un folio real. Por favor, indícame exactamente cuál es el folio real que vamos a utilizar para este trámite:\n\n${foliosList}\n\n¿Cuál de estos folios corresponde al inmueble de este trámite? (responde con el número del folio exactamente)`)
-        } else {
-          // Si no hay información asociada, solo mostrar los folios
-          return askOne(`En la hoja de inscripción detecté más de un folio real: ${folios.map((f: string) => `"${f}"`).join(', ')}. Por favor, indícame exactamente cuál es el folio real que vamos a utilizar para este trámite (elige uno exactamente).`)
-        }
+        const list = folios.map((f: string) => `- Folio ${f}`).join('\n')
+        return askOne(
+          `En la hoja de inscripción detecté más de un folio real. Por favor, indícame exactamente cuál es el folio real que vamos a utilizar para este trámite:\n\n${list}\n\n(responde con el número del folio exactamente)`
+        )
       }
       return askOne('Detecté más de un folio real en la inscripción. ¿Cuál folio real debemos usar?')
     }
@@ -1336,12 +1748,19 @@ function buildDeterministicFollowUp(state: any, context: any): string | null {
   // Gravámenes
   if (s === 'ESTADO_6') {
     const gravamenes = Array.isArray(context?.gravamenes) ? context.gravamenes : []
+    const inmueble = context?.inmueble || {}
+    // Si ya se confirmó explícitamente que está libre, no volver a preguntar; continuar.
+    if (inmueble?.existe_hipoteca === false) {
+      const next = pickNextByStatus()
+      if (next && next !== 'ESTADO_6') return buildDeterministicFollowUp({ ...state, current_state: next }, context)
+      return null
+    }
     if (gravamenes.length === 0) {
-      return askOne('En el folio real, ¿hay algún gravamen/hipoteca vigente que deba cancelarse? (sí/no)')
+      return askOne('PASO 6 (Gravamen): ¿hay algún gravamen/hipoteca VIGENTE o PENDIENTE por cancelar? (sí/no)')
     }
     const g0 = gravamenes[0]
-    if (g0?.cancelacion_confirmada !== true) {
-      return askOne('Confirmación rápida: ¿la cancelación de esa hipoteca/gravamen ya está inscrita en el Registro Público? (sí/no)')
+    if (g0?.cancelacion_confirmada !== true && g0?.cancelacion_confirmada !== false) {
+      return askOne('Si existe hipoteca/gravamen, ¿se cancelará en la escritura/trámite actual? (sí/no). Si respondes "no", se entenderá que la cancelación ya está inscrita en el Registro Público.')
     }
     // Si ya está confirmado, seguir al siguiente estado pendiente
     const next = pickNextByStatus()

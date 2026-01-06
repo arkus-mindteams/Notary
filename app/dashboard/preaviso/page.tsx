@@ -150,8 +150,8 @@ export default function PreavisoPage() {
           })
         } else if (compradorNombre) {
           searchResponse = await fetch(`/api/expedientes/compradores?nombre=${encodeURIComponent(compradorNombre)}`, {
-            headers: searchHeaders,
-          })
+          headers: searchHeaders,
+        })
         }
 
         if (searchResponse && searchResponse.ok) {
@@ -398,10 +398,10 @@ export default function PreavisoPage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <div>
-                  <h1 className="text-3xl font-bold text-gray-900">Pre-Aviso de Compraventa</h1>
-                  <p className="text-gray-600">
-                    Sistema interactivo para generar solicitudes de certificado con efecto de pre-aviso
-                  </p>
+              <h1 className="text-3xl font-bold text-gray-900">Pre-Aviso de Compraventa</h1>
+              <p className="text-gray-600">
+                Sistema interactivo para generar solicitudes de certificado con efecto de pre-aviso
+              </p>
                 </div>
                 {showExportButtons && exportData && (
                   <div className="flex gap-2">
@@ -474,10 +474,10 @@ export default function PreavisoPage() {
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button>
-                      <Download className="h-4 w-4 mr-2" />
+                  <Download className="h-4 w-4 mr-2" />
                       Descargar
                       <ChevronDown className="h-4 w-4 ml-2" />
-                    </Button>
+                </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem onClick={handleDownloadWord}>

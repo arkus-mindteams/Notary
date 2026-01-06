@@ -27,13 +27,15 @@ LIC. XAVIER IBÁÑEZ VERAMENDI, Notario Titular de la Notaría No. 3 de esta ciu
 
 {{! 5. Actos jurídicos numerados (romanos con guión) }}
 {{#each actosNumerados}}
-{{this.numeroRomano}}.- {{#if (eq this.tipo 'cancelacionCreditoVendedor')}}CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:
+{{this.numeroRomano}}.- {{#if (eq this.tipo 'cancelacionHipoteca')}}CANCELACIÓN DE HIPOTECA:
 
-VENDEDOR: {{../vendedor.nombre}}{{#if ../vendedor.denominacion_social}}, {{../vendedor.denominacion_social}}{{/if}}
-{{#if ../vendedor.institucionCredito}}ACREEDOR: {{../vendedor.institucionCredito}}{{#if ../vendedor.numeroCredito}}
-NÚMERO DE CRÉDITO: {{../vendedor.numeroCredito}}{{/if}}
+{{#if ../vendedor.denominacion_social}}DEUDOR: {{../vendedor.denominacion_social}}
+{{else}}DEUDOR: {{../vendedor.nombre}}
 {{/if}}
-{{else}}{{#if (eq this.tipo 'compraventa')}}CONTRATO DE TRANSMISION DE PROPIEDAD:
+{{#if ../gravamenPrincipal.institucion}}ACREEDOR: {{../gravamenPrincipal.institucion}}{{/if}}
+{{#if ../gravamenPrincipal.numero_credito}}NÚMERO DE CRÉDITO: {{../gravamenPrincipal.numero_credito}}{{/if}}
+CANCELACIÓN: SE CANCELARÁ EN LA ESCRITURA/TRÁMITE ACTUAL.
+{{else}}{{#if (eq this.tipo 'compraventa')}}CONTRATO DE COMPRAVENTA:
 
 {{#if ../vendedor.denominacion_social}}TRANSMITENTE: {{../vendedor.denominacion_social}}
 {{else}}TRANSMITENTE: {{../vendedor.nombre}}
@@ -42,12 +44,19 @@ ADQUIRIENTE: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{
 {{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CRÉDITO CON GARANTÍA HIPOTECARIA:
 
 DEUDOR: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}
-{{#if this.credito.institucion}}ACREEDOR: {{this.credito.institucion}}
-{{else}}{{#if ../comprador.institucionCredito}}ACREEDOR: {{../comprador.institucionCredito}}
-{{/if}}{{/if}}
-{{#if this.credito.participantes}}{{#each this.credito.participantes}}{{#if this.nombre}}{{#if (eq this.rol 'acreditado')}}ACREDITADO: {{this.nombre}}
+{{#if (hasItems this.creditos)}}CRÉDITOS:
+{{#each this.creditos}}
+- CRÉDITO {{inc @index}}
+{{#if this.institucion}}ACREEDOR: {{this.institucion}}{{/if}}
+{{#if this.monto}}MONTO: {{this.monto}}{{/if}}
+{{#if this.tipo_credito}}TIPO: {{this.tipo_credito}}{{/if}}
+{{#if this.participantes}}{{#each this.participantes}}{{#if this.nombre}}{{#if (eq this.rol 'acreditado')}}ACREDITADO: {{this.nombre}}
 {{else}}{{#if (eq this.rol 'coacreditado')}}COACREDITADO: {{this.nombre}}
 {{/if}}{{/if}}{{/if}}{{/each}}{{/if}}
+
+{{/each}}
+{{else}}{{#if ../comprador.institucionCredito}}ACREEDOR: {{../comprador.institucionCredito}}
+{{/if}}{{/if}}
 {{/if}}{{/if}}{{/if}}
 
 {{/each}}

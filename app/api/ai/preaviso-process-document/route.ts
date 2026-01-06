@@ -190,6 +190,8 @@ IMPORTANTE:
 {
   "folioReal": "número del folio real si está visible (solo si hay un único folio)",
   "foliosReales": ["lista de TODOS los folios reales detectados (strings). Si detectas más de uno, inclúyelos todos aquí. Si detectas solo uno, incluye ese único valor. Si no detectas ninguno, usa []"],
+  "foliosRealesUnidades": ["lista de folios reales detectados en secciones de UNIDADES (p.ej. 'DEPARTAMENTO/LOCAL/ESTACIONAMIENTO', 'UNIDAD', 'CONJ. HABITACIONAL'). Si no hay, []"],
+  "foliosRealesInmueblesAfectados": ["lista de folios reales detectados específicamente bajo el encabezado 'INMUEBLE(S) AFECTADO(S)'. Si no hay, []"],
   "foliosConInfo": [
     {
       "folio": "número del folio real (OBLIGATORIO si hay múltiples folios)",
@@ -205,6 +207,8 @@ IMPORTANTE:
     }
   ],
   "seccion": "sección registral si está visible (CIVIL, MIXTA, etc.)",
+  "partidasTitulo": ["lista de partidas detectadas en la sección TÍTULO / INSCRIPCIÓN (NO en ANTECEDENTES). Si hay múltiples, inclúyelas todas. Si no hay, []"],
+  "partidasAntecedentes": ["lista de partidas detectadas SOLO en la sección ANTECEDENTES REGISTRALES (si existen). Si no hay, []"],
   "partidas": ["lista de TODAS las partidas registrales detectadas (strings). Si hay múltiples, inclúyelas todas. Si hay una sola, inclúyela. Si no hay, usa []"],
   "partida": "partida registral si está visible (para folio único, usar solo si partidas[] está vacío)",
   "ubicacion": "dirección completa del inmueble si está visible (para folio único)",
@@ -229,6 +233,7 @@ IMPORTANTE:
     "rfc": "RFC si está disponible",
     "curp": "CURP si está disponible"
   },
+  "propietario_contexto": "de dónde se extrajo el nombre del propietario. Valores: \"PROPIETARIO(S)\", \"TITULAR REGISTRAL\", \"DESCONOCIDO\"",
   "superficie": "superficie del inmueble si está disponible (para folio único, con unidad: m², m2, metros, etc.)",
   "valor": "valor del inmueble si está disponible",
   "gravamenes": "información sobre gravámenes o hipotecas si está visible, o null si no hay",
@@ -237,11 +242,23 @@ IMPORTANTE:
 
 INSTRUCCIONES CRÍTICAS:
 1. Extrae SOLO la información que puedas leer CLARAMENTE en el documento. Si no estás seguro, usa null.
-2. Si detectas múltiples folios reales, NO elijas uno: ponlos TODOS en foliosReales[].
+1.1 PROPIETARIO/TITULAR (CRÍTICO):
+   - El campo propietario.nombre SOLO puede salir de la sección rotulada como "PROPIETARIO(S)" o "TITULAR REGISTRAL" (si existe).
+   - NO uses nombres de personal del registro/notaría: ignora "EJECUTIVO", "ANALISTA", "SUBREGISTRADOR", "COTEJADO", "COTEJADO CONTRA ORIGINAL", "MÉTODO DE AUTENTICIDAD", "FIRMA ELECTRÓNICA", "CÓDIGO DE AUTENTICIDAD".
+   - Si no encuentras claramente el propietario bajo PROPIETARIO(S)/TITULAR REGISTRAL, deja propietario.nombre = null y propietario_contexto = "DESCONOCIDO".
+   - Si lo encuentras, llena propietario_contexto como "PROPIETARIO(S)" o "TITULAR REGISTRAL" según el encabezado.
+2. FOLIOS REALES (CRÍTICO): recorre TODA la página y detecta TODAS las ocurrencias del patrón "FOLIO REAL:" (puede aparecer múltiples veces).
+   - Si encuentras más de un folio real, ponlos TODOS en foliosReales[] (sin omitir ninguno) y pon "folioReal": null.
+   - Si solo encuentras uno, ponlo en foliosReales[] y también en "folioReal".
+   - NO te quedes con el primero: debes escanear el documento completo antes de responder.
+   - Además clasifica los folios según su sección: llena foliosRealesUnidades[] y foliosRealesInmueblesAfectados[] cuando aplique.
 3. Si detectas múltiples folios, intenta extraer información del inmueble asociada a cada folio en foliosConInfo[].
    - Si el documento muestra claramente qué información corresponde a cada folio, asóciala correctamente.
    - Si no puedes asociar información específica a cada folio, usa los campos generales (ubicacion, superficie, partida, datosCatastrales).
-4. Para partidas: si hay múltiples partidas, inclúyelas TODAS en partidas[] (array). Si hay una sola, también inclúyela en partidas[].
+   - Si puedes, incluye una entrada en foliosConInfo[] por CADA folio detectado (al menos con { folio }).
+4. Para partidas: prioriza las partidas que aparecen en la sección TÍTULO / INSCRIPCIÓN (esas van en partidasTitulo[]). NO uses las de ANTECEDENTES como partida principal.
+   - Si encuentras partidas en ANTECEDENTES, colócalas en partidasAntecedentes[].
+   - En partidas[] incluye TODAS las partidas detectadas, pero asegúrate de incluir las de partidasTitulo[] si existen.
 5. Para dirección: si está disponible como objeto estructurado, usa direccion{}. Si solo está como texto, usa ubicacion.
 6. NO extraigas ni infieras forma de pago o institución de crédito desde la inscripción (eso se confirma con el usuario en el chat).
 7. Si algún campo no está disponible o no es legible, usa null (no inventes valores).`
@@ -325,6 +342,16 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
       
       // Manejar otros errores de OpenAI
       const errorMessage = errorData?.error?.message || `Error procesando documento: ${resp.status}`
+      if (resp.status === 429 || errorData?.error?.code === 'insufficient_quota') {
+        return NextResponse.json(
+          {
+            error: "openai_quota_exceeded",
+            message:
+              "OpenAI devolvió 429 (insufficient_quota). No se pudo extraer información del documento porque la cuenta/llave no tiene cuota disponible. Revisa el plan/billing o cambia la API key.",
+          },
+          { status: 429 }
+        )
+      }
       return NextResponse.json(
         { error: "api_error", message: errorMessage },
         { status: resp.status >= 400 && resp.status < 500 ? resp.status : 500 }
@@ -358,10 +385,177 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
       )
     }
 
+    // Segunda pasada (solo folios) cuando el modelo tiende a devolver "solo el primero" por página.
+    // Esto es especialmente común en hojas con múltiples secciones (p.ej. DEPARTAMENTO/LOCAL y luego INMUEBLE(S) AFECTADO(S)).
+    const ensureAllFoliosOnPage = async (current: any) => {
+      // Mantenerlo acotado a inscripción para no duplicar llamadas en documentos que no lo requieren.
+      // (La detección de tipo ya se normaliza en frontend; si se requiere robustez extra, reactivar escritura.)
+      if (documentType !== 'inscripcion') return current
+      const folios = Array.isArray(current?.foliosReales) ? current.foliosReales.filter(Boolean) : []
+      const foliosConInfo = Array.isArray(current?.foliosConInfo) ? current.foliosConInfo : []
+      const foliosConInfoFolios = foliosConInfo.map((f: any) => f?.folio).filter(Boolean)
+      const totalKnown = new Set([...folios, ...foliosConInfoFolios].map((x: any) => String(x)))
+
+      // Si solo tenemos 0-1 folios, intentamos una extracción dedicada.
+      if (totalKnown.size > 1) return current
+
+      try {
+        const folioScanSystem = `Eres un extractor especializado. Tu ÚNICA tarea es:
+1) encontrar TODOS los "FOLIO REAL:" en esta imagen y
+2) extraer, si está visible cerca de cada folio, datos básicos (unidad y/o superficie y/o ubicación).
+
+Devuelve SOLO este JSON:
+{
+  "folios": [
+    {
+      "folio": "número de folio real (string)",
+      "unidad": "unidad si aplica (string o null)",
+      "condominio": "condominio/conjunto si aplica (string o null)",
+      "ubicacion": "ubicación/dirección si aplica (string o null)",
+      "superficie": "superficie si aplica (string con unidad) o null"
+    }
+  ],
+  "foliosReales": ["lista de TODOS los folios reales detectados como strings, sin omitir ninguno. Si no encuentras ninguno, []"]
+}
+
+REGLAS:
+- Escanea TODA la imagen (arriba, en medio y abajo). No te quedes con el primero.
+- Incluye TODOS, incluso si aparecen en distintas secciones (p.ej. unidades y luego "INMUEBLE(S) AFECTADO(S)").
+- Si hay varios, deben ir todos en el array.
+- NO inventes datos: si no se ve claro, usa null.`
+
+        const folioScanResp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: folioScanSystem },
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: "Encuentra TODOS los folios reales en esta imagen." },
+                  { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
+                ],
+              },
+            ],
+            temperature: 0,
+            response_format: { type: "json_object" },
+            ...(model.includes("gpt-5") || model.includes("o1")
+              ? { max_completion_tokens: 400 }
+              : { max_tokens: 400 }),
+          }),
+        })
+
+        if (!folioScanResp.ok) {
+          // Si hay cuota/errores, no bloquear el flujo principal.
+          return current
+        }
+
+        const folioScanData = await folioScanResp.json()
+        const folioScanText = folioScanData?.choices?.[0]?.message?.content || ""
+        let parsed: any = null
+        try {
+          let jt = String(folioScanText || '').trim()
+          if (jt.startsWith("```")) {
+            const m = jt.match(/```(?:json)?\n([\s\S]*?)\n```/)
+            if (m) jt = m[1]
+          }
+          parsed = JSON.parse(jt)
+        } catch {
+          parsed = null
+        }
+
+        const scanned = Array.isArray(parsed?.foliosReales) ? parsed.foliosReales.filter(Boolean).map((x: any) => String(x)) : []
+        const scannedFolios = Array.isArray(parsed?.folios) ? parsed.folios : []
+        if (scanned.length === 0 && scannedFolios.length === 0) return current
+        const scannedFromObjects = scannedFolios
+          .map((f: any) => f?.folio)
+          .filter(Boolean)
+          .map((x: any) => String(x))
+        const scannedAll = [...scanned, ...scannedFromObjects]
+        if (scannedAll.length === 0) return current
+
+        // Merge (dedupe por dígitos)
+        const norm = (v: any) => {
+          const digits = String(v || '').replace(/\D/g, '')
+          return digits || String(v || '').trim()
+        }
+        const map = new Map<string, string>()
+        for (const f of [...folios, ...foliosConInfoFolios, ...scannedAll]) {
+          const s = String(f).trim()
+          if (!s) continue
+          map.set(norm(s), s)
+        }
+
+        const mergedFolios = Array.from(map.values())
+        const next = { ...(current || {}) }
+        next.foliosReales = mergedFolios
+        // Si hay múltiples, folioReal debe ser null (evita autoselección)
+        if (mergedFolios.length > 1) next.folioReal = null
+        // Completar foliosConInfo con entradas mínimas por folio (para listado)
+        const existingKeys = new Set(foliosConInfoFolios.map((x: any) => norm(x)))
+        const nextFoliosConInfo = Array.isArray(next.foliosConInfo) ? [...next.foliosConInfo] : []
+        const infoMap = new Map<string, any>()
+        for (const existing of nextFoliosConInfo) {
+          const key = norm(existing?.folio)
+          if (!key) continue
+          infoMap.set(key, existing)
+        }
+        // Mergear attrs por folio detectado en escaneo
+        for (const f of scannedFolios) {
+          const key = norm(f?.folio)
+          if (!key) continue
+          const prev = infoMap.get(key) || { folio: f?.folio }
+          infoMap.set(key, {
+            ...prev,
+            folio: prev?.folio || f?.folio,
+            unidad: f?.unidad ?? prev?.unidad ?? null,
+            condominio: f?.condominio ?? prev?.condominio ?? null,
+            ubicacion: f?.ubicacion ?? prev?.ubicacion ?? null,
+            superficie: f?.superficie ?? prev?.superficie ?? null,
+          })
+        }
+        for (const f of mergedFolios) {
+          const k = norm(f)
+          if (!existingKeys.has(k) && !infoMap.has(k)) {
+            infoMap.set(k, { folio: f })
+          }
+        }
+        next.foliosConInfo = Array.from(infoMap.values())
+
+        if (process.env.PREAVISO_DEBUG === '1') {
+          console.info('[preaviso-process-document] folio scan merged', {
+            fileName: file.name,
+            beforeCount: totalKnown.size,
+            scannedCount: scannedAll.length,
+            mergedCount: mergedFolios.length,
+            scanned: scannedAll,
+            mergedFolios,
+          })
+        }
+
+        return next
+      } catch {
+        return current
+      }
+    }
+
+    extractedData = await ensureAllFoliosOnPage(extractedData)
+
     // Normalización defensiva (evita regresiones por variaciones del OCR/LLM)
     // Garantiza que, cuando aplique, exista extractedData.propietario.nombre (titular registral)
     const normalizePropietario = (data: any) => {
       if (!data || typeof data !== 'object') return data
+
+      const looksLikeStaffOrMeta = (name: any): boolean => {
+        const s = String(name || '').toUpperCase()
+        if (!s.trim()) return false
+        return /(EJECUTIVO|ANALISTA|SUBREGISTRADOR|COTEJAD|COTEJO|METODO\s+DE\s+AUTENTICIDAD|M[ÉE]TODO\s+DE\s+AUTENTICIDAD|FIRMA\s+ELECTRONICA|FIRMA\s+ELECTR[ÓO]NICA|CODIGO\s+DE\s+AUTENTICIDAD|C[ÓO]DIGO\s+DE\s+AUTENTICIDAD)/.test(s)
+      }
 
       // Caso: propietario como string
       if (typeof data.propietario === 'string') {
@@ -395,10 +589,32 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
         data.propietario.nombre = nombreFallback
       }
 
+      // Guard: si el "propietario" parece nombre de personal/meta, no lo uses.
+      if (data.propietario?.nombre && looksLikeStaffOrMeta(data.propietario.nombre)) {
+        data.propietario.nombre = null
+        data.propietario_contexto = data.propietario_contexto || 'DESCONOCIDO'
+      }
+
       return data
     }
 
     extractedData = normalizePropietario(extractedData)
+
+    // Debug: ver folios detectados por página (útil para casos donde solo devuelve el primero)
+    if (process.env.PREAVISO_DEBUG === '1') {
+      const folios = Array.isArray((extractedData as any)?.foliosReales) ? (extractedData as any).foliosReales : []
+      const folioReal = (extractedData as any)?.folioReal ?? null
+      const foliosConInfo = Array.isArray((extractedData as any)?.foliosConInfo) ? (extractedData as any).foliosConInfo : []
+      console.info('[preaviso-process-document] extracted folios', {
+        fileName: file.name,
+        documentType,
+        folioReal,
+        foliosRealesCount: folios.length,
+        foliosReales: folios,
+        foliosConInfoCount: foliosConInfo.length,
+        foliosConInfoFolios: foliosConInfo.map((f: any) => f?.folio).filter(Boolean),
+      })
+    }
 
     // Helper: merge canónico (v1.4) en backend para que state y data siempre estén alineados.
     const safeArray = (v: any): any[] => (Array.isArray(v) ? v : [])
@@ -409,6 +625,7 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
     const mergeExtractedIntoContext = (docType: string | null, extracted: any, baseContext: any) => {
       const update: any = {}
       const ctx = baseContext || {}
+      const fileNameForSource = file?.name || null
 
       // Base inmueble (asegurar estructura v1.4 mínima)
       const inmueble = safeObj(ctx.inmueble)
@@ -418,6 +635,9 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
       const ensureInmueble = () => {
         update.inmueble = {
           folio_real: inmueble?.folio_real ?? null,
+          // Campos internos (no parte del schema v1.4) pero necesarios para control determinista del flujo:
+          folio_real_confirmed: inmueble?.folio_real_confirmed === true,
+          folio_real_scope: (inmueble as any)?.folio_real_scope ?? null,
           partidas: safeArray(inmueble?.partidas),
           all_registry_pages_confirmed: inmueble?.all_registry_pages_confirmed === true,
           direccion: {
@@ -441,21 +661,73 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
         }
       }
 
+      // === Folios (modelo canónico) ===
+      const ensureFolios = () => {
+        const prev = (ctx as any).folios || {}
+        const prevSelection = prev?.selection || {}
+        update.folios = {
+          candidates: Array.isArray(prev?.candidates) ? prev.candidates : [],
+          selection: {
+            selected_folio: prevSelection?.selected_folio ?? null,
+            selected_scope: prevSelection?.selected_scope ?? null,
+            confirmed_by_user: prevSelection?.confirmed_by_user === true,
+          },
+        }
+      }
+
+      const normalizeFolioDigits = (v: any): string | null => {
+        if (v === undefined || v === null) return null
+        const digits = String(v).replace(/\D/g, '')
+        return digits ? digits : null
+      }
+
+      const addCandidate = (folioValue: any, scope: 'unidades' | 'inmuebles_afectados' | 'otros', attrs?: any) => {
+        const folio = normalizeFolioDigits(folioValue)
+        if (!folio) return
+        const existing = Array.isArray(update.folios?.candidates) ? update.folios.candidates : []
+        const key = `${scope}:${folio}`
+        const map = new Map<string, any>()
+        for (const c of existing) {
+          const f = normalizeFolioDigits(c?.folio)
+          const s = c?.scope || 'otros'
+          if (!f) continue
+          map.set(`${s}:${f}`, c)
+        }
+        const prevC = map.get(key) || { folio, scope }
+        map.set(key, {
+          ...prevC,
+          folio,
+          scope,
+          attrs: { ...(prevC.attrs || {}), ...(attrs || {}) },
+          sources: [
+            ...(prevC.sources || []),
+            {
+              docName: fileNameForSource || undefined,
+              docType: docType || undefined,
+            },
+          ],
+        })
+        update.folios.candidates = Array.from(map.values())
+      }
+
       // === ESCRITURA / INSCRIPCIÓN ===
       if (docType === 'escritura' || docType === 'inscripcion') {
         ensureInmueble()
+        ensureFolios()
         
-        // Folio real: priorizar folioReal único, luego foliosReales[0] si solo hay uno
-        if (extracted?.folioReal) {
-          update.inmueble.folio_real = String(extracted.folioReal)
-        } else if (Array.isArray(extracted?.foliosReales) && extracted.foliosReales.length === 1) {
-          update.inmueble.folio_real = String(extracted.foliosReales[0])
-        }
+        // Folio real:
+        // NO fijar `inmueble.folio_real` desde extracción. El folio del trámite NO tiene default
+        // y debe confirmarse explícitamente por el usuario vía `context.folios.selection`.
 
-        // Partidas: soportar partida (string) y partidas (array) - priorizar array
+        // Partidas: soportar partida (string) y partidas (array).
+        // Para inscripción, priorizar partidasTitulo[] (sección TÍTULO) por encima de antecedentes.
         const partidas = safeArray(update.inmueble.partidas)
-        if (Array.isArray(extracted?.partidas) && extracted.partidas.length > 0) {
-          for (const p of extracted.partidas) if (p) partidas.push(String(p))
+        const partidasTitulo = Array.isArray(extracted?.partidasTitulo) ? extracted.partidasTitulo : []
+        const partidasArr = Array.isArray(extracted?.partidas) ? extracted.partidas : []
+        const partidasPreferidas = (docType === 'inscripcion' && partidasTitulo.length > 0) ? partidasTitulo : partidasArr
+
+        if (Array.isArray(partidasPreferidas) && partidasPreferidas.length > 0) {
+          for (const p of partidasPreferidas) if (p) partidas.push(String(p))
         } else if (extracted?.partida) {
           partidas.push(String(extracted.partida))
         }
@@ -500,6 +772,36 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
         // Superficie/valor (stringificar defensivo)
         if (extracted?.superficie) update.inmueble.superficie = asStringOrNull(extracted.superficie)
         if (extracted?.valor) update.inmueble.valor = asStringOrNull(extracted.valor)
+
+        // Folios candidatos: poblar por "scope" cuando exista, sin seleccionar por defecto.
+        // 1) Scopes explícitos (inscripción)
+        const foliosUnidades = Array.isArray(extracted?.foliosRealesUnidades) ? extracted.foliosRealesUnidades : []
+        for (const f of foliosUnidades) addCandidate(f, 'unidades')
+        const foliosAfectados = Array.isArray(extracted?.foliosRealesInmueblesAfectados) ? extracted.foliosRealesInmueblesAfectados : []
+        for (const f of foliosAfectados) addCandidate(f, 'inmuebles_afectados')
+
+        // 2) foliosConInfo (si trae unidad/condominio, tratar como UNIDADES; si no, OTROS)
+        const fci = Array.isArray(extracted?.foliosConInfo) ? extracted.foliosConInfo : []
+        for (const entry of fci) {
+          const entryScope =
+            entry?.unidad || entry?.condominio ? 'unidades' : 'otros'
+          addCandidate(entry?.folio, entryScope as any, {
+            unidad: entry?.unidad ?? null,
+            condominio: entry?.condominio ?? null,
+            lote: entry?.lote ?? null,
+            manzana: entry?.manzana ?? null,
+            fraccionamiento: entry?.fraccionamiento ?? null,
+            colonia: entry?.colonia ?? null,
+            superficie: entry?.superficie ?? null,
+            ubicacion: entry?.ubicacion ?? null,
+            partida: entry?.partida ?? null,
+          })
+        }
+
+        // 3) folios generales (fallback)
+        const foliosReales = Array.isArray(extracted?.foliosReales) ? extracted.foliosReales : []
+        for (const f of foliosReales) addCandidate(f, 'otros')
+        if (extracted?.folioReal) addCandidate(extracted.folioReal, 'otros')
 
         // Titular registral → vendedores[0] (NO asumir tipo_persona)
         const propietarioNombre = extracted?.propietario?.nombre
@@ -621,7 +923,10 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
       const { __targetPerson, ...cleanDataUpdate } = dataUpdate || {}
       mergedContextForState = { ...context, ...cleanDataUpdate, documentosProcesados: nextDocs }
       state = computePreavisoState(mergedContextForState).state
-      dataUpdate = cleanDataUpdate
+      // IMPORTANTE: el frontend necesita persistir `documentosProcesados` para:
+      // - Agregar/deduplicar folios reales entre múltiples páginas
+      // - Mostrar el listado completo para que el usuario elija
+      dataUpdate = { ...cleanDataUpdate, documentosProcesados: nextDocs }
     }
 
     // Expediente existente: ahora se decide por target inferido por contexto (no por inferencia del modelo).
@@ -647,7 +952,7 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
         }
 
         if (comprador) {
-          if (currentUser?.rol === 'abogado' && comprador.notaria_id !== currentUser.notaria_id) {
+          if (currentUser?.rol === 'abogado' && (comprador as any).notaria_id !== currentUser.notaria_id) {
             expedienteExistente = null
           } else {
             const tramites = await TramiteService.findTramitesByCompradorId(comprador.id, notariaId || undefined)

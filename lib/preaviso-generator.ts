@@ -335,9 +335,12 @@ Tijuana, Baja California
 
   private static getActosList(data: PreavisoData): string {
     const actos = []
-    if (data.actosNotariales.cancelacionCreditoVendedor) {
-      actos.push('Cancelación del crédito del vendedor')
-    }
+    // Mantener compatibilidad: la cancelación de hipoteca ahora vive en PASO 6 (gravámenes).
+    const needsCancelacionHipoteca =
+      Array.isArray(data.gravamenes) &&
+      data.gravamenes.length > 0 &&
+      data.gravamenes.some((g: any) => g?.cancelacion_confirmada === false)
+    if (needsCancelacionHipoteca) actos.push('Cancelación de hipoteca')
     actos.push('Compraventa')
     if (data.actosNotariales.aperturaCreditoComprador) {
       actos.push('Apertura de crédito del comprador')
