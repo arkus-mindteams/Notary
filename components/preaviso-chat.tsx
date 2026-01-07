@@ -448,6 +448,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const [isProcessingDocument, setIsProcessingDocument] = useState(false)
   const [processingProgress, setProcessingProgress] = useState(0)
   const [processingFileName, setProcessingFileName] = useState<string | null>(null)
+  const cancelDocumentProcessing = () => {
+    if (!isProcessingDocument) return
+    cancelDocumentBatchRequestedRef.current = true
+    try {
+      documentBatchAbortRef.current?.abort()
+    } catch {}
+    setProcessingFileName(null)
+    setProcessingProgress(0)
+    setIsProcessingDocument(false)
+  }
+
+  // Abort global para cancelar un batch completo de carga/procesamiento
+  const documentBatchAbortRef = useRef<AbortController | null>(null)
+  const cancelDocumentBatchRequestedRef = useRef(false)
 
   // Guardar progreso automáticamente cuando cambian los datos
   useEffect(() => {
@@ -771,6 +785,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
     setIsProcessingDocument(true)
     setProcessingProgress(0)
+    cancelDocumentBatchRequestedRef.current = false
+    // Cancelar cualquier batch anterior colgado
+    if (documentBatchAbortRef.current) {
+      try { documentBatchAbortRef.current.abort() } catch {}
+    }
+    const batchAbort = new AbortController()
+    documentBatchAbortRef.current = batchAbort
     
     // Separar PDFs e imágenes
     const pdfFiles = Array.from(files).filter(
@@ -819,13 +840,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         
         // Contar páginas totales
         for (const pdfFile of pdfFiles) {
+          if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
           setProcessingFileName(pdfFile.name)
           const images = await convertPdfToImages(pdfFile, 0, (current, total) => {
+            if (batchAbort.signal.aborted) return
             convertedPages++
             if (totalPages === 0) totalPages = total
             const progress = Math.min(50, (convertedPages / (totalPages || 1)) * 50) // 0-50% para conversión
             setProcessingProgress(progress)
           })
+          if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
           allImageFiles = [...allImageFiles, ...images]
         }
       } catch (error) {
@@ -850,6 +874,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
     // Procesar cada documento con IA
     try {
+      if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
       // Determinar tipo de documento basado en el nombre original o contenido visual
       const detectDocumentType = async (fileName: string, file: File): Promise<string> => {
         const name = fileName
@@ -885,6 +910,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       const items: ImgItem[] = []
       for (let i = 0; i < allImageFiles.length; i++) {
+        if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
         const imageFile = allImageFiles[i]
         const originalFile = Array.from(files).find(f =>
           imageFile.name.includes(f.name.replace(/\.[^.]+$/, ''))
@@ -909,6 +935,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       let nextToApply = 0
 
       const applyResult = async (item: ImgItem, processResult: any) => {
+        if (batchAbort.signal.aborted) return
         if (processResult?.state) setServerState(processResult.state as ServerStateSnapshot)
         if (processResult?.expedienteExistente) setExpedienteExistente(processResult.expedienteExistente)
 
@@ -986,13 +1013,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           // marcar antes para evitar carreras
           uploadedOriginalFilesThisBatch.add(item.originalKey)
           try {
-            const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number) => {
+            const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number, signal?: AbortSignal) => {
               const controller = new AbortController()
+              const onAbort = () => controller.abort()
+              if (signal) {
+                if (signal.aborted) controller.abort()
+                else signal.addEventListener('abort', onAbort, { once: true })
+              }
               const timer = setTimeout(() => controller.abort(), timeoutMs)
               try {
                 return await fetch(input, { ...init, signal: controller.signal })
               } finally {
                 clearTimeout(timer)
+                if (signal) signal.removeEventListener('abort', onAbort)
               }
             }
 
@@ -1024,7 +1057,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               method: 'POST',
               headers,
               body: uploadFormData,
-            }, 45_000)
+            }, 45_000, batchAbort.signal)
           } catch (uploadError) {
             console.error(`Error subiendo documento ${item.originalFile.name} a S3:`, uploadError)
             // No bloquear; no reintentar en este lote
@@ -1044,6 +1077,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
 
       const processOne = async (item: ImgItem) => {
+        if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
         // Contexto actual (snapshot) para que el backend devuelva merge + state.
         // Para PDFs (inscripción/escritura/plano) la dependencia de contexto es baja.
         // Para identificaciones dejamos concurrencia=1 (ver pool abajo).
@@ -1073,13 +1107,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         const headers: HeadersInit = {}
         if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
 
-        const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number) => {
+        const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number, signal?: AbortSignal) => {
           const controller = new AbortController()
+          const onAbort = () => controller.abort()
+          if (signal) {
+            if (signal.aborted) controller.abort()
+            else signal.addEventListener('abort', onAbort, { once: true })
+          }
           const timer = setTimeout(() => controller.abort(), timeoutMs)
           try {
             return await fetch(input, { ...init, signal: controller.signal })
           } finally {
             clearTimeout(timer)
+            if (signal) signal.removeEventListener('abort', onAbort)
           }
         }
 
@@ -1089,8 +1129,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             method: 'POST',
             headers,
             body: formData
-          }, 120_000)
+          }, 120_000, batchAbort.signal)
         } catch (e: any) {
+          if (e?.name === 'AbortError') throw e
           const msg = (e?.name === 'AbortError')
             ? 'Timeout procesando esta página (120s).'
             : (e?.message || 'Error desconocido procesando documento.')
@@ -1108,14 +1149,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         let cursor = 0
         const workers = Array.from({ length: concurrency }).map(async () => {
           while (cursor < poolItems.length) {
+            if (batchAbort.signal.aborted) return
             const myIdx = cursor++
             const item = poolItems[myIdx]
             try {
               const result = await processOne(item)
+              if (batchAbort.signal.aborted) return
               completedCount++
               setProcessingProgress(50 + (completedCount / Math.max(1, totalFiles)) * 40)
               await onOneDone(item.index, item, result)
             } catch (e) {
+              if ((e as any)?.name === 'AbortError') return
               console.error(`Error procesando ${item.originalFile.name}:`, e)
               completedCount++
               setProcessingProgress(50 + (completedCount / Math.max(1, totalFiles)) * 40)
@@ -1146,6 +1190,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         await runPool(idItems, 1)
       }
 
+      if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
       setProcessingProgress(90) // 90% después de procesar todos los archivos
 
       setProcessingProgress(95) // 95% consultando al agente
@@ -1174,6 +1219,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         headers: {
           'Content-Type': 'application/json',
         },
+        signal: batchAbort.signal,
         body: JSON.stringify({
           messages: [
             ...messages.filter(m => m.id !== processingMessage.id).map(m => ({ role: m.role, content: m.content })),
@@ -1234,6 +1280,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
       }
     } catch (error) {
+      if ((error as any)?.name === 'AbortError' || batchAbort.signal.aborted || cancelDocumentBatchRequestedRef.current) {
+        // Cancelado por el usuario
+        setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
+        const cancelMessage: ChatMessage = {
+          id: generateMessageId('cancel'),
+          role: 'assistant',
+          content: 'Proceso cancelado. Puedes volver a intentar cuando gustes.',
+          timestamp: new Date()
+        }
+        setMessages(prev => [...prev, cancelMessage])
+      } else {
       console.error('Error procesando documento:', error)
       setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
       const errorMessage: ChatMessage = {
@@ -1243,11 +1300,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         timestamp: new Date()
       }
       setMessages(prev => [...prev, errorMessage])
+      }
     } finally {
       setIsProcessing(false)
       setIsProcessingDocument(false)
       setProcessingProgress(0)
       setProcessingFileName(null)
+      // Limpiar abort controller del batch actual
+      if (documentBatchAbortRef.current === batchAbort) {
+        documentBatchAbortRef.current = null
+      }
     }
   }
 
@@ -2330,7 +2392,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
                     <span>{processingFileName ? `Procesando: ${processingFileName}` : 'Procesando documento...'}</span>
                   </span>
-                  <span className="text-blue-600 font-semibold">{Math.round(processingProgress)}%</span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-blue-600 font-semibold">{Math.round(processingProgress)}%</span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={cancelDocumentProcessing}
+                      className="h-8 px-3"
+                      title="Cancelar subida/procesamiento"
+                    >
+                      Cancelar
+                    </Button>
+                  </div>
                 </div>
                 <Progress value={processingProgress} className="h-1.5 bg-blue-100" />
               </div>
