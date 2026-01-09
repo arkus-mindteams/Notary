@@ -543,6 +543,26 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     if (compradorTipoPersona === 'persona_fisica' && !compradorEstadoCivil) {
       requiredMissing.push('compradores[0].persona_fisica.estado_civil')
     }
+    
+    // Verificar compradores adicionales (cónyuges) - NO requerir tipo_persona si es cónyuge
+    // Los cónyuges siempre son persona_fisica y se asignan automáticamente
+    const comprador0 = compradores[0]
+    const conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre || null
+    if (conyugeNombre && compradores.length > 1) {
+      for (let i = 1; i < compradores.length; i++) {
+        const c = compradores[i]
+        const nombreComprador = c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social || null
+        const esConyuge = nombreComprador && conyugeNombre && 
+          normalizeForMatch(nombreComprador) === normalizeForMatch(conyugeNombre)
+        
+        // Si es cónyuge y no tiene tipo_persona, asignarlo automáticamente (pero esto se hace en el código, no aquí)
+        // Solo verificar que no se requiera tipo_persona para cónyuges
+        if (esConyuge && !c.tipo_persona) {
+          // No agregar a requiredMissing - el tipo se asignará automáticamente
+          // Esto evita que el sistema pida tipo_persona para cónyuges
+        }
+      }
+    }
   }
 
   if (currentState === 'ESTADO_5') {

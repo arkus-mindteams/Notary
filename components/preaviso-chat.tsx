@@ -136,6 +136,8 @@ export interface InmuebleV14 {
 export interface PreavisoData {
   // Meta (opcional, se puede agregar después)
   tipoOperacion: 'compraventa' | null
+  // Runtime (solo control de flujo; no forma parte del documento final)
+  _document_intent?: 'conyuge' | null
   
   // Arrays según v1.4
   vendedores: VendedorElement[]
@@ -277,6 +279,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   } | null>(null)
   const [data, setData] = useState<PreavisoData>({
     tipoOperacion: 'compraventa', // Siempre es compraventa en este sistema
+    _document_intent: null,
     vendedores: [],
     compradores: [],
     creditos: undefined,
@@ -632,6 +635,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           context: {
             // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
             // Esto permite que el backend detecte correctamente qué información ya está capturada
+            _document_intent: (data as any)._document_intent ?? null,
+            tramiteId: activeTramiteId,
             vendedores: data.vendedores || [],
             compradores: data.compradores || [],
             // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
@@ -671,6 +676,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           const d = result.data
 
           if (d.tipoOperacion !== undefined) nextData.tipoOperacion = d.tipoOperacion
+          if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (nextData as any)._document_intent = (d as any)._document_intent
           if (d.vendedores !== undefined) nextData.vendedores = d.vendedores as any
           if (d.compradores !== undefined) nextData.compradores = d.compradores as any
           if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
@@ -884,6 +890,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         // Detección por nombre
         if (name.includes('inscripcion') || name.includes('hoja de inscripcion') || name.includes('folio real')) return 'inscripcion'
         if (name.includes('escritura') || name.includes('titulo') || name.includes('propiedad')) return 'escritura'
+        if (name.includes('matrimonio') || name.includes('acta de matrimonio') || name.includes('acta_matrimonio')) return 'acta_matrimonio'
         if (name.includes('plano') || name.includes('croquis') || name.includes('catastral')) return 'plano'
         if (name.includes('ine') || name.includes('ife') || name.includes('identificacion') || 
             name.includes('pasaporte') || name.includes('licencia') || name.includes('curp') ||
@@ -929,6 +936,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       // Upload S3: marcar "in-flight" para evitar duplicados en concurrencia
       const uploadedOriginalFilesThisBatch = new Set<string>()
+      // OCR/RAG: mapear originalKey -> documentoId para persistir texto por página
+      const documentoIdByOriginalKey = new Map<string, string>()
+      // OCR pendiente cuando aún no existe documentoId (ej. primeras páginas antes del upload)
+      const pendingOcrByOriginalKey = new Map<string, Array<{ pageNumber: number, text: string, metadata?: any }>>()
 
       // Aplicar resultados en orden, aunque se procesen en paralelo
       const pending = new Map<number, any>()
@@ -938,6 +949,24 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (batchAbort.signal.aborted) return
         if (processResult?.state) setServerState(processResult.state as ServerStateSnapshot)
         if (processResult?.expedienteExistente) setExpedienteExistente(processResult.expedienteExistente)
+
+        const postJsonWithTimeout = async (input: string, body: any, timeoutMs: number) => {
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), timeoutMs)
+          try {
+            const { data: { session } } = await supabase.auth.getSession()
+            const headers: HeadersInit = { 'Content-Type': 'application/json' }
+            if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
+            return await fetch(input, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(body),
+              signal: controller.signal,
+            })
+          } finally {
+            clearTimeout(timer)
+          }
+        }
 
         // Marcar documento original como procesado (una vez basta; este setState es idempotente)
         setUploadedDocuments(prev => {
@@ -956,8 +985,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             const updated = { ...prev }
             const d = processResult.data
             if (d.tipoOperacion !== undefined) updated.tipoOperacion = d.tipoOperacion
+            if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (updated as any)._document_intent = (d as any)._document_intent
             if (d.vendedores !== undefined) updated.vendedores = d.vendedores as any
-            if (d.compradores !== undefined) updated.compradores = d.compradores as any
+            // CRÍTICO: Asegurar que compradores se actualice correctamente, incluso si viene como array vacío inicialmente
+            if (d.compradores !== undefined) {
+              // Si el backend devuelve compradores, siempre usar esa versión (puede ser un array con el comprador recién creado)
+              updated.compradores = Array.isArray(d.compradores) ? d.compradores : (d.compradores as any)
+            }
             if (Object.prototype.hasOwnProperty.call(d, 'creditos')) updated.creditos = d.creditos as any
             if (d.gravamenes !== undefined) updated.gravamenes = d.gravamenes as any
             if (d.inmueble) updated.inmueble = d.inmueble as any
@@ -1003,9 +1037,26 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               }
             }
             updated.actosNotariales = determineActosNotariales(updated)
+            // CRÍTICO: Actualizar workingData con la versión actualizada ANTES de continuar
             workingData = updated
             return updated
           })
+          
+          // CRÍTICO: También actualizar workingData directamente para que esté disponible inmediatamente
+          // para el siguiente procesamiento (especialmente importante para documentos procesados secuencialmente)
+          const d = processResult.data
+          if (d.compradores !== undefined) {
+            workingData.compradores = Array.isArray(d.compradores) ? d.compradores : (d.compradores as any)
+          }
+          if (d.vendedores !== undefined) {
+            workingData.vendedores = d.vendedores as any
+          }
+          if (d.tipoOperacion !== undefined) {
+            workingData.tipoOperacion = d.tipoOperacion
+          }
+          if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) {
+            (workingData as any)._document_intent = (d as any)._document_intent
+          }
         }
 
         // S3 upload (solo 1 por archivo original)
@@ -1051,16 +1102,85 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             uploadFormData.append('compradorId', '')
             uploadFormData.append('tipo', expedienteTipo)
             uploadFormData.append('tramiteId', activeTramiteId)
+            uploadFormData.append('metadata', JSON.stringify({
+              preaviso_subtype: item.docType,
+              original_name: item.originalFile.name,
+            }))
 
             // Timeout para evitar que el pipeline se quede colgado si S3/upload se bloquea.
-            await fetchWithTimeout('/api/expedientes/documentos/upload', {
+            const uploadResp = await fetchWithTimeout('/api/expedientes/documentos/upload', {
               method: 'POST',
               headers,
               body: uploadFormData,
             }, 45_000, batchAbort.signal)
+
+            try {
+              if (uploadResp.ok) {
+                const uploadedDoc = await uploadResp.json()
+                if (uploadedDoc?.id) {
+                  const docId = String(uploadedDoc.id)
+                  documentoIdByOriginalKey.set(item.originalKey, docId)
+                  // flush OCR pendiente
+                  const pend = pendingOcrByOriginalKey.get(item.originalKey) || []
+                  if (pend.length > 0) {
+                    for (const p of pend) {
+                      try {
+                        await postJsonWithTimeout('/api/ai/preaviso-ocr-cache/upsert', {
+                          tramiteId: activeTramiteId,
+                          docName: item.originalFile.name,
+                          docSubtype: item.docType,
+                          docRole: null,
+                          pageNumber: p.pageNumber,
+                          text: p.text,
+                        }, 15_000)
+                      } catch {}
+                    }
+                    pendingOcrByOriginalKey.delete(item.originalKey)
+                  }
+                }
+              }
+            } catch {
+              // no bloquear
+            }
           } catch (uploadError) {
             console.error(`Error subiendo documento ${item.originalFile.name} a S3:`, uploadError)
             // No bloquear; no reintentar en este lote
+          }
+        }
+
+        // OCR por página: guardar texto para RAG (si llegó del backend).
+        if (activeTramiteId && processResult?.ocrText && typeof processResult.ocrText === 'string') {
+          const text = processResult.ocrText.trim()
+          if (text) {
+            const inferPageNumber = (): number => {
+              const n = item.imageFile?.name || item.originalFile?.name || ''
+              const m1 = n.match(/page[_-]?(\d{1,4})/i)
+              if (m1?.[1]) return Math.max(1, Number(m1[1]))
+              const m2 = n.match(/[_-](\d{1,4})\.(png|jpe?g|webp)$/i)
+              if (m2?.[1]) return Math.max(1, Number(m2[1]))
+              return 1
+            }
+            const pageNumber = inferPageNumber()
+            const docId = documentoIdByOriginalKey.get(item.originalKey) || null
+            const meta = { page_file: item.imageFile?.name || null }
+            if (docId) {
+              try {
+                await postJsonWithTimeout('/api/ai/preaviso-ocr-cache/upsert', {
+                  tramiteId: activeTramiteId,
+                  docName: item.originalFile.name,
+                  docSubtype: item.docType,
+                  docRole: null,
+                  pageNumber,
+                  text,
+                }, 15_000)
+              } catch {
+                // no bloquear
+              }
+            } else {
+              const prev = pendingOcrByOriginalKey.get(item.originalKey) || []
+              prev.push({ pageNumber, text, metadata: meta })
+              pendingOcrByOriginalKey.set(item.originalKey, prev)
+            }
           }
         }
       }
@@ -1084,8 +1204,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         const formData = new FormData()
         formData.append('file', item.imageFile)
         formData.append('documentType', item.docType)
+        formData.append('needOcr', '1')
         formData.append('context', JSON.stringify({
           tipoOperacion: workingData.tipoOperacion,
+          _document_intent: (workingData as any)._document_intent ?? null,
+          tramiteId: activeTramiteId,
           vendedores: workingData.vendedores || [],
           compradores: workingData.compradores || [],
           creditos: workingData.creditos,
@@ -1230,6 +1353,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           ],
           context: {
             // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
+            _document_intent: (workingData as any)._document_intent ?? null,
+            tramiteId: activeTramiteId,
             vendedores: workingData.vendedores || [],
             compradores: workingData.compradores || [],
             // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
@@ -1255,6 +1380,25 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         const result = await chatResponse.json()
         if (result?.state) {
           setServerState(result.state as ServerStateSnapshot)
+        }
+        // Aplicar `data` estructurada del backend (incluye flags runtime como _document_intent)
+        if (result?.data) {
+          setData(prevData => {
+            const nextData = { ...prevData }
+            const d = result.data
+            if (d.tipoOperacion !== undefined) nextData.tipoOperacion = d.tipoOperacion
+            if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (nextData as any)._document_intent = (d as any)._document_intent
+            if (d.vendedores !== undefined) nextData.vendedores = d.vendedores as any
+            if (d.compradores !== undefined) nextData.compradores = d.compradores as any
+            if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
+            if (d.gravamenes !== undefined) nextData.gravamenes = d.gravamenes as any
+            if (d.inmueble) nextData.inmueble = d.inmueble as any
+            if (d.folios !== undefined) nextData.folios = d.folios as any
+            if (d.control_impresion) nextData.control_impresion = d.control_impresion
+            if (d.validaciones) nextData.validaciones = d.validaciones
+            nextData.actosNotariales = determineActosNotariales(nextData)
+            return nextData
+          })
         }
         const messagesToAdd = result.messages || [result.message]
         
@@ -2644,24 +2788,97 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                       <span>PASO 4: Comprador(es)</span>
                     </h4>
                   </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.compradores && data.compradores.length > 0 && (
-                      <>
-                        {data.compradores[0].persona_fisica?.nombre && (
-                          <div><span className="font-medium">Nombre:</span> {data.compradores[0].persona_fisica.nombre}</div>
-                        )}
-                        {data.compradores[0].persona_moral?.denominacion_social && (
-                          <div><span className="font-medium">Denominación Social:</span> {data.compradores[0].persona_moral.denominacion_social}</div>
-                        )}
-                        {(data.compradores[0].persona_fisica?.rfc || data.compradores[0].persona_moral?.rfc) && (
-                          <div><span className="font-medium">RFC:</span> {data.compradores[0].persona_fisica?.rfc || data.compradores[0].persona_moral?.rfc}</div>
-                        )}
-                        {data.compradores[0].persona_fisica?.curp && (
-                          <div><span className="font-medium">CURP:</span> {data.compradores[0].persona_fisica.curp}</div>
-                        )}
-                      </>
-                    )}
-                    {(!data.compradores || data.compradores.length === 0 || (!data.compradores[0].persona_fisica?.nombre && !data.compradores[0].persona_moral?.denominacion_social)) && (
+                  <div className="ml-6 space-y-2 text-xs text-gray-600">
+                    {data.compradores && data.compradores.length > 0 ? (
+                      data.compradores.map((comprador, idx) => {
+                        const nombre = comprador.persona_fisica?.nombre || comprador.persona_moral?.denominacion_social || null
+                        const rfc = comprador.persona_fisica?.rfc || comprador.persona_moral?.rfc || null
+                        const curp = comprador.persona_fisica?.curp || null
+                        
+                        // Función auxiliar para normalizar nombres (quitar espacios extra, convertir a minúsculas)
+                        const normalizeName = (str: string | null | undefined): string => {
+                          if (!str) return ''
+                          return str.toLowerCase().trim().replace(/\s+/g, ' ')
+                        }
+                        
+                        // Determinar rol en crédito si hay créditos
+                        // Buscar en TODOS los créditos, no solo el primero
+                        let rolEnCredito: string | null = null
+                        if (data.creditos && data.creditos.length > 0 && nombre) {
+                          // Iterar sobre todos los créditos
+                          for (const credito of data.creditos) {
+                            if (!credito.participantes || !Array.isArray(credito.participantes)) continue
+                            
+                            const participante = credito.participantes.find((p: any) => {
+                              // 1) Si tiene party_id, buscar por party_id (incluye 'comprador_1', 'comprador_2', etc.)
+                              if (p.party_id && comprador.party_id) {
+                                return p.party_id === comprador.party_id
+                              }
+                              
+                              // 2) Si el participante tiene party_id como 'comprador_X' y el comprador tiene el mismo índice
+                              if (p.party_id && typeof p.party_id === 'string' && p.party_id.startsWith('comprador_')) {
+                                const numStr = p.party_id.replace('comprador_', '')
+                                const num = parseInt(numStr, 10)
+                                if (!isNaN(num) && num === idx + 1) {
+                                  return true
+                                }
+                              }
+                              
+                              // 3) Si tiene nombre directo, comparar por nombre normalizado
+                              if (p.nombre && nombre) {
+                                const nombreNormalizado = normalizeName(nombre)
+                                const participanteNombreNormalizado = normalizeName(p.nombre)
+                                if (nombreNormalizado && participanteNombreNormalizado) {
+                                  // Comparación exacta o parcial (por si hay diferencias menores)
+                                  return nombreNormalizado === participanteNombreNormalizado ||
+                                         nombreNormalizado.includes(participanteNombreNormalizado) ||
+                                         participanteNombreNormalizado.includes(nombreNormalizado)
+                                }
+                              }
+                              
+                              return false
+                            })
+                            
+                            if (participante) {
+                              rolEnCredito = participante.rol === 'acreditado' ? 'Acreditado' : 
+                                           participante.rol === 'coacreditado' ? 'Coacreditado' : null
+                              break // Si encontramos el rol, no necesitamos seguir buscando
+                            }
+                          }
+                        }
+                        
+                        if (!nombre) return null
+                        
+                        return (
+                          <div key={idx} className="border-l-2 border-blue-200 pl-2 space-y-1">
+                            <div className="font-semibold text-gray-700">
+                              {data.compradores.length > 1 ? `Comprador ${idx + 1}` : 'Comprador'} 
+                              {rolEnCredito && ` (${rolEnCredito})`}
+                            </div>
+                            {comprador.persona_fisica?.nombre && (
+                              <div><span className="font-medium">Nombre:</span> {comprador.persona_fisica.nombre}</div>
+                            )}
+                            {comprador.persona_moral?.denominacion_social && (
+                              <div><span className="font-medium">Denominación Social:</span> {comprador.persona_moral.denominacion_social}</div>
+                            )}
+                            {rfc && (
+                              <div><span className="font-medium">RFC:</span> {rfc}</div>
+                            )}
+                            {curp && (
+                              <div><span className="font-medium">CURP:</span> {curp}</div>
+                            )}
+                            {comprador.persona_fisica?.estado_civil && (
+                              <div><span className="font-medium">Estado Civil:</span> {comprador.persona_fisica.estado_civil}</div>
+                            )}
+                            {comprador.persona_fisica?.conyuge?.nombre && (
+                              <div className="text-gray-500 italic">
+                                <span className="font-medium">Cónyuge:</span> {comprador.persona_fisica.conyuge.nombre}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })
+                    ) : (
                       <div className="text-gray-400 italic">Pendiente (requiere identificación oficial)</div>
                     )}
                   </div>

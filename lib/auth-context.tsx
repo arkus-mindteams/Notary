@@ -37,11 +37,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Obtener token de la sesión actual.
         // IMPORTANTE: no usar timeouts aquí; getSession es local (storage) y un timeout puede provocar
         // falsos "deslogueos" si por cualquier razón tarda más de lo esperado.
-        const { data: { session: currentSession } } = await supabase.auth.getSession()
+        const { data: { session: currentSession }, error: sessionError } = await supabase.auth.getSession()
       
-        if (!currentSession?.access_token) {
+        if (sessionError || !currentSession?.access_token) {
           setUser(null)
           setSession(null)
+          setIsLoading(false)
+          return
+        }
+
+        // Verificar si la sesión está expirada
+        const now = Math.floor(Date.now() / 1000)
+        if (currentSession.expires_at && currentSession.expires_at < now) {
+          // Sesión expirada: limpiar y redirigir
+          setUser(null)
+          setSession(null)
+          await supabase.auth.signOut() // Limpiar storage de Supabase
           setIsLoading(false)
           return
         }
@@ -57,6 +68,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             },
             signal: controller.signal,
           })
+        } catch (fetchError: any) {
+          // Si es un abort (timeout) o error de red, no desloguear
+          if (fetchError?.name === 'AbortError') {
+            console.warn('[Auth] Timeout fetching user, manteniendo sesión')
+          } else {
+            console.error('[Auth] Error de red al obtener usuario:', fetchError)
+          }
+          setIsLoading(false)
+          fetchingRef.current = false
+          pendingFetchRef.current = null
+          return
         } finally {
           clearTimeout(timeoutId)
         }
@@ -64,22 +86,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (response && response.ok) {
           const data = await response.json()
           setUser(data.user)
+          setIsLoading(false)
         } else {
           // Si el endpoint falla/no responde, NO desloguear al usuario por un fallo temporal.
           // Solo limpiar user/session si es un fallo real de auth (401/403).
           const status = response?.status
           if (status === 401 || status === 403) {
+            // Token expirado o inválido: limpiar todo
             setUser(null)
             setSession(null)
+            await supabase.auth.signOut() // Limpiar storage de Supabase
           } else {
             // Mantener el user previo (si existe) para evitar redirects falsos.
+            console.warn(`[Auth] Error ${status} al obtener usuario, manteniendo sesión`)
           }
+          setIsLoading(false)
         }
       } catch (error) {
         console.error('Error fetching user:', error)
-        // No borrar user/session por default: puede ser un fallo temporal de red/backend.
-      } finally {
+        // En caso de error inesperado, asegurar que isLoading se ponga en false
         setIsLoading(false)
+      } finally {
         fetchingRef.current = false
         pendingFetchRef.current = null
       }
@@ -101,11 +128,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         
         if (error) {
           console.error('[Auth] Error obteniendo sesión:', error)
+          setSession(null)
+          setUser(null)
           setIsLoading(false)
           return
         }
         
         if (session) {
+          // Verificar si la sesión está expirada antes de usarla
+          const now = Math.floor(Date.now() / 1000)
+          if (session.expires_at && session.expires_at < now) {
+            // Sesión expirada: limpiar
+            console.info('[Auth] Sesión expirada, limpiando')
+            setSession(null)
+            setUser(null)
+            await supabase.auth.signOut()
+            setIsLoading(false)
+            return
+          }
+          
           setSession(session)
           await fetchUser(session.user.id)
         } else {
@@ -116,6 +157,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch (error) {
         console.error('[Auth] Error inesperado obteniendo sesión:', error)
         if (mounted) {
+          setSession(null)
+          setUser(null)
           setIsLoading(false)
         }
       }
@@ -129,6 +172,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.info('[Auth] onAuthStateChange:', event)
 
       if (session) {
+        // Verificar si la sesión está expirada
+        const now = Math.floor(Date.now() / 1000)
+        if (session.expires_at && session.expires_at < now) {
+          console.info('[Auth] Sesión expirada en onAuthStateChange, limpiando')
+          setSession(null)
+          setUser(null)
+          setIsLoading(false)
+          return
+        }
+        
         setSession(session)
         // onAuthStateChange se dispara después del login, así que llamamos fetchUser
         await fetchUser(session.user.id)

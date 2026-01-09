@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
@@ -18,8 +18,15 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   
-  const { login } = useAuth()
+  const { login, session, isLoading: authLoading } = useAuth()
   const router = useRouter()
+
+  // Si ya hay sesión activa, redirigir al dashboard
+  useEffect(() => {
+    if (!authLoading && session) {
+      router.push('/dashboard')
+    }
+  }, [session, authLoading, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -38,6 +45,25 @@ export default function LoginPage() {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  // Mostrar loading mientras se verifica la sesión
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="flex flex-col items-center justify-center p-8 space-y-4">
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+            <p className="text-sm text-muted-foreground">Verificando sesión...</p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  // Si ya hay sesión, no mostrar el formulario (el useEffect redirigirá)
+  if (session) {
+    return null
   }
 
   return (
