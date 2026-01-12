@@ -304,7 +304,6 @@ function DeslindePageInner() {
   const [appState, setAppState] = useState<AppState>("upload")
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [documentUrl, setDocumentUrl] = useState<string>("")
-  const [thumbnailUrls, setThumbnailUrls] = useState<Map<number, string>>(new Map())
   const [units, setUnits] = useState<PropertyUnit[]>([])
   const [unitSegments, setUnitSegments] = useState<Map<string, TransformedSegment[]>>(new Map())
   const [processingStarted, setProcessingStarted] = useState(false)
@@ -332,59 +331,13 @@ function DeslindePageInner() {
       if (documentUrl && !documentUrl.startsWith("/")) {
         URL.revokeObjectURL(documentUrl)
       }
-      // Clean up thumbnail URLs
-      setThumbnailUrls((prev) => {
-        prev.forEach((url) => {
-          if (!url.startsWith("/")) {
-            URL.revokeObjectURL(url)
-          }
-        })
-        return new Map()
-      })
       router.replace("/dashboard/deslinde")
     }
   }, [searchParams, documentUrl, router])
 
-  // Create thumbnail URLs when files change
-  useEffect(() => {
-    setThumbnailUrls((prev) => {
-      const newThumbnailUrls = new Map<number, string>()
-      
-      selectedFiles.forEach((file, index) => {
-        if (prev.has(index)) {
-          // Keep existing URL
-          newThumbnailUrls.set(index, prev.get(index)!)
-        } else {
-          // Create new URL
-          const url = URL.createObjectURL(file)
-          newThumbnailUrls.set(index, url)
-        }
-      })
-      
-      // Clean up URLs for removed files
-      prev.forEach((url, index) => {
-        if (!newThumbnailUrls.has(index)) {
-          if (!url.startsWith("/")) {
-            URL.revokeObjectURL(url)
-          }
-        }
-      })
-      
-      return newThumbnailUrls
-    })
-  }, [selectedFiles])
-
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      setThumbnailUrls((prev) => {
-        prev.forEach((url) => {
-          if (!url.startsWith("/")) {
-            URL.revokeObjectURL(url)
-          }
-        })
-        return new Map()
-      })
       if (documentUrl && !documentUrl.startsWith("/")) {
         URL.revokeObjectURL(documentUrl)
       }
@@ -435,26 +388,23 @@ function DeslindePageInner() {
     
     // Add regular image files immediately (not from PDF conversion)
     if (imageFiles.length > 0) {
-      setSelectedFiles((prevFiles) => {
-        const existingFiles = prevFiles || []
-        const newFiles = imageFiles.filter(
-          (newFile) =>
-            !existingFiles.some(
-              (existingFile) =>
-                existingFile.name === newFile.name && existingFile.size === newFile.size
-            )
-        )
-        
-        const combinedFiles = [...existingFiles, ...newFiles]
-        
-        // Update preview with first image if we didn't have one
-        if (combinedFiles.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
-          const url = URL.createObjectURL(combinedFiles[0])
-          setDocumentUrl(url)
-        }
-        
-        return combinedFiles
-      })
+      // Update preview with first image if we didn't have one
+      if (selectedFiles.length === 0 && (!documentUrl || documentUrl.startsWith("/"))) {
+        const url = URL.createObjectURL(imageFiles[0])
+        setDocumentUrl(url)
+      }
+    }
+  }
+
+  const handleFilesChange = (files: File[]) => {
+    setSelectedFiles(files)
+    // Update preview with first image if we have files
+    if (files.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
+      const url = URL.createObjectURL(files[0])
+      setDocumentUrl(url)
+    } else if (files.length === 0 && documentUrl && !documentUrl.startsWith("/")) {
+      URL.revokeObjectURL(documentUrl)
+      setDocumentUrl("")
     }
   }
   
@@ -499,26 +449,8 @@ function DeslindePageInner() {
     }
     
     if (processedImages.length > 0) {
-      setSelectedFiles((prevFiles) => {
-        const existingFiles = prevFiles || []
-        const newFiles = processedImages.filter(
-          (newFile) =>
-            !existingFiles.some(
-              (existingFile) =>
-                existingFile.name === newFile.name && existingFile.size === newFile.size
-            )
-        )
-        
-        const combinedFiles = [...existingFiles, ...newFiles]
-        
-        // Update preview with first image if we didn't have one
-        if (combinedFiles.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
-          const url = URL.createObjectURL(combinedFiles[0])
-          setDocumentUrl(url)
-        }
-        
-        return combinedFiles
-      })
+      const combinedFiles = [...selectedFiles, ...processedImages]
+      handleFilesChange(combinedFiles)
     }
     
     // Close modal and reset
@@ -607,28 +539,6 @@ function DeslindePageInner() {
     setSelectedPdfImages(new Set())
   }
 
-  const handleRemoveFile = (index: number) => {
-    setSelectedFiles((prevFiles) => {
-      const newFiles = prevFiles.filter((_, i) => i !== index)
-      
-      // Update preview if we removed the first image
-      if (newFiles.length > 0 && index === 0) {
-    if (documentUrl && !documentUrl.startsWith("/")) {
-      URL.revokeObjectURL(documentUrl)
-    }
-        const url = URL.createObjectURL(newFiles[0])
-    setDocumentUrl(url)
-      } else if (newFiles.length === 0) {
-        // No more files, revoke URL
-    if (documentUrl && !documentUrl.startsWith("/")) {
-      URL.revokeObjectURL(documentUrl)
-    }
-        setDocumentUrl("")
-      }
-      
-      return newFiles
-    })
-  }
 
   const handleProcessImages = () => {
     if (selectedFiles.length === 0) return
@@ -1322,135 +1232,92 @@ function DeslindePageInner() {
               Procesa plantas arquitectónicas y genera texto notarial automáticamente
             </p>
           </div>
-
-          {/* Main Layout: Upload Zone (prominent) then Selected Images below */}
-          <div className="space-y-6">
-            {/* Large Upload Zone - Main Focus */}
-            <div className="min-h-[450px] flex flex-col items-center justify-center">
-              <div className="w-full max-w-2xl">
-                <UploadZone onFilesSelect={handleFilesSelect} />
-              </div>
+          {/* How it Works Section - Bottom */}
+          <div className="bg-gradient-to-br from-primary/5 via-primary/3 to-background rounded-lg border border-primary/10 p-4 md:p-5">
+            <div className="mb-3">
+              <h2 className="text-lg font-semibold text-foreground mb-1">¿Cómo funciona?</h2>
+              <p className="text-xs text-muted-foreground">
+                Sigue estos pasos simples para procesar tus plantas arquitectónicas
+              </p>
             </div>
-
-            {/* Selected Images List - Below upload */}
-            {selectedFiles.length > 0 && (
-              <Card className="p-4">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-foreground">
-                      Documentos seleccionados ({selectedFiles.length})
-                    </h3>
-                    <Button onClick={handleProcessImages} size="lg" className="gap-2">
-                      <Play className="h-4 w-4" />
-                      Procesar imágenes
-                    </Button>
-              </div>
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                    {selectedFiles.map((file, index) => {
-                      const imageUrl = thumbnailUrls.get(index)
-                      return (
-                        <Card key={`${file.name}-${file.size}-${index}`} className="p-2 relative group border">
-                          <div className="space-y-2">
-                            <div className="relative aspect-video rounded-md bg-muted flex items-center justify-center overflow-hidden">
-                              {imageUrl ? (
-                                <img
-                                  src={imageUrl}
-                                  alt={file.name}
-                                  className="w-full h-full object-contain"
-                                />
-                              ) : (
-                                <ImageIcon className="h-6 w-6 text-muted-foreground" />
-                              )}
-                              <Button
-                                variant="destructive"
-                                size="icon"
-                                className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                                onClick={() => handleRemoveFile(index)}
-                              >
-                                <X className="h-3 w-3" />
-                              </Button>
-            </div>
-                            <div className="space-y-1">
-                              <p className="text-xs font-medium truncate" title={file.name}>
-                                {file.name}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                {(file.size / 1024 / 1024).toFixed(2)} MB
-                              </p>
-              </div>
-            </div>
-                        </Card>
-                      )
-                    })}
-          </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-gray-800  w-7 h-7 flex items-center justify-center flex-shrink-0">
+                      <div className="rounded-full bg-blue-500/30 text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                        1
+                      </div>
+                    </div>
+                    <h3 className="font-medium text-sm">Sube tus documentos</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    Arrastra imágenes o PDFs. También puedes pegarlas desde el portapapeles.
+                  </p>
                 </div>
               </Card>
-            )}
 
-            {/* How it Works Section - Bottom */}
-            <div className="bg-gradient-to-br from-primary/5 via-primary/3 to-background rounded-lg border border-primary/10 p-4 md:p-5">
-              <div className="mb-3">
-                <h2 className="text-lg font-semibold text-foreground mb-1">¿Cómo funciona?</h2>
-                <p className="text-xs text-muted-foreground">
-                  Sigue estos pasos simples para procesar tus plantas arquitectónicas
-                </p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                  <div className="flex flex-col items-start gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-                  1
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-gray-800  w-7 h-7 flex items-center justify-center flex-shrink-0">
+                      <div className="rounded-full bg-blue-500/30 text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                        2
                       </div>
-                      <h3 className="font-medium text-sm">Sube tus documentos</h3>
                     </div>
-                    <p className="text-xs text-muted-foreground leading-snug">
-                      Arrastra imágenes o PDFs. También puedes pegarlas desde el portapapeles.
-                    </p>
+                    <h3 className="font-medium text-sm">Procesa con IA</h3>
                   </div>
-                </Card>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    La IA extrae automáticamente medidas, colindancias y superficies.
+                  </p>
+                </div>
+              </Card>
 
-                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                  <div className="flex flex-col items-start gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-                  2
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-gray-800  w-7 h-7 flex items-center justify-center flex-shrink-0">
+                      <div className="rounded-full bg-blue-500/30 text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                        3
                       </div>
-                      <h3 className="font-medium text-sm">Procesa con IA</h3>
                     </div>
-                    <p className="text-xs text-muted-foreground leading-snug">
-                      La IA extrae automáticamente medidas, colindancias y superficies.
-                    </p>
+                    <h3 className="font-medium text-sm">Revisa y edita</h3>
                   </div>
-                </Card>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    Valida la información y edita el texto notarial según tus necesidades.
+                  </p>
+                </div>
+              </Card>
 
-                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                  <div className="flex flex-col items-start gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-                  3
-                      </div>
-                      <h3 className="font-medium text-sm">Revisa y edita</h3>
-                    </div>
-                    <p className="text-xs text-muted-foreground leading-snug">
-                      Valida la información y edita el texto notarial según tus necesidades.
-                    </p>
-                  </div>
-                </Card>
-
-                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                  <div className="flex flex-col items-start gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-gray-800  w-7 h-7 flex items-center justify-center flex-shrink-0">
+                      <div className="rounded-full bg-blue-500/30 text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
                         4
-          </div>
-                      <h3 className="font-medium text-sm">Exporta el resultado</h3>
+                      </div>
                     </div>
-                    <p className="text-xs text-muted-foreground leading-snug">
-                      Obtén tu documento final en formato notarial listo para usar.
-                    </p>
+                    <h3 className="font-medium text-sm">Exporta el resultado</h3>
                   </div>
-                </Card>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    Obtén tu documento final en formato notarial listo para usar.
+                  </p>
+                </div>
+              </Card>
+            </div>
+          </div>
+
+          {/* Main Layout: Upload Zone (prominent) with Selected Images inside */}
+          <div className="space-y-6 mt-4">
+            {/* Upload Zone with Selected Images inside */}
+            <div className="min-h-[450px] flex flex-col items-center justify-center">
+              <div className="w-full">
+                <UploadZone 
+                  onFilesSelect={handleFilesSelect}
+                  onFilesChange={handleFilesChange}
+                  onProcess={handleProcessImages}
+                  files={selectedFiles}
+                />
               </div>
             </div>
           </div>

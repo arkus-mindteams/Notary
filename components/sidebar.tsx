@@ -16,6 +16,7 @@ import {
   Settings,
   Users,
   FileCode,
+  HomeIcon,
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -46,92 +47,117 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
   }
 
   return (
-    <Card className={`h-full flex flex-col transition-all duration-300 ${
-      isCollapsed ? 'w-16' : 'w-64'
+    <Card className={`h-full flex pt-2 bg-gray-800 rounded-l-none rounded-b-none flex-col transition-all duration-300 ${
+      isCollapsed ? 'w-18' : 'w-64'
     }`}>
       {/* Header con Usuario y Notaría */}
-      <div className="border-b">
-        {/* Sección Usuario */}
-        {!isCollapsed && user && (
-          <div className="p-4 pb-3 border-b">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
-                <span className="text-sm font-medium text-blue-600">
-                  {user.name.split(' ').map(n => n[0]).join('')}
-                </span>
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-900 truncate">
-                  {user.name}
-                </p>
-                <p className="text-xs text-gray-500 capitalize">
-                  {user.role}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
+      <div className="border-b border-b-gray-700 ">
         {/* Sección Notaría */}
-        <div className="p-4">
-          <div className="flex items-center justify-between">
-            {!isCollapsed ? (
-              <div className="relative w-full h-16 flex-1 mr-2">
-                <Image
-                  src="/notaria-logo.jpeg"
-                  alt="Notaría #3"
-                  fill
-                  className="object-contain"
-                />
-              </div>
-            ) : (
-              <div className="relative w-full h-12 mx-auto">
-                <Image
-                  src="/notaria-logo.jpeg"
-                  alt="Notaría #3"
-                  fill
-                  className="object-contain"
-                />
-              </div>
-            )}
+        <div className="px-4">
+          <div
+            className={`
+              flex items-center
+              ${isCollapsed ? "flex-col gap-2" : "flex-row justify-between"}
+            `}
+          >
+            {/* Logo */}
+            <div
+              className={`
+                relative
+                ${isCollapsed ? "w-12 h-12" : "w-full h-16 mr-2 flex-1"}
+              `}
+            >
+              <Image
+                src={isCollapsed ? "/logo.png" : "/notaria-logo-removebg-preview.png"}
+                alt="Notaría #3"
+                fill
+                className="object-contain"
+              />
+            </div>
 
+            {/* Botón */}
             <Button
               variant="ghost"
               size="sm"
               onClick={onToggle}
-              className="h-8 w-8 p-0 flex-shrink-0"
+              className="
+                h-8 w-8 p-0 flex-shrink-0
+                text-gray-400
+                hover:bg-transparent hover:text-gray-200
+                cursor-pointer
+                focus-visible:ring-0
+              "
             >
-              {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+              {isCollapsed ? (
+                <ChevronRight className="h-4 w-4" />
+              ) : (
+                <ChevronLeft className="h-4 w-4" />
+              )}
             </Button>
           </div>
         </div>
+
+
+        {/* Sección Usuario */}
+        {user && (
+          <div className="p-4 pb-3 pt-6 ">
+            <div
+              className={`
+                flex items-center
+                ${isCollapsed ? "justify-center" : "space-x-3"}
+              `}
+            >
+              {/* Avatar */}
+              <div className="w-10 h-10 bg-blue-500/30 rounded-full flex items-center justify-center flex-shrink-0">
+                <span className="text-sm font-medium text-blue-200">
+                  {user.name
+                    .split(" ")
+                    .map(n => n[0])
+                    .join("")}
+                </span>
+              </div>
+
+              {/* Info (solo cuando NO está colapsado) */}
+              {!isCollapsed && (
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-300 truncate">
+                    {user.name}
+                  </p>
+                  <p className="text-xs text-gray-400 capitalize">
+                    {user.role}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Navegación */}
       <div className="flex-1 p-4 space-y-2">
         <Button
-          variant={pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde' ? 'default' : 'ghost'}
+          variant="ghost"
           className={`w-full justify-start overflow-hidden ${
             isCollapsed ? 'px-2' : 'px-3'
           } ${
             pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde'
-              ? 'bg-blue-600 text-white hover:bg-blue-700'
-              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+              ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
           }`}
           onClick={() => handleNavigation('/dashboard/deslinde?reset=1')}
         >
           <FileText className="h-4 w-4 flex-shrink-0" />
           {!isCollapsed && <span className="ml-3 truncate text-sm">Lectura de Plantas Arquitectónicas</span>}
         </Button>
-        
+
         <Button
-          variant={pathname === '/dashboard/preaviso' ? 'default' : 'ghost'}
+          variant="ghost"
           className={`w-full justify-start overflow-hidden ${
             isCollapsed ? 'px-2' : 'px-3'
           } ${
             pathname === '/dashboard/preaviso'
-              ? 'bg-blue-600 text-white hover:bg-blue-700'
-              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+              ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
           }`}
           onClick={() => handleNavigation('/dashboard/preaviso')}
         >
@@ -140,13 +166,13 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
         </Button>
 
         <Button
-          variant={pathname === '/dashboard/expedientes' ? 'default' : 'ghost'}
+          variant="ghost"
           className={`w-full justify-start overflow-hidden ${
             isCollapsed ? 'px-2' : 'px-3'
           } ${
             pathname === '/dashboard/expedientes'
-              ? 'bg-blue-600 text-white hover:bg-blue-700'
-              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+              ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
           }`}
           onClick={() => handleNavigation('/dashboard/expedientes')}
         >
@@ -156,7 +182,7 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
 
         {/* Sección Administración (solo para superadmin) */}
         {user?.role === 'superadmin' && (
-          <>
+          <div className='border-t pt-2 mt-4 border-t-gray-700'>
             <div className={`px-4 py-2 ${isCollapsed ? 'px-2' : ''}`}>
               {!isCollapsed && (
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
@@ -165,13 +191,13 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
               )}
             </div>
             <Button
-              variant={pathname === '/dashboard/admin/usuarios' ? 'default' : 'ghost'}
+              variant="ghost"
               className={`w-full justify-start overflow-hidden ${
                 isCollapsed ? 'px-2' : 'px-3'
               } ${
                 pathname === '/dashboard/admin/usuarios'
-                  ? 'bg-blue-600 text-white hover:bg-blue-700'
-                  : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+                  ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
               }`}
               onClick={() => handleNavigation('/dashboard/admin/usuarios')}
             >
@@ -179,28 +205,28 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
               {!isCollapsed && <span className="ml-3 truncate text-sm">Usuarios</span>}
             </Button>
             <Button
-              variant={pathname === '/dashboard/admin/preaviso-config' ? 'default' : 'ghost'}
+              variant="ghost"
               className={`w-full justify-start overflow-hidden ${
                 isCollapsed ? 'px-2' : 'px-3'
               } ${
                 pathname === '/dashboard/admin/preaviso-config'
-                  ? 'bg-blue-600 text-white hover:bg-blue-700'
-                  : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+                  ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
               }`}
               onClick={() => handleNavigation('/dashboard/admin/preaviso-config')}
             >
               <FileCode className="h-4 w-4 flex-shrink-0" />
               {!isCollapsed && <span className="ml-3 truncate text-sm">Config. Preaviso</span>}
             </Button>
-          </>
+          </div>
         )}
       </div>
 
       {/* Logout */}
-      <div className="p-4 border-t">
+      <div className="p-4 border-t border-t-gray-700 ">
         <Button
           variant="ghost"
-          className={`w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50 ${
+          className={`w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-700/30 ${
             isCollapsed ? 'px-2' : 'px-3'
           }`}
           onClick={handleLogout}
