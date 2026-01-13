@@ -9,10 +9,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'sonner'
-import { Save, Loader2 } from 'lucide-react'
+import { Save, Loader2, Info } from 'lucide-react'
 import { createBrowserClient } from '@/lib/supabase'
 import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 interface PreavisoConfig {
   id: string
@@ -167,29 +168,37 @@ export default function AdminPreavisoConfigPage() {
       <DashboardLayout>
       <div className="p-6 space-y-6">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Configuración de Preaviso</h1>
-          <p className="text-gray-600 mt-1">Edita el prompt maestro y el JSON schema canónico</p>
+          <h1 className="text-3xl font-bold text-gray-900">Configuración del Preaviso</h1>
+          <p className="text-gray-600 mt-1">Ajusta las instrucciones y la estructura que usará la IA para capturar la información.</p>
         </div>
 
         {isLoading ? (
           <Card>
-            <CardContent className="py-8">
-              <div className="text-center">Cargando...</div>
+            <CardContent className="py-8 flex flex-col items-center justify-center gap-2">
+              <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+              <span className="text-gray-500">Cargando…</span>
             </CardContent>
           </Card>
         ) : (
           <div className="space-y-6">
             {/* Prompt */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Prompt Maestro</CardTitle>
-                <CardDescription>
-                  Instrucciones que seguirá la IA durante el proceso de captura del preaviso
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            <div>
+              <div className="flex items-center gap-2 font-medium ">
+                Prompt del sistema
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Info className="h-4 w-4 cursor-pointer text-muted-foreground" />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>
+                      Instrucciones que seguirá la IA durante el proceso de captura del preaviso
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+
+              <div className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="prompt">Prompt del Sistema</Label>
                   <Textarea
                     id="prompt"
                     value={prompt}
@@ -198,8 +207,8 @@ export default function AdminPreavisoConfigPage() {
                     placeholder="Ingresa el prompt maestro..."
                   />
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
 
             {/* JSON Schema */}
             <Card>
@@ -225,7 +234,7 @@ export default function AdminPreavisoConfigPage() {
 
             {/* Botón Guardar */}
             <div className="flex justify-end">
-              <Button onClick={handleSave} disabled={isSaving} size="lg">
+              <Button onClick={handleSave} disabled={isSaving} className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white font-bold py-2.5">
                 {isSaving ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
