@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { DashboardLayout } from '@/components/dashboard-layout'
+import { ProtectedRoute } from '@/components/protected-route'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -11,6 +12,7 @@ import { toast } from 'sonner'
 import { Save, Loader2 } from 'lucide-react'
 import { createBrowserClient } from '@/lib/supabase'
 import { useMemo } from 'react'
+import { useRouter } from 'next/navigation'
 
 interface PreavisoConfig {
   id: string
@@ -21,7 +23,8 @@ interface PreavisoConfig {
 }
 
 export default function AdminPreavisoConfigPage() {
-  const { user: currentUser, session } = useAuth()
+  const { user: currentUser, session, isLoading: authLoading } = useAuth()
+  const router = useRouter()
   const supabase = useMemo(() => createBrowserClient(), [])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
@@ -29,19 +32,20 @@ export default function AdminPreavisoConfigPage() {
   const [prompt, setPrompt] = useState('')
   const [jsonSchema, setJsonSchema] = useState('')
 
-  // Verificar que sea superadmin
+  // Verificar que sea superadmin (solo después de que el usuario esté cargado)
   useEffect(() => {
-    if (currentUser && currentUser.role !== 'superadmin') {
-      window.location.href = '/dashboard'
+    if (!authLoading && currentUser && currentUser.role !== 'superadmin') {
+      router.push('/dashboard')
     }
-  }, [currentUser])
+  }, [currentUser, authLoading, router])
 
   // Cargar datos
   useEffect(() => {
-    if (currentUser?.role === 'superadmin' && session) {
+    if (!authLoading && currentUser?.role === 'superadmin' && session) {
       loadConfig()
     }
-  }, [currentUser, session])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, session, authLoading])
 
   const loadConfig = async () => {
     try {
@@ -119,12 +123,48 @@ export default function AdminPreavisoConfigPage() {
     }
   }
 
-  if (currentUser?.role !== 'superadmin') {
-    return null
+  // Mostrar loading mientras se verifica autenticación o rol
+  if (authLoading || !currentUser) {
+    return (
+      <ProtectedRoute>
+        <DashboardLayout>
+          <div className="p-6 space-y-6">
+            <Card>
+              <CardContent className="py-8">
+                <div className="text-center">
+                  <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-primary" />
+                  <p className="text-muted-foreground">Verificando permisos...</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </DashboardLayout>
+      </ProtectedRoute>
+    )
+  }
+
+  // Verificar rol después de que el usuario esté cargado
+  if (currentUser.role !== 'superadmin') {
+    return (
+      <ProtectedRoute>
+        <DashboardLayout>
+          <div className="p-6 space-y-6">
+            <Card>
+              <CardContent className="py-8">
+                <div className="text-center">
+                  <p className="text-muted-foreground">No tienes permisos para acceder a esta sección.</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </DashboardLayout>
+      </ProtectedRoute>
+    )
   }
 
   return (
-    <DashboardLayout>
+    <ProtectedRoute>
+      <DashboardLayout>
       <div className="p-6 space-y-6">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Configuración de Preaviso</h1>
@@ -202,7 +242,8 @@ export default function AdminPreavisoConfigPage() {
           </div>
         )}
       </div>
-    </DashboardLayout>
+      </DashboardLayout>
+    </ProtectedRoute>
   )
 }
 
