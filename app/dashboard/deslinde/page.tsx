@@ -1229,15 +1229,15 @@ function DeslindePageInner() {
           <div className="mb-6">
             <h1 className="text-2xl font-bold text-gray-900 break-words">Lectura de Plantas Arquitectónicas</h1>
             <p className="text-gray-600 text-sm mt-1">
-              Procesa plantas arquitectónicas y genera texto notarial automáticamente
+              Sube tus planos y genera descripciones notariales precisas en segundos.
             </p>
           </div>
           {/* How it Works Section - Bottom */}
           <div className="bg-gradient-to-br from-primary/5 via-primary/3 to-background rounded-lg border border-primary/10 p-4 md:p-5">
             <div className="mb-3">
-              <h2 className="text-lg font-semibold text-foreground mb-1">¿Cómo funciona?</h2>
+              <h2 className="text-lg font-semibold text-foreground mb-1">¿Cómo empezar?</h2>
               <p className="text-xs text-muted-foreground">
-                Sigue estos pasos simples para procesar tus plantas arquitectónicas
+                Sigue estos pasos y deja que nuestra IA redacte la descripción notarial por ti.
               </p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
