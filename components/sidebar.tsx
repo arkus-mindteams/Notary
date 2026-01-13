@@ -5,6 +5,14 @@ import { useRouter, usePathname } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import Image from 'next/image'
 import {
   FileText,
@@ -29,17 +37,26 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
   const router = useRouter()
   const pathname = usePathname()
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [showLogoutDialog, setShowLogoutDialog] = useState(false)
 
-  const handleLogout = async () => {
+  const handleLogoutClick = () => {
+    setShowLogoutDialog(true)
+  }
+
+  const handleConfirmLogout = async () => {
+    setShowLogoutDialog(false)
     setIsLoggingOut(true)
     try {
       await logout()
-      router.push('/login')
+      // Usar window.location para forzar una navegación completa
+      // Esto asegura que todo el estado se limpie correctamente
+      window.location.href = '/login'
     } catch (error) {
       console.error('Error en logout:', error)
-    } finally {
-      setIsLoggingOut(false)
+      // Redirigir incluso si hay error usando window.location
+      window.location.href = '/login'
     }
+    // No necesitamos finally porque window.location causa una navegación completa
   }
 
   const handleNavigation = (path: string) => {
@@ -47,7 +64,7 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
   }
 
   return (
-    <Card className={`h-full flex pt-2 bg-gray-800 rounded-l-none rounded-b-none flex-col transition-all duration-300 ${
+    <Card className={`h-full flex pt-2 bg-gray-800 border-none rounded-l-none rounded-b-none flex-col transition-all duration-300 ${
       isCollapsed ? 'w-18' : 'w-64'
     }`}>
       {/* Header con Usuario y Notaría */}
@@ -229,7 +246,7 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
           className={`w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-700/30 ${
             isCollapsed ? 'px-2' : 'px-3'
           }`}
-          onClick={handleLogout}
+          onClick={handleLogoutClick}
           disabled={isLoggingOut}
         >
           <LogOut className="h-4 w-4" />
@@ -240,6 +257,34 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
           )}
         </Button>
       </div>
+
+      {/* Dialog de confirmación de logout */}
+      <Dialog open={showLogoutDialog} onOpenChange={setShowLogoutDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>¿Cerrar sesión?</DialogTitle>
+            <DialogDescription>
+              ¿Estás seguro de que deseas cerrar sesión? Tendrás que iniciar sesión nuevamente para acceder al sistema.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowLogoutDialog(false)}
+              disabled={isLoggingOut}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmLogout}
+              disabled={isLoggingOut}
+            >
+              {isLoggingOut ? 'Cerrando...' : 'Cerrar Sesión'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

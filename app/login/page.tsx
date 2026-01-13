@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
@@ -17,26 +17,55 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [loginSuccess, setLoginSuccess] = useState(false)
   
-  const { login } = useAuth()
+  const { login, user, session, isLoading: authLoading } = useAuth()
   const router = useRouter()
+
+  // Redirigir si el usuario ya está autenticado
+  useEffect(() => {
+    if (!authLoading && session && user) {
+      router.replace('/dashboard/deslinde')
+    }
+  }, [session, user, authLoading, router])
+
+  // Si el login fue exitoso pero después de 3 segundos no se cargó el usuario,
+  // redirigir de todas formas (el ProtectedRoute manejará la carga)
+  useEffect(() => {
+    if (loginSuccess && !user && session) {
+      const timeout = setTimeout(() => {
+        router.replace('/dashboard/deslinde')
+        setIsLoading(false)
+      }, 3000)
+      return () => clearTimeout(timeout)
+    }
+    // Si el usuario se carga, limpiar el estado de loginSuccess
+    if (loginSuccess && user) {
+      setLoginSuccess(false)
+      setIsLoading(false)
+    }
+  }, [loginSuccess, user, session, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setIsLoading(true)
+    setLoginSuccess(false)
 
     try {
       const success = await login(email, password)
-      if (success) {
-        router.push('/dashboard')
-      } else {
+      if (!success) {
         setError('Credenciales incorrectas. Por favor, verifique su email y contraseña.')
+        setIsLoading(false)
+      } else {
+        setLoginSuccess(true)
+        // Si el login es exitoso, el useEffect se encargará de la redirección
+        // cuando user y session estén disponibles
       }
     } catch (error) {
       setError('Error al iniciar sesión. Por favor, intente nuevamente.')
-    } finally {
       setIsLoading(false)
+      setLoginSuccess(false)
     }
   }
 

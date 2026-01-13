@@ -25,12 +25,12 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="flex flex-col items-center justify-center p-8 space-y-4">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-            <p className="text-sm text-muted-foreground">Verificando autenticación...</p>
-          </CardContent>
-        </Card>
+        <div className="w-full max-w-md">
+          <div className="flex flex-col items-center justify-center p-8 space-y-4">
+            <Loader2 className="h-12 w-12 animate-spin text-primary" />
+            <p className="text-md text-muted-foreground">Verificando autenticación...</p>
+          </div>
+        </div>
       </div>
     )
   }
@@ -39,12 +39,12 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   if (session && !user) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="flex flex-col items-center justify-center p-8 space-y-4">
+        <div className="w-full max-w-md">
+          <div className="flex flex-col items-center justify-center p-8 space-y-4">
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
-            <p className="text-sm text-muted-foreground">Verificando perfil...</p>
-          </CardContent>
-        </Card>
+            <p className="text-md -md  text-muted-foreground">Verificando perfil...</p>
+          </div>
+        </div>
       </div>
     )
   }
@@ -52,12 +52,12 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   if (!session) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="flex flex-col items-center justify-center p-8 space-y-4">
+       <div className="w-full max-w-md">
+          <div className="flex flex-col items-center justify-center p-8 space-y-4">
             <Shield className="h-8 w-8 text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">Redirigiendo al login...</p>
-          </CardContent>
-        </Card>
+            <p className="text-md text-muted-foreground">Redirigiendo al login...</p>
+          </div>
+        </div>
       </div>
     )
   }

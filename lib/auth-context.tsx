@@ -184,12 +184,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = async (): Promise<void> => {
     try {
       setIsLoading(true)
+      // Hacer signOut primero
       await supabase.auth.signOut()
+      // Limpiar el estado inmediatamente después
       setUser(null)
       setSession(null)
+      setIsLoading(false)
     } catch (error) {
       console.error('Error en logout:', error)
-    } finally {
+      // Asegurarse de que el estado esté limpio incluso si hay error
+      setUser(null)
+      setSession(null)
       setIsLoading(false)
     }
   }
