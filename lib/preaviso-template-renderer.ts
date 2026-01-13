@@ -212,9 +212,28 @@ export class PreavisoTemplateRenderer {
     if (data.actos.aperturaCreditoComprador && data.creditos && data.creditos.length > 0) {
       const creditosConParticipantes = data.creditos.map(credito => {
         const participantesConNombres = (credito.participantes || []).map(p => {
-          // Si ya tenemos nombre explícito (ej. coacreditado capturado por texto), respetarlo y asegurar que sea válido
-          // CRÍTICO: Si el participante ya tiene nombre, usarlo directamente (no sobrescribir)
-          if ((p as any)?.nombre && String((p as any).nombre).trim().length >= 3) {
+          const rawNombre = (p as any)?.nombre ? String((p as any).nombre).trim() : ''
+          const normalize = (s: string) =>
+            String(s || '')
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .toLowerCase()
+              .replace(/[^\w\s]/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim()
+          const nNorm = normalize(rawNombre)
+          const looksLikePlaceholder =
+            nNorm === 'el comprador' ||
+            nNorm === 'la compradora' ||
+            nNorm.startsWith('el comprad') ||
+            nNorm.startsWith('la comprad') ||
+            nNorm === 'el conyuge' ||
+            nNorm === 'la conyuge' ||
+            nNorm.startsWith('el conyug') ||
+            nNorm.startsWith('la conyug')
+
+          // Si ya tenemos nombre explícito y NO es placeholder, respetarlo (no sobrescribir)
+          if (rawNombre && rawNombre.length >= 3 && !looksLikePlaceholder) {
             return p
           }
 
@@ -289,6 +308,15 @@ export class PreavisoTemplateRenderer {
                   nombre: (p as any)?.nombre || segundoNombre
                 }
               }
+            }
+          }
+
+          // Fallback final: si sigue sin nombre y es acreditado principal, usar comprador[0]
+          if (p.rol === 'acreditado') {
+            const c0 = data.compradores?.[0]
+            const c0Nombre = (c0 as any)?.nombre || (c0 as any)?.denominacion_social || c0?.persona_fisica?.nombre || c0?.persona_moral?.denominacion_social || null
+            if (c0Nombre) {
+              return { ...p, nombre: c0Nombre }
             }
           }
           

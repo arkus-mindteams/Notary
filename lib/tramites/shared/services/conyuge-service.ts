@@ -1,0 +1,68 @@
+/**
+ * Servicio para obtener nombre del cónyuge
+ * Fuente única de verdad para el cónyuge
+ */
+
+export class ConyugeService {
+  /**
+   * Obtiene el nombre del cónyuge de múltiples fuentes
+   * Fuente única de verdad para el cónyuge
+   */
+  static getConyugeNombre(context: any): string | null {
+    // 1. compradores[0].persona_fisica.conyuge.nombre (schema v1.4)
+    const comprador0 = context.compradores?.[0]
+    if (comprador0?.persona_fisica?.conyuge?.nombre) {
+      return comprador0.persona_fisica.conyuge.nombre
+    }
+
+    // 2. compradores[1+] si el nombre coincide con cónyuge
+    if (comprador0?.persona_fisica?.estado_civil === 'casado') {
+      const compradorNombre = comprador0.persona_fisica.nombre
+      const compradores = context.compradores || []
+      
+      for (let i = 1; i < compradores.length; i++) {
+        const nombre = compradores[i]?.persona_fisica?.nombre
+        if (nombre && nombre !== compradorNombre) {
+          return nombre
+        }
+      }
+    }
+
+    // 3. documentosProcesados recientes (últimos 5 minutos)
+    const documentos = context.documentosProcesados || []
+    const ahora = Date.now()
+    const cincoMinutos = 5 * 60 * 1000
+
+    for (const doc of documentos.reverse()) {
+      if (doc.tipo === 'identificacion' && doc.informacionExtraida?.nombre) {
+        const nombre = doc.informacionExtraida.nombre
+        const compradorNombre = comprador0?.persona_fisica?.nombre
+        
+        // Si el nombre no es del comprador, probablemente es del cónyuge
+        if (nombre !== compradorNombre && nombre.length >= 6) {
+          return nombre
+        }
+      }
+    }
+
+    return null
+  }
+
+  /**
+   * Normaliza nombres para comparación
+   */
+  static normalizeName(name: string): string {
+    return String(name || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim()
+  }
+
+  /**
+   * Compara dos nombres (normalizados)
+   */
+  static namesMatch(name1: string, name2: string): boolean {
+    return this.normalizeName(name1) === this.normalizeName(name2)
+  }
+}

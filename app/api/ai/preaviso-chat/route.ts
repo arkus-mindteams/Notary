@@ -444,6 +444,9 @@ RULES:
 - If seller name is already captured in the session context, DO NOT ask the user to type it from zero.
 - Ask the user to CONFIRM the name (verbatim) and specify tipo_persona (persona_fisica/persona_moral).
 - Ask ONLY one question; phrase it so the user can answer both confirmation + tipo_persona in one reply.
+- ABSOLUTELY PROHIBITED: Do NOT ask about apoderados, representantes legales, firmantes, administradores, socios, accionistas, or who will sign on behalf of the seller.
+- For persona_moral sellers: ONLY capture the company name (denominacion_social). Do NOT ask who will sign, who is the legal representative, or any information about signers.
+- Assume the seller (persona_fisica or persona_moral) will appear directly. Do NOT ask for additional information about signers or representatives.
 
 MANDATORY QUESTION (ONE QUESTION ONLY):
 If titular_registral_detected == true:
@@ -458,6 +461,7 @@ If titular_registral_detected == false:
 
 BLOCKING:
 - Do NOT proceed until seller name is explicitly confirmed AND tipo_persona is provided.
+- Do NOT ask for information about signers, representatives, or apoderados.
 
 ────────────────────────────────────────
 STEP 3 — PAYMENT METHOD

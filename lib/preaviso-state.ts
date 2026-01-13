@@ -201,7 +201,7 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     ESTADO_2: 'incomplete',
     ESTADO_3: 'incomplete',
     ESTADO_4: 'incomplete',
-    ESTADO_5: 'not_applicable',
+    ESTADO_5: 'pending', // Inicialmente pendiente hasta que se confirme la forma de pago
     ESTADO_6: 'incomplete',
     ESTADO_8: 'pending',
   }
@@ -348,16 +348,42 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   // - Si el usuario confirmó explícitamente que el vendedor capturado ES el titular registral
   //   (titular_registral_confirmado=true) y ya tenemos tipo_persona + nombre, considerar COMPLETO
   //   aunque el texto extraído del documento sea muy largo o tenga variaciones.
+  // - Si el vendedor viene del documento (source: 'documento_inscripcion'), también considerarlo completo
+  //   porque el documento es fuente de verdad.
+  // - Si el vendedor tiene nombre y tipo_persona Y hay propietario en el documento, considerar completo
+  //   (el documento es fuente de verdad, no necesita confirmación explícita)
   // - En caso contrario, requerir match normalizado entre vendedorNombre y titularRegistral.
+  
+  // Verificar si el vendedor viene del documento de inscripción
+  const vendedorVieneDelDocumento = primerVendedor?.persona_fisica?.nombre && infoInscripcion.propietario?.nombre ||
+                                     primerVendedor?.persona_moral?.denominacion_social && infoInscripcion.propietario?.nombre
+  
   if (vendedorConfirmadoComoTitular && vendedorNombre && vendedorTipoPersona) {
+    // Confirmado explícitamente por el usuario
     stateStatus.ESTADO_3 = 'completed'
   } else if (vendedorNombre && vendedorTipoPersona && titularRegistral && normalizeForMatch(vendedorNombre) === normalizeForMatch(titularRegistral)) {
+    // Match normalizado entre vendedor y titular registral
+    stateStatus.ESTADO_3 = 'completed'
+  } else if (vendedorNombre && vendedorTipoPersona && infoInscripcion.propietario?.nombre) {
+    // Si tenemos nombre y tipo_persona del vendedor Y el documento tiene propietario, considerar completo
+    // (el documento es fuente de verdad, no necesita confirmación explícita si viene del documento)
+    stateStatus.ESTADO_3 = 'completed'
+  } else if (vendedorNombre && vendedorTipoPersona && vendedorVieneDelDocumento) {
+    // Si el vendedor viene del documento y tiene nombre + tipo_persona, considerar completo
+    // (el documento es fuente de verdad)
     stateStatus.ESTADO_3 = 'completed'
   } else if (vendedorNombre || titularRegistral) {
     stateStatus.ESTADO_3 = 'incomplete'
   }
 
   // Operación/forma de pago
+  // ESTADO_1 está completo SOLO si:
+  // 1. tipoOperacion está definido (siempre es 'compraventa')
+  // 2. La forma de pago está confirmada (creditosProvided = true)
+  //    - creditos = undefined => NO confirmado => ESTADO_1 incomplete
+  //    - creditos = [] => Confirmado contado => ESTADO_1 completed
+  //    - creditos = [...] => Confirmado crédito => ESTADO_1 completed
+  // Si creditosProvided = false, significa que aún no se sabe si será crédito o contado
   stateStatus.ESTADO_1 = tipoOperacion && creditosProvided ? 'completed' : 'incomplete'
 
   // Compradores
@@ -531,8 +557,21 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     // En ese caso solo falta confirmar el tipo_persona y capturarlo en estructura v1.4 vía <DATA_UPDATE>.
     if (vendedores.length === 0 && !titularRegistral) requiredMissing.push('vendedores[]')
     if (!vendedorTipoPersona) requiredMissing.push('vendedores[].tipo_persona')
-    if (!titularRegistral && !vendedorConfirmadoComoTitular) blockingReasons.push('titular_registral_missing')
-    if (vendedorNombre && titularRegistral && normalizeForMatch(vendedorNombre) !== normalizeForMatch(titularRegistral) && !vendedorConfirmadoComoTitular) {
+    
+    // Si el vendedor viene del documento de inscripción y tiene nombre + tipo_persona, no bloquear
+    // (el documento es fuente de verdad)
+    const vendedorVieneDelDocumento = primerVendedor && (
+      infoInscripcion.propietario?.nombre ||
+      primerVendedor.titular_registral_confirmado === true
+    )
+    
+    // Solo bloquear por titular_registral si NO viene del documento
+    if (!titularRegistral && !vendedorConfirmadoComoTitular && !vendedorVieneDelDocumento) {
+      blockingReasons.push('titular_registral_missing')
+    }
+    
+    // Solo bloquear por mismatch si NO viene del documento y NO está confirmado
+    if (vendedorNombre && titularRegistral && normalizeForMatch(vendedorNombre) !== normalizeForMatch(titularRegistral) && !vendedorConfirmadoComoTitular && !vendedorVieneDelDocumento) {
       blockingReasons.push('vendedor_titular_mismatch')
     }
   }

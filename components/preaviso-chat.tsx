@@ -457,9 +457,42 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     try {
       documentBatchAbortRef.current?.abort()
     } catch {}
+    
+    // Eliminar mensaje de procesamiento (buscar por contenido o por ID que empiece con 'processing')
+    setMessages(prev => {
+      const filtered = prev.filter(m => {
+        // Eliminar mensajes de procesamiento del asistente
+        if (m.role === 'assistant' && (m.content === 'Procesando documento...' || m.content.includes('Procesando'))) {
+          return false
+        }
+        // Eliminar mensajes con ID que indique procesamiento
+        if (m.id && m.id.includes('processing') && m.role === 'assistant') {
+          return false
+        }
+        return true
+      })
+      
+      // Agregar mensaje de cancelación solo si no existe ya
+      const hasCancelMessage = filtered.some(m => 
+        m.content.includes('cancelado') || m.content.includes('Cancelado')
+      )
+      if (!hasCancelMessage) {
+        const cancelMessage: ChatMessage = {
+          id: generateMessageId('cancel'),
+          role: 'assistant',
+          content: 'Proceso cancelado. Puedes volver a intentar cuando gustes.',
+          timestamp: new Date()
+        }
+        return [...filtered, cancelMessage]
+      }
+      return filtered
+    })
+    
+    // Limpiar estado completamente
     setProcessingFileName(null)
     setProcessingProgress(0)
     setIsProcessingDocument(false)
+    setIsProcessing(false)
   }
 
   // Abort global para cancelar un batch completo de carga/procesamiento
@@ -605,6 +638,35 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
   }, [data, onExportReady, isCompleteByServer])
 
+  // Handler para pegar imágenes desde el portapapeles
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    // Buscar imagen en el portapapeles
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      
+      // Verificar si es una imagen
+      if (item.type.indexOf('image') !== -1) {
+        e.preventDefault() // Prevenir que se pegue como texto
+        
+        const blob = item.getAsFile()
+        if (!blob) continue
+
+        // Convertir blob a File
+        const file = new File([blob], `imagen-portapapeles-${Date.now()}.png`, {
+          type: blob.type || 'image/png',
+          lastModified: Date.now()
+        })
+
+        // Procesar como archivo subido
+        await handleFileUpload([file])
+        return
+      }
+    }
+  }
+
   const handleSend = async () => {
     if (!input.trim() || isProcessing) return
 
@@ -621,8 +683,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     setIsProcessing(true)
 
     try {
-      // Llamar al agente de IA
-      const response = await fetch('/api/ai/preaviso-chat', {
+      // Llamar al agente de IA (usando Plugin System V2)
+      const response = await fetch('/api/ai/preaviso-chat-v2', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -653,7 +715,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 informacionExtraida: d.extractedData
               })),
             expedienteExistente: expedienteExistente || undefined
-          }
+          },
+          tramiteId: activeTramiteId
         })
       })
 
@@ -681,8 +744,57 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           if (d.compradores !== undefined) nextData.compradores = d.compradores as any
           if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
           if (d.gravamenes !== undefined) nextData.gravamenes = d.gravamenes as any
-          if (d.inmueble) nextData.inmueble = d.inmueble as any
-          if (d.folios !== undefined) nextData.folios = d.folios as any
+          // CRÍTICO: Merge profundo de inmueble (en chat) para no perder datos extraídos del documento
+          // cuando el backend manda un update parcial (ej. solo existe_hipoteca).
+          if (Object.prototype.hasOwnProperty.call(d, 'inmueble')) {
+            const prevI: any = (nextData as any).inmueble || {}
+            const nextI: any = (d as any).inmueble
+            if (nextI && typeof nextI === 'object') {
+              const mergedDireccion =
+                (prevI?.direccion && nextI?.direccion)
+                  ? { ...prevI.direccion, ...nextI.direccion }
+                  : (nextI?.direccion ?? prevI?.direccion)
+              ;(nextData as any).inmueble = {
+                ...prevI,
+                ...nextI,
+                direccion: mergedDireccion,
+                folio_real: nextI?.folio_real ?? prevI?.folio_real ?? null,
+                partidas: nextI?.partidas ?? prevI?.partidas ?? [],
+                superficie: nextI?.superficie ?? prevI?.superficie ?? null,
+                existe_hipoteca: (nextI?.existe_hipoteca !== undefined ? nextI.existe_hipoteca : prevI?.existe_hipoteca),
+              }
+            } else if (nextI === null) {
+              ;(nextData as any).inmueble = prevI
+            }
+          }
+          // CRÍTICO: Merge estable de `folios` también en chat (handleSend), para no perder selection confirmada
+          if (d.folios !== undefined) {
+            const prevF: any = (nextData as any).folios || { candidates: [], selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false } }
+            const nextF: any = d.folios
+            const map = new Map<string, any>()
+            for (const c of [...(prevF.candidates || []), ...(nextF.candidates || [])]) {
+              const folio = String(c?.folio || '').replace(/\D/g, '')
+              const scope = c?.scope || 'otros'
+              if (!folio) continue
+              const key = `${scope}:${folio}`
+              const prevC = map.get(key) || {}
+              map.set(key, {
+                ...prevC,
+                ...c,
+                folio,
+                scope,
+                attrs: { ...(prevC.attrs || {}), ...(c.attrs || {}) },
+                sources: [...(prevC.sources || []), ...(c.sources || [])],
+              })
+            }
+            const preserveSelection =
+              prevF.selection?.confirmed_by_user === true &&
+              (!nextF.selection?.confirmed_by_user || !nextF.selection?.selected_folio)
+            ;(nextData as any).folios = {
+              candidates: Array.from(map.values()),
+              selection: preserveSelection ? prevF.selection : (nextF.selection || prevF.selection),
+            }
+          }
           if (d.control_impresion) nextData.control_impresion = d.control_impresion
           if (d.validaciones) nextData.validaciones = d.validaciones
 
@@ -786,8 +898,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
   }
 
-  const handleFileUpload = async (files: FileList | null) => {
+  const handleFileUpload = async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return
+    
+    // Convertir FileList a array si es necesario
+    const filesArray = Array.isArray(files) ? files : Array.from(files)
 
     setIsProcessingDocument(true)
     setProcessingProgress(0)
@@ -800,13 +915,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     documentBatchAbortRef.current = batchAbort
     
     // Separar PDFs e imágenes
-    const pdfFiles = Array.from(files).filter(
+    const pdfFiles = filesArray.filter(
       file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
     )
-    const imageFiles = Array.from(files).filter(file => !pdfFiles.includes(file))
+    const imageFiles = filesArray.filter(file => !pdfFiles.includes(file))
 
     // Agregar documentos originales a la lista (sin mostrar imágenes convertidas)
-    const originalDocs: UploadedDocument[] = Array.from(files).map(file => ({
+    const originalDocs: UploadedDocument[] = filesArray.map(file => ({
       id: generateMessageId('doc'),
       file,
       name: file.name,
@@ -817,13 +932,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     setUploadedDocuments(prev => [...prev, ...originalDocs])
 
     // Mensaje de usuario
-    const fileNames = Array.from(files).map(f => f.name)
+    const fileNames = filesArray.map(f => f.name)
     const fileMessage: ChatMessage = {
       id: generateMessageId('file'),
       role: 'user',
       content: `He subido el siguiente documento: ${fileNames.join(', ')}`,
       timestamp: new Date(),
-      attachments: Array.from(files)
+      attachments: filesArray
     }
     setMessages(prev => [...prev, fileMessage])
 
@@ -881,13 +996,60 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Procesar cada documento con IA
     try {
       if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-      // Determinar tipo de documento basado en el nombre original o contenido visual
+      // Inferir tipo de documento esperado basado en la última pregunta del agente
+      const inferExpectedDocumentType = (): string | null => {
+        // Obtener último mensaje del asistente
+        const lastAssistantMessage = [...messages]
+          .reverse()
+          .find(m => m.role === 'assistant')?.content || ''
+        
+        if (!lastAssistantMessage) return null
+        
+        const msg = lastAssistantMessage.toLowerCase()
+        
+        // Si pregunta por comprador o datos del comprador → esperar identificación
+        if (msg.includes('comprador') || msg.includes('adquirente') || 
+            msg.includes('quién será el comprador') || msg.includes('nombre del comprador') ||
+            msg.includes('datos del comprador') || msg.includes('identificación del comprador')) {
+          return 'identificacion'
+        }
+        
+        // Si pregunta por cónyuge → esperar identificación (default). Si el usuario sube acta,
+        // `detectDocumentType` la clasificará por nombre como acta_matrimonio.
+        // CRÍTICO: esto debe ir ANTES que el bloque de "estado civil", porque frases como
+        // "está casado" aparecen también en preguntas del cónyuge y causan falsos positivos.
+        if (msg.includes('cónyuge') || msg.includes('conyuge') || msg.includes('esposa') || msg.includes('esposo') ||
+            msg.includes('pareja') || msg.includes('nombre del cónyuge')) {
+          return 'identificacion'
+        }
+
+        // Si pregunta por estado civil → aceptar texto. Si el usuario sube acta, la detectamos por nombre.
+        // Nota: NO usar "está casado/soltero/..." como heurística aquí porque aparece en preguntas del cónyuge.
+        if (msg.includes('estado civil') || msg.includes('estado civil del comprador')) {
+          return 'acta_matrimonio'
+        }
+        
+        // Si pregunta por vendedor o titular registral → esperar identificación o inscripción
+        if (msg.includes('vendedor') || msg.includes('titular registral') || msg.includes('propietario')) {
+          return 'identificacion'
+        }
+        
+        // Si pregunta por folio real o inscripción → esperar inscripción
+        if (msg.includes('folio real') || msg.includes('hoja de inscripción') || msg.includes('inscripción')) {
+          return 'inscripcion'
+        }
+        
+        return null
+      }
+
+      // Determinar tipo de documento basado en el nombre original, contenido visual, o contexto
       const detectDocumentType = async (fileName: string, file: File): Promise<string> => {
         const name = fileName
           .toLowerCase()
           .normalize('NFD')
           .replace(/[\u0300-\u036f]/g, '')
-        // Detección por nombre
+        
+        // 1. Detección por nombre (prioridad alta)
         if (name.includes('inscripcion') || name.includes('hoja de inscripcion') || name.includes('folio real')) return 'inscripcion'
         if (name.includes('escritura') || name.includes('titulo') || name.includes('propiedad')) return 'escritura'
         if (name.includes('matrimonio') || name.includes('acta de matrimonio') || name.includes('acta_matrimonio')) return 'acta_matrimonio'
@@ -896,10 +1058,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             name.includes('pasaporte') || name.includes('licencia') || name.includes('curp') ||
             name.includes('generales') || name.includes('identidad') || name.includes('credencial')) return 'identificacion'
         
-        // Si no se puede determinar por nombre, intentar detectar visualmente
+        // 2. Inferir del contexto (última pregunta del agente)
+        const expectedType = inferExpectedDocumentType()
+        if (expectedType) {
+          return expectedType
+        }
+        
+        // 3. Detección por tamaño/tipo (fallback)
         // Para imágenes pequeñas o genéricas, asumir que puede ser identificación
-        // La IA Vision detectará automáticamente el tipo al procesar
-        if (file.type.startsWith('image/') && file.size < 5 * 1024 * 1024) { // Archivos pequeños probablemente son IDs
+        if (file.type.startsWith('image/') && file.size < 5 * 1024 * 1024) {
           return 'identificacion'
         }
         
@@ -919,9 +1086,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       for (let i = 0; i < allImageFiles.length; i++) {
         if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
         const imageFile = allImageFiles[i]
-        const originalFile = Array.from(files).find(f =>
+        const originalFile = filesArray.find(f =>
           imageFile.name.includes(f.name.replace(/\.[^.]+$/, ''))
-        ) || files[0]
+        ) || filesArray[0]
         const docType = await detectDocumentType(originalFile.name, originalFile)
         const originalKey = `${originalFile.name}:${originalFile.size}:${(originalFile as any).lastModified || ''}`
         items.push({ index: i, imageFile, originalFile, docType, originalKey })
@@ -986,11 +1153,101 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             const d = processResult.data
             if (d.tipoOperacion !== undefined) updated.tipoOperacion = d.tipoOperacion
             if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (updated as any)._document_intent = (d as any)._document_intent
-            if (d.vendedores !== undefined) updated.vendedores = d.vendedores as any
-            // CRÍTICO: Asegurar que compradores se actualice correctamente, incluso si viene como array vacío inicialmente
+            
+            // CRÍTICO: Merge inteligente de vendedores (no sobrescribir si ya existen)
+            if (d.vendedores !== undefined) {
+              const prevVendedores = Array.isArray(updated.vendedores) ? updated.vendedores : []
+              const nextVendedores = Array.isArray(d.vendedores) ? d.vendedores : []
+              
+              // Si hay vendedores previos y nuevos, hacer merge preservando los previos
+              if (prevVendedores.length > 0 && nextVendedores.length > 0) {
+                // Merge: preferir vendedores nuevos si tienen más información, pero preservar los previos si tienen datos importantes
+                const merged: any[] = []
+                const prevMap = new Map<string, any>()
+                prevVendedores.forEach((v: any, idx: number) => {
+                  const key = v?.party_id || `vendedor_${idx}`
+                  prevMap.set(key, v)
+                })
+                
+                // Agregar/actualizar con los nuevos
+                nextVendedores.forEach((v: any, idx: number) => {
+                  const key = v?.party_id || `vendedor_${idx}`
+                  const prev = prevMap.get(key)
+                  if (prev) {
+                    // Merge: preservar datos previos pero actualizar con nuevos
+                    merged.push({
+                      ...prev,
+                      ...v,
+                      // Preservar nombre si el nuevo no lo tiene
+                      persona_fisica: v.persona_fisica || prev.persona_fisica,
+                      persona_moral: v.persona_moral || prev.persona_moral,
+                      // Preservar confirmación si ya estaba confirmado
+                      titular_registral_confirmado: v.titular_registral_confirmado !== undefined 
+                        ? v.titular_registral_confirmado 
+                        : prev.titular_registral_confirmado
+                    })
+                    prevMap.delete(key)
+                  } else {
+                    merged.push(v)
+                  }
+                })
+                
+                // Agregar vendedores previos que no fueron actualizados
+                prevMap.forEach((v) => merged.push(v))
+                updated.vendedores = merged
+              } else if (nextVendedores.length > 0) {
+                // Si solo hay nuevos, usar esos
+                updated.vendedores = nextVendedores
+              }
+              // Si solo hay previos, mantenerlos (no hacer nada)
+            }
+            
+            // CRÍTICO: Merge inteligente de compradores (preservar cónyuge y otros datos importantes)
             if (d.compradores !== undefined) {
-              // Si el backend devuelve compradores, siempre usar esa versión (puede ser un array con el comprador recién creado)
-              updated.compradores = Array.isArray(d.compradores) ? d.compradores : (d.compradores as any)
+              const prevCompradores = Array.isArray(updated.compradores) ? updated.compradores : []
+              const nextCompradores = Array.isArray(d.compradores) ? d.compradores : []
+              
+              if (prevCompradores.length > 0 && nextCompradores.length > 0) {
+                // Merge: preservar compradores previos pero actualizar con nuevos
+                const merged: any[] = []
+                const prevMap = new Map<string, any>()
+                prevCompradores.forEach((c: any, idx: number) => {
+                  const key = c?.party_id || `comprador_${idx}`
+                  prevMap.set(key, c)
+                })
+                
+                // Agregar/actualizar con los nuevos
+                nextCompradores.forEach((c: any, idx: number) => {
+                  const key = c?.party_id || `comprador_${idx}`
+                  const prev = prevMap.get(key)
+                  if (prev) {
+                    // Merge profundo: preservar datos previos pero actualizar con nuevos
+                    merged.push({
+                      ...prev,
+                      ...c,
+                      // Preservar nombre si el nuevo no lo tiene
+                      persona_fisica: c.persona_fisica ? {
+                        ...prev.persona_fisica,
+                        ...c.persona_fisica,
+                        // CRÍTICO: Preservar cónyuge si ya existe y el nuevo no lo incluye
+                        conyuge: c.persona_fisica?.conyuge || prev.persona_fisica?.conyuge
+                      } : prev.persona_fisica,
+                      persona_moral: c.persona_moral || prev.persona_moral
+                    })
+                    prevMap.delete(key)
+                  } else {
+                    merged.push(c)
+                  }
+                })
+                
+                // Agregar compradores previos que no fueron actualizados
+                prevMap.forEach((c) => merged.push(c))
+                updated.compradores = merged
+              } else if (nextCompradores.length > 0) {
+                // Si solo hay nuevos, usar esos
+                updated.compradores = nextCompradores
+              }
+              // Si solo hay previos, mantenerlos (no hacer nada)
             }
             if (Object.prototype.hasOwnProperty.call(d, 'creditos')) updated.creditos = d.creditos as any
             if (d.gravamenes !== undefined) updated.gravamenes = d.gravamenes as any
@@ -1030,6 +1287,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   sources: [...(prevC.sources || []), ...(c.sources || [])],
                 })
               }
+              
+              // CRÍTICO: Preservar selección de folio si ya fue confirmada por el usuario
+              // Solo sobrescribir si el nuevo tiene una selección confirmada O si la previa no estaba confirmada
+              const preserveSelection = prevF.selection?.confirmed_by_user === true && 
+                                       (!nextF.selection?.confirmed_by_user || !nextF.selection?.selected_folio)
+              
+              updated.folios = {
+                candidates: Array.from(map.values()),
+                selection: preserveSelection 
+                  ? prevF.selection  // Preservar selección previa confirmada
+                  : (nextF.selection || prevF.selection)  // Usar nueva selección o preservar previa
+              }
               updated.folios = {
                 candidates: Array.from(map.values()),
                 // selection: el backend es autoridad (pero si no viene, conservar la previa)
@@ -1045,11 +1314,92 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           // CRÍTICO: También actualizar workingData directamente para que esté disponible inmediatamente
           // para el siguiente procesamiento (especialmente importante para documentos procesados secuencialmente)
           const d = processResult.data
+          // CRÍTICO: Merge inteligente de compradores (preservar cónyuge y otros datos importantes)
           if (d.compradores !== undefined) {
-            workingData.compradores = Array.isArray(d.compradores) ? d.compradores : (d.compradores as any)
+            const prevCompradores = Array.isArray(workingData.compradores) ? workingData.compradores : []
+            const nextCompradores = Array.isArray(d.compradores) ? d.compradores : []
+            
+            if (prevCompradores.length > 0 && nextCompradores.length > 0) {
+              // Merge: preservar compradores previos pero actualizar con nuevos
+              const merged: any[] = []
+              const prevMap = new Map<string, any>()
+              prevCompradores.forEach((c: any, idx: number) => {
+                const key = c?.party_id || `comprador_${idx}`
+                prevMap.set(key, c)
+              })
+              
+              // Agregar/actualizar con los nuevos
+              nextCompradores.forEach((c: any, idx: number) => {
+                const key = c?.party_id || `comprador_${idx}`
+                const prev = prevMap.get(key)
+                if (prev) {
+                  // Merge profundo: preservar datos previos pero actualizar con nuevos
+                  merged.push({
+                    ...prev,
+                    ...c,
+                    // Preservar nombre si el nuevo no lo tiene
+                    persona_fisica: c.persona_fisica ? {
+                      ...prev.persona_fisica,
+                      ...c.persona_fisica,
+                      // CRÍTICO: Preservar cónyuge si ya existe y el nuevo no lo incluye
+                      conyuge: c.persona_fisica?.conyuge || prev.persona_fisica?.conyuge
+                    } : prev.persona_fisica,
+                    persona_moral: c.persona_moral || prev.persona_moral
+                  })
+                  prevMap.delete(key)
+                } else {
+                  merged.push(c)
+                }
+              })
+              
+              // Agregar compradores previos que no fueron actualizados
+              prevMap.forEach((c) => merged.push(c))
+              workingData.compradores = merged
+            } else if (nextCompradores.length > 0) {
+              // Si solo hay nuevos, usar esos
+              workingData.compradores = nextCompradores
+            }
+            // Si solo hay previos, mantenerlos (no hacer nada)
           }
+          // CRÍTICO: Merge inteligente de vendedores (preservar existentes si el backend no los incluye)
           if (d.vendedores !== undefined) {
-            workingData.vendedores = d.vendedores as any
+            const prevVendedores = Array.isArray(workingData.vendedores) ? workingData.vendedores : []
+            const nextVendedores = Array.isArray(d.vendedores) ? d.vendedores : []
+            
+            if (prevVendedores.length > 0 && nextVendedores.length > 0) {
+              // Merge: preservar vendedores previos pero actualizar con nuevos
+              const merged: any[] = []
+              const prevMap = new Map<string, any>()
+              prevVendedores.forEach((v: any, idx: number) => {
+                const key = v?.party_id || `vendedor_${idx}`
+                prevMap.set(key, v)
+              })
+              
+              nextVendedores.forEach((v: any, idx: number) => {
+                const key = v?.party_id || `vendedor_${idx}`
+                const prev = prevMap.get(key)
+                if (prev) {
+                  merged.push({
+                    ...prev,
+                    ...v,
+                    persona_fisica: v.persona_fisica || prev.persona_fisica,
+                    persona_moral: v.persona_moral || prev.persona_moral,
+                    titular_registral_confirmado: v.titular_registral_confirmado !== undefined 
+                      ? v.titular_registral_confirmado 
+                      : prev.titular_registral_confirmado
+                  })
+                  prevMap.delete(key)
+                } else {
+                  merged.push(v)
+                }
+              })
+              
+              prevMap.forEach((v) => merged.push(v))
+              workingData.vendedores = merged
+            } else if (nextVendedores.length > 0) {
+              workingData.vendedores = nextVendedores
+            }
+            // Si solo hay previos, mantenerlos (no hacer nada)
           }
           if (d.tipoOperacion !== undefined) {
             workingData.tipoOperacion = d.tipoOperacion
@@ -1198,6 +1548,22 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       const processOne = async (item: ImgItem) => {
         if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        // CRÍTICO: Sincronizar workingData con dataRef.current justo antes de enviar contexto
+        // Esto asegura que tengamos la última versión del contexto, incluyendo _document_intent
+        // que se establece cuando el asistente pregunta por el cónyuge
+        workingData = dataRef.current
+        workingDocs = uploadedDocumentsRef.current
+
+        // DEBUG: verificar _document_intent en el momento exacto de procesar documento
+        console.log('[PreavisoChat] processOne -> context snapshot', {
+          file: item?.originalFile?.name,
+          docType: item?.docType,
+          _document_intent: (workingData as any)?._document_intent ?? null,
+          comprador0: workingData?.compradores?.[0]?.persona_fisica?.nombre || workingData?.compradores?.[0]?.persona_moral?.denominacion_social || null,
+          comprador0EstadoCivil: workingData?.compradores?.[0]?.persona_fisica?.estado_civil || null,
+          conyuge: workingData?.compradores?.[0]?.persona_fisica?.conyuge?.nombre || null,
+        })
+        
         // Contexto actual (snapshot) para que el backend devuelva merge + state.
         // Para PDFs (inscripción/escritura/plano) la dependencia de contexto es baja.
         // Para identificaciones dejamos concurrencia=1 (ver pool abajo).
@@ -1248,7 +1614,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
         let processResponse: Response
         try {
-          processResponse = await fetchWithTimeout('/api/ai/preaviso-process-document', {
+          processResponse = await fetchWithTimeout('/api/ai/preaviso-process-document-v2', {
             method: 'POST',
             headers,
             body: formData
@@ -1318,6 +1684,21 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       setProcessingProgress(95) // 95% consultando al agente
 
+      // CRÍTICO: Sincronizar workingData con dataRef.current justo antes de enviar contexto al chat
+      // Esto asegura que tengamos la última versión del contexto, incluyendo _document_intent
+      // que se establece cuando el asistente pregunta por el cónyuge
+      workingData = dataRef.current
+      workingDocs = uploadedDocumentsRef.current
+
+      // DEBUG: verificar que el chat reciba el contexto actualizado (incluye _document_intent y cónyuge si ya fue capturado)
+      console.log('[PreavisoChat] before /preaviso-chat-v2 -> context snapshot', {
+        _document_intent: (workingData as any)?._document_intent ?? null,
+        comprador0: workingData?.compradores?.[0]?.persona_fisica?.nombre || workingData?.compradores?.[0]?.persona_moral?.denominacion_social || null,
+        comprador0EstadoCivil: workingData?.compradores?.[0]?.persona_fisica?.estado_civil || null,
+        conyuge: workingData?.compradores?.[0]?.persona_fisica?.conyuge?.nombre || null,
+        creditos: Array.isArray(workingData?.creditos) ? `len=${workingData.creditos.length}` : (workingData?.creditos === undefined ? 'undefined' : 'other'),
+      })
+
       // Después de procesar, consultar al agente de IA para determinar siguientes pasos
       const newDocuments = [...workingData.documentos, ...fileNames]
       
@@ -1337,7 +1718,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         })
         .join('\n\n')
 
-      const chatResponse = await fetch('/api/ai/preaviso-chat', {
+      const chatResponse = await fetch('/api/ai/preaviso-chat-v2', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1370,7 +1751,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 tipo: d.documentType || 'desconocido',
                 informacionExtraida: d.extractedData
               }))
-          }
+          },
+          tramiteId: activeTramiteId
         })
       })
 
@@ -1397,6 +1779,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             if (d.control_impresion) nextData.control_impresion = d.control_impresion
             if (d.validaciones) nextData.validaciones = d.validaciones
             nextData.actosNotariales = determineActosNotariales(nextData)
+            
+            // CRÍTICO: dataRef.current se actualiza automáticamente en el useEffect cuando data cambia
+            // Pero necesitamos actualizar workingData inmediatamente para que esté disponible en este batch
+            // Nota: dataRef.current se actualizará cuando React ejecute el useEffect, pero workingData
+            // se actualiza aquí mismo porque está en el scope del handleFileUpload
+            workingData = nextData
+            dataRef.current = nextData
+            
             return nextData
           })
         }
@@ -2040,12 +2430,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       if (contadoMatch) {
         // Contado = sin créditos (v1.4)
-        if (currentData.creditos && currentData.creditos.length > 0) {
-          updates.creditos = []
-          hasUpdates = true
-        }
+        // Establecer creditos = [] cuando el usuario explícitamente confirma contado
+        // Esto marca creditosProvided = true y ESTADO_1 como completed
+        updates.creditos = []
+        hasUpdates = true
       } else if (seraCreditoMatch || creditoMatch || (creditoSimpleMatch && userInput.match(/(?:sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|confirmo|confirmado)/i))) {
         // Crédito detectado (v1.4)
+        // Solo establecer creditos si el usuario explícitamente confirma crédito
         if (!currentData.creditos || currentData.creditos.length === 0) {
           updates.creditos = [{
             credito_id: null,
@@ -2583,13 +2974,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   ref={textInputRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
+                  onPaste={handlePaste}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault()
                       handleSend()
                     }
                   }}
-                  placeholder="Escribe tu mensaje..."
+                  placeholder="Escribe tu mensaje o pega una imagen (Ctrl+V / Cmd+V)..."
                   className="min-h-[44px] max-h-[120px] resize-none border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-2xl bg-gray-50 focus:bg-white transition-all pr-12"
                   disabled={isProcessing}
                 />
@@ -2675,10 +3067,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     {data.tipoOperacion ? (
                       <>
                         <div><span className="font-medium">Tipo de operación:</span> {data.tipoOperacion}</div>
-                        {data.creditos && data.creditos.length > 0 ? (
-                          <div><span className="font-medium">Forma de pago:</span> Crédito</div>
-                        ) : data.creditos && data.creditos.length === 0 ? (
-                          <div><span className="font-medium">Forma de pago:</span> Contado</div>
+                        {serverState?.state_status?.ESTADO_1 === 'completed' ? (
+                          data.creditos !== undefined && data.creditos.length > 0 ? (
+                            <div><span className="font-medium">Forma de pago:</span> Crédito</div>
+                          ) : data.creditos !== undefined && data.creditos.length === 0 ? (
+                            <div><span className="font-medium">Forma de pago:</span> Contado</div>
+                          ) : (
+                            <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
+                          )
                         ) : (
                           <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
                         )}
@@ -2901,7 +3297,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   </div>
                   <div className="ml-6 space-y-1 text-xs text-gray-600">
                     {data.tipoOperacion ? (
-                      data.creditos && data.creditos.length > 0 ? (
+                      // Verificar estado del servidor para determinar si está pendiente
+                      serverState?.state_status?.ESTADO_5 === 'pending' ? (
+                        <div className="text-gray-400 italic">Pendiente: aún no se ha confirmado si será crédito o contado</div>
+                      ) : data.creditos !== undefined && data.creditos.length > 0 ? (
                         <>
                           {data.creditos.map((credito, idx) => (
                             <div key={idx} className="mb-2">
@@ -2917,8 +3316,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                             </div>
                           ))}
                         </>
-                      ) : (
+                      ) : data.creditos !== undefined && data.creditos.length === 0 ? (
                         <div className="text-gray-500">No aplica (pago de contado)</div>
+                      ) : (
+                        <div className="text-gray-400 italic">Pendiente: aún no se ha confirmado si será crédito o contado</div>
                       )
                     ) : (
                       <div className="text-gray-400 italic">Pendiente</div>
