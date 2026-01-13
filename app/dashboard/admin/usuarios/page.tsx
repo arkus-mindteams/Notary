@@ -42,8 +42,12 @@ export default function AdminUsuariosPage() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([])
   const [notarias, setNotarias] = useState<Notaria[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingUsuario, setEditingUsuario] = useState<Usuario | null>(null)
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [usuarioToDelete, setUsuarioToDelete] = useState<Usuario | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [formData, setFormData] = useState<Partial<CreateUsuarioRequest>>({
     nombre: '',
     apellido_paterno: '',
@@ -132,29 +136,60 @@ export default function AdminUsuariosPage() {
 
   const handleSubmit = async () => {
     try {
+      setIsSubmitting(true)
+      
       if (!session) {
         toast.error('No hay sesión activa')
+        setIsSubmitting(false)
         return
       }
 
       // Validaciones
-      if (!formData.email || !formData.nombre || !formData.rol) {
-        toast.error('Campos requeridos faltantes')
+      if(!formData.nombre && !formData.apellido_paterno && !formData.telefono && !formData.email && (!editingUsuario && !formData.password)) {
+        toast.error('Todos los campos son requeridos')
+        setIsSubmitting(false)
+        return
+      }
+      
+      if (!formData.nombre || !formData.apellido_paterno) {
+        toast.error('El nombre y apellido son requeridos')
+        setIsSubmitting(false)
+        return
+      }
+
+      if (!formData.telefono) {
+        toast.error('El teléfono es requerido')
+        setIsSubmitting(false)
+        return
+      }
+
+      if (!formData.rol) {
+        toast.error('El rol es requerido')
+        setIsSubmitting(false)
+        return
+      }
+
+      if (!formData.email) {
+        toast.error('El correo electrónico es requerido')
+        setIsSubmitting(false)
         return
       }
 
       if (!editingUsuario && !formData.password) {
         toast.error('La contraseña es requerida para nuevos usuarios')
+        setIsSubmitting(false)
         return
       }
 
       if (formData.rol === 'abogado' && !formData.notaria_id) {
         toast.error('Los abogados deben tener una notaría asignada')
+        setIsSubmitting(false)
         return
       }
 
       if (formData.rol === 'superadmin' && formData.notaria_id) {
         toast.error('El superadmin no debe tener notaría asignada')
+        setIsSubmitting(false)
         return
       }
 
@@ -162,21 +197,32 @@ export default function AdminUsuariosPage() {
       
       if (!currentSession) {
         toast.error('No hay sesión activa')
+        setIsSubmitting(false)
         return
       }
 
       if (editingUsuario) {
+        // Guardar el ID en una variable local para evitar que se pierda
+        const usuarioId = editingUsuario.id
+        
+        // Validar que el ID esté presente
+        if (!usuarioId || usuarioId === 'undefined' || usuarioId === 'null') {
+          toast.error('Error al actualizar usuario', { description: 'ID de usuario no válido' })
+          setIsSubmitting(false)
+          return
+        }
+
         // Actualizar
         const updateData: UpdateUsuarioRequest = {
           nombre: formData.nombre,
           apellido_paterno: formData.apellido_paterno,
-          apellido_materno: null, // Solo usamos un apellido
+          apellido_materno: undefined, // Solo usamos un apellido
           telefono: formData.telefono,
           rol: formData.rol,
           notaria_id: formData.notaria_id || null,
         }
 
-        const res = await fetch(`/api/admin/usuarios/${editingUsuario.id}`, {
+        const res = await fetch(`/api/admin/usuarios/${usuarioId}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -186,8 +232,17 @@ export default function AdminUsuariosPage() {
         })
 
         if (!res.ok) {
-          const error = await res.json()
-          throw new Error(error.message || 'Error actualizando usuario')
+          let errorMessage = 'Error actualizando usuario'
+          try {
+            const error = await res.json()
+            errorMessage = error.message || errorMessage
+          } catch {
+            // Si no se puede parsear el JSON, usar el mensaje por defecto
+            errorMessage = `Error al actualizar usuario: ${res.status} ${res.statusText}`
+          }
+          toast.error('Error al actualizar usuario', { description: errorMessage })
+          setIsSubmitting(false)
+          return
         }
 
         toast.success('Usuario actualizado correctamente')
@@ -198,7 +253,7 @@ export default function AdminUsuariosPage() {
           password: formData.password!,
           nombre: formData.nombre!,
           apellido_paterno: formData.apellido_paterno,
-          apellido_materno: null, // Solo usamos un apellido
+          apellido_materno: undefined, // Solo usamos un apellido
           telefono: formData.telefono,
           rol: formData.rol!,
           notaria_id: formData.notaria_id || null,
@@ -214,28 +269,49 @@ export default function AdminUsuariosPage() {
         })
 
         if (!res.ok) {
-          const error = await res.json()
-          throw new Error(error.message || 'Error creando usuario')
+          let errorMessage = 'Error creando usuario'
+          try {
+            const error = await res.json()
+            errorMessage = error.message || errorMessage
+          } catch {
+            // Si no se puede parsear el JSON, usar el mensaje por defecto
+            errorMessage = `Error al crear usuario: ${res.status} ${res.statusText}`
+          }
+          toast.error('Error al crear usuario', { description: errorMessage })
+          setIsSubmitting(false)
+          return
         }
 
         toast.success('Usuario creado correctamente')
       }
 
       setIsDialogOpen(false)
-      loadData()
+      setIsSubmitting(false)
+      await loadData()
     } catch (error: any) {
-      toast.error('Error', { description: error.message })
+      // Este catch maneja errores que no sean de actualización/creación
+      // (por ejemplo, errores en loadData o validaciones)
+      toast.error('Error', { description: error.message || 'Ocurrió un error inesperado' })
+      setIsSubmitting(false)
     }
   }
 
-  const handleDelete = async (usuario: Usuario) => {
-    if (!confirm(`¿Estás seguro de desactivar a ${usuario.nombre}?`)) {
+  const handleDelete = (usuario: Usuario) => {
+    setUsuarioToDelete(usuario)
+    setIsDeleteDialogOpen(true)
+  }
+
+  const confirmDelete = async () => {
+    if (!usuarioToDelete) {
       return
     }
 
     try {
+      setIsDeleting(true)
+      
       if (!session) {
         toast.error('No hay sesión activa')
+        setIsDeleting(false)
         return
       }
 
@@ -243,10 +319,11 @@ export default function AdminUsuariosPage() {
       
       if (!currentSession) {
         toast.error('No hay sesión activa')
+        setIsDeleting(false)
         return
       }
 
-      const res = await fetch(`/api/admin/usuarios/${usuario.id}`, {
+      const res = await fetch(`/api/admin/usuarios/${usuarioToDelete.id}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${currentSession.access_token}`,
@@ -259,9 +336,13 @@ export default function AdminUsuariosPage() {
       }
 
       toast.success('Usuario desactivado correctamente')
-      loadData()
+      setIsDeleteDialogOpen(false)
+      setUsuarioToDelete(null)
+      await loadData()
     } catch (error: any) {
       toast.error('Error', { description: error.message })
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -341,7 +422,7 @@ export default function AdminUsuariosPage() {
                         <TableCell>
                           <span className={`px-2 py-1 rounded text-xs font-medium uppercase ${
                             usuario.rol === 'superadmin'
-                              ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                              ? 'bg-indigo-100 text-sky-700 border border-sky-200'
                               : 'bg-slate-100 text-slate-700 border border-slate-200'
                           }`}>
                             {usuario.rol === 'superadmin' ? 'Administrador' : usuario.rol}
@@ -377,9 +458,14 @@ export default function AdminUsuariosPage() {
                               >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
-                            ) : (
-                              // Placeholder para mantener el espacio
-                              <div className="w-8 h-8" />
+                            ) :  (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="invisible pointer-events-none"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
                             )}
                           </div>
                         </TableCell>
@@ -393,7 +479,16 @@ export default function AdminUsuariosPage() {
         </Card>
 
         {/* Dialog para crear/editar */}
-        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+        <Dialog 
+          open={isDialogOpen} 
+          onOpenChange={(open) => {
+            if (!open && !isSubmitting) {
+              setIsDialogOpen(false)
+              setEditingUsuario(null)
+              setIsSubmitting(false)
+            }
+          }}
+        >
           <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>
@@ -537,11 +632,76 @@ export default function AdminUsuariosPage() {
             <hr className="my-2" />
 
             <DialogFooter>
-              <Button onClick={() => setIsDialogOpen(false)} className="cursor-pointer bg-white border hover:bg-gray-100 text-black py-2.5">
+              <Button 
+                onClick={() => {
+                  setIsDialogOpen(false)
+                  setEditingUsuario(null)
+                  setIsSubmitting(false)
+                }} 
+                disabled={isSubmitting}
+                className="cursor-pointer bg-white border hover:bg-gray-100 text-black py-2.5"
+              >
                 Cancelar
               </Button>
-              <Button onClick={handleSubmit}  className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white py-2.5">
-                {editingUsuario ? 'Guardar Cambios' : 'Registrar Usuario'}
+              <Button 
+                onClick={handleSubmit}
+                disabled={isSubmitting}
+                className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white py-2.5"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    {editingUsuario ? 'Guardando...' : 'Registrando...'}
+                  </>
+                ) : (
+                  editingUsuario ? 'Guardar Cambios' : 'Registrar Usuario'
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Dialog de confirmación para eliminar */}
+        <Dialog 
+          open={isDeleteDialogOpen} 
+          onOpenChange={(open) => {
+            if (!open && !isDeleting) {
+              setIsDeleteDialogOpen(false)
+              setUsuarioToDelete(null)
+            }
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Confirmar desactivación</DialogTitle>
+              <DialogDescription>
+                ¿Estás seguro de que deseas desactivar a {usuarioToDelete?.nombre} {usuarioToDelete?.apellido_paterno || ''}?
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button 
+                onClick={() => {
+                  setIsDeleteDialogOpen(false)
+                  setUsuarioToDelete(null)
+                }} 
+                disabled={isDeleting}
+                className="cursor-pointer bg-white border hover:bg-gray-100 text-black py-2.5"
+              >
+                Cancelar
+              </Button>
+              <Button 
+                onClick={confirmDelete}
+                disabled={isDeleting}
+                className="cursor-pointer bg-red-600 hover:bg-red-700 text-white py-2.5"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Desactivando...
+                  </>
+                ) : (
+                  'Desactivar Usuario'
+                )}
               </Button>
             </DialogFooter>
           </DialogContent>
