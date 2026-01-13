@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Button } from '@/components/ui/button'
@@ -31,7 +31,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { toast } from 'sonner'
-import { Plus, Edit, Trash2, X, Loader2 } from 'lucide-react'
+import { Plus, Edit, Trash2, X, Loader2, RefreshCw } from 'lucide-react'
 import { createBrowserClient } from '@/lib/supabase'
 import type { Usuario, Notaria, CreateUsuarioRequest, UpdateUsuarioRequest } from '@/lib/types/auth-types'
 import { useMemo } from 'react'
@@ -57,6 +57,9 @@ export default function AdminUsuariosPage() {
     email: '',
     password: '',
   })
+  const hasLoadedDataRef = useRef(false)
+  const lastUserIdRef = useRef<string | undefined>(undefined)
+  const isLoadingRef = useRef(false)
 
   // Verificar que sea superadmin
   useEffect(() => {
@@ -65,15 +68,14 @@ export default function AdminUsuariosPage() {
     }
   }, [currentUser])
 
-  // Cargar datos
-  useEffect(() => {
-    if (currentUser?.role === 'superadmin' && session) {
-      loadData()
+  const loadData = useCallback(async () => {
+    // Evitar múltiples requests simultáneos
+    if (isLoadingRef.current) {
+      return
     }
-  }, [currentUser, session])
 
-  const loadData = async () => {
     try {
+      isLoadingRef.current = true
       setIsLoading(true)
       const { data: { session: currentSession } } = await supabase.auth.getSession()
       
@@ -103,9 +105,61 @@ export default function AdminUsuariosPage() {
     } catch (error: any) {
       toast.error('Error cargando datos', { description: error.message })
     } finally {
+      isLoadingRef.current = false
       setIsLoading(false)
     }
-  }
+  }, [supabase])
+
+  // Detectar cuando la página vuelve a estar visible y resetear isLoading si está atascado
+  useEffect(() => {
+    let timeoutId: NodeJS.Timeout | null = null
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Si la página vuelve a estar visible y isLoading está en true,
+        // dar 3 segundos y luego resetear si sigue en true (probablemente está atascado)
+        timeoutId = setTimeout(() => {
+          if (isLoadingRef.current) {
+            isLoadingRef.current = false
+            setIsLoading(false)
+          }
+        }, 3000)
+      } else {
+        // Limpiar timeout si la página se oculta
+        if (timeoutId) {
+          clearTimeout(timeoutId)
+          timeoutId = null
+        }
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
+    }
+  }, [])
+
+  // Cargar datos solo cuando es necesario (montaje inicial o cambio de usuario/sesión)
+  useEffect(() => {
+    if (currentUser?.role === 'superadmin' && session) {
+      // Si cambió el usuario o es la primera carga, recargar datos
+      const userChanged = currentUser.id !== lastUserIdRef.current
+      const isFirstLoad = !hasLoadedDataRef.current
+      
+      if (userChanged || isFirstLoad) {
+        loadData()
+        hasLoadedDataRef.current = true
+        lastUserIdRef.current = currentUser.id
+      }
+    } else {
+      // Si no hay sesión o no es superadmin, resetear el ref
+      hasLoadedDataRef.current = false
+      lastUserIdRef.current = undefined
+    }
+  }, [currentUser, session, loadData])
 
   const handleCreate = () => {
     setEditingUsuario(null)
@@ -374,10 +428,25 @@ export default function AdminUsuariosPage() {
             <h1 className="text-3xl font-bold text-gray-900">Gestión de Usuarios</h1>
             <p className="text-gray-600 mt-1">Administra los usuarios del sistema</p>
           </div>
-          <Button onClick={handleCreate} className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white font-bold py-2.5">
-            <Plus className="h-4 w-4 mr-2" />
-            Nuevo usuario
-          </Button>
+          <div className="flex gap-2">
+            <Button 
+              onClick={() => {
+                // Forzar ejecución incluso si isLoading está en true
+                isLoadingRef.current = false
+                loadData()
+              }} 
+              disabled={isLoading}
+              variant="outline"
+              className="cursor-pointer border-gray-300 hover:bg-gray-200 text-gray-700 font-bold py-2.5 hover:text-gray-800"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+              Actualizar tabla
+            </Button>
+            <Button onClick={handleCreate} className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white font-bold py-2.5">
+              <Plus className="h-4 w-4 mr-2" />
+              Nuevo usuario
+            </Button>
+          </div>
         </div>
 
         <Card>
