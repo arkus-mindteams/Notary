@@ -5,6 +5,7 @@
 
 import { NextResponse } from 'next/server'
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
+import { PreavisoConversationLogService } from '@/lib/services/preaviso-conversation-log-service'
 
 export async function POST(req: Request) {
   try {
@@ -67,6 +68,51 @@ export async function POST(req: Request) {
       context || {},
       messages.slice(-10) // Últimos 10 mensajes para contexto
     )
+
+    // Logging (DB): guardar historial para QA/debugging
+    try {
+      const conversationId =
+        context?.conversation_id ||
+        body?.conversation_id ||
+        null
+
+      // Si el frontend no mandó conversation_id, no registrar (evitamos generar IDs en server sin devolverlos aún).
+      if (conversationId) {
+        const asUuidOrNull = (v: any): string | null => {
+          if (!v || typeof v !== 'string') return null
+          const s = v.trim()
+          return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : null
+        }
+        const tramiteIdForLog =
+          asUuidOrNull(context?.tramiteId) ||
+          asUuidOrNull(tramiteIdFromBody) ||
+          null
+
+        const lastAssistantMessage = result.message || null
+        const nextMessages = [
+          ...(Array.isArray(messages) ? messages : []),
+          ...(lastAssistantMessage ? [{ role: 'assistant', content: lastAssistantMessage }] : [])
+        ]
+        const meta = {
+          user_agent: req.headers.get('user-agent'),
+          ts: new Date().toISOString(),
+          tramite_id_raw: typeof tramiteIdFromBody === 'string' ? tramiteIdFromBody : null,
+        }
+        await PreavisoConversationLogService.upsert({
+          conversationId: String(conversationId),
+          tramiteId: tramiteIdForLog,
+          pluginId,
+          messages: nextMessages as any,
+          lastUserMessage,
+          lastAssistantMessage,
+          context,
+          state: result.state,
+          meta,
+        })
+      }
+    } catch (e) {
+      console.error('[preaviso-chat-v2] logging error', e)
+    }
 
     // Retornar respuesta (formato compatible con frontend)
     // El frontend espera: { message(s), data, state }

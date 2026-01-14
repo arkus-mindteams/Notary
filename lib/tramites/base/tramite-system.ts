@@ -214,6 +214,75 @@ export class TramiteSystem {
       updatedContext = { ...updatedContext, ...documentIntentUpdate }
     }
 
+    // 8.2. Inferir la intención de la última pregunta (para respuestas cortas y context-aware parsing)
+    const inferLastQuestionIntent = (): string | null => {
+      if (tramiteId !== 'preaviso') return null
+
+      // Si ya está todo completo, no hay intención pendiente
+      const missingNow = this.stateMachine.getMissingStates(plugin, updatedContext)
+      if (missingNow.length === 0) return null
+
+      // Heurísticas por estado y campos faltantes
+      const stateId = newState.id
+      const buyer0 = updatedContext?.compradores?.[0]
+
+      if (stateId === 'ESTADO_1') {
+        if (updatedContext?.creditos === undefined) return 'payment_method'
+        if (Array.isArray(updatedContext?.creditos) && updatedContext.creditos.length > 0) {
+          const inst = updatedContext.creditos[0]?.institucion
+          if (!inst) return 'credit_institution'
+        }
+      }
+      if (stateId === 'ESTADO_4') {
+        const buyerName = buyer0?.persona_fisica?.nombre || buyer0?.persona_moral?.denominacion_social
+        if (!buyerName) return 'buyer_name'
+        if (!buyer0?.tipo_persona) return 'buyer_tipo_persona'
+        if (buyer0?.tipo_persona === 'persona_fisica' && !buyer0?.persona_fisica?.estado_civil) return 'estado_civil'
+      }
+      if (stateId === 'ESTADO_4B') {
+        if (buyer0?.persona_fisica?.estado_civil === 'casado' && !buyer0?.persona_fisica?.conyuge?.nombre) {
+          return 'conyuge_name'
+        }
+      }
+      if (stateId === 'ESTADO_5') {
+        const inst = updatedContext?.creditos?.[0]?.institucion
+        if (!inst) return 'credit_institution'
+        const parts = updatedContext?.creditos?.[0]?.participantes
+        if (!parts || parts.length === 0) return 'credit_participants'
+      }
+      if (stateId === 'ESTADO_2') {
+        if (!updatedContext?.inmueble?.folio_real) return 'folio_real'
+        const partidas = updatedContext?.inmueble?.partidas || []
+        if (!Array.isArray(partidas) || partidas.length === 0) return 'partidas'
+        const direccion = updatedContext?.inmueble?.direccion?.calle
+        if (!direccion) return 'inmueble_direccion'
+      }
+      if (stateId === 'ESTADO_3') {
+        const vendedor0 = updatedContext?.vendedores?.[0]
+        const vendedorNombre =
+          vendedor0?.persona_fisica?.nombre ||
+          vendedor0?.persona_moral?.denominacion_social
+        if (!vendedorNombre) return 'seller_name'
+        if (!vendedor0?.tipo_persona) return 'seller_tipo_persona'
+      }
+      if (stateId === 'ESTADO_6') {
+        if (updatedContext?.inmueble?.existe_hipoteca === null || updatedContext?.inmueble?.existe_hipoteca === undefined) {
+          return 'encumbrance'
+        }
+      }
+      if (stateId === 'ESTADO_6B') {
+        return 'encumbrance_cancellation'
+      }
+
+      return null
+    }
+
+    const lastIntent = inferLastQuestionIntent()
+    updatedContext = {
+      ...updatedContext,
+      _last_question_intent: lastIntent
+    }
+
     // 9. Obtener estados completados y faltantes
     const completed = this.stateMachine.getCompletedStates(plugin, updatedContext)
     const missing = this.stateMachine.getMissingStates(plugin, updatedContext)

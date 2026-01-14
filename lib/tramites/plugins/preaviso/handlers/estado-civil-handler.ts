@@ -10,8 +10,9 @@ export class EstadoCivilHandler {
     command: EstadoCivilCommand,
     context: any
   ): Promise<HandlerResult> {
-    // 1. Validar
-    const validation = ValidationService.validateEstadoCivil(command.payload.estadoCivil)
+    // 1. Normalizar + validar
+    const normalized = ValidationService.normalizeEstadoCivil(command.payload.estadoCivil)
+    const validation = ValidationService.validateEstadoCivil(normalized)
     if (!validation.valid) {
       throw new Error(validation.error)
     }
@@ -36,7 +37,7 @@ export class EstadoCivilHandler {
       tipo_persona: buyer.tipo_persona || 'persona_fisica',
       persona_fisica: {
         ...buyer.persona_fisica,
-        estado_civil: command.payload.estadoCivil
+        estado_civil: normalized
       }
     }
 

@@ -294,9 +294,12 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   // - Si hay candidatos y no está confirmado => folioReal = null (siempre pedir confirmación/selección)
   // - Si no hay candidatos => mantener null y pedir al usuario que lo indique
   const hasAnyCandidates = foliosRealesCandidates.length > 0
+  // Folio efectivo:
+  // - Si hay candidatos (vienen típicamente de hoja de inscripción): exigir confirmación explícita del usuario.
+  // - Si NO hay candidatos (captura manual): aceptar `inmueble.folio_real` como fuente directa.
   const folioReal = hasAnyCandidates
     ? (folioConfirmed && folioInCandidates ? selectedFolio : null)
-    : null
+    : (inmueble?.folio_real ? String(inmueble.folio_real) : null)
 
   if (PREAVISO_DEBUG) {
     console.info('[preaviso-state] folios detectados', {
@@ -330,7 +333,8 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   const valor = inmueble?.valor || infoInscripcion.valor
 
   // Nota: "valor" NO es obligatorio para avanzar (solo se captura si el usuario lo proporciona/confirmar).
-  const estado2Completo = !!(folioReal && (partidas?.length || 0) > 0 && direccion && superficie)
+  // Superficie NO debe bloquear el flujo (si el usuario no la tiene o la considera irrelevante).
+  const estado2Completo = !!(folioReal && (partidas?.length || 0) > 0 && direccion)
   stateStatus.ESTADO_2 = estado2Completo ? 'completed' : 'incomplete'
 
   // Vendedor/titular
@@ -548,7 +552,7 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     if (hasMultiplePartidas && partidasSeleccionadas.length !== 1) blockingReasons.push('multiple_partida_detected')
     if ((partidas?.length || 0) === 0) requiredMissing.push('inmueble.partidas')
     if (!direccion) requiredMissing.push('inmueble.direccion')
-    if (!superficie) requiredMissing.push('inmueble.superficie')
+    // Superficie NO es obligatoria
     // inmueble.valor NO es obligatorio
   }
 

@@ -60,9 +60,30 @@ export class ConyugeService {
   }
 
   /**
+   * Normalización tolerante para matching (ignora comas/orden y espacios).
+   * Ej: "WU, JINWEI" ≈ "JINWEI WU"
+   */
+  static normalizeNameForMatch(name: string): string {
+    const base = this.normalizeName(name)
+    const tokens = base
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean)
+    // Quitar tokens muy cortos que suelen ser ruido (ej. iniciales)
+    const filtered = tokens.filter(t => t.length >= 2)
+    filtered.sort()
+    return filtered.join(' ')
+  }
+
+  /**
    * Compara dos nombres (normalizados)
    */
   static namesMatch(name1: string, name2: string): boolean {
-    return this.normalizeName(name1) === this.normalizeName(name2)
+    const a = this.normalizeName(String(name1 || ''))
+    const b = this.normalizeName(String(name2 || ''))
+    if (!a || !b) return false
+    if (a === b) return true
+    // Fallback tolerante: comparar por tokens ordenados
+    return this.normalizeNameForMatch(a) === this.normalizeNameForMatch(b)
   }
 }

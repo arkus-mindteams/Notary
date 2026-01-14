@@ -103,6 +103,28 @@ export interface EncumbranceCommand extends Command {
   }
 }
 
+export interface InmuebleManualCommand extends Command {
+  type: 'inmueble_manual'
+  payload: {
+    folio_real?: string | null
+    partidas?: string[]
+    direccion?: {
+      calle?: string | null
+      municipio?: string | null
+      estado?: string | null
+      colonia?: string | null
+    } | null
+    datos_catastrales?: {
+      unidad?: string | null
+      condominio?: string | null
+      fraccionamiento?: string | null
+      lote?: string | null
+      manzana?: string | null
+    } | null
+    seccion?: string | null
+  }
+}
+
 export interface DocumentProcessedCommand extends Command {
   type: 'document_processed'
   payload: {

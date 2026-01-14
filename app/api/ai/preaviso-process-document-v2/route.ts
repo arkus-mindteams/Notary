@@ -5,6 +5,7 @@
 
 import { NextResponse } from 'next/server'
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
+import { PreavisoConversationLogService } from '@/lib/services/preaviso-conversation-log-service'
 
 export async function POST(req: Request) {
   try {
@@ -90,6 +91,45 @@ export async function POST(req: Request) {
       documentType,
       context || {}
     )
+
+    // Logging (DB): registrar evento de documento como parte de la conversación si hay conversation_id
+    try {
+      const conversationId = context?.conversation_id || null
+      if (conversationId) {
+        const asUuidOrNull = (v: any): string | null => {
+          if (!v || typeof v !== 'string') return null
+          const s = v.trim()
+          return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : null
+        }
+        const tramiteIdForLog =
+          asUuidOrNull(context?.tramiteId) ||
+          asUuidOrNull(tramiteIdRaw) ||
+          null
+
+        const meta = {
+          kind: 'document_upload',
+          documentType,
+          fileName: file?.name || null,
+          user_agent: req.headers.get('user-agent'),
+          ts: new Date().toISOString(),
+          tramite_id_raw: typeof tramiteIdRaw === 'string' ? tramiteIdRaw : null,
+        }
+        // No siempre tenemos el arreglo completo de messages aquí; guardamos meta + snapshot del contexto.
+        await PreavisoConversationLogService.upsert({
+          conversationId: String(conversationId),
+          tramiteId: tramiteIdForLog,
+          pluginId,
+          // IMPORTANT: no sobrescribir messages existentes
+          lastUserMessage: `He subido el siguiente documento: ${file?.name || ''}`.trim(),
+          lastAssistantMessage: 'Documento procesado correctamente',
+          context,
+          state: { commands: result.commands?.map((c: any) => c.type) || [] },
+          meta,
+        })
+      }
+    } catch (e) {
+      console.error('[preaviso-process-document-v2] logging error', e)
+    }
 
     // Guardar OCR en Redis si se requiere (reutilizar lógica existente)
     // NOTA: El OCR se maneja principalmente desde el frontend que procesa cada página

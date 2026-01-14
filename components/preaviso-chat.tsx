@@ -138,6 +138,7 @@ export interface PreavisoData {
   tipoOperacion: 'compraventa' | null
   // Runtime (solo control de flujo; no forma parte del documento final)
   _document_intent?: 'conyuge' | null
+  _last_question_intent?: string | null
   
   // Arrays según v1.4
   vendedores: VendedorElement[]
@@ -261,6 +262,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const { user } = useAuth()
   const supabase = useMemo(() => createBrowserClient(), [])
   const messageIdCounterRef = useRef(0)
+  const conversationIdRef = useRef<string | null>(null)
   
   // Función helper para generar IDs únicos para mensajes
   const generateMessageId = (prefix: string = 'msg'): string => {
@@ -333,6 +335,28 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
   // Fuente de verdad del progreso/estado (viene del backend)
   const [serverState, setServerState] = useState<ServerStateSnapshot | null>(null)
+
+  // conversation_id estable (logging/QA): persiste en sessionStorage para sobrevivir refresh.
+  useEffect(() => {
+    try {
+      const KEY = 'preaviso_conversation_id'
+      const existing = sessionStorage.getItem(KEY)
+      if (existing) {
+        conversationIdRef.current = existing
+        return
+      }
+      const id =
+        (globalThis.crypto && 'randomUUID' in globalThis.crypto)
+          ? (globalThis.crypto as any).randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+      sessionStorage.setItem(KEY, id)
+      conversationIdRef.current = id
+    } catch {
+      if (!conversationIdRef.current) {
+        conversationIdRef.current = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+      }
+    }
+  }, [])
 
   // Enviar mensajes iniciales y crear nuevo trámite al iniciar
   useEffect(() => {
@@ -697,7 +721,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           context: {
             // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
             // Esto permite que el backend detecte correctamente qué información ya está capturada
+            conversation_id: conversationIdRef.current,
             _document_intent: (data as any)._document_intent ?? null,
+            _last_question_intent: (data as any)._last_question_intent ?? null,
             tramiteId: activeTramiteId,
             vendedores: data.vendedores || [],
             compradores: data.compradores || [],
@@ -1572,6 +1598,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         formData.append('documentType', item.docType)
         formData.append('needOcr', '1')
         formData.append('context', JSON.stringify({
+          conversation_id: conversationIdRef.current,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
           tramiteId: activeTramiteId,
@@ -1735,6 +1762,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           context: {
             // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
             _document_intent: (workingData as any)._document_intent ?? null,
+            _last_question_intent: (workingData as any)._last_question_intent ?? null,
             tramiteId: activeTramiteId,
             vendedores: workingData.vendedores || [],
             compradores: workingData.compradores || [],
@@ -1770,6 +1798,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             const d = result.data
             if (d.tipoOperacion !== undefined) nextData.tipoOperacion = d.tipoOperacion
             if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (nextData as any)._document_intent = (d as any)._document_intent
+            if (Object.prototype.hasOwnProperty.call(d, '_last_question_intent')) (nextData as any)._last_question_intent = (d as any)._last_question_intent
+          if (Object.prototype.hasOwnProperty.call(d, '_last_question_intent')) (nextData as any)._last_question_intent = (d as any)._last_question_intent
             if (d.vendedores !== undefined) nextData.vendedores = d.vendedores as any
             if (d.compradores !== undefined) nextData.compradores = d.compradores as any
             if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
@@ -3352,7 +3382,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                           return <div className="text-green-700">Existe gravamen/hipoteca: cancelación ya inscrita (confirmado)</div>
                         }
                         if (g0?.cancelacion_confirmada === false) {
-                          return <div className="text-yellow-700 italic">Existe gravamen/hipoteca: se cancelará en la escritura/trámite (pendiente de verificación)</div>
+                          return <div className="text-green-700">Existe gravamen/hipoteca: se cancelará en la escritura/trámite (confirmado)</div>
                         }
                         return <div className="text-gray-400 italic">Pendiente: confirmar si la cancelación ya está inscrita (sí/no)</div>
                       })()

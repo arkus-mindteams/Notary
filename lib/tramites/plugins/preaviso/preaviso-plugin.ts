@@ -45,7 +45,9 @@ export class PreavisoPlugin implements TramitePlugin {
         required: true,
         // Superficie NO debe bloquear (si el usuario no la tiene o dice que es irrelevante).
         // Dirección sí es deseable para el documento, pero idealmente viene de la inscripción.
-        fields: ['documentosProcesados[]', 'inmueble.folio_real', 'inmueble.partidas', 'inmueble.direccion'],
+        // IMPORTANTE: permitir captura manual (sin documentosProcesados[]).
+        // NOTA: usar calle para evitar marcar completo cuando solo existe el objeto direccion vacío.
+        fields: ['inmueble.folio_real', 'inmueble.partidas', 'inmueble.direccion.calle'],
         conditional: () => true,
       },
       {
@@ -230,6 +232,81 @@ export class PreavisoPlugin implements TramitePlugin {
     const validationNow = this.validate(context)
     if (state.id === 'ESTADO_8' || (missingNow.length === 0 && validationNow.valid)) {
       return 'Listo: con la información capturada ya puedes generar el Preaviso. Puedes ver el documento en los botones de arriba del chat.'
+    }
+
+    // Determinismo para evitar preguntas irrelevantes/repetidas sobre crédito:
+    // - NO preguntar si es 100% crédito, "recursos propios", "otro crédito", etc.
+    // - Solo preguntar lo estrictamente necesario para avanzar.
+    if (state.id === 'ESTADO_1') {
+      // Confirmar forma de pago exactamente una vez
+      if (context?.creditos === undefined) {
+        return '¿La compraventa se va a pagar de contado o con crédito?'
+      }
+      // Si ya se confirmó contado, avanzar a lo siguiente (el state machine debería cambiar, pero por seguridad)
+      if (Array.isArray(context?.creditos) && context.creditos.length === 0) {
+        return 'Perfecto. ¿Me indicas el nombre completo del comprador o compradores que van a adquirir el inmueble?'
+      }
+      // Si ya se confirmó crédito, NO preguntar “si es el único pago/otro crédito”.
+      if (Array.isArray(context?.creditos) && context.creditos.length > 0) {
+        const inst = context.creditos[0]?.institucion
+        if (!inst) {
+          return 'Perfecto, será con crédito. ¿Con qué banco o institución se va a tramitar el crédito?'
+        }
+        // Ya hay institución, avanzar (roles se preguntan en ESTADO_5)
+        return 'Perfecto. ¿Me indicas el nombre completo del comprador o compradores que van a adquirir el inmueble?'
+      }
+    }
+
+    if (state.id === 'ESTADO_5') {
+      // Crédito aplica: si falta institución, pedirla; si falta participantes, pedir roles.
+      const inst = context?.creditos?.[0]?.institucion
+      if (!inst) {
+        return '¿Con qué banco o institución se va a tramitar el crédito?'
+      }
+      const parts = context?.creditos?.[0]?.participantes
+      const hasParts = Array.isArray(parts) && parts.length > 0
+      if (!hasParts) {
+        return '¿Quiénes serán los participantes del crédito? Por ejemplo: “el comprador como acreditado y su cónyuge como coacreditada”.'
+      }
+    }
+
+    if (state.id === 'ESTADO_2') {
+      const folio = context?.inmueble?.folio_real
+      const partidas = context?.inmueble?.partidas || []
+      const direccion = context?.inmueble?.direccion?.calle
+      if (!folio) {
+        return '¿Cuál es el folio real del inmueble?'
+      }
+      if (!Array.isArray(partidas) || partidas.length === 0) {
+        return '¿Cuál es el número de partida registral del inmueble?'
+      }
+      if (!direccion) {
+        return '¿Cuál es la dirección del inmueble (calle y municipio)?'
+      }
+    }
+
+    if (state.id === 'ESTADO_4') {
+      const buyer0 = context?.compradores?.[0]
+      const buyerName = buyer0?.persona_fisica?.nombre || buyer0?.persona_moral?.denominacion_social || null
+      const tipo = buyer0?.tipo_persona || null
+      if (!buyerName) {
+        return '¿Quién o quiénes van a comprar el inmueble? Indícame el nombre completo del comprador o compradores.'
+      }
+      if (!tipo) {
+        return '¿El comprador es persona física o persona moral?'
+      }
+      if (tipo === 'persona_fisica' && !buyer0?.persona_fisica?.estado_civil) {
+        return `¿Me indicas cuál es el estado civil de ${buyerName} (soltero/a, casado/a, divorciado/a o viudo/a)?`
+      }
+    }
+
+    if (state.id === 'ESTADO_4B') {
+      const buyer0 = context?.compradores?.[0]
+      const buyerName = buyer0?.persona_fisica?.nombre || null
+      const conyuge = buyer0?.persona_fisica?.conyuge?.nombre || null
+      if (buyer0?.persona_fisica?.estado_civil === 'casado' && buyerName && !conyuge) {
+        return `Como ${buyerName} está casado/a, ¿me indicas el nombre completo de su cónyuge tal como aparecerá en la escritura?`
+      }
     }
 
     // Usar LLM para generar pregunta natural y flexible

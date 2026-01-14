@@ -445,10 +445,15 @@ IMPORTANTE:
         return {
           systemPrompt: `Eres un experto en análisis de actas de matrimonio. Extrae información en formato JSON:
 {
-  "conyuge1": { "nombre": "nombre completo del cónyuge 1" },
-  "conyuge2": { "nombre": "nombre completo del cónyuge 2" }
-}`,
-          userPrompt: 'Analiza esta acta de matrimonio y extrae los nombres de los cónyuges.'
+  "conyuge1": { "nombre": "nombre completo del cónyuge 1 (exactamente como aparece)" },
+  "conyuge2": { "nombre": "nombre completo del cónyuge 2 (exactamente como aparece)" }
+}
+
+REGLAS:
+- Devuelve nombres completos, con apellidos y nombres, tal como aparecen (respetando orden, comas si existieran).
+- NO inventes nombres. Si un nombre no es legible, usa null.
+- Si el documento usa etiquetas como "CONTRAYENTE", "CÓNYUGE", "ESPOSO/ESPOSA", extrae ambos.`,
+          userPrompt: 'Analiza esta acta de matrimonio y extrae los nombres completos de AMBOS cónyuges exactamente como aparecen.'
         }
       
       default:
@@ -680,6 +685,21 @@ IMPORTANTE:
       const compradorNombre = context.compradores?.[0]?.persona_fisica?.nombre
       const comprador = context.compradores?.[0]
 
+      // CRÍTICO: si viene acta de matrimonio, asegurar estado civil CASADO antes de guardar cónyuge
+      // (el handler de cónyuge exige buyer.estado_civil === 'casado').
+      const estadoCivilActual = comprador?.persona_fisica?.estado_civil
+      if (comprador && estadoCivilActual !== 'casado') {
+        commands.push({
+          type: 'estado_civil',
+          timestamp: new Date(),
+          payload: {
+            buyerIndex: 0,
+            estadoCivil: 'casado',
+            source: 'documento_acta_matrimonio'
+          }
+        })
+      }
+
       // Si hay comprador, identificar cuál es el cónyuge
       if (compradorNombre) {
         for (const nombre of nombres) {
@@ -697,8 +717,8 @@ IMPORTANTE:
           }
         }
       } else {
-        // Si no hay comprador aún, usar el primer nombre como comprador y el segundo como cónyuge
-        // (esto se ajustará cuando se confirme el comprador)
+        // Si no hay comprador aún, usar el primer nombre como comprador y el segundo como cónyuge.
+        // Orden de comandos: buyer_name -> estado_civil -> conyuge_name.
         if (nombres[0]) {
           commands.push({
             type: 'buyer_name',
@@ -711,6 +731,15 @@ IMPORTANTE:
             }
           })
         }
+        commands.push({
+          type: 'estado_civil',
+          timestamp: new Date(),
+          payload: {
+            buyerIndex: 0,
+            estadoCivil: 'casado',
+            source: 'documento_acta_matrimonio'
+          }
+        })
         if (nombres[1]) {
           commands.push({
             type: 'conyuge_name',
@@ -723,9 +752,14 @@ IMPORTANTE:
           })
         }
       }
-
-      // Establecer estado civil como "casado" si hay comprador
-      if (comprador && !comprador.persona_fisica?.estado_civil) {
+      // Nota: ya se aseguró estado civil arriba para evitar errores de orden.
+    } else if (nombres.length === 1) {
+      // Si solo hay un nombre en el acta, puede ser que el comprador ya esté identificado
+      // y este sea el cónyuge
+      const compradorNombre = context.compradores?.[0]?.persona_fisica?.nombre
+      const comprador = context.compradores?.[0]
+      const estadoCivilActual = comprador?.persona_fisica?.estado_civil
+      if (comprador && estadoCivilActual !== 'casado') {
         commands.push({
           type: 'estado_civil',
           timestamp: new Date(),
@@ -736,10 +770,6 @@ IMPORTANTE:
           }
         })
       }
-    } else if (nombres.length === 1) {
-      // Si solo hay un nombre en el acta, puede ser que el comprador ya esté identificado
-      // y este sea el cónyuge
-      const compradorNombre = context.compradores?.[0]?.persona_fisica?.nombre
       if (compradorNombre && !ConyugeService.namesMatch(nombres[0], compradorNombre)) {
         commands.push({
           type: 'conyuge_name',

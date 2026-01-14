@@ -58,6 +58,18 @@ export class CreditParticipantHandler {
       participantes.push(newParticipant)
     }
 
+    // Si el usuario solo declaró un COACREDITADO (comúnmente el cónyuge) pero no existe Acreditado,
+    // auto-agregar al comprador_1 como acreditado para evitar loops de preguntas.
+    const hasAcreditado = participantes.some((p: any) => p?.rol === 'acreditado')
+    const hasCoacreditado = participantes.some((p: any) => p?.rol === 'coacreditado')
+    if (!hasAcreditado && hasCoacreditado) {
+      participantes.push({
+        party_id: 'comprador_1',
+        nombre: this.resolveNameByPartyId('comprador_1', context),
+        rol: 'acreditado'
+      })
+    }
+
     creditos[creditIndex] = {
       ...creditos[creditIndex],
       participantes

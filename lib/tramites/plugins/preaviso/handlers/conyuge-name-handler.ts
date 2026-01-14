@@ -53,6 +53,47 @@ export class ConyugeNameHandler {
 
     updatedContext.compradores = compradores
 
+    // 5. Auto-rol: si hay crédito(s) y el comprador es casado, agregar al cónyuge como COACREDITADO por defecto
+    // (sin re-preguntar) cuando aún no existe en participantes.
+    if (Array.isArray(updatedContext.creditos) && updatedContext.creditos.length > 0) {
+      const conyugeNombre = command.payload.name
+      const creditos = [...updatedContext.creditos]
+      for (let i = 0; i < creditos.length; i++) {
+        const credito = creditos[i]
+        const participantes = Array.isArray(credito?.participantes) ? [...credito.participantes] : []
+        const already = participantes.some((p: any) => {
+          if (p?.party_id && p.party_id === 'conyuge') return true
+          if (p?.nombre && ConyugeService.namesMatch(p.nombre, conyugeNombre)) return true
+          return false
+        })
+        if (!already) {
+          participantes.push({
+            party_id: null,
+            nombre: conyugeNombre,
+            rol: 'coacreditado'
+          })
+          creditos[i] = { ...credito, participantes }
+        }
+      }
+      updatedContext.creditos = creditos
+
+      // Marcar participa=true si hay crédito (por defecto, para reflejar coacreditación)
+      const prevConyuge = updatedContext.compradores?.[buyerIndex]?.persona_fisica?.conyuge
+      if (prevConyuge) {
+        compradores[buyerIndex] = {
+          ...compradores[buyerIndex],
+          persona_fisica: {
+            ...compradores[buyerIndex].persona_fisica,
+            conyuge: {
+              ...prevConyuge,
+              participa: true
+            }
+          }
+        }
+        updatedContext.compradores = compradores
+      }
+    }
+
     console.log('[ConyugeNameHandler] Cónyuge actualizado:', {
       compradorNombre: compradores[buyerIndex]?.persona_fisica?.nombre,
       conyugeNombre: compradores[buyerIndex]?.persona_fisica?.conyuge?.nombre,

@@ -72,8 +72,9 @@ export class ValidationService {
    * Valida estado civil
    */
   static validateEstadoCivil(estadoCivil: string): { valid: boolean; error?: string } {
+    const normalized = this.normalizeEstadoCivil(estadoCivil)
     const valid = ['soltero', 'casado', 'divorciado', 'viudo']
-    if (!valid.includes(estadoCivil.toLowerCase())) {
+    if (!valid.includes(normalized)) {
       return { valid: false, error: `Estado civil "${estadoCivil}" no válido` }
     }
     return { valid: true }
