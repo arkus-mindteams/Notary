@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { ProtectedRoute } from '@/components/protected-route'
@@ -32,6 +32,7 @@ export default function AdminPreavisoConfigPage() {
   const [config, setConfig] = useState<PreavisoConfig | null>(null)
   const [prompt, setPrompt] = useState('')
   const [jsonSchema, setJsonSchema] = useState('')
+  const hasLoadedDataRef = useRef(false)
 
   // Verificar que sea superadmin (solo después de que el usuario esté cargado)
   useEffect(() => {
@@ -40,10 +41,20 @@ export default function AdminPreavisoConfigPage() {
     }
   }, [currentUser, authLoading, router])
 
-  // Cargar datos
+  // Cargar datos (montaje inicial, remount, o cambio de usuario/sesión)
   useEffect(() => {
     if (!authLoading && currentUser?.role === 'superadmin' && session) {
-      loadConfig()
+      // Si el config está vacío (remount), necesitamos cargar
+      const configEmpty = !config
+      
+      // Cargar si es la primera vez o si el config está vacío (remount)
+      if (!hasLoadedDataRef.current || configEmpty) {
+        loadConfig()
+        hasLoadedDataRef.current = true
+      }
+    } else {
+      // Resetear el ref si no hay sesión o no es superadmin
+      hasLoadedDataRef.current = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser, session, authLoading])

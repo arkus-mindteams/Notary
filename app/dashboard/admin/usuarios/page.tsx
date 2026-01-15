@@ -142,14 +142,17 @@ export default function AdminUsuariosPage() {
     }
   }, [])
 
-  // Cargar datos solo cuando es necesario (montaje inicial o cambio de usuario/sesión)
+  // Cargar datos solo cuando es necesario (montaje inicial, remount, o cambio de usuario/sesión)
   useEffect(() => {
     if (currentUser?.role === 'superadmin' && session) {
-      // Si cambió el usuario o es la primera carga, recargar datos
+      // Si cambió el usuario, recargar datos
       const userChanged = currentUser.id !== lastUserIdRef.current
-      const isFirstLoad = !hasLoadedDataRef.current
       
-      if (userChanged || isFirstLoad) {
+      // Si los datos están vacíos (remount), necesitamos cargar
+      const dataEmpty = usuarios.length === 0 && notarias.length === 0
+      
+      // Si cambió el usuario, es la primera carga, o los datos están vacíos (remount), cargar
+      if (userChanged || !hasLoadedDataRef.current || dataEmpty) {
         loadData()
         hasLoadedDataRef.current = true
         lastUserIdRef.current = currentUser.id
@@ -159,7 +162,7 @@ export default function AdminUsuariosPage() {
       hasLoadedDataRef.current = false
       lastUserIdRef.current = undefined
     }
-  }, [currentUser, session, loadData])
+  }, [currentUser, session, loadData, usuarios.length, notarias.length])
 
   const handleCreate = () => {
     setEditingUsuario(null)

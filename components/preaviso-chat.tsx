@@ -267,6 +267,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   }
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [initialMessagesSent, setInitialMessagesSent] = useState(false)
+  const initializationRef = useRef(false)
+  const lastUserIdRef = useRef<string | null>(null)
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
   const [expedienteExistente, setExpedienteExistente] = useState<{
     compradorId: string
@@ -335,12 +337,101 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   useEffect(() => {
     let mounted = true
 
+    console.log('[PreavisoChat] useEffect ejecutado - user?.id:', user?.id, 'initializationRef.current:', initializationRef.current, 'initialMessagesSent:', initialMessagesSent, 'messages.length:', messages.length)
+
     const initializeChat = async () => {
+      // Esperar a que el usuario esté disponible
       if (!user?.id) {
+        console.log('[PreavisoChat] Usuario no disponible aún, esperando...')
         return
       }
 
-      // Crear nuevo trámite siempre
+      // Si el usuario cambió, resetear flags de inicialización
+      const userChanged = user.id !== lastUserIdRef.current
+      if (userChanged) {
+        console.log('[PreavisoChat] Usuario cambió de', lastUserIdRef.current, 'a', user.id, '- reseteando estado')
+        initializationRef.current = false
+        setInitialMessagesSent(false)
+        setMessages([]) // Limpiar mensajes anteriores
+        lastUserIdRef.current = user.id
+        // Continuar con la inicialización después del reset
+      } else if (lastUserIdRef.current === null && user.id) {
+        // Primera carga: establecer el usuario actual
+        console.log('[PreavisoChat] Primera carga, estableciendo usuario:', user.id)
+        lastUserIdRef.current = user.id
+      }
+
+      // Verificar si los mensajes están vacíos - si están vacíos, necesitamos inicializar
+      // independientemente del estado de initializationRef (puede ser un remount)
+      const messagesEmpty = messages.length === 0
+      
+      if (messagesEmpty) {
+        console.log('[PreavisoChat] Mensajes vacíos, reseteando flags y procediendo con inicialización')
+        initializationRef.current = false
+        setInitialMessagesSent(false)
+      }
+
+      // Verificar si los mensajes iniciales ya están presentes
+      const hasInitialMessages = messages.length > 0 && messages.some(m => 
+        INITIAL_MESSAGES.some(initialMsg => m.content === initialMsg && m.role === 'assistant')
+      )
+      
+      if (hasInitialMessages) {
+        console.log('[PreavisoChat] Mensajes iniciales ya presentes en el estado, marcando como enviados')
+        setInitialMessagesSent(true)
+        initializationRef.current = true
+        return
+      }
+
+      // Verificar si ya se inicializó para este usuario (solo si NO hubo cambio de usuario y los mensajes no están vacíos)
+      if (!userChanged && !messagesEmpty && initializationRef.current) {
+        console.log('[PreavisoChat] Ya se inicializó para este usuario y hay mensajes, omitiendo...')
+        return
+      }
+
+      console.log('[PreavisoChat] Iniciando inicialización del chat para usuario:', user.id)
+
+      // Marcar como inicializado ANTES de enviar mensajes para evitar ejecuciones duplicadas
+      initializationRef.current = true
+
+      // Enviar mensajes iniciales primero (no dependen de la creación del trámite)
+      const sendInitialMessages = async () => {
+        console.log('[PreavisoChat] Enviando mensajes iniciales...')
+        for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
+          if (!mounted) break
+          
+          await new Promise(resolve => setTimeout(resolve, i * 400))
+          
+          if (!mounted) break
+          
+          const initialMessageId = generateMessageId('initial')
+          setMessages(prev => {
+            const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
+            if (exists) return prev
+            return [...prev, {
+              id: initialMessageId,
+              role: 'assistant',
+              content: INITIAL_MESSAGES[i],
+              timestamp: new Date()
+            }]
+          })
+        }
+        if (mounted) {
+          setInitialMessagesSent(true)
+          console.log('[PreavisoChat] Mensajes iniciales enviados correctamente')
+        }
+      }
+
+      // Enviar mensajes iniciales inmediatamente
+      try {
+        await sendInitialMessages()
+      } catch (error) {
+        console.error('[PreavisoChat] Error enviando mensajes iniciales:', error)
+        // Resetear el flag para permitir reintentos
+        initializationRef.current = false
+      }
+
+      // Crear nuevo trámite (esto puede fallar sin afectar los mensajes iniciales)
       try {
         const { data: { session } } = await supabase.auth.getSession()
         const headers: HeadersInit = { 'Content-Type': 'application/json' }
@@ -406,43 +497,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
       } catch (error) {
         console.error('Error creando nuevo trámite:', error)
+        // No bloquear la inicialización del chat si falla la creación del trámite
       }
-
-      // Enviar mensajes iniciales
-      const sendInitialMessages = async () => {
-        for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
-          if (!mounted) break
-          
-          await new Promise(resolve => setTimeout(resolve, i * 400))
-          
-          if (!mounted) break
-          
-          const initialMessageId = generateMessageId('initial')
-          setMessages(prev => {
-            const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
-            if (exists) return prev
-            return [...prev, {
-              id: initialMessageId,
-              role: 'assistant',
-              content: INITIAL_MESSAGES[i],
-              timestamp: new Date()
-            }]
-          })
-        }
-        if (mounted) {
-          setInitialMessagesSent(true)
-        }
-      }
-
-      sendInitialMessages()
     }
 
+    // Ejecutar inicialización
     initializeChat()
 
     return () => {
       mounted = false
+      // No resetear los refs aquí porque cuando el componente se desmonta completamente,
+      // React los resetea automáticamente. Solo marcamos mounted como false para
+      // cancelar cualquier operación async en curso.
     }
-  }, [user?.id])
+  }, [user?.id, supabase])
 
   // Estado de procesamiento de documentos debe declararse ANTES de cualquier useEffect que lo use
   const [isProcessingDocument, setIsProcessingDocument] = useState(false)
