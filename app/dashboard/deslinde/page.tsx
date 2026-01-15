@@ -1341,6 +1341,7 @@ function DeslindePageInner() {
                       variant="outline"
                       size="sm"
                       onClick={selectAllPdfImages}
+                      className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground"
                     >
                       Seleccionar todas
                     </Button>
@@ -1348,13 +1349,11 @@ function DeslindePageInner() {
                       variant="outline"
                       size="sm"
                       onClick={deselectAllPdfImages}
+                      className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground"
                     >
                       Deseleccionar todas
                     </Button>
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    {selectedPdfImages.size} de {pdfConvertedImages.length} seleccionadas
-                  </p>
                 </div>
 
                 {/* Images Grid */}
@@ -1376,18 +1375,24 @@ function DeslindePageInner() {
                     )
                   })}
                 </div>
+
+                <p className="text-sm text-muted-foreground">
+                  {selectedPdfImages.size} de {pdfConvertedImages.length} seleccionadas
+                </p>
               </div>
 
               <DialogFooter>
                 <Button
                   variant="outline"
                   onClick={handleCancelPdfImageSelection}
+                  className="gap-1 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground"
                 >
                   Cancelar
                 </Button>
                 <Button
                   onClick={handleConfirmPdfImageSelection}
                   disabled={selectedPdfImages.size === 0}
+                  className="bg-gray-800 hover:bg-gray-700 text-white font-bold p-2.5"
                 >
                   Agregar {selectedPdfImages.size > 0 ? `${selectedPdfImages.size} ` : ''}imagen{selectedPdfImages.size !== 1 ? 'es' : ''}
                 </Button>
