@@ -41,22 +41,14 @@ CANCELACIÓN: SE CANCELARÁ EN LA ESCRITURA/TRÁMITE ACTUAL.
 {{else}}TRANSMITENTE: {{../vendedor.nombre}}
 {{/if}}
 ADQUIRIENTE: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}
-{{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CRÉDITO CON GARANTÍA HIPOTECARIA:
+{{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CREDITO SIMPLE CON INTERES Y GARANTÍA HIPOTECARIA.
 
-DEUDOR: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}
-{{#if (hasItems this.creditos)}}CRÉDITOS:
-{{#each this.creditos}}
-- CRÉDITO {{inc @index}}
-{{#if this.institucion}}ACREEDOR: {{this.institucion}}{{/if}}
-{{#if this.monto}}MONTO: {{this.monto}}{{/if}}
-{{#if this.tipo_credito}}TIPO: {{this.tipo_credito}}{{/if}}
+{{#if (hasItems this.creditos)}}{{#each this.creditos}}{{#if @first}}
+{{#if this.institucion}}ACREDITANTE: {{this.institucion}}{{/if}}
 {{#if this.participantes}}{{#each this.participantes}}{{#if this.nombre}}{{#if (eq this.rol 'acreditado')}}ACREDITADO: {{this.nombre}}
 {{else}}{{#if (eq this.rol 'coacreditado')}}COACREDITADO: {{this.nombre}}
 {{/if}}{{/if}}{{/if}}{{/each}}{{/if}}
-
-{{/each}}
-{{else}}{{#if ../comprador.institucionCredito}}ACREEDOR: {{../comprador.institucionCredito}}
-{{/if}}{{/if}}
+{{/if}}{{/each}}{{/if}}
 {{/if}}{{/if}}{{/if}}
 
 {{/each}}

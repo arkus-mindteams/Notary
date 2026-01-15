@@ -133,20 +133,13 @@
       {{else}}TRANSMITENTE: {{../vendedor.nombre}}<br>
     {{/if}}
       ADQUIRIENTE: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}<br>
-      {{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CRÉDITO CON GARANTÍA HIPOTECARIA:<br><br>
-      DEUDOR: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}<br>
-      {{#if (hasItems this.creditos)}}CRÉDITOS:<br>
-      {{#each this.creditos}}
-      - CRÉDITO {{inc @index}}<br>
-      {{#if this.institucion}}ACREEDOR: {{this.institucion}}<br>{{/if}}
-      {{#if this.monto}}MONTO: {{this.monto}}<br>{{/if}}
-      {{#if this.tipo_credito}}TIPO: {{this.tipo_credito}}<br>{{/if}}
+      {{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CREDITO SIMPLE CON INTERES Y GARANTÍA HIPOTECARIA.<br><br>
+      {{#if (hasItems this.creditos)}}{{#each this.creditos}}{{#if @first}}
+      {{#if this.institucion}}ACREDITANTE: {{this.institucion}}<br>{{/if}}
       {{#if this.participantes}}{{#each this.participantes}}{{#if this.nombre}}{{#if (eq this.rol 'acreditado')}}ACREDITADO: {{this.nombre}}<br>
       {{else}}{{#if (eq this.rol 'coacreditado')}}COACREDITADO: {{this.nombre}}<br>
       {{/if}}{{/if}}{{/if}}{{/each}}{{/if}}
-      <br>
-      {{/each}}
-      {{else}}{{#if ../comprador.institucionCredito}}ACREEDOR: {{../comprador.institucionCredito}}<br>{{/if}}{{/if}}
+      {{/if}}{{/each}}{{/if}}
       {{/if}}{{/if}}{{/if}}
     </div>
     {{/each}}
