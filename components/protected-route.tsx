@@ -35,18 +35,9 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     )
   }
 
-  // Si hay sesión pero todavía no cargó el perfil (`user`), NO redirigir.
+  // Si hay sesión pero el perfil no cargó, permitir continuar para evitar bloqueos largos.
   if (session && !user) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardContent className="flex flex-col items-center justify-center p-8 space-y-4">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-            <p className="text-sm text-muted-foreground">Verificando perfil...</p>
-          </CardContent>
-        </Card>
-      </div>
-    )
+    return <>{children}</>
   }
 
   if (!session) {

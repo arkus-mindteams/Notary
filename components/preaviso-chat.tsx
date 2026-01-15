@@ -259,7 +259,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Mostramos una confirmación neutra y corta para no “desaparecer” el mensaje.
     return cleaned.length > 0 ? cleaned : 'Información registrada.'
   }
-  const { user } = useAuth()
+  const { user, session } = useAuth()
   const supabase = useMemo(() => createBrowserClient(), [])
   const messageIdCounterRef = useRef(0)
   const conversationIdRef = useRef<string | null>(null)
@@ -363,16 +363,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     let mounted = true
 
     const initializeChat = async () => {
-      if (!user?.id) {
+      if (!session?.access_token) {
         return
       }
 
       // Crear nuevo trámite siempre
       try {
-        const { data: { session } } = await supabase.auth.getSession()
+        const { data: { session: freshSession } } = await supabase.auth.getSession()
         const headers: HeadersInit = { 'Content-Type': 'application/json' }
-        if (session?.access_token) {
-          headers['Authorization'] = `Bearer ${session.access_token}`
+        if (freshSession?.access_token) {
+          headers['Authorization'] = `Bearer ${freshSession.access_token}`
         }
 
         const response = await fetch('/api/expedientes/tramites', {
@@ -380,7 +380,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           headers,
           body: JSON.stringify({
             compradorId: null,
-            userId: user.id,
+            userId: user?.id || null,
             tipo: 'preaviso',
             datos: {
               tipoOperacion: 'compraventa', // Siempre es compraventa
@@ -469,7 +469,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     return () => {
       mounted = false
     }
-  }, [user?.id])
+  }, [user?.id, session?.access_token])
 
   // Estado de procesamiento de documentos debe declararse ANTES de cualquier useEffect que lo use
   const [isProcessingDocument, setIsProcessingDocument] = useState(false)
@@ -537,16 +537,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
       const direccion = data.inmueble?.direccion?.calle || (data.inmueble?.direccion as any)
       
-      if (!user?.id || (!vendedorNombre && !direccion && !compradorNombre)) {
+      if (!session?.access_token || (!vendedorNombre && !direccion && !compradorNombre)) {
         return
       }
 
       try {
         // Obtener token de la sesión para autenticación
-        const { data: { session } } = await supabase.auth.getSession()
+        const { data: { session: freshSession } } = await supabase.auth.getSession()
         const headers: HeadersInit = { 'Content-Type': 'application/json' }
-        if (session?.access_token) {
-          headers['Authorization'] = `Bearer ${session.access_token}`
+        if (freshSession?.access_token) {
+          headers['Authorization'] = `Bearer ${freshSession.access_token}`
         }
 
         // Si no hay trámite activo, crear uno
@@ -556,7 +556,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             headers,
             body: JSON.stringify({
               compradorId: null, // Sin comprador aún
-              userId: user.id,
+              userId: user?.id || null,
               tipo: 'preaviso',
               datos: data,
               estado: 'en_proceso',
@@ -586,7 +586,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Debounce: guardar después de 2 segundos de inactividad
     const timer = setTimeout(saveProgress, 2000)
     return () => clearTimeout(timer)
-  }, [data, activeTramiteId, user?.id, isProcessingDocument])
+  }, [data, activeTramiteId, user?.id, session?.access_token, isProcessingDocument])
   const [input, setInput] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const [uploadedDocuments, setUploadedDocuments] = useState<UploadedDocument[]>([])
