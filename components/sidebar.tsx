@@ -19,20 +19,25 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   MessageSquare,
   FolderOpen,
   Settings,
   Users,
   FileCode,
   HomeIcon,
+  Menu,
 } from 'lucide-react'
 
 interface SidebarProps {
   isCollapsed: boolean
   onToggle: () => void
+  onNavigate?: () => void
+  isMobile?: boolean
 }
 
-export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
+export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }: SidebarProps) {
   const { user, logout } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
@@ -61,38 +66,40 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
 
   const handleNavigation = (path: string) => {
     router.push(path)
+    // Close mobile sidebar after navigation
+    if (onNavigate) {
+      onNavigate()
+    }
   }
 
   return (
-    <Card className={`h-full flex pt-2 bg-gray-800 border-none rounded-l-none rounded-b-none flex-col transition-all duration-300 ${
-      isCollapsed ? 'w-18' : 'w-64'
-    }`}>
+    <Card className={`${isMobile ? (isCollapsed ? 'h-16' : 'h-screen') : 'h-full'} flex ${isMobile && isCollapsed ? 'pt-0' : 'pt-2'} bg-gray-800 border-none ${isMobile ? 'rounded-none' : 'rounded-l-none rounded-b-none'} flex-col transition-all duration-300 w-full ${isMobile && !isCollapsed ? 'overflow-y-auto' : 'overflow-hidden'}`}>
       {/* Header con Usuario y Notaría */}
-      <div className="border-b border-b-gray-700 ">
+      <div className={`bg-gray-800 ${isMobile && isCollapsed ? 'border-b-0' : 'border-b border-b-gray-700'}`}>
         {/* Sección Notaría */}
-        <div className="px-4">
+        <div className={`${isMobile && isCollapsed ? 'px-4 py-3' : isMobile ? 'px-4 py-3' : 'px-4'}`}>
           <div
             className={`
-              flex items-center
-              ${isCollapsed ? "flex-col gap-2" : "flex-row justify-between"}
+              flex items-center justify-between
+              ${isCollapsed && !isMobile ? "flex-col gap-2" : "flex-row"}
             `}
           >
             {/* Logo */}
             <div
               className={`
                 relative
-                ${isCollapsed ? "w-12 h-12" : "w-full h-16 mr-2 flex-1"}
+                ${isCollapsed && !isMobile ? "w-12 h-12" : isMobile ? "h-10 flex-1 max-w-[200px]" : "w-full h-16 mr-2 flex-1"}
               `}
             >
               <Image
-                src={isCollapsed ? "/logo.png" : "/notaria-logo-removebg-preview.png"}
+                src={isCollapsed && !isMobile ? "/logo.png" : "/notaria-logo-removebg-preview.png"}
                 alt="Notaría #3"
                 fill
-                className="object-contain"
+                className={isMobile ? "object-contain object-left" : "object-contain"}
               />
             </div>
 
-            {/* Botón */}
+            {/* Botón de toggle */}
             <Button
               variant="ghost"
               size="sm"
@@ -100,15 +107,19 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
               className="
                 h-8 w-8 p-0 flex-shrink-0
                 text-gray-400
-                hover:bg-transparent hover:text-gray-200
+                hover:bg-gray-700 hover:text-gray-200
                 cursor-pointer
                 focus-visible:ring-0
               "
             >
-              {isCollapsed ? (
-                <ChevronRight className="h-4 w-4" />
+              {isMobile ? (
+                <Menu className="h-5 w-5" />
               ) : (
-                <ChevronLeft className="h-4 w-4" />
+                isCollapsed ? (
+                  <ChevronRight className="h-4 w-4" />
+                ) : (
+                  <ChevronLeft className="h-4 w-4" />
+                )
               )}
             </Button>
           </div>
@@ -116,8 +127,8 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
 
 
         {/* Sección Usuario */}
-        {user && (
-          <div className="p-4 pb-3 pt-6 ">
+        {user && !isCollapsed && (
+          <div className={`${isMobile ? 'p-3' : 'p-4 pb-3 pt-6'}`}>
             <div
               className={`
                 flex items-center
@@ -151,7 +162,7 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
       </div>
 
       {/* Navegación */}
-      <div className="flex-1 p-4 space-y-2">
+      <div className={`${isMobile ? '' : 'flex-1'} ${isMobile && isCollapsed ? 'hidden' : 'p-4 space-y-2'}`}>
         <Button
           variant="ghost"
           className={`w-full justify-start overflow-hidden ${
@@ -240,7 +251,7 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
       </div>
 
       {/* Logout */}
-      <div className="p-4 border-t border-t-gray-700 ">
+      <div className={`${isMobile && isCollapsed ? 'hidden' : 'p-4'} border-t border-t-gray-700`}>
         <Button
           variant="ghost"
           className={`w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-700/30 ${

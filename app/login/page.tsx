@@ -70,9 +70,9 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex">
+    <div className="min-h-screen flex flex-col lg:flex-row">
       {/* Mitad gris */}
-      <div className="w-1/3 relative min-h-screen bg-gradient-to-br from-gray-800 via-gray-900 to-black">
+      <div className="hidden lg:flex lg:w-1/3 relative min-h-screen bg-gradient-to-br from-gray-800 via-gray-900 to-black">
         {/* Logo esquina superior izquierda */}
         <div className="absolute top-6 left-6">
           <Image
@@ -85,37 +85,49 @@ export default function LoginPage() {
           />
         </div>
         <div className="flex items-center justify-center h-full px-6 text-end">
-          <Label className="text-4xl font-bold text-white mb-[400px]">
+          <Label className="text-2xl lg:text-4xl font-bold text-white mb-[400px]">
             Sistema de Interpretación Notarial de Plantas Arquitectónicas
           </Label>
         </div>
       </div>
 
-      <div className="w-2/3 flex bg-gray-900">
-        <Card className="w-full min-h-screen rounded-l-[30px] rounded-r-none ">
-          <CardHeader className="text-center p-0  text-center">
+      {/* Logo móvil - solo visible en pantallas pequeñas */}
+      <div className="lg:hidden absolute top-4 left-4 z-10">
+        <Image
+          src="/logo.png"
+          alt="Logo Notaría"
+          width={40}
+          height={40}
+          className="object-contain"
+          priority
+        />
+      </div>
+
+      <div className="w-full lg:w-2/3 flex bg-gray-900">
+        <Card className="w-full min-h-screen rounded-none lg:rounded-l-[30px] lg:rounded-r-none">
+          <CardHeader className="text-center p-0">
             {/* Logo */}
-            <div className="w-full h-48 relative items-center justify-center flex mt-10">
+            <div className="w-full h-32 sm:h-40 md:h-48 relative items-center justify-center flex mt-6 sm:mt-8 md:mt-10">
              <Image
                 src="/notaria-logo-black.png"
                 alt="Logo Notaría"
                 width={400}
                 height={150}
-                className="object-contain object-center"
+                className="object-contain object-center w-[280px] sm:w-[320px] md:w-[400px]"
                 priority
               />
             </div>
-            <div>
-              <CardTitle className="text-2xl font-bold text-gray-800">
+            <div className="px-4 sm:px-6">
+              <CardTitle className="text-xl sm:text-2xl font-bold text-gray-800">
                 Bienvenido
               </CardTitle>
-              <CardDescription className="text-gray-600">
+              <CardDescription className="text-sm sm:text-base text-gray-600">
                 Ingresa tus credenciales para acceder a tu cuenta
               </CardDescription>
             </div>
           </CardHeader>
 
-          <CardContent className="space-y-6 px-14 pt-8">
+          <CardContent className="space-y-6 px-4 sm:px-8 md:px-14 pt-6 sm:pt-8 pb-8">
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Campo Email */}
               <div className="space-y-2">
@@ -129,7 +141,7 @@ export default function LoginPage() {
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="pl-10 h-12"
+                    className="pl-10 h-11 sm:h-12"
                     placeholder="abogado@notaria.com"
                     required
                   />
@@ -148,7 +160,7 @@ export default function LoginPage() {
                     type={showPassword ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="pl-10 pr-10 h-12"
+                    className="pl-10 pr-10 h-11 sm:h-12"
                     placeholder="********"
                     required
                   />
@@ -165,14 +177,14 @@ export default function LoginPage() {
               {/* Error Message */}
               {error && (
                 <Alert variant="destructive">
-                  <AlertDescription>{error}</AlertDescription>
+                  <AlertDescription className="text-sm">{error}</AlertDescription>
                 </Alert>
               )}
 
               {/* Botón de Login */}
               <Button
                 type="submit"
-                className="w-full h-12 bg-gray-800 hover:bg-gray-900 text-white font-bold py-2.5"
+                className="w-full h-11 sm:h-12 bg-gray-800 hover:bg-gray-900 text-white font-bold py-2.5 text-sm sm:text-base"
                 disabled={isLoading}
               >
                 {isLoading ? 'Iniciando sesión...' : 'Iniciar Sesión'}

@@ -282,7 +282,7 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
               <span>Arrastra archivos, selecciona o pega desde el portapapeles (Ctrl+V) PDF, PNG o JPG (Máx. 20MB)</span>
             </div>
           </div>
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <input
               type="file"
               id="file-upload"
@@ -291,14 +291,15 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
               multiple
               onChange={handleFileInput}
             />
-            <Button asChild size="lg" className="w-xl cursor-pointer h-12 bg-blue-950 hover:bg-blue-950/80 text-white font-bold py-2.5">
-              <label htmlFor="file-upload" className="cursor-pointer">Seleccionar archivos</label>
+            <Button asChild size="lg" className="w-full sm:w-auto cursor-pointer h-10 sm:h-12 bg-blue-950 hover:bg-blue-950/80 text-white font-bold py-2 sm:py-2.5 px-4 sm:px-6 text-sm sm:text-base">
+              <label htmlFor="file-upload" className="cursor-pointer w-full sm:w-auto">Seleccionar archivos</label>
             </Button>
           </div>
            {selectedFiles.length > 0 && onProcess && (
-              <Button onClick={onProcess} className="w-xl cursor-pointer h-12 bg-gray-800 hover:bg-gray-700 text-white font-bold py-2.5">
+              <Button onClick={onProcess} className="w-full sm:w-auto cursor-pointer h-10 sm:h-12 bg-gray-800 hover:bg-gray-700 text-white font-bold py-2 sm:py-2.5 px-4 sm:px-6 text-sm sm:text-base">
                 <Play className="h-4 w-4 mr-2" />
-                Procesar imágenes ({selectedFiles.length})
+                <span className="hidden sm:inline">Procesar imágenes </span>
+                <span>({selectedFiles.length})</span>
               </Button>
             )}
 
