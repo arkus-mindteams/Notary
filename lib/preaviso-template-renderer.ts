@@ -211,7 +211,7 @@ export class PreavisoTemplateRenderer {
     // Requisito: no generar múltiples actos, sino un solo contrato con varios créditos dentro.
     if (data.actos.aperturaCreditoComprador && data.creditos && data.creditos.length > 0) {
       const creditosConParticipantes = data.creditos.map(credito => {
-        const participantesConNombres = (credito.participantes || []).map(p => {
+        let participantesConNombres = (credito.participantes || []).map(p => {
           const rawNombre = (p as any)?.nombre ? String((p as any).nombre).trim() : ''
           const normalize = (s: string) =>
             String(s || '')
@@ -322,6 +322,23 @@ export class PreavisoTemplateRenderer {
           
           return p
         })
+        // Guardrail: si no hay acreditado explícito, usar comprador principal
+        const hasAcreditado = participantesConNombres.some(p => p?.rol === 'acreditado')
+        if (!hasAcreditado && data.compradores?.[0]) {
+          const comprador0 = data.compradores[0]
+          const nombre = comprador0.nombre || comprador0.denominacion_social || null
+          if (nombre) {
+            participantesConNombres = [
+              {
+                party_id: comprador0.party_id || null,
+                rol: 'acreditado',
+                nombre
+              },
+              ...participantesConNombres
+            ]
+          }
+        }
+
         return {
           ...credito,
           participantes: participantesConNombres
@@ -408,6 +425,19 @@ export class PreavisoTemplateRenderer {
       lines.forEach((line) => {
         const trimmedLine = line.trim()
         
+        // Detectar títulos y encabezados centrados
+        const isCenteredHeader =
+          trimmedLine.includes('LIC.') ||
+          trimmedLine.includes('NOTARIO ADSCRITO') ||
+          trimmedLine.includes('NOTARIO TITULAR') ||
+          trimmedLine.includes('CALLE ANTONIO CASO') ||
+          trimmedLine.startsWith('TEL:') ||
+          trimmedLine.includes('SOLICITUD DE CERTIFICADO') ||
+          trimmedLine.includes('ANTECEDENTE REGISTRAL') ||
+          trimmedLine.startsWith('PARTIDA NO:') ||
+          trimmedLine.startsWith('SECCIÓN') ||
+          trimmedLine.startsWith('FOLIO REAL:')
+
         // Detectar títulos
         if (trimmedLine.includes('SOLICITUD DE CERTIFICADO') || 
             trimmedLine.includes('OBJETO DE LA COMPRAVENTA') ||
@@ -423,7 +453,7 @@ export class PreavisoTemplateRenderer {
                 })
               ],
               heading: trimmedLine.includes('SOLICITUD') ? HeadingLevel.TITLE : undefined,
-              alignment: trimmedLine.includes('SOLICITUD') ? AlignmentType.CENTER : AlignmentType.LEFT,
+              alignment: isCenteredHeader ? AlignmentType.CENTER : AlignmentType.LEFT,
               spacing: { after: 300 }
             })
           )
@@ -441,6 +471,22 @@ export class PreavisoTemplateRenderer {
               ],
               alignment: AlignmentType.CENTER,
               spacing: { after: 200 }
+            })
+          )
+        } else if (isCenteredHeader) {
+          // Líneas de encabezado centradas
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: 24,
+                  font: 'Times New Roman'
+                })
+              ],
+              alignment: AlignmentType.CENTER,
+              spacing: { after: 120 }
             })
           )
         } else if (trimmedLine.match(/^[IVX]+\./)) {
@@ -487,6 +533,21 @@ export class PreavisoTemplateRenderer {
               spacing: { after: 120 }
             })
           )
+        } else if (trimmedLine === '4501E') {
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: 24,
+                  font: 'Times New Roman'
+                })
+              ],
+              alignment: AlignmentType.RIGHT,
+              spacing: { after: 120 }
+            })
+          )
         } else if (trimmedLine.includes('_________________________________')) {
           // Línea de firma
           paragraphs.push(
@@ -503,17 +564,27 @@ export class PreavisoTemplateRenderer {
           )
         } else if (trimmedLine) {
           // Párrafo normal
+          const isLeft =
+            trimmedLine.startsWith('OBJETO DE LA COMPRAVENTA') ||
+            trimmedLine.startsWith('MUNICIPIO:')
+          const isBoldLabel =
+            /^(ACREEDOR|DEUDOR|VENDEDOR|COMPRADOR|ACREDITANTE|ACREDITADO|COACREDITADO|OBJETO DE LA COMPRAVENTA)/.test(trimmedLine)
           paragraphs.push(
             new Paragraph({
               children: [
                 new TextRun({
                   text: trimmedLine,
+                  bold: isBoldLabel,
                   size: 24,
                   font: 'Times New Roman'
                 })
               ],
               spacing: { after: 120 },
-              alignment: trimmedLine.includes('TIJUANA') ? AlignmentType.CENTER : AlignmentType.JUSTIFIED
+              alignment: isLeft
+                ? AlignmentType.LEFT
+                : trimmedLine.includes('TIJUANA')
+                  ? AlignmentType.CENTER
+                  : AlignmentType.JUSTIFIED
             })
           )
         }
@@ -752,14 +823,17 @@ export class PreavisoTemplateRenderer {
     const primerComprador = data.compradores?.[0]
     const tieneCreditos = data.creditos && data.creditos.length > 0
     const gravamenesArr = Array.isArray(data.gravamenes) ? data.gravamenes : []
+    const tieneGravamen =
+      gravamenesArr.length > 0 || data.inmueble?.existe_hipoteca === true
     const cancelacionPendiente =
       gravamenesArr.length > 0 &&
-      gravamenesArr.some((g: any) => g?.cancelacion_confirmada === false)
-    // Nota: `inmueble.existe_hipoteca` es tri-state y puede no existir en objetos legacy.
-    // Para efectos de impresión, la fuente de verdad es: si hay gravamen con cancelación pendiente, se imprime el acto.
-    // Si hay un gravamen con cancelación pendiente, se imprime el acto de cancelación.
-    // `existe_hipoteca` puede estar null/undefined por compatibilidad, pero no debe bloquear la impresión.
-    const necesitaCancelacionHipoteca = cancelacionPendiente
+      gravamenesArr.some(
+        (g: any) => g?.cancelacion_confirmada === false || g?.cancelacion_confirmada === null || g?.cancelacion_confirmada === undefined
+      )
+    const cancelacionYaInscrita =
+      gravamenesArr.length > 0 &&
+      gravamenesArr.every((g: any) => g?.cancelacion_confirmada === true)
+    const necesitaCancelacionHipoteca = tieneGravamen && !cancelacionYaInscrita
     
     // Calcular actos notariales para el renderer (NO usar data.actosNotariales directo,
     // porque ese objeto legacy no incluye cancelacionHipoteca y causaba omitir el acto).
@@ -826,6 +900,7 @@ export class PreavisoTemplateRenderer {
         manzana: data.inmueble.datos_catastrales?.manzana || null,
         fraccionamiento: data.inmueble.datos_catastrales?.fraccionamiento || null,
         colonia: data.inmueble.direccion?.colonia || null,
+        municipio: data.inmueble.direccion?.municipio || null,
         all_registry_pages_confirmed: data.inmueble.all_registry_pages_confirmed || false
       } : null,
       gravamenes: data.gravamenes?.map(g => ({

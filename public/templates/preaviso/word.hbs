@@ -2,45 +2,41 @@
 {{! Estructura según formato oficial de la Notaría No. 3 }}
 
 {{! 1. Encabezado del notario }}
-LIC. XAVIER IBÁÑEZ VERAMENDI
-NOTARIO TITULAR DE LA NOTARÍA NO. 3 DE ESTA CIUDAD.
-CALLE ANTONIO CASO # 2040, SEGUNDO PISO, ZONA RIO, TIJUANA B.C.
-TEL: 200-24-27
+LIC. {{notaria.nombre}}
+NOTARIO ADSCRITO A LA NOTARÍA NO. {{notaria.numero}} DE ESTA CIUDAD
+CALLE ANTONIO CASO # 2040, ZONA RIO, TIJUANA B.C.
+TEL: 664-200-24-27
 
 {{! 2. Título del documento }}
-SOLICITUD DE CERTIFICADO CON
-EFECTO DE PRE-AVISO Y DE INFORME DE EXISTENCIA O INEXISTENCIA DECLARATORIAS DE USO O DESTINO, MANIFESTACIONES O RESERVAS
+SOLICITUD DE CERTIFICADO CON EFECTO DE PRE-AVISO
 
-{{! 3. ANTECEDENTES REGISTRALES }}
-ANTECEDENTES REGISTRALES
-{{#if inmueble.partidas}}No. PARTIDA: {{#each inmueble.partidas}}{{#if @first}}{{this}}{{else}}, {{this}}{{/if}}{{/each}}{{#if inmueble.seccion}} SECCION: {{inmueble.seccion}}{{/if}}
-{{else}}{{#if inmueble.numero_expediente}}No. {{inmueble.numero_expediente}}{{#if inmueble.seccion}} SECCION: {{inmueble.seccion}}{{/if}}
-{{/if}}{{/if}}
-         	FOLIO REAL: {{inmueble.folioReal}}
+{{! 3. ANTECEDENTE REGISTRAL }}
+ANTECEDENTE REGISTRAL
+{{#if inmueble.partidas}}PARTIDA NO: {{#each inmueble.partidas}}{{#if @first}}{{this}}{{else}}, {{this}}{{/if}}{{/each}}{{/if}}
+{{#if inmueble.seccion}}SECCIÓN {{inmueble.seccion}}{{/if}}
+FOLIO REAL: {{inmueble.folioReal}}
 
 C. DIRECTOR DEL REGISTRO PÚBLICO
 DE LA PROPIEDAD Y DEL COMERCIO.
 P R E S E N T E.
 
 {{! 4. Párrafo legal del art. 2885 }}
-LIC. XAVIER IBÁÑEZ VERAMENDI, Notario Titular de la Notaría No. 3 de esta ciudad, para los efectos de lo dispuesto por el artículo 2,885 del Código Civil del Estado, hace de su conocimiento que ante mi fe se pretenden otorgar LOS SIGUIENTES ACTOS JURIDICOS:
+LICENCIADO {{notaria.nombre}}, NOTARIO ADSCRITO A LA NOTARÍA NÚMERO {{notaria.numero}} DE ESTA MUNICIPALIDAD CUYO TITULAR ES EL LICENCIADO XAVIER IBÁÑEZ VERAMENDI, PARA LOS EFECTOS DE LO DISPUESTO POR EL ARTÍCULO 2,885 DEL CÓDIGO CIVIL DEL ESTADO, HACE DE SU CONOCIMIENTO QUE ANTE MI FE SE PRETENDEN OTORGAR TRANSMISIÓN DE PROPIEDAD EN EJECUCIÓN DE FIDEICOMISO Y EXTINCIÓN PARCIAL DEL MISMO Y CONTRATO DE APERTURA DE CRÉDITO SIMPLE CON INTERÉS Y GARANTÍA HIPOTECARIA, CUYAS CARACTERÍSTICAS ENSEGUIDA SE DETALLAN:
 
 {{! 5. Actos jurídicos numerados (romanos con guión) }}
 {{#each actosNumerados}}
-{{this.numeroRomano}}.- {{#if (eq this.tipo 'cancelacionHipoteca')}}CANCELACIÓN DE HIPOTECA:
+{{this.numeroRomano}}.- {{#if (eq this.tipo 'cancelacionHipoteca')}}CANCELACION DE HIPOTECA:
 
+{{#if ../gravamenPrincipal.institucion}}ACREEDOR: {{../gravamenPrincipal.institucion}}{{/if}}
 {{#if ../vendedor.denominacion_social}}DEUDOR: {{../vendedor.denominacion_social}}
 {{else}}DEUDOR: {{../vendedor.nombre}}
 {{/if}}
-{{#if ../gravamenPrincipal.institucion}}ACREEDOR: {{../gravamenPrincipal.institucion}}{{/if}}
-{{#if ../gravamenPrincipal.numero_credito}}NÚMERO DE CRÉDITO: {{../gravamenPrincipal.numero_credito}}{{/if}}
-CANCELACIÓN: SE CANCELARÁ EN LA ESCRITURA/TRÁMITE ACTUAL.
 {{else}}{{#if (eq this.tipo 'compraventa')}}CONTRATO DE COMPRAVENTA:
 
-{{#if ../vendedor.denominacion_social}}TRANSMITENTE: {{../vendedor.denominacion_social}}
-{{else}}TRANSMITENTE: {{../vendedor.nombre}}
+{{#if ../vendedor.denominacion_social}}VENDEDOR: {{../vendedor.denominacion_social}}
+{{else}}VENDEDOR: {{../vendedor.nombre}}
 {{/if}}
-ADQUIRIENTE: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}
+COMPRADOR: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}
 {{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CREDITO SIMPLE CON INTERES Y GARANTÍA HIPOTECARIA.
 
 {{#if (hasItems this.creditos)}}{{#each this.creditos}}{{#if @first}}
@@ -53,18 +49,16 @@ ADQUIRIENTE: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{
 
 {{/each}}
 
-{{! 6. OBJETO DE LA TRANSMISIÓN Y GARANTÍA }}
-{{#if (hasItems creditos)}}
-OBJETO DE LA TRANSMISION Y GARANTIA: 
-{{else}}
-OBJETO DE LA TRANSMISION: 
-{{/if}}
+{{! 6. OBJETO DE LA COMPRAVENTA Y GARANTÍA }}
+OBJETO DE LA COMPRAVENTA Y GARANTIA: FOLIO REAL: {{inmueble.folioReal}}
 
 {{! 7. Descripción del inmueble (formato específico) }}
-{{#if inmueble.unidad}}{{inmueble.unidad}}{{#if inmueble.condominio}}, DEL {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}}, CONSTRUIDO SOBRE EL LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, DEL {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
+{{#if inmueble.unidad}}UNIDAD: {{inmueble.unidad}}{{#if inmueble.condominio}} CONJ. HABITACIONAL: {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}} CONSTRUIDO EN EL LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}} DE {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
 {{else}}{{#if inmueble.direccion}}{{inmueble.direccion}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
 {{else}}INMUEBLE UBICADO EN {{inmueble.colonia}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
 {{/if}}{{/if}}
+
+{{#if inmueble.municipio}}MUNICIPIO: {{inmueble.municipio}}{{/if}}
 
 {{! 8. Artículo 139 (condicional) }}
 {{#if include_urban_dev_article_139}}
@@ -72,11 +66,11 @@ Asimismo, en los términos del Artículo 139 de la Ley de Desarrollo Urbano para
 {{/if}}
 
 {{! 8. Cierre }}
-TIJUANA, B. C., A LA FECHA DE SU PRESENTACION.
+TIJUANA, B. C. AL MOMENTO DE SU PRESENTACION
 
 
 
 
 {{! 9. Firma del notario }}
-LIC. XAVIER IBÁÑEZ VERAMENDI
+LIC. {{notaria.nombre}}
 

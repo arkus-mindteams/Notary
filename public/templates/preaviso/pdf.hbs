@@ -85,25 +85,24 @@
   {{! 1. Encabezado del notario }}
   <div class="header">
     <div class="notary-info">
-      LIC. XAVIER IBÁÑEZ VERAMENDI<br>
-      NOTARIO TITULAR DE LA NOTARÍA NO. 3 DE ESTA CIUDAD.<br>
-      CALLE ANTONIO CASO # 2040, SEGUNDO PISO, ZONA RIO, TIJUANA B.C.<br>
-      TEL: 200-24-27
+      LIC. {{notaria.nombre}}<br>
+      NOTARIO ADSCRITO A LA NOTARÍA NO. {{notaria.numero}} DE ESTA CIUDAD<br>
+      CALLE ANTONIO CASO # 2040, ZONA RIO, TIJUANA B.C.<br>
+      TEL: 664-200-24-27
     </div>
   </div>
 
   {{! 2. Título del documento }}
   <div class="title">
-    SOLICITUD DE CERTIFICADO CON<br>
-    EFECTO DE PRE-AVISO Y DE INFORME DE EXISTENCIA O INEXISTENCIA DECLARATORIAS DE USO O DESTINO, MANIFESTACIONES O RESERVAS
+    SOLICITUD DE CERTIFICADO CON EFECTO DE PRE-AVISO
   </div>
 
-  {{! 3. ANTECEDENTES REGISTRALES }}
+  {{! 3. ANTECEDENTE REGISTRAL }}
   <div class="date">
-    ANTECEDENTES REGISTRALES<br>
-    {{#if inmueble.partidas}}No. PARTIDA: {{#each inmueble.partidas}}{{#if @first}}{{this}}{{else}}, {{this}}{{/if}}{{/each}}{{#if inmueble.seccion}} SECCION: {{inmueble.seccion}}{{/if}}<br>
-    {{else}}{{#if inmueble.numero_expediente}}No. {{inmueble.numero_expediente}}{{#if inmueble.seccion}} SECCION: {{inmueble.seccion}}{{/if}}<br>
-    {{/if}}{{/if}}FOLIO REAL: {{inmueble.folioReal}}
+    <strong>ANTECEDENTE REGISTRAL</strong><br>
+    {{#if inmueble.partidas}}PARTIDA NO: {{#each inmueble.partidas}}{{#if @first}}{{this}}{{else}}, {{this}}{{/if}}{{/each}}<br>{{/if}}
+    {{#if inmueble.seccion}}SECCIÓN {{inmueble.seccion}}<br>{{/if}}
+    FOLIO REAL: {{inmueble.folioReal}}
   </div>
 
   <div class="addressee">
@@ -114,25 +113,23 @@
 
   {{! 4. Párrafo legal del art. 2885 }}
   <div class="legal-basis">
-    LIC. XAVIER IBÁÑEZ VERAMENDI, Notario Titular de la Notaría No. 3 de esta ciudad, para los efectos de lo dispuesto por el artículo 2,885 del Código Civil del Estado, hace de su conocimiento que ante mi fe se pretenden otorgar LOS SIGUIENTES ACTOS JURIDICOS:
+    LICENCIADO {{notaria.nombre}}, NOTARIO ADSCRITO A LA NOTARÍA NÚMERO {{notaria.numero}} DE ESTA MUNICIPALIDAD CUYO TITULAR ES EL LICENCIADO XAVIER IBÁÑEZ VERAMENDI, PARA LOS EFECTOS DE LO DISPUESTO POR EL ARTÍCULO 2,885 DEL CÓDIGO CIVIL DEL ESTADO, HACE DE SU CONOCIMIENTO QUE ANTE MI FE SE PRETENDEN OTORGAR TRANSMISIÓN DE PROPIEDAD EN EJECUCIÓN DE FIDEICOMISO Y EXTINCIÓN PARCIAL DEL MISMO Y CONTRATO DE APERTURA DE CRÉDITO SIMPLE CON INTERÉS Y GARANTÍA HIPOTECARIA, CUYAS CARACTERÍSTICAS ENSEGUIDA SE DETALLAN:
   </div>
 
   {{! 5. Actos jurídicos numerados (romanos con guión) }}
   <div class="acts">
     {{#each actosNumerados}}
     <div class="act-item">
-      <span class="act-number">{{this.numeroRomano}}.-</span> {{#if (eq this.tipo 'cancelacionHipoteca')}}CANCELACIÓN DE HIPOTECA:<br><br>
+      <span class="act-number">{{this.numeroRomano}}.-</span> {{#if (eq this.tipo 'cancelacionHipoteca')}}CANCELACION DE HIPOTECA:<br><br>
+      {{#if ../gravamenPrincipal.institucion}}ACREEDOR: {{../gravamenPrincipal.institucion}}<br>{{/if}}
       {{#if ../vendedor.denominacion_social}}DEUDOR: {{../vendedor.denominacion_social}}<br>
       {{else}}DEUDOR: {{../vendedor.nombre}}<br>
       {{/if}}
-      {{#if ../gravamenPrincipal.institucion}}ACREEDOR: {{../gravamenPrincipal.institucion}}<br>{{/if}}
-      {{#if ../gravamenPrincipal.numero_credito}}NÚMERO DE CRÉDITO: {{../gravamenPrincipal.numero_credito}}<br>{{/if}}
-      CANCELACIÓN: SE CANCELARÁ EN LA ESCRITURA/TRÁMITE ACTUAL.<br><br>
       {{else}}{{#if (eq this.tipo 'compraventa')}}CONTRATO DE COMPRAVENTA:<br><br>
-      {{#if ../vendedor.denominacion_social}}TRANSMITENTE: {{../vendedor.denominacion_social}}<br>
-      {{else}}TRANSMITENTE: {{../vendedor.nombre}}<br>
+      {{#if ../vendedor.denominacion_social}}VENDEDOR: {{../vendedor.denominacion_social}}<br>
+      {{else}}VENDEDOR: {{../vendedor.nombre}}<br>
     {{/if}}
-      ADQUIRIENTE: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}<br>
+      COMPRADOR: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}<br>
       {{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CREDITO SIMPLE CON INTERES Y GARANTÍA HIPOTECARIA.<br><br>
       {{#if (hasItems this.creditos)}}{{#each this.creditos}}{{#if @first}}
       {{#if this.institucion}}ACREDITANTE: {{this.institucion}}<br>{{/if}}
@@ -145,23 +142,20 @@
     {{/each}}
   </div>
 
-  {{! 6. OBJETO DE LA TRANSMISIÓN Y GARANTÍA }}
+  {{! 6. OBJETO DE LA COMPRAVENTA Y GARANTÍA }}
   <div class="property-object">
     <div class="title">
-      {{#if (hasItems creditos)}}
-      OBJETO DE LA TRANSMISION Y GARANTIA: 
-      {{else}}
-      OBJETO DE LA TRANSMISION: 
-      {{/if}}
+      OBJETO DE LA COMPRAVENTA Y GARANTIA: FOLIO REAL: {{inmueble.folioReal}}
     </div>
 
     {{! 7. Descripción del inmueble (formato específico) }}
     <p>
-      {{#if inmueble.unidad}}{{inmueble.unidad}}{{#if inmueble.condominio}}, DEL {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}}, CONSTRUIDO SOBRE EL LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, DEL {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
+      {{#if inmueble.unidad}}UNIDAD: {{inmueble.unidad}}{{#if inmueble.condominio}} CONJ. HABITACIONAL: {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}} CONSTRUIDO EN EL LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}} DE {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
       {{else}}{{#if inmueble.direccion}}{{inmueble.direccion}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
       {{else}}INMUEBLE UBICADO EN {{inmueble.colonia}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
       {{/if}}{{/if}}
     </p>
+    {{#if inmueble.municipio}}<p>MUNICIPIO: {{inmueble.municipio}}</p>{{/if}}
 
     {{! 8. Artículo 139 (condicional) }}
     {{#if include_urban_dev_article_139}}
@@ -171,13 +165,13 @@
 
   {{! 8. Cierre }}
   <div class="closing">
-    TIJUANA, B. C., A LA FECHA DE SU PRESENTACION.
+    TIJUANA, B. C. AL MOMENTO DE SU PRESENTACION
   </div>
 
   {{! 9. Firma del notario }}
   <div class="signature">
     <div style="margin-top: 50px;">
-      LIC. XAVIER IBÁÑEZ VERAMENDI
+      LIC. {{notaria.nombre}}
     </div>
   </div>
 </body>

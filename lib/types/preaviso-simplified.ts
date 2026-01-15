@@ -61,6 +61,7 @@ export interface PreavisoSimplifiedJSON {
     manzana?: string | null
     fraccionamiento?: string | null
     colonia?: string | null
+    municipio?: string | null
     all_registry_pages_confirmed?: boolean
   } | null
   

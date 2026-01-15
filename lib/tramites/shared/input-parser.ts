@@ -819,7 +819,8 @@ export class InputParser {
       // - "libre de gravamen"
       // - "sin hipoteca"
       // - "no tiene"
-      pattern: /^(?:\s*(?:es|esta|está)\s+)?(?:sí|si|no|confirmo|confirmado|correcto|libre(?:\s+de\s+(?:gravamen(?:es)?|hipoteca))?|sin\s+(?:gravamen(?:es)?|hipoteca)|no\s+(?:tiene|hay)(?:\s+(?:gravamen(?:es)?|hipoteca))?)\s*$/i,
+      // - "tiene gravamen/hipoteca"
+      pattern: /^(?:\s*(?:es|esta|está)\s+)?(?:sí|si|no|confirmo|confirmado|correcto|libre(?:\s+de\s+(?:gravamen(?:es)?|hipoteca))?|sin\s+(?:gravamen(?:es)?|hipoteca)|no\s+(?:tiene|hay)(?:\s+(?:gravamen(?:es)?|hipoteca))?|(?:tiene|hay|existe)\s+(?:un\s+)?(?:gravamen(?:es)?|hipoteca|embargo))\s*$/i,
       condition: (input, context, lastAssistantMessage?: string) => {
         // Solo si aún no está contestado en el contexto
         const unanswered = context.inmueble?.existe_hipoteca === null || context.inmueble?.existe_hipoteca === undefined
@@ -842,6 +843,10 @@ export class InputParser {
         // Negaciones claras
         if (t === 'no' || t.startsWith('no ') || t.includes('sin ') || t.includes('libre')) {
           return { exists: false }
+        }
+        // Afirmaciones explícitas con verbo
+        if (/\b(tiene|hay|existe)\b/.test(t) && /\b(gravamen|gravamenes|hipoteca|embargo)\b/.test(t)) {
+          return { exists: true }
         }
         // Afirmación clara
         if (t === 'si' || t === 'sí') {
