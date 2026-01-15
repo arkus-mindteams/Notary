@@ -180,14 +180,14 @@ export default function LoginPage() {
             </form>
 
             {/* Enlace de recuperación */}
-            <div className="text-center">
+             {/* <div className="text-center">
               <a
                 href="#"
                 className="text-sm text-gray-800 hover:text-gray-900 hover:underline"
               >
                 ¿Olvidó su contraseña?
               </a>
-            </div>
+            </div>*/}
           </CardContent>
         </Card>
       </div>
