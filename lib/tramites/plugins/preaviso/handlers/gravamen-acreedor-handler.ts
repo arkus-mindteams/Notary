@@ -7,7 +7,9 @@ import { ValidationService } from '../../../shared/services/validation-service'
 
 export class GravamenAcreedorHandler {
   static async handle(command: Command, context: any): Promise<HandlerResult> {
-    const institution = String(command.payload?.institucion || '').trim()
+    const institution = String(command.payload?.institucion || '')
+      .replace(/^acreedor(a)?\s*[:\-]?\s*/i, '')
+      .trim()
     if (!ValidationService.isValidInstitution(institution)) {
       throw new Error(`Institución "${institution}" no válida`)
     }

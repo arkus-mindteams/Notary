@@ -3133,7 +3133,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                       <div><span className="font-medium">Folio Real:</span> {data.inmueble.folio_real}</div>
                     )}
                     {data.inmueble?.partidas && data.inmueble.partidas.length > 0 && (
-                      <div><span className="font-medium">Partida(s):</span> {data.inmueble.partidas.join(', ')}</div>
+                      <div><span className="font-medium">Partida(s):</span> {
+                        data.inmueble.partidas
+                          .map((p: any) => {
+                            if (typeof p === 'string') return p
+                            if (!p) return null
+                            return p.partida || p.numero || p.folio || p.value || null
+                          })
+                          .filter(Boolean)
+                          .join(', ')
+                      }</div>
                     )}
                     {data.inmueble?.direccion?.calle && (
                       <div><span className="font-medium">Dirección:</span> {

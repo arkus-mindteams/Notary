@@ -139,6 +139,13 @@ export class PreavisoTemplateRenderer {
       }
     }
     
+    const normalizePartida = (p: any): string | null => {
+      if (typeof p === 'string') return p
+      if (!p) return null
+      const v = p.partida || p.numero || p.folio || p.value
+      return v ? String(v) : null
+    }
+
     return {
       isValid: errors.length === 0,
       errors
@@ -888,7 +895,7 @@ export class PreavisoTemplateRenderer {
       inmueble: data.inmueble ? {
         direccion: direccionStr,
         folioReal: data.inmueble.folio_real || null,
-        partidas: data.inmueble.partidas || [],
+        partidas: (data.inmueble.partidas || []).map(normalizePartida).filter(Boolean) as string[],
         seccion: data.inmueble.seccion || null,
         numero_expediente: data.inmueble.numero_expediente || null,
         superficie: data.inmueble.superficie || null,

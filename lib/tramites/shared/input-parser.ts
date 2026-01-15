@@ -183,7 +183,7 @@ export class InputParser {
           return false // Ya está confirmado
         }
         // Verificar que realmente está hablando de forma de pago
-        const inputLower = input.toLowerCase()
+        const inputLower = this.normalizeCommonTypos(input)
         // Si el usuario está hablando de gravamen/hipoteca/cancelación, NO capturar forma de pago
         // a menos que el asistente esté preguntando explícitamente por contado vs crédito.
         const mentionsEncumbrance = /\b(gravamen|gravamenes|hipoteca|cancelaci[oó]n|cancelar|se\s+cancel)\b/i.test(inputLower)
@@ -205,11 +205,11 @@ export class InputParser {
           inputLower.includes('por')
         // Si menciona palabras relacionadas con pago O es una respuesta simple (solo "credito" o "contado")
         // Guardrail adicional: si no es respuesta simple, exigir que el asistente haya preguntado por forma de pago.
-        if (/^(contado|credito|crédito)$/i.test(input.trim())) return true
+        if (/^(contado|credito|crédito)$/i.test(inputLower.trim())) return true
         return isAskingPayment && mentionsPayment
       },
       extract: (input) => {
-        const inputLower = input.toLowerCase()
+        const inputLower = this.normalizeCommonTypos(input)
         const isContado = /contado/i.test(inputLower)
         return {
           method: isContado ? 'contado' : 'credito'
@@ -396,7 +396,7 @@ export class InputParser {
       condition: (input, context, lastAssistantMessage?: string) => {
         if (!this.isCreditInstitutionContext(context, lastAssistantMessage)) return false
         // Evitar yes/no o respuestas que claramente no son institución
-        const t = String(input || '').trim().toLowerCase()
+        const t = this.normalizeCommonTypos(input).trim()
         if (/^(si|sí|no|confirmo|confirmado|ok|okay|correcto|afirmativo|de acuerdo)$/i.test(t)) return false
         return true
       },
@@ -835,7 +835,7 @@ export class InputParser {
         return /\b(gravamen|gravamenes|hipoteca|libre|sin)\b/i.test(t) || this.isEncumbranceContext(context, lastAssistantMessage)
       },
       extract: (input, context, lastAssistantMessage?: string) => {
-        const t = String(input || '').trim().toLowerCase()
+        const t = this.normalizeCommonTypos(input)
           .replace(/\.+/g, ' ')
           .replace(/\s+/g, ' ')
         const last = String(lastAssistantMessage || '').toLowerCase()
@@ -1194,6 +1194,27 @@ export class InputParser {
   }
 
   /**
+   * Normaliza typos comunes para mejorar captura determinista
+   */
+  private normalizeCommonTypos(input: string): string {
+    const t = String(input || '').toLowerCase()
+    return t
+      // crédito
+      .replace(/\bcreditp\b/g, 'credito')
+      .replace(/\bcredti?o\b/g, 'credito')
+      .replace(/\bcrediot\b/g, 'credito')
+      .replace(/\bcredito+(\b|$)/g, 'credito')
+      // contado
+      .replace(/\bcontdao\b/g, 'contado')
+      .replace(/\bcontdao\b/g, 'contado')
+      .replace(/\bcontaod\b/g, 'contado')
+      // gravamen/hipoteca
+      .replace(/\bgravmen\b/g, 'gravamen')
+      .replace(/\bgravamenes\b/g, 'gravamenes')
+      .replace(/\bhipotcea\b/g, 'hipoteca')
+  }
+
+  /**
    * Normaliza nombre de institución
    */
   private normalizeInstitution(input: string): string {
@@ -1221,16 +1242,17 @@ export class InputParser {
   private extractInstitutionFreeform(input: string): string | null {
     const raw = String(input || '').trim()
     if (!raw) return null
+    const rawClean = raw.replace(/^acreedor(a)?\s*[:\-]?\s*/i, '').trim()
 
     // Si parece razón social completa, preservar tal cual
-    if (/[,.]/.test(raw) || /\bS\.?\s*A\.?/i.test(raw) || /\bSOCIEDAD\s+ANONIMA\b/i.test(raw)) {
-      return raw
+    if (/[,.]/.test(rawClean) || /\bS\.?\s*A\.?/i.test(rawClean) || /\bSOCIEDAD\s+ANONIMA\b/i.test(rawClean)) {
+      return rawClean
     }
 
     // Intentar extraer después de palabras guía
     // Ej: "será con Banregio", "con el banco Scotiabank", "institución: BanCoppel"
     const lowered = raw.toLowerCase()
-    const cleaned = raw
+    const cleaned = rawClean
       .replace(/\s+/g, ' ')
       .replace(/^[\s:,-]+|[\s:,-]+$/g, '')
 
