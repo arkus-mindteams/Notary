@@ -463,7 +463,10 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     if (!hayGravamenesCapturados) {
       stateStatus.ESTADO_6 = 'incomplete'
     } else {
-      const gravamenesCompletos = gravamenes.every((g: any) => g.cancelacion_confirmada === true || g.cancelacion_confirmada === false)
+      const gravamenesCompletos = gravamenes.every((g: any) =>
+        (g.cancelacion_confirmada === true || g.cancelacion_confirmada === false) &&
+        !!g.institucion
+      )
       stateStatus.ESTADO_6 = gravamenesCompletos ? 'completed' : 'incomplete'
     }
   } else if (existeHipoteca === false) {

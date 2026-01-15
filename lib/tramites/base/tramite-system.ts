@@ -269,6 +269,10 @@ export class TramiteSystem {
         if (updatedContext?.inmueble?.existe_hipoteca === null || updatedContext?.inmueble?.existe_hipoteca === undefined) {
           return 'encumbrance'
         }
+        const g0 = Array.isArray(updatedContext?.gravamenes) ? updatedContext.gravamenes[0] : null
+        if (updatedContext?.inmueble?.existe_hipoteca === true && !g0?.institucion) {
+          return 'gravamen_acreedor'
+        }
       }
       if (stateId === 'ESTADO_6B') {
         return 'encumbrance_cancellation'

@@ -17,6 +17,7 @@ import { CreditInstitutionHandler } from '../plugins/preaviso/handlers/credit-in
 import { CreditParticipantHandler } from '../plugins/preaviso/handlers/credit-participant-handler'
 import { EncumbranceHandler } from '../plugins/preaviso/handlers/encumbrance-handler'
 import { InmuebleManualHandler } from '../plugins/preaviso/handlers/inmueble-manual-handler'
+import { GravamenAcreedorHandler } from '../plugins/preaviso/handlers/gravamen-acreedor-handler'
 
 export class CommandRouter {
   private handlers: Map<string, any> = new Map()
@@ -34,6 +35,7 @@ export class CommandRouter {
     this.handlers.set('credit_participant', CreditParticipantHandler)
     this.handlers.set('encumbrance', EncumbranceHandler)
     this.handlers.set('inmueble_manual', InmuebleManualHandler)
+    this.handlers.set('gravamen_acreedor', GravamenAcreedorHandler)
   }
 
   /**

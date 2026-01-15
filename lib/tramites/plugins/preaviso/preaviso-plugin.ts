@@ -115,12 +115,14 @@ export class PreavisoPlugin implements TramitePlugin {
           ctx?.inmueble?.existe_hipoteca === true &&
           Array.isArray(ctx?.gravamenes) &&
           ctx.gravamenes.length > 0 &&
+          !!ctx.gravamenes[0]?.institucion &&
           (ctx.gravamenes[0]?.cancelacion_confirmada === null || ctx.gravamenes[0]?.cancelacion_confirmada === undefined),
         fields: ['gravamenes[].cancelacion_confirmada'],
         conditional: (ctx) =>
           ctx?.inmueble?.existe_hipoteca === true &&
           Array.isArray(ctx?.gravamenes) &&
-          ctx.gravamenes.length > 0,
+          ctx.gravamenes.length > 0 &&
+          !!ctx.gravamenes[0]?.institucion,
       },
       {
         id: 'ESTADO_8',
@@ -230,8 +232,51 @@ export class PreavisoPlugin implements TramitePlugin {
     // Responder de forma determinista para evitar que el LLM invente "condiciones especiales", "más compradores", etc.
     const missingNow = this.getMissingFields(state, context)
     const validationNow = this.validate(context)
-    if (state.id === 'ESTADO_8' || (missingNow.length === 0 && validationNow.valid)) {
+    const g0 = Array.isArray(context?.gravamenes) ? context.gravamenes[0] : null
+    const missingAcreedor = context?.inmueble?.existe_hipoteca === true && !g0?.institucion
+    if ((state.id === 'ESTADO_8' || (missingNow.length === 0 && validationNow.valid)) && !missingAcreedor) {
       return 'Listo: con la información capturada ya puedes generar el Preaviso. Puedes ver el documento en los botones de arriba del chat.'
+    }
+
+    // Guardrail global: si faltan datos mínimos del inmueble, pedirlos ANTES de avanzar a otras secciones.
+    // Esto evita que salte a vendedores cuando aún falta dirección/partida/folio.
+    const inmueble = context?.inmueble
+    const folio = inmueble?.folio_real
+    const partidas = inmueble?.partidas || []
+    const direccionCalle = inmueble?.direccion?.calle
+    if (!folio) {
+      // Si hay candidatos detectados (hoja de inscripción), pedir selección explícita.
+      const candidates = Array.isArray(context?.folios?.candidates) ? context.folios.candidates : []
+      const selection = context?.folios?.selection
+      const confirmed = selection?.confirmed_by_user === true && selection?.selected_folio
+      if (!confirmed && candidates.length > 0) {
+        const items = candidates
+          .map((c: any) => {
+            const folio = String(c?.folio || '').trim()
+            if (!folio) return null
+            const attrs = c?.attrs || {}
+            const unidad = attrs?.unidad ? `Unidad: ${attrs.unidad}` : null
+            const condominio = attrs?.condominio ? `Condominio: ${attrs.condominio}` : null
+            const parts = [unidad, condominio].filter(Boolean)
+            return parts.length > 0 ? `${folio} (${parts.join(' • ')})` : folio
+          })
+          .filter(Boolean) as string[]
+        if (items.length > 0) {
+          return `Detecté los siguientes folios reales:\n- ${items.join('\n- ')}\n¿Cuál debemos usar? Responde con el número del folio.`
+        }
+      }
+      return '¿Cuál es el folio real del inmueble?'
+    }
+    if (!Array.isArray(partidas) || partidas.length === 0) {
+      return '¿Cuál es el número de partida registral del inmueble?'
+    }
+    if (!direccionCalle) {
+      return '¿Cuál es la dirección del inmueble (calle y municipio)?'
+    }
+
+    // Guardrail: si hay gravamen y falta acreedor, preguntar ANTES de cancelación
+    if (context?.inmueble?.existe_hipoteca === true && !g0?.institucion) {
+      return '¿Cuál es la institución acreedora del gravamen/hipoteca? (la institución a la que se le debe)'
     }
 
     // Determinismo para evitar preguntas irrelevantes/repetidas sobre crédito:
@@ -266,23 +311,30 @@ export class PreavisoPlugin implements TramitePlugin {
       const parts = context?.creditos?.[0]?.participantes
       const hasParts = Array.isArray(parts) && parts.length > 0
       if (!hasParts) {
-        return '¿Quiénes serán los participantes del crédito? Por ejemplo: “el comprador como acreditado y su cónyuge como coacreditada”.'
+        const buyer0 = context?.compradores?.[0]
+        const estadoCivil = buyer0?.persona_fisica?.estado_civil
+        if (estadoCivil && estadoCivil !== 'casado') {
+          return '¿El comprador será el único acreditado o habrá otro acreditado/coacreditado?'
+        }
+        return '¿Quiénes serán los participantes del crédito? Por ejemplo: “el comprador como acreditado” (y coacreditado solo si aplica).'
       }
     }
 
+    if (state.id === 'ESTADO_6') {
+      const hasHipoteca = context?.inmueble?.existe_hipoteca === true
+      const g0 = Array.isArray(context?.gravamenes) ? context.gravamenes[0] : null
+      if (hasHipoteca && !g0?.institucion) {
+        return '¿Cuál es la institución acreedora del gravamen/hipoteca? (la institución a la que se le debe)'
+      }
+    }
+
+    if (state.id === 'ESTADO_6B') {
+      // Pregunta clara y neutral, sin inferir institución del crédito del comprador.
+      return '¿La hipoteca/gravamen se va a cancelar antes de la compraventa o se cancelará con motivo de esta operación en la misma escritura?'
+    }
+
     if (state.id === 'ESTADO_2') {
-      const folio = context?.inmueble?.folio_real
-      const partidas = context?.inmueble?.partidas || []
-      const direccion = context?.inmueble?.direccion?.calle
-      if (!folio) {
-        return '¿Cuál es el folio real del inmueble?'
-      }
-      if (!Array.isArray(partidas) || partidas.length === 0) {
-        return '¿Cuál es el número de partida registral del inmueble?'
-      }
-      if (!direccion) {
-        return '¿Cuál es la dirección del inmueble (calle y municipio)?'
-      }
+      // (cubierto por el guardrail global)
     }
 
     if (state.id === 'ESTADO_4') {

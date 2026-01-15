@@ -3139,7 +3139,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                       <div><span className="font-medium">Dirección:</span> {
                         typeof data.inmueble.direccion === 'string' 
                           ? data.inmueble.direccion 
-                          : `${data.inmueble.direccion.calle || ''} ${data.inmueble.direccion.numero || ''} ${data.inmueble.direccion.colonia || ''}`.trim()
+                          : (() => {
+                              const unidad = data.inmueble?.datos_catastrales?.unidad
+                              const base = `${data.inmueble.direccion.calle || ''} ${data.inmueble.direccion.numero || ''} ${data.inmueble.direccion.colonia || ''}`.trim()
+                              return unidad ? `Unidad ${unidad}, ${base}` : base
+                            })()
                       }</div>
                     )}
                     {data.inmueble?.superficie && (
@@ -3378,13 +3382,31 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     ) : Array.isArray(data.gravamenes) && data.gravamenes.length > 0 ? (
                       (() => {
                         const g0: any = data.gravamenes[0]
+                        const acreedor = g0?.institucion ? (
+                          <div className="text-gray-700">Acreedor: {g0.institucion}</div>
+                        ) : null
                         if (g0?.cancelacion_confirmada === true) {
-                          return <div className="text-green-700">Existe gravamen/hipoteca: cancelación ya inscrita (confirmado)</div>
+                          return (
+                            <>
+                              <div className="text-green-700">Existe gravamen/hipoteca: cancelación ya inscrita (confirmado)</div>
+                              {acreedor}
+                            </>
+                          )
                         }
                         if (g0?.cancelacion_confirmada === false) {
-                          return <div className="text-green-700">Existe gravamen/hipoteca: se cancelará en la escritura/trámite (confirmado)</div>
+                          return (
+                            <>
+                              <div className="text-green-700">Existe gravamen/hipoteca: se cancelará en la escritura/trámite (confirmado)</div>
+                              {acreedor}
+                            </>
+                          )
                         }
-                        return <div className="text-gray-400 italic">Pendiente: confirmar si la cancelación ya está inscrita (sí/no)</div>
+                        return (
+                          <>
+                            <div className="text-gray-400 italic">Pendiente: confirmar si la cancelación ya está inscrita (sí/no)</div>
+                            {acreedor}
+                          </>
+                        )
                       })()
                     ) : (
                       <div className="text-gray-400 italic">Pendiente: confirmar si está libre de gravamen/hipoteca (sí/no)</div>

@@ -370,6 +370,14 @@ export class InputParser {
         // Extraer la institución del texto (puede estar en cualquier parte)
         const match = input.match(/\b(bbva|santander|banorte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar)\b/i)
         if (!match) return null
+        const trimmed = String(input || '').trim()
+        // Si el usuario escribió una razón social larga, preservar texto completo
+        if (trimmed.length > match[1].length + 6) {
+          return {
+            creditIndex: 0,
+            institution: trimmed
+          }
+        }
         return {
           creditIndex: 0,
           institution: this.normalizeInstitution(match[1])
@@ -383,15 +391,13 @@ export class InputParser {
     // Esta regla NO debe capturar fuera de contexto; depende de isCreditInstitutionContext().
     this.rules.push({
       name: 'credit_institution_freeform',
-      // Respuesta corta/mediana (evita capturar párrafos completos)
-      pattern: /^[\p{L}\d\s.&'"\-(),]{2,80}$/u,
+      // Respuesta corta/mediana (pero permite razón social completa)
+      pattern: /^[\p{L}\d\s.&'"\-(),]{2,200}$/u,
       condition: (input, context, lastAssistantMessage?: string) => {
         if (!this.isCreditInstitutionContext(context, lastAssistantMessage)) return false
         // Evitar yes/no o respuestas que claramente no son institución
         const t = String(input || '').trim().toLowerCase()
         if (/^(si|sí|no|confirmo|confirmado|ok|okay|correcto|afirmativo|de acuerdo)$/i.test(t)) return false
-        // Si ya matcheó el patrón de instituciones comunes, no duplicar
-        if (/\b(bbva|santander|banorte|hsbc|banamex|infonavit|fovissste)\b/i.test(t)) return false
         return true
       },
       extract: (input) => {
@@ -406,6 +412,69 @@ export class InputParser {
     })
 
     // 7. Participantes de crédito (patrones comunes)
+    // 7.A0 Confirmación corta de "solo comprador" en contexto de participantes
+    this.rules.push({
+      name: 'credit_participants_confirm_single',
+      pattern: /^(si|sí|solo|solo\s+el|solo\s+la|único|unico|única|unica)$/i,
+      condition: (input, context, lastAssistantMessage?: string) => {
+        const creditos = context?.creditos
+        if (!Array.isArray(creditos) || creditos.length === 0) return false
+        const parts = creditos[0]?.participantes
+        if (Array.isArray(parts) && parts.length > 0) return false
+        if (context?._last_question_intent === 'credit_participants') return true
+        const msg = String(lastAssistantMessage || '').toLowerCase()
+        return msg.includes('acreditado') || msg.includes('participantes')
+      },
+      extract: () => ({
+        __commands: [
+          {
+            type: 'credit_participant',
+            timestamp: new Date(),
+            payload: {
+              creditIndex: 0,
+              participant: {
+                partyId: 'comprador_1',
+                role: 'acreditado',
+                isConyuge: false
+              }
+            }
+          }
+        ]
+      }),
+      handler: 'CreditParticipantHandler'
+    })
+
+    // 7.A Solo comprador como acreditado
+    this.rules.push({
+      name: 'credit_participants_solo_comprador',
+      pattern: /\b(solo|sóla|sola|único|unico)\b.*\b(comprador|compradora|acreditad[oa])\b/i,
+      condition: (input, context, lastAssistantMessage?: string) => {
+        const creditos = context?.creditos
+        if (!Array.isArray(creditos) || creditos.length === 0) return false
+        const parts = creditos[0]?.participantes
+        if (Array.isArray(parts) && parts.length > 0) return false
+        if (context?._last_question_intent === 'credit_participants') return true
+        const msg = String(lastAssistantMessage || '').toLowerCase()
+        return msg.includes('participantes') || msg.includes('acreditado')
+      },
+      extract: () => ({
+        __commands: [
+          {
+            type: 'credit_participant',
+            timestamp: new Date(),
+            payload: {
+              creditIndex: 0,
+              participant: {
+                partyId: 'comprador_1',
+                role: 'acreditado',
+                isConyuge: false
+              }
+            }
+          }
+        ]
+      }),
+      handler: 'CreditParticipantHandler'
+    })
     // 7.0 Participantes etiquetados (más flexible, soporta frases mixtas)
     // Ej:
     // - "Acreditado: WU JINWEI, Coacreditada: QIAOZHEN ZHANG"
@@ -795,6 +864,28 @@ export class InputParser {
       handler: 'EncumbranceHandler'
     })
 
+    // 8A. Acreedor del gravamen/hipoteca (institución a la que se le debe)
+    this.rules.push({
+      name: 'gravamen_acreedor',
+      pattern: /^[\p{L}\d\s.&'"\-(),]{2,200}$/u,
+      condition: (input, context, lastAssistantMessage?: string) => {
+        if (context?.inmueble?.existe_hipoteca !== true) return false
+        const g0 = Array.isArray(context?.gravamenes) ? context.gravamenes[0] : null
+        if (g0?.institucion) return false
+        if (context?._last_question_intent === 'gravamen_acreedor') return true
+        const msg = String(lastAssistantMessage || '').toLowerCase()
+        return msg.includes('acreedor') || (msg.includes('institución') && msg.includes('gravamen')) || msg.includes('hipoteca') && msg.includes('institución')
+      },
+      extract: (input) => {
+        const inst = this.extractInstitutionFreeform(input)
+        if (!inst) return null
+        return {
+          institucion: inst
+        }
+      },
+      handler: 'GravamenAcreedorHandler'
+    })
+
     // 8B. Cancelación de hipoteca/gravamen (sí/no) — opción A
     // Se activa SOLO si el asistente acaba de preguntar si se cancelará y aún no está definido.
     this.rules.push({
@@ -925,6 +1016,7 @@ export class InputParser {
       'CreditParticipantHandler': 'credit_participant',
       'EncumbranceHandler': 'encumbrance',
       'InmuebleManualHandler': 'inmueble_manual',
+      'GravamenAcreedorHandler': 'gravamen_acreedor',
     }
 
     const commands: any[] = []
@@ -1114,22 +1206,21 @@ export class InputParser {
       'banco del bienestar': 'Banco del Bienestar'
     }
 
-    // Si el input ya está en mayúsculas o tiene formato correcto, retornarlo tal cual
     if (mapping[normalized]) {
       return mapping[normalized]
     }
-    
-    // Si no está en el mapping pero parece una institución válida, retornar en mayúsculas
-    if (normalized.length > 2 && /^[a-z\s]+$/i.test(input)) {
-      return input.toUpperCase()
-    }
-    
-    return input
+
+    return input.trim()
   }
 
   private extractInstitutionFreeform(input: string): string | null {
     const raw = String(input || '').trim()
     if (!raw) return null
+
+    // Si parece razón social completa, preservar tal cual
+    if (/[,.]/.test(raw) || /\bS\.?\s*A\.?/i.test(raw) || /\bSOCIEDAD\s+ANONIMA\b/i.test(raw)) {
+      return raw
+    }
 
     // Intentar extraer después de palabras guía
     // Ej: "será con Banregio", "con el banco Scotiabank", "institución: BanCoppel"
@@ -1144,21 +1235,15 @@ export class InputParser {
       cleaned.match(/(?:con\s+(?:el\s+)?)?(?:banco\s+)?([^\n,;.]+)$/i)
 
     const candidate = (m && m[1]) ? String(m[1]).trim() : cleaned
-    // Quitar palabras de relleno comunes al inicio
+    // Quitar palabras de relleno comunes al inicio (sin quitar "banco" si viene como nombre oficial)
     const candidate2 = candidate
-      .replace(/^(ser(a|á)|es|con|con el|con la|banco|instituci(o|ó)n)\s+/i, '')
+      .replace(/^(ser(a|á)|es|con|con el|con la|instituci(o|ó)n)\s+/i, '')
       .trim()
 
-    // Limitar tokens para evitar capturar “banregio pero aún no sé…” completo
-    const tokens = candidate2.split(/\s+/).filter(Boolean)
-    if (tokens.length === 0) return null
-    const maxTokens = 4
-    const short = tokens.slice(0, maxTokens).join(' ')
-
-    // Debe parecer nombre de institución (no números solos, no una oración)
-    if (/^\d+$/.test(short)) return null
-    if (short.length < 2) return null
-    // Normalizar con mapping si aplica; si no, title/upper conservador
-    return this.normalizeInstitution(short)
+    // Debe parecer nombre de institución (no números solos, no vacío)
+    if (/^\d+$/.test(candidate2)) return null
+    if (candidate2.length < 2) return null
+    // Preservar tal como fue escrito
+    return candidate2
   }
 }
