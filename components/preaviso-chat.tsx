@@ -977,6 +977,43 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
     setMessages(prev => [...prev, processingMessage])
 
+    // Asegurar sesión válida antes de procesar (evita quedarse en 50% si la sesión expiró)
+    const ensureSession = async () => {
+      let { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        const refreshed = await supabase.auth.refreshSession()
+        session = refreshed.data.session || null
+      }
+      return session
+    }
+
+    try {
+      const session = await ensureSession()
+      if (!session?.access_token) {
+        setIsProcessingDocument(false)
+        setProcessingProgress(0)
+        setProcessingFileName(null)
+        setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
+          id: generateMessageId('session-expired'),
+          role: 'assistant',
+          content: 'Tu sesión expiró. Por favor actualiza la página e inicia sesión de nuevo.',
+          timestamp: new Date()
+        }]))
+        return
+      }
+    } catch (e) {
+      setIsProcessingDocument(false)
+      setProcessingProgress(0)
+      setProcessingFileName(null)
+      setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
+        id: generateMessageId('session-error'),
+        role: 'assistant',
+        content: 'No se pudo validar tu sesión. Por favor actualiza la página e intenta de nuevo.',
+        timestamp: new Date()
+      }]))
+      return
+    }
+
     // Convertir PDFs a imágenes en segundo plano
     let allImageFiles: File[] = [...imageFiles]
     if (pdfFiles.length > 0) {
@@ -1121,6 +1158,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
 
       const totalFiles = items.length
+      if (totalFiles === 0) {
+        setIsProcessingDocument(false)
+        setProcessingProgress(0)
+        setProcessingFileName(null)
+        setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
+          id: generateMessageId('no-pages'),
+          role: 'assistant',
+          content: 'No se pudieron extraer páginas del PDF. Intenta con otro archivo o conviértelo a imágenes.',
+          timestamp: new Date()
+        }]))
+        return
+      }
       let completedCount = 0
 
       // Snapshot mutable para construir contexto correcto durante el flujo (evita usar "data" o "uploadedDocuments" viejos)
