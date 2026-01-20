@@ -6,7 +6,6 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Progress } from '@/components/ui/progress'
 import { useAuth } from '@/lib/auth-context'
 import { createBrowserClient } from '@/lib/supabase'
@@ -708,6 +707,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
   }, [pendingFiles])
   const [showDataPanel, setShowDataPanel] = useState(true)
+  const [hidePanelsAfterMessage, setHidePanelsAfterMessage] = useState(false)
+  const previousPendingFilesLengthRef = useRef(0)
+
+  // Permitir que los paneles vuelvan a aparecer cuando se suben nuevos archivos pendientes (solo si aumenta)
+  useEffect(() => {
+    // Solo restablecer si los archivos pendientes AUMENTAN (nuevos archivos subidos)
+    // No restablecer si disminuyen (archivos procesados)
+    if (pendingFiles.length > previousPendingFilesLengthRef.current && hidePanelsAfterMessage) {
+      setHidePanelsAfterMessage(false)
+    }
+    previousPendingFilesLengthRef.current = pendingFiles.length
+  }, [pendingFiles.length, hidePanelsAfterMessage])
   const [isDragging, setIsDragging] = useState(false)
   const [showExportOptions, setShowExportOptions] = useState(false)
   const [showNewChatDialog, setShowNewChatDialog] = useState(false)
@@ -850,6 +861,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Resetear input
     setInput('')
     
+    // Restablecer visibilidad de paneles
+    setHidePanelsAfterMessage(false)
+    
     // Crear nuevo trámite
     if (user?.id) {
       try {
@@ -904,6 +918,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   }
 
   const handleSend = async () => {
+    // Ocultar paneles inmediatamente cuando se envía un mensaje
+    setHidePanelsAfterMessage(true)
+    
     // Si hay archivos pendientes, procesarlos primero
     if (pendingFiles.length > 0) {
       // Crear un FileList simulado para usar con handleFileUpload
@@ -2558,7 +2575,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               variant="outline"
               size="icon"
               className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground w-fit "
-              onClick={() => setShowDataPanel(true)}
+              onClick={() => {
+                setShowDataPanel(true)
+                setHidePanelsAfterMessage(false)
+              }}
             >
               <Eye className="h-4 w-4" /> 
               <span className="text-xs">Mostrar informacion capturada</span>
@@ -2630,7 +2650,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
           {/* Messages con diseño moderno */}
           <div className="flex-1 overflow-hidden bg-gradient-to-b from-gray-50/50 to-white">
-            <ScrollArea className="h-full">
+            <div className="h-full overflow-auto">
               <div className="p-6 space-y-4">
               {messages.map((message) => (
                 <div
@@ -2746,7 +2766,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               
               <div ref={scrollRef} />
             </div>
-          </ScrollArea>
+          </div>
         </div>
 
 
@@ -2784,224 +2804,149 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             <div className="flex items-end">
               {/* Input de texto moderno con iconos dentro */}
               <div className="flex-1 relative">
-
-                  {/* Panel de archivos pendientes */}
-                  {pendingFiles.length > 0 && (
-                    <div className="flex-shrink-0">
-                      <div className="p-4">
-                        <div className="mb-2">
-                          <p className="text-xs text-gray-500 font-medium">Archivos pendientes (se procesarán al enviar):</p>
-                        </div>
-                        <ScrollArea className="w-full">
-                          <div className="flex gap-3 pb-2">
-                            {pendingFiles.map((file, index) => {
-                              const fileUrl = URL.createObjectURL(file)
-                              const isImage = file.type.startsWith('image/')
-                              const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-                              
-                              return (
-                                <div
-                                  key={`pending-${index}-${file.name}`}
-                                  className="group relative flex-shrink-0 w-24 bg-white rounded-lg border-2 border-dashed border-blue-300 hover:border-blue-400 hover:shadow-lg transition-all duration-200 overflow-hidden"
-                                >
-                                  {/* Preview */}
-                                  <div className="relative h-20 bg-gradient-to-br from-blue-50 to-blue-100">
-                                    {isImage ? (
-                                      <img
-                                        src={fileUrl}
-                                        alt={file.name}
-                                        className="w-full h-full object-cover opacity-70"
-                                        onLoad={() => URL.revokeObjectURL(fileUrl)}
-                                      />
-                                    ) : isPDF ? (
-                                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
-                                        <FileText className="h-6 w-6 text-red-500 opacity-70" />
-                                      </div>
-                                    ) : (
-                                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
-                                        <FileText className="h-6 w-6 text-blue-500 opacity-70" />
-                                      </div>
-                                    )}
-                                    
-                                    {/* Badge de pendiente */}
-                                    <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
-                                      <Upload className="h-2.5 w-2.5 text-white" />
+                {/* Contenedor del input con borde y fondo */}
+                <div className="border border-gray-300 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/20 rounded-2xl bg-gray-50 focus-within:bg-white transition-all">
+                  
+                  {/* Panel de archivos pendientes dentro del input */}
+                  {pendingFiles.length > 0 && !hidePanelsAfterMessage && (
+                    <div className="px-3 pt-3 pb-2 border-b border-gray-200">
+                      <div className="mb-2">
+                        <p className="text-xs text-gray-500 font-medium">Archivos pendientes (se procesarán al enviar):</p>
+                      </div>
+                      <div className="w-full overflow-auto">
+                        <div className="flex gap-3 pb-2">
+                          {pendingFiles.map((file, index) => {
+                            const fileUrl = URL.createObjectURL(file)
+                            const isImage = file.type.startsWith('image/')
+                            const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+                            
+                            return (
+                              <div
+                                key={`pending-${index}-${file.name}`}
+                                className="group relative flex-shrink-0 w-24 bg-white rounded-lg border-2 border-dashed border-blue-300 hover:border-blue-400 hover:shadow-lg transition-all duration-200 overflow-hidden"
+                              >
+                                {/* Preview */}
+                                <div className="relative h-20 bg-gradient-to-br from-blue-50 to-blue-100">
+                                  {isImage ? (
+                                    <img
+                                      src={fileUrl}
+                                      alt={file.name}
+                                      className="w-full h-full object-cover opacity-70"
+                                      onLoad={() => URL.revokeObjectURL(fileUrl)}
+                                    />
+                                  ) : isPDF ? (
+                                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
+                                      <FileText className="h-6 w-6 text-red-500 opacity-70" />
                                     </div>
-                                    
-                                    {/* Botón para eliminar */}
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        URL.revokeObjectURL(fileUrl)
-                                        setPendingFiles(prev => prev.filter((_, i) => i !== index))
-                                      }}
-                                      className="absolute top-1.5 left-1.5 bg-red-500 hover:bg-red-600 rounded-full p-1 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                                      title="Eliminar archivo"
-                                    >
-                                      <X className="h-2.5 w-2.5 text-white" />
-                                    </button>
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
+                                      <FileText className="h-6 w-6 text-blue-500 opacity-70" />
+                                    </div>
+                                  )}
+                                  
+                                  {/* Badge de pendiente */}
+                                  <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
+                                    <Upload className="h-2.5 w-2.5 text-white" />
                                   </div>
                                   
-                                  {/* Información */}
-                                  <div className="p-2 bg-white">
-                                    <p className="text-xs font-medium text-gray-900 truncate mb-0.5" title={file.name}>
-                                      {file.name}
-                                    </p>
-                                    <p className="text-xs text-gray-400">
-                                      {(file.size / 1024 / 1024).toFixed(2)} MB
-                                    </p>
-                                  </div>
+                                  {/* Botón para eliminar */}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      URL.revokeObjectURL(fileUrl)
+                                      setPendingFiles(prev => prev.filter((_, i) => i !== index))
+                                    }}
+                                    className="absolute top-1.5 left-1.5 bg-red-500 hover:bg-red-600 rounded-full p-1 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                                    title="Eliminar archivo"
+                                  >
+                                    <X className="h-2.5 w-2.5 text-white" />
+                                  </button>
                                 </div>
-                              )
-                            })}
-                          </div>
-                        </ScrollArea>
+                                
+                                {/* Información */}
+                                <div className="p-2 bg-white">
+                                  <p className="text-xs font-medium text-gray-900 truncate mb-0.5" title={file.name}>
+                                    {file.name}
+                                  </p>
+                                  <p className="text-xs text-gray-400">
+                                    {(file.size / 1024 / 1024).toFixed(2)} MB
+                                  </p>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Panel de documentos debajo del chat y panel de información */}
-                  {uploadedDocuments.length > 0 && (
-                    <div className="flex-shrink-0">
-                      {/* Lista de documentos horizontal con diseño moderno */}
-                      <div className="p-4">
-                        <ScrollArea className="w-full">
-                          <div className="flex gap-3 pb-2">
-                            {uploadedDocuments.map((doc) => {
-                              const fileUrl = URL.createObjectURL(doc.file)
-                              const isImage = doc.type.startsWith('image/')
-                              const isPDF = doc.type === 'application/pdf' || doc.name.toLowerCase().endsWith('.pdf')
-                              
-                              return (
-                                <div
-                                  key={doc.id}
-                                  className="group relative flex-shrink-0 w-24 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-lg transition-all duration-200 overflow-hidden"
-                                >
-                                  {/* Preview */}
-                                  <div className="relative h-20 bg-gradient-to-br from-gray-50 to-gray-100">
-                                    {isImage ? (
-                                      <img
-                                        src={fileUrl}
-                                        alt={doc.name}
-                                        className="w-full h-full object-cover"
-                                      />
-                                    ) : isPDF ? (
-                                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
-                                        <FileText className="h-6 w-6 text-red-500" />
-                                      </div>
-                                    ) : (
-                                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
-                                        <FileText className="h-6 w-6 text-blue-500" />
-                                      </div>
-                                    )}
-                                    
-                                    {/* Overlay con estado */}
-                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors" />
-                                    
-                                    {/* Badge de estado */}
-                                    {doc.processed ? (
-                                      doc.error ? (
-                                        <div className="absolute top-1.5 right-1.5 bg-red-500 rounded-full p-1 shadow-lg">
-                                          <AlertCircle className="h-2.5 w-2.5 text-white" />
-                                        </div>
-                                      ) : (
-                                        <div className="absolute top-1.5 right-1.5 bg-green-500 rounded-full p-1 shadow-lg">
-                                          <CheckCircle2 className="h-2.5 w-2.5 text-white" />
-                                        </div>
-                                      )
-                                    ) : (
-                                      <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
-                                        <Loader2 className="h-2.5 w-2.5 text-white animate-spin" />
-                                      </div>
-                                    )}
-                                  </div>
-                                  
-                                  {/* Información */}
-                                  <div className="p-2 bg-white">
-                                    <p className="text-xs font-medium text-gray-900 truncate mb-0.5" title={doc.name}>
-                                      {doc.name}
-                                    </p>
-                                    <p className="text-xs text-gray-400">
-                                      {(doc.size / 1024 / 1024).toFixed(2)} MB
-                                    </p>
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </ScrollArea>
+                  {/* Contenedor relativo para el textarea y los iconos */}
+                  <div className="relative">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      accept=".pdf,.jpg,.jpeg,.png,.docx"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files.length > 0) {
+                          // Solo agregar a pendientes, no procesar aún
+                          setPendingFiles(prev => [...prev, ...Array.from(e.target.files!)])
+                          // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
+                          e.target.value = ''
+                        }
+                      }}
+                      className="hidden"
+                    />
+                    
+                    <Textarea
+                      ref={textInputRef}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault()
+                          handleSend()
+                        }
+                      }}
+                      placeholder="Escribe tu mensaje..."
+                      className="min-h-[44px] max-h-[120px] resize-none border-0 bg-transparent focus:ring-0 focus-visible:ring-0 pl-12 pr-12 py-3"
+                      disabled={isProcessing}
+                    />
+                    
+                    {/* Botón de adjuntar archivos dentro del input - izquierda */}
+                    <Button
+                      onClick={() => fileInputRef.current?.click()}
+                      variant="ghost"
+                      size="icon"
+                      className="absolute left-2 bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-gray-600 hover:text-blue-600 transition-colors"
+                      title="Adjuntar documentos"
+                    >
+                      <Upload className="h-4 w-4" />
+                    </Button>
+
+                    {/* Botón de enviar dentro del input - derecha */}
+                    <Button
+                      onClick={handleSend}
+                      disabled={(!input.trim() && pendingFiles.length === 0) || isProcessing}
+                      className="absolute right-2 bg-transparent bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-black disabled:opacity-50 disabled:cursor-not-allowed "
+                      size="icon"
+                      title={pendingFiles.length > 0 ? "Procesar archivos y enviar" : "Enviar mensaje"}
+                    >
+                      {isProcessing ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <ArrowUp className="h-4 w-4" />
+                      )}
+                    </Button>
+                    
+                    {/* Contador de caracteres o indicador */}
+                    {input.length > 0 && (
+                      <div className="absolute bottom-2 right-12 text-xs text-gray-400">
+                        {input.length}
                       </div>
-                    </div>
-                  )}
-          
-
-
-
-
-
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  accept=".pdf,.jpg,.jpeg,.png,.docx"
-                  onChange={(e) => {
-                    if (e.target.files && e.target.files.length > 0) {
-                      // Solo agregar a pendientes, no procesar aún
-                      setPendingFiles(prev => [...prev, ...Array.from(e.target.files!)])
-                      // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
-                      e.target.value = ''
-                    }
-                  }}
-                  className="hidden"
-                />
-                
-                <Textarea
-                  ref={textInputRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      handleSend()
-                    }
-                  }}
-                  placeholder="Escribe tu mensaje..."
-                  className="min-h-[44px] max-h-[120px] resize-none border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-2xl bg-gray-50 focus:bg-white transition-all pl-12 pr-12"
-                  disabled={isProcessing}
-                />
-                
-                {/* Botón de adjuntar archivos dentro del input - izquierda */}
-                <Button
-                  onClick={() => fileInputRef.current?.click()}
-                  variant="ghost"
-                  size="icon"
-                  className="absolute left-2 bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-gray-600 hover:text-blue-600 transition-colors"
-                  title="Adjuntar documentos"
-                >
-                  <Upload className="h-4 w-4" />
-                </Button>
-
-                {/* Botón de enviar dentro del input - derecha */}
-                <Button
-                  onClick={handleSend}
-                  disabled={(!input.trim() && pendingFiles.length === 0) || isProcessing}
-                  className="absolute right-2 bg-transparent bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-black disabled:opacity-50 disabled:cursor-not-allowed "
-                  size="icon"
-                  title={pendingFiles.length > 0 ? "Procesar archivos y enviar" : "Enviar mensaje"}
-                >
-                  {isProcessing ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <ArrowUp className="h-4 w-4" />
-                  )}
-                </Button>
-                
-                {/* Contador de caracteres o indicador */}
-                {input.length > 0 && (
-                  <div className="absolute bottom-2 right-12 text-xs text-gray-400">
-                    {input.length}
+                    )}
                   </div>
-                )}
+                </div>
               </div>
             </div>
             
@@ -3017,7 +2962,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       </Card>
 
       {/* Panel de información extraída */}
-      {showDataPanel && (
+      {showDataPanel  && (
         <Card className="w-80 p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
           <CardContent className="flex-1 flex flex-col p-0 min-h-0">
             {/* Header del panel */}
@@ -3044,7 +2989,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
             {/* Contenido del panel */}
             <div className="flex-1 min-h-0 overflow-hidden">
-              <ScrollArea className="h-full">
+              <div className="h-full overflow-auto">
                 <div className="p-4 space-y-4">
                 {/* PASO 1 – OPERACIÓN Y FORMA DE PAGO */}
                 <div className="space-y-2">
@@ -3277,7 +3222,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 </div>
 
                 </div>
-              </ScrollArea>
+              </div>
             </div>
           </CardContent>
         </Card>
