@@ -2593,15 +2593,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3">
                 <div className="relative group">
-                  <div className="w-12 h-12 rounded-2xl overflow-hidden bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-600 flex items-center justify-center shadow-lg ring-2 ring-blue-100  transition-all">
-                      <Image
-                        src="/ai-img.png"
-                        alt="Asistente Legal"
-                        width={48}
-                        height={48}
-                        className="w-full h-full object-cover"
-                        priority
-                      />
+                  <div className="w-12 h-12 rounded-2xl overflow-hidden bg-gradient-to-br f from-slate-100 to-slate-300 flex items-center justify-center shadow-lg ring-2 ring-blue-100  transition-all">
+                      <Bot className="w-5 h-5 text-black" />
                   </div>
                   <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-white shadow-sm">
                     <div className="w-full h-full bg-green-400 rounded-full animate-pulse"></div>
@@ -2664,14 +2657,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   >
                     {/* Avatar moderno */}
                     {message.role === 'assistant' && (
-                      <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
-                        <Image
-                          src="/ai-img.png"
-                          alt="Asistente Legal"
-                          width={32}
-                          height={32}
-                          className="w-full h-full object-cover"
-                        />
+                      <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-slate-100 to-slate-300 flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
+                          <Bot className="w-5 h-5 text-black bg-gray-200" />
                       </div>
                     )}
                     
@@ -2749,14 +2736,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               {isProcessing && (
                 <div className="flex justify-start">
                   <div className="flex items-end space-x-2">
-                    <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
-                      <Bot className="w-5 h-5 text-white" />
+                    <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-slate-100 to-slate-300  flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
+                      <Bot className="w-5 h-5 text-black" />
                     </div>
                     <div className="bg-white rounded-2xl px-4 py-3 shadow-sm border border-gray-100">
                       <div className="flex space-x-1.5">
-                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
                       </div>
                     </div>
                   </div>
