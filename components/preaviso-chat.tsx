@@ -259,6 +259,70 @@ const INITIAL_MESSAGES = [
   "Para comenzar, ¿tienes la hoja de inscripción del inmueble? Necesito folio real, sección y partida. Si no la tienes, puedo capturar los datos manualmente."
 ]
 
+// Componente para mostrar miniatura de imagen
+function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasError = false }: { 
+  file: File
+  isProcessing?: boolean
+  isProcessed?: boolean
+  hasError?: boolean
+}) {
+  const [fileUrl, setFileUrl] = useState<string | null>(null)
+  
+  useEffect(() => {
+    const url = URL.createObjectURL(file)
+    setFileUrl(url)
+    
+    return () => {
+      URL.revokeObjectURL(url)
+    }
+  }, [file])
+  
+  if (!fileUrl) return null
+  
+  return (
+    <div className="relative group">
+      <img
+        src={fileUrl}
+        alt={file.name}
+        className="h-20 w-20 object-cover rounded-lg border-2 border-gray-200 hover:border-blue-400 transition-all cursor-pointer shadow-sm"
+        onClick={() => {
+          // Abrir imagen en tamaño completo
+          const newWindow = window.open()
+          if (newWindow && fileUrl) {
+            newWindow.document.write(`
+              <html>
+                <head><title>${file.name}</title></head>
+                <body style="margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f3f4f6;">
+                  <img src="${fileUrl}" style="max-width:100%;max-height:100vh;object-fit:contain;" alt="${file.name}" />
+                </body>
+              </html>
+            `)
+          }
+        }}
+      />
+      {/* Badge de estado */}
+      {isProcessed ? (
+        hasError ? (
+          <div className="absolute top-1.5 right-1.5 bg-red-500 rounded-full p-1 shadow-lg">
+            <AlertCircle className="h-2.5 w-2.5 text-white" />
+          </div>
+        ) : (
+          <div className="absolute top-1.5 right-1.5 bg-green-500 rounded-full p-1 shadow-lg">
+            <CheckCircle2 className="h-2.5 w-2.5 text-white" />
+          </div>
+        )
+      ) : isProcessing ? (
+        <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
+          <Loader2 className="h-2.5 w-2.5 text-white animate-spin" />
+        </div>
+      ) : null}
+      <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] px-1 py-0.5 rounded-b-lg opacity-0 group-hover:opacity-100 transition-opacity truncate">
+        {file.name}
+      </div>
+    </div>
+  )
+}
+
 export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady }: PreavisoChatProps) {
   const stripDataUpdateBlocksForDisplay = (text: string): string => {
     if (!text) return ''
@@ -2593,14 +2657,36 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                         <div className={`mt-3 pt-3 ${
                           message.role === 'user' ? 'border-t border-white/20' : 'border-t border-gray-100'
                         }`}>
-                          {message.attachments.map((file, idx) => (
-                            <div key={idx} className={`flex items-center space-x-2 text-xs ${
-                              message.role === 'user' ? 'text-gray-200' : 'text-gray-600'
-                            }`}>
-                              <FileCheck className="h-3.5 w-3.5" />
-                              <span className="truncate">{file.name}</span>
-                            </div>
-                          ))}
+                          <div className="flex flex-wrap gap-2">
+                            {message.attachments.map((file, idx) => {
+                              const isImage = file.type.startsWith('image/')
+                              // Buscar el documento correspondiente en uploadedDocuments para verificar su estado de procesamiento
+                              const correspondingDoc = uploadedDocuments.find(doc => doc.name === file.name)
+                              const isProcessing = correspondingDoc ? !correspondingDoc.processed : false
+                              const isProcessed = correspondingDoc?.processed || false
+                              const hasError = correspondingDoc?.error ? true : false
+                              
+                              return (
+                                <div key={idx}>
+                                  {isImage ? (
+                                    <ImageThumbnail 
+                                      file={file} 
+                                      isProcessing={isProcessing}
+                                      isProcessed={isProcessed}
+                                      hasError={hasError}
+                                    />
+                                  ) : (
+                                    <div className={`flex items-center space-x-2 text-xs ${
+                                      message.role === 'user' ? 'text-gray-200' : 'text-gray-600'
+                                    }`}>
+                                      <FileCheck className="h-3.5 w-3.5" />
+                                      <span className="truncate">{file.name}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
                         </div>
                       )}
                       
