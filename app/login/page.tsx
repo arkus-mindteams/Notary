@@ -69,6 +69,25 @@ export default function LoginPage() {
     }
   }
 
+  // Mostrar loading mientras se verifica la sesión
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="flex flex-col items-center justify-center p-8 space-y-4">
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+            <p className="text-sm text-muted-foreground">Verificando sesión...</p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  // Si ya hay sesión, no mostrar el formulario (el useEffect redirigirá)
+  if (session) {
+    return null
+  }
+
   return (
     <div className="min-h-screen flex flex-col lg:flex-row">
       {/* Mitad gris */}

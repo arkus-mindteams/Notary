@@ -212,29 +212,86 @@ export class PreavisoTemplateRenderer {
     if (data.actos.aperturaCreditoComprador && data.creditos && data.creditos.length > 0) {
       const creditosConParticipantes = data.creditos.map(credito => {
         const participantesConNombres = (credito.participantes || []).map(p => {
-          // Si ya tenemos nombre explícito (ej. coacreditado capturado por texto), respetarlo.
-          if ((p as any)?.nombre) return p
+          // Si ya tenemos nombre explícito (ej. coacreditado capturado por texto), respetarlo y asegurar que sea válido
+          // CRÍTICO: Si el participante ya tiene nombre, usarlo directamente (no sobrescribir)
+          if ((p as any)?.nombre && String((p as any).nombre).trim().length >= 3) {
+            return p
+          }
 
-          // Buscar en compradores
-          const comprador = data.compradores.find(c => {
-            // NO asumir comprador cuando party_id es null: esto rompía coacreditados (se imprimía el nombre del comprador).
-            if (!p.party_id) return false
-            return c.party_id === p.party_id
-          })
-          if (comprador) {
-            return {
-              ...p,
-              nombre: comprador.nombre || comprador.denominacion_social || null
+          // Si tiene party_id, buscar en compradores/vendedores
+          if (p.party_id) {
+            // Buscar en compradores
+            const comprador = data.compradores.find(c => c.party_id === p.party_id)
+            if (comprador) {
+              return {
+                ...p,
+                // Si ya tiene nombre, preservarlo; si no, usar el del comprador
+                nombre: (p as any)?.nombre || comprador.nombre || comprador.denominacion_social || null
+              }
+            }
+            // Buscar en vendedores si no está en compradores
+            const vendedor = data.vendedores.find(v => v.party_id === p.party_id)
+            if (vendedor) {
+              return {
+                ...p,
+                // Si ya tiene nombre, preservarlo; si no, usar el del vendedor
+                nombre: (p as any)?.nombre || vendedor.nombre || vendedor.denominacion_social || null
+              }
             }
           }
-          // Buscar en vendedores si no está en compradores
-          const vendedor = data.vendedores.find(v => v.party_id === p.party_id)
-          if (vendedor) {
-            return {
-              ...p,
-              nombre: vendedor.nombre || vendedor.denominacion_social || null
+          
+          // Si no tiene party_id pero es coacreditado, buscar por nombre en compradores[0].persona_fisica.conyuge
+          // o buscar en todos los compradores por nombre si ya existe
+          // IMPORTANTE: También verificar si tiene party_id pero es coacreditado (puede ser cónyuge con party_id)
+          if (p.rol === 'coacreditado') {
+            // CRÍTICO: Si ya tiene nombre válido, preservarlo (no sobrescribir)
+            if ((p as any)?.nombre && String((p as any).nombre).trim().length >= 3) {
+              return p
+            }
+            
+            // Buscar el nombre del cónyuge en el contexto
+            const comprador0 = data.compradores[0]
+            const conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre || null
+            
+            if (conyugeNombre) {
+              // Buscar si ya existe como comprador separado
+              const conyugeComprador = data.compradores.find((c, idx) => {
+                if (idx === 0) return false
+                const nm = c.nombre || c.denominacion_social || null
+                return nm && nm.toLowerCase().trim() === conyugeNombre.toLowerCase().trim()
+              })
+              
+              if (conyugeComprador) {
+                return {
+                  ...p,
+                  // Si ya tiene nombre, preservarlo; si no, usar el del cónyuge
+                  nombre: (p as any)?.nombre || conyugeComprador.nombre || conyugeComprador.denominacion_social || conyugeNombre
+                }
+              }
+              
+              // Si no existe como comprador separado, usar el nombre del cónyuge
+              // CRÍTICO: Incluir nombre incluso si tiene party_id (para cónyuges que fueron creados como compradores)
+              return {
+                ...p,
+                // Si ya tiene nombre, preservarlo; si no, usar el del contexto
+                nombre: (p as any)?.nombre || conyugeNombre
+              }
+            }
+            
+            // Si no hay nombre del cónyuge en el contexto pero el participante es coacreditado,
+            // buscar en todos los compradores (puede ser que el cónyuge esté como segundo comprador)
+            if (data.compradores.length > 1) {
+              const segundoComprador = data.compradores[1]
+              const segundoNombre = segundoComprador?.nombre || segundoComprador?.denominacion_social || null
+              if (segundoNombre) {
+                return {
+                  ...p,
+                  nombre: (p as any)?.nombre || segundoNombre
+                }
+              }
             }
           }
+          
           return p
         })
         return {

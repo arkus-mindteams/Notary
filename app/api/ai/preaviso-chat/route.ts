@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { PreavisoConfigService } from "@/lib/services/preaviso-config-service"
 import { computePreavisoState } from "@/lib/preaviso-state"
+import { PreavisoOcrCacheService } from "@/lib/services/preaviso-ocr-cache-service"
 
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
@@ -31,6 +32,9 @@ interface ChatRequest {
       tipo: string
       informacionExtraida: any
     }>
+    // Runtime: para RAG / OCR por trámite
+    tramiteId?: string | null
+    _document_evidence?: any[]
     expedienteExistente?: {
       compradorId: string
       compradorNombre: string
@@ -345,6 +349,10 @@ async function buildSystemPrompts(context?: ChatRequest['context']): Promise<{
       ? `EXPEDIENTE EXISTENTE NOTICE:\n- compradorNombre: ${context.expedienteExistente.compradorNombre}\n- tieneExpedientes: ${context.expedienteExistente.tieneExpedientes}\n- cantidadTramites: ${context.expedienteExistente.cantidadTramites}`
       : `EXPEDIENTE EXISTENTE NOTICE:\n- (none)`
   const anyBuyerCasado = computed.derived.anyBuyerCasado
+  const comprador0 = compradores[0]
+  const conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre || null
+  const conyugeParticipa = comprador0?.persona_fisica?.conyuge?.participa === true
+  const conyugeYaCapturado = conyugeNombre && conyugeParticipa
 
   const prompt3_taskState = `=== PROMPT 3: TASK / STATE ===
 DYNAMIC CONTEXT — FLOW CONTROL ONLY
@@ -379,6 +387,11 @@ ${requiredMissing.length > 0 ? requiredMissing.map(f => `  - ${f}`).join('\n') :
 
 CAPTURED INFORMATION (SOURCE OF TRUTH):
 ${JSON.stringify(capturedData, null, 2)}
+
+DOCUMENT EVIDENCE (OCR/RAG) — ONLY IF PRESENT:
+${Array.isArray((context as any)?._document_evidence) && (context as any)._document_evidence.length > 0
+  ? JSON.stringify((context as any)._document_evidence, null, 2)
+  : '[]'}
 
 ────────────────────────────────────────
 GLOBAL FLOW ORDER (MANDATORY)
@@ -477,7 +490,9 @@ ${compradores.length > 0 ? compradores.map((c: any, idx: number) => {
   const nombre = c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social || null
   const tipo = c?.tipo_persona || null
   const estadoCivil = c?.persona_fisica?.estado_civil || null
-  return `- Buyer[${idx}]: ${nombre ? `name="${nombre}"` : 'name=missing'}, tipo_persona=${tipo || 'missing'}, ${tipo === 'persona_fisica' ? `estado_civil=${estadoCivil || 'missing'}` : 'N/A'}`
+  const esConyuge = idx > 0 && compradores[0]?.persona_fisica?.conyuge?.nombre && 
+                    (nombre === compradores[0]?.persona_fisica?.conyuge?.nombre)
+  return `- Buyer[${idx}]: ${nombre ? `name="${nombre}"` : 'name=missing'}, tipo_persona=${tipo || 'missing'}, ${tipo === 'persona_fisica' ? `estado_civil=${estadoCivil || 'missing'}` : 'N/A'}${esConyuge ? ' (SPOUSE - always persona_fisica)' : ''}`
 }).join('\n') : '- No buyers captured yet'}
 
 MISSING INFORMATION:
@@ -485,9 +500,16 @@ ${requiredMissing.filter((m: string) => m.startsWith('compradores')).length > 0
   ? requiredMissing.filter((m: string) => m.startsWith('compradores')).map((m: string) => `- ${m}`).join('\n')
   : '- All required buyer information is captured'}
 
+IMPORTANT RULES FOR SPOUSE (CÓNYUGE):
+- If a buyer is a spouse (conyuge), it is ALWAYS persona_fisica (never persona_moral)
+- DO NOT ask for tipo_persona for spouse buyers
+- Spouse buyers are automatically persona_fisica when created
+- Only ask tipo_persona for the first buyer (buyer[0]) if missing
+
 BLOCKING:
 - Cannot proceed without at least one buyer with name and tipo_persona.
 - For persona_fisica: estado_civil is required.
+- Spouse buyers (buyer[1+]) are automatically persona_fisica - do NOT ask for tipo_persona.
 
 ────────────────────────────────────────
 STEP 5 — MARITAL DECISION (CRITICAL BRANCH)
@@ -507,12 +529,24 @@ If answer == NO:
 - Continue to STEP 5
 
 If answer == YES:
-- Capture spouse as a NEW persona (only after explicit YES)
-- Ask spouse full name and identification
-- Ask spouse role explicitly: comprador | coacreditado | otro (specify)
+- Check if spouse name is already captured: ${conyugeYaCapturado ? 'YES (spouse name already exists: ' + JSON.stringify(conyugeNombre) + ')' : 'NO'}
+
+CRITICAL RULE: If spouse name is already captured (from documents like marriage certificate or spouse ID):
+  - DO NOT ask the user to write the spouse name
+  - DO NOT ask the user to type the spouse name
+  - DO NOT say "I can only take data if you confirm it" or similar phrases
+  - DO NOT say "Please write the name" or "Please indicate the name"
+  - The name is already captured from the documents, ACCEPT IT and use it
+  - Only ask for spouse role if it's not clear: comprador | coacreditado | otro (specify)
+  - If role is already clear from context or user messages (e.g., user says "sera coacreditada"), proceed without asking
+
+If spouse name is NOT captured:
+  - Ask spouse full name and identification
+  - Ask spouse role explicitly: comprador | coacreditado | otro (specify)
 
 BLOCKING:
 - Do NOT proceed until this question is answered.
+- If spouse name is already captured, skip asking for name and only ask for role.
 
 ────────────────────────────────────────
 STEP 6 — CREDITS (ITERATIVE — STRICT)
@@ -618,7 +652,101 @@ export async function POST(req: Request) {
     // Ej: selección de folio_real con múltiples folios -> copiar superficie/datos asociados desde foliosConInfo.
     // Esto debe ocurrir ANTES de construir PROMPT 3 / llamar al modelo, para que el modelo no pregunte lo que ya existe.
     const preDeterministicUpdate = applyDeterministicUserInputUpdate(lastUserMessage, context, null, lastAssistantMessage)
-    const contextForLLM = preDeterministicUpdate ? { ...(context || {}), ...(preDeterministicUpdate || {}) } : (context || {})
+    let contextForLLM: any = preDeterministicUpdate ? { ...(context || {}), ...(preDeterministicUpdate || {}) } : (context || {})
+
+    // === RAG (OCR) — evidencia desde documentos ya subidos ===
+    // Permite que el usuario diga "revisa ese dato del documento X" (por alias) sin re-procesar imágenes.
+    const maybeAttachDocumentEvidence = async () => {
+      const userText = String(lastUserMessage || '').trim()
+      const wantsReview =
+        /\b(revisa|revisar|verifica|verificar|checa|checar|consulta|consultar|confirma|confirmar)\b/i.test(userText) &&
+        /\b(documento|archivo|acta|matrimonio|pasaporte|ine|ife|credencial|inscripci[oó]n|escritura|plano)\b/i.test(userText)
+
+      const tramiteId = contextForLLM?.tramiteId
+      if (!wantsReview || !tramiteId) return
+
+      // Leer OCR cacheado en Redis (TTL corto). No dependemos de DB.
+      const keys = await PreavisoOcrCacheService.listKeysForTramite(String(tramiteId), 200)
+      if (!keys.length) return
+      const entries = (await PreavisoOcrCacheService.getMany(keys)).filter(Boolean) as any[]
+      if (entries.length === 0) return
+
+      const norm = (s: any) =>
+        String(s || '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .trim()
+
+      const t = norm(userText)
+      const wantsActa = /\bacta\b/.test(t) || /\bmatrimonio\b/.test(t)
+      const wantsPasaporte = /\bpasaporte\b/.test(t)
+      const wantsInscripcion = /\binscripcion\b/.test(t) || /\bhoja\s+de\s+inscripcion\b/.test(t)
+      const wantsEscritura = /\bescritura\b/.test(t)
+      const wantsPlano = /\bplano\b/.test(t) || /\bcroquis\b/.test(t)
+      const wantsId = /\b(ine|ife|credencial|identificacion)\b/.test(t)
+
+      const wantsConyuge = /\bconyug(e|ue)\b/.test(t)
+      const wantsVendedor = /\b(vendedor|titular\s+registral)\b/.test(t)
+      const wantsComprador = /\bcomprador\b/.test(t)
+
+      const filtered = entries.filter((e: any) => {
+        const name = norm(e?.docName)
+        const subtype = norm(e?.docSubtype)
+        const role = norm(e?.docRole)
+
+        if (wantsActa) return subtype.includes('acta_matrimonio') || name.includes('matrimonio') || name.includes('acta')
+        if (wantsPasaporte) return name.includes('pasaporte')
+        if (wantsInscripcion) return subtype.includes('inscripcion') || name.includes('inscripcion') || name.includes('folio')
+        if (wantsEscritura) return subtype.includes('escritura') || name.includes('escritura') || name.includes('titulo')
+        if (wantsPlano) return subtype.includes('plano') || name.includes('plano') || name.includes('croquis')
+        if (wantsId) {
+          if (wantsConyuge) return role === 'conyuge' || subtype.includes('identificacion') || name.includes('pasaporte') || name.includes('ine')
+          if (wantsVendedor) return role === 'vendedor' || name.includes('ine_vendedor')
+          if (wantsComprador) return role === 'comprador' || name.includes('ine_comprador')
+          return subtype.includes('identificacion') || name.includes('ine') || name.includes('pasaporte')
+        }
+        return true
+      })
+
+      const candidates = filtered.length > 0 ? filtered : entries
+
+      // Scoring simple (por tokens) para seleccionar evidencia relevante
+      const tokens = Array.from(new Set(t.split(/\s+/g).filter(w => w.length >= 4))).slice(0, 12)
+      const score = (txt: string) => {
+        const n = norm(txt)
+        let s = 0
+        for (const tok of tokens) if (n.includes(tok)) s += 1
+        // bonus por palabras clave
+        if (/\b(rfc|curp|folio|propietari|titular|hipoteca|gravamen|monto|institucion)\b/i.test(txt)) s += 1
+        return s
+      }
+
+      const ranked = candidates
+        .map((e: any) => ({ e, s: score(String(e?.text || '')) }))
+        .sort((a: any, b: any) => b.s - a.s)
+        .slice(0, 6)
+        .filter((x: any) => x.s > 0)
+
+      if (ranked.length === 0) return
+
+      const evidence = ranked.map((x: any) => {
+        const e = x.e
+        const txt = String(e?.text || '')
+        return {
+          doc_name: e?.docName || null,
+          doc_subtype: e?.docSubtype || null,
+          doc_role: e?.docRole || null,
+          page_number: e?.pageNumber ?? null,
+          snippet: txt.length > 900 ? txt.slice(0, 900) : txt,
+        }
+      })
+
+      // Ephemeral: solo para PROMPT 3 en este request (no se persiste en `data`).
+      contextForLLM = { ...(contextForLLM || {}), _document_evidence: evidence }
+    }
+
+    await maybeAttachDocumentEvidence()
 
     // Construir prompts separados por responsabilidad
     const prompts = await buildSystemPrompts(contextForLLM)
@@ -626,7 +754,7 @@ export async function POST(req: Request) {
     // Construir mensajes para OpenAI con prompts separados
     const systemMessages: ChatMessage[] = [
       {
-        role: 'system',
+      role: 'system',
         content: prompts.prompt1_systemCore
       },
       {
@@ -666,7 +794,7 @@ export async function POST(req: Request) {
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
       console.error('[api/ai/preaviso-chat] OpenAI error:', errorData)
-      return NextResponse.json(
+        return NextResponse.json(
         { error: 'openai_error', message: errorData.error?.message || 'Error al procesar la solicitud' },
         { status: response.status }
       )
@@ -702,6 +830,45 @@ export async function POST(req: Request) {
     const postMerged = mergeContextUpdates(updatedData, deterministicUpdate)
     // Incluir también el update determinista aplicado pre-LLM (sin perder lo que el modelo confirmó)
     const mergedUpdate = mergeContextUpdates(preDeterministicUpdate, postMerged)
+    
+    // Asegurar que los compradores que son cónyuges siempre tengan tipo_persona: 'persona_fisica'
+    if (mergedUpdate?.compradores || context?.compradores) {
+      const compradores = mergedUpdate?.compradores || context?.compradores || []
+      const comprador0 = compradores[0]
+      const conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre || null
+      
+      if (conyugeNombre && compradores.length > 1) {
+        const compradoresActualizados = compradores.map((c: any, idx: number) => {
+          // Si es el segundo comprador o posterior y su nombre coincide con el cónyuge
+          if (idx > 0) {
+            const nombreComprador = c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social || null
+            const esConyuge = nombreComprador && conyugeNombre && 
+              nombreComprador.toLowerCase().trim() === conyugeNombre.toLowerCase().trim()
+            
+            if (esConyuge && (!c.tipo_persona || c.tipo_persona !== 'persona_fisica')) {
+              // Asignar automáticamente persona_fisica al cónyuge
+              return {
+                ...c,
+                tipo_persona: 'persona_fisica',
+                persona_fisica: c.persona_fisica || { nombre: nombreComprador, rfc: null, curp: null, estado_civil: null },
+                persona_moral: undefined,
+              }
+            }
+          }
+          return c
+        })
+        
+        // Solo actualizar si hubo cambios
+        const huboCambios = compradoresActualizados.some((c: any, idx: number) => {
+          const original = compradores[idx]
+          return c.tipo_persona !== original?.tipo_persona
+        })
+        
+        if (huboCambios) {
+          mergedUpdate.compradores = compradoresActualizados
+        }
+      }
+    }
 
     // Recalcular estado "server-truth" con el contexto actualizado (si hay cambios)
     const nextContext = mergedUpdate ? { ...(context || {}), ...(mergedUpdate || {}) } : (contextForLLM || {})
@@ -718,6 +885,23 @@ export async function POST(req: Request) {
     const isAckOnly = looksLikeAck && !/[¿?]/.test(strippedAssistant) && strippedAssistant.length < 180
 
     const followUp = buildDeterministicFollowUp(next.state, nextContext)
+
+    // === Intento de documento (runtime) ===
+    // Si el asistente está pidiendo explícitamente identificación / acta del CÓNYUGE,
+    // persistimos un flag en el contexto para que `preaviso-process-document` no pise al comprador.
+    // Regla: esto es RUNTIME (PROMPT 3 / código), no es regla legal.
+    const inferDocumentIntentFromAssistant = (assistantText: string): any | null => {
+      const t = String(assistantText || '').toLowerCase()
+      const mentionsConyuge = /\bc[oó]nyuge\b/.test(t)
+      if (!mentionsConyuge) return null
+      const asksName = /(nombre\s+completo|ind[ií]came\s+por\s+favor|para\s+poder\s+captur(ar|arlo)|para\s+continuar\s+necesito)/i.test(assistantText)
+      const mentionsId = /\b(identificaci[oó]n|credencial|pasaporte|ine|ife|licencia|curp)\b/i.test(assistantText)
+      const mentionsActa = /\b(acta\s+de\s+matrimonio|matrimonio)\b/i.test(assistantText)
+      if (asksName || mentionsId || mentionsActa) {
+        return { _document_intent: 'conyuge' }
+      }
+      return null
+    }
 
     // Detectar si el asistente YA está solicitando datos/confirmación aunque no use signos "¿?"
     // Esto evita duplicar preguntas (ej. "Por favor indícame..." seguido de un follow-up determinista).
@@ -744,21 +928,25 @@ export async function POST(req: Request) {
       !assistantAlreadyAsks &&
       (mergedUpdate || isAckOnly || isPureDataUpdate)
 
+    // Aplicar intent AFTER decidir follow-ups: no afecta estado, pero sí el próximo merge de documentos.
+    const docIntentUpdate = inferDocumentIntentFromAssistant(strippedAssistant)
+    const mergedUpdateWithIntent = mergeContextUpdates(mergedUpdate, docIntentUpdate)
+
     return NextResponse.json({
       // Si estamos bloqueados por múltiples folios, devolvemos directamente el prompt determinista con listado.
       message: (shouldForceDeterministicFolioPrompt || shouldForceDeterministicPaso6Prompt) ? followUp : assistantMessage,
       messages: shouldForceDeterministicFolioPrompt
         ? undefined
         : (shouldAddFollowUp ? [assistantMessage, followUp] : undefined),
-      data: mergedUpdate,
+      data: mergedUpdateWithIntent,
       state: next.state
     })
   } catch (error: any) {
     console.error('[api/ai/preaviso-chat] Error:', error)
-    return NextResponse.json(
+      return NextResponse.json(
       { error: 'internal_error', message: error.message || 'Error interno del servidor' },
-      { status: 500 }
-    )
+        { status: 500 }
+      )
   }
 }
 
@@ -773,6 +961,10 @@ function mergeContextUpdates(a: any, b: any): any {
 function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, parsedUpdate: any, lastAssistantMessage?: string): any | null {
   const userText = (userTextRaw || '').trim()
   if (!userText) return null
+
+  // Guard: algunos mensajes "role=user" son generados por la UI (p.ej. al subir documentos).
+  // Nunca deben activar captura determinista de nombres/campos.
+  if (/\bhe\s+subido\s+el\s+siguiente\s+documento\b/i.test(userText)) return null
 
   // Usar el contexto más reciente disponible para decidir (context + parsedUpdate si existe)
   const baseContext = parsedUpdate ? { ...(context || {}), ...(parsedUpdate || {}) } : (context || {})
@@ -814,26 +1006,168 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
               : 'viudo')
       : null
 
+  // Helper: respuestas "placeholders" que NO deben capturarse como valores (especialmente nombres).
+  const isNonDataPhrase = (() => {
+    const t = userText.replace(/[“”"']/g, '').trim().toLowerCase()
+    // respuestas típicas que luego aparecen erróneamente como "vendedor" o campos
+    if (/^(lo\s+omitir[eé]|lo\s+omitire|omitire|omitir[eé]|lo\s+omito)\b/.test(t)) return true
+    if (/^(no\s+aplica|n\/a|na)\b/.test(t)) return true
+    if (/^(desconozco|no\s+lo\s+s[eé]|no\s+lo\s+se|no\s+s[eé]|no\s+se)\b/.test(t)) return true
+    if (/^(prefiero\s+omitir|omitir|lo\s+ignoro)\b/.test(t)) return true
+    return false
+  })()
+
+  // Si el usuario respondió con un placeholder, no aplicar captura determinista.
+  // (El LLM o el follow-up determinista debe repreguntar según falte info.)
+  if (isNonDataPhrase) return null
+
+  // Helper: inferir persona moral con alta confianza a partir del nombre (opción A).
+  const inferTipoPersonaByName = (rawName: string): 'persona_moral' | null => {
+    const n = String(rawName || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[“”"']/g, '')
+      .replace(/[^a-z0-9\s.]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    // Señales fuertes de persona moral (MX + comunes)
+    const pm = [
+      /\bs\.?\s*a\.?\b/,                 // S.A.
+      /\bs\.?\s*a\.?\s*de\s*c\.?\s*v\.?\b/, // S.A. de C.V.
+      /\bs\.?\s*de\s*r\.?\s*l\.?\b/,     // S. de R.L.
+      /\bs\.?\s*de\s*r\.?\s*l\.?\s*de\s*c\.?\s*v\.?\b/, // S. de R.L. de C.V.
+      /\bsapi\b/,                         // SAPI
+      /\bs\.?\s*a\.?\s*p\.?\s*i\.?\b/,   // S.A.P.I. o SAPI
+      /\ba\.?\s*c\.?\b/,                  // A.C.
+      /\bs\.?\s*c\.?\b/,                  // S.C.
+      /\bsociedad\s+anonima\b/,          // "sociedad anonima"
+      /\bsociedad\s+anonima\s+promotora\b/, // "sociedad anonima promotora"
+      /\bsociedad\s+de\s+responsabilidad\s+limitada\b/,
+      /\bsociedad\s+de\s+capital\s+variable\b/, // "sociedad de capital variable"
+      /\bsociedad\s+anonima\s+promotora\s+de\s+inversion\s+de\s+capital\s+variable\b/, // Completo
+      /\bcompania\b|\bcompania\s+.*\b/i,
+      /\bempresa\b/,
+      /\binmobiliaria\b/,                // "inmobiliaria" (común en nombres de empresas)
+      /\bdesarrolladora\b/,              // "desarrolladora" (común en nombres de empresas)
+      /\bcorporation\b|\bcorp\b|\binc\b|\bllc\b|\bltd\b/,
+      /\bsociedad\b/,                    // "sociedad" (genérico, pero común en PM)
+    ]
+    if (pm.some(r => r.test(n))) return 'persona_moral'
+    return null
+  }
+
+  // Helper: "parece nombre" para capturas de texto libre (pero con filtros anti-basura).
+  // OJO: esto NO valida legalmente nada; solo evita que textos como "lo omitiré" terminen en nombres.
+  const looksLikeFreeName = (() => {
+    const t = userText.replace(/[“”"']/g, '').trim()
+    if (t.length < 6) return false
+    if (/\d{3,}/.test(t)) return false
+    if (/^(no|nel|nop)\b/i.test(t)) return false
+    if (/^(moral|fisica|f[ií]sica)\b/i.test(t)) return false
+    // CRÍTICO: Evitar capturar roles como nombres
+    if (/^(coacreditado|coacreditada|acreditado|acreditada|comprador|compradora|vendedor|vendedora)\b/i.test(t)) return false
+    // Evitar placeholders
+    if (/^(lo\s+omitir[eé]|lo\s+omitire|omitire|omitir[eé]|no\s+aplica|n\/a|na|desconozco|no\s+lo\s+s[eé]|no\s+lo\s+se|no\s+s[eé]|no\s+se)\b/i.test(t)) return false
+    // Evitar mensajes auto-generados por UI
+    if (/\bhe\s+subido\s+el\s+siguiente\s+documento\b/i.test(t)) return false
+    // Evitar confirmaciones
+    if (/^s[ií]\b/i.test(t)) return false
+    if (/\bpersona\s+moral\b/i.test(t) || /\bpersona\s+f[ií]sica\b/i.test(t) || /\bmoral\b/i.test(t) || /\bf[ií]sica\b/i.test(t)) return false
+    return true
+  })()
+
+  // Helper: ¿el asistente realmente pidió nombre de titular registral en el turno anterior?
+  const assistantAskedTitularName = (() => {
+    const a = String(lastAssistantMessage || '').toLowerCase()
+    if (!a) return false
+    if (!/\btitular\s+registral\b/.test(a) && !/\bpropietari[oa]\b/.test(a)) return false
+    return /\b(nombre\s+completo|ind[ií]ca(me|nos)|por\s+favor|tal\s+como\s+aparece)\b/i.test(lastAssistantMessage || '')
+  })()
+
+  // Helper: ¿el asistente realmente pidió nombre del COMPRADOR en el turno anterior?
+  // CRÍTICO: NO activar si pregunta por el cónyuge, solo si pregunta por el comprador principal
+  const assistantAskedBuyerName = (() => {
+    const a = String(lastAssistantMessage || '').toLowerCase()
+    if (!a) return false
+    // Si pregunta por el cónyuge, NO considerar que está pidiendo nombre del comprador
+    if (/\b(c[oó]nyuge|conyugue|c[oó]nyugue)\b/.test(a)) return false
+    if (!/\bcomprador\b/.test(a) && !/\badquirente\b/.test(a)) return false
+    return /\b(nombre\s+completo|ind[ií]ca(me|nos)|por\s+favor|tal\s+como\s+aparece)\b/i.test(lastAssistantMessage || '')
+  })()
+
+  // 0.49) Captura determinista de comprador por "texto libre" (cuando el asistente lo pidió).
+  // Esto reduce capturas erróneas vía LLM y permite inferencia A (PM por sufijos societarios).
+  if (
+    currentState === 'ESTADO_4' &&
+    assistantAskedBuyerName &&
+    looksLikeFreeName &&
+    (missing.includes('compradores[]') || missing.includes('compradores[].tipo_persona') || ss['ESTADO_4'] === 'incomplete')
+  ) {
+    const nombre = userText.trim().replace(/^[""]|[""]$/g, '')
+    
+    // CRÍTICO: Filtrar palabras que NO son nombres pero que pueden confundirse con nombres
+    // Evitar capturar roles, estados civiles, o respuestas genéricas como nombres
+    const palabrasInvalidas = [
+      'coacreditado', 'coacreditada', 'acreditado', 'acreditada',
+      'comprador', 'compradora', 'vendedor', 'vendedora',
+      'casado', 'casada', 'soltero', 'soltera', 'divorciado', 'divorciada', 'viudo', 'viuda',
+      'moral', 'fisica', 'física', 'persona', 'moral', 'física',
+      'como', 'es', 'será', 'sí', 'no', 'si', 'no'
+    ]
+    const nombreLower = nombre.toLowerCase().trim()
+    const esPalabraInvalida = palabrasInvalidas.some(p => nombreLower === p || nombreLower.includes(p) && nombreLower.length < 20)
+    
+    // Si es una palabra inválida, NO capturar como nombre
+    if (esPalabraInvalida) {
+      return null
+    }
+    
+    const inferred = inferTipoPersonaByName(nombre)
+    const compradores = Array.isArray(baseContext?.compradores) ? [...baseContext.compradores] : []
+    const c0 = compradores[0] || { party_id: null, tipo_persona: null }
+    compradores[0] = {
+      ...c0,
+      tipo_persona: inferred ? inferred : (c0?.tipo_persona ?? null),
+      persona_fisica: inferred
+        ? undefined
+        : { ...(c0?.persona_fisica || {}), nombre },
+      persona_moral: inferred
+        ? { ...(c0?.persona_moral || {}), denominacion_social: nombre }
+        : (c0?.persona_moral as any),
+    }
+    return { compradores }
+  }
+
   // 0.45) Captura determinista de cónyuge (cuando el comprador está casado y el usuario proporciona nombre + rol).
   // Ejemplos:
   // - "MARGARITA LOPEZ como coacreditado"
   // - "Juan Pérez comprador y coacreditado"
   // Objetivo: NO pisar al comprador principal (`compradores[0]`) y NO disparar estado civil del cónyuge.
-  const conyugeRoleMatch = userText.match(/^\s*([^,]+?)\s+(?:como|es)\s+(comprador(?:\s+y\s+coacreditado)?|coacreditado|comprador)\s*$/i)
+  // CRÍTICO: Evitar capturar frases que mencionan participantes del crédito como "el comprador como acreditado y su conyugue como coacreditado"
+  const esFraseParticipantes = /\b(el\s+)?comprador\s+como\s+(acreditado|coacreditado)\b/i.test(userText) || /\b(su\s+)?(c[oó]nyuge|conyugue)\s+como\s+(acreditado|coacreditado)\b/i.test(userText)
+  
+  const conyugeRoleMatch = !esFraseParticipantes ? userText.match(/^\s*([^,]+?)\s+(?:como|es)\s+(comprador(?:\s+y\s+coacreditado)?|coacreditado|comprador)\s*$/i) : null
   if (conyugeRoleMatch && conyugeRoleMatch[1] && conyugeRoleMatch[2]) {
-    const nombreConyuge = conyugeRoleMatch[1].trim().replace(/^["“]|["”]$/g, '')
-    const rolRaw = conyugeRoleMatch[2].toLowerCase()
-    const rol = rolRaw.includes('comprador') && rolRaw.includes('coacreditado')
-      ? 'comprador_y_coacreditado'
-      : (rolRaw.includes('comprador') ? 'comprador' : 'coacreditado')
+    const nombreConyuge = conyugeRoleMatch[1].trim().replace(/^[""]|[""]$/g, '')
+    
+    // Validar que el nombre no contenga palabras genéricas que indican que es una frase sobre participantes, no un nombre
+    if (/\b(comprador|acreditado|coacreditado|como|es|y|and)\b/i.test(nombreConyuge)) {
+      // Esta es una frase sobre participantes, no un nombre del cónyuge. Dejar que el parser de participantes lo maneje.
+    } else {
+      const rolRaw = conyugeRoleMatch[2].toLowerCase()
+      const rol = rolRaw.includes('comprador') && rolRaw.includes('coacreditado')
+        ? 'comprador_y_coacreditado'
+        : (rolRaw.includes('comprador') ? 'comprador' : 'coacreditado')
 
-    const anyBuyerCasado = computed.derived?.anyBuyerCasado === true
-    const compradores = Array.isArray(baseContext?.compradores) ? [...baseContext.compradores] : []
-    const comprador0 = compradores[0]
-    const comprador0Nombre = comprador0?.persona_fisica?.nombre || comprador0?.persona_moral?.denominacion_social || null
+      const anyBuyerCasado = computed.derived?.anyBuyerCasado === true
+      const compradores = Array.isArray(baseContext?.compradores) ? [...baseContext.compradores] : []
+      const comprador0 = compradores[0]
+      const comprador0Nombre = comprador0?.persona_fisica?.nombre || comprador0?.persona_moral?.denominacion_social || null
 
-    if (anyBuyerCasado && comprador0 && comprador0Nombre && nombreConyuge.length >= 6) {
-      const updated: any = {}
+      if (anyBuyerCasado && comprador0 && comprador0Nombre && nombreConyuge.length >= 6) {
+        const updated: any = {}
 
       // 1) Guardar conyuge dentro del comprador principal (schema v1.4)
       if (comprador0?.tipo_persona === 'persona_fisica' || comprador0?.persona_fisica) {
@@ -892,7 +1226,9 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
         }
       }
 
-      return updated
+        // Si acabamos de capturar el cónyuge por texto, limpiar intent de documento para evitar que el siguiente upload pise compradores.
+        return { ...updated, _document_intent: null }
+      }
     }
   }
 
@@ -906,14 +1242,23 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
     if (nombre.length >= 6) {
       const compradores = Array.isArray(baseContext?.compradores) ? [...baseContext.compradores] : []
       const c0 = compradores[0] || { party_id: null, tipo_persona: null }
+      const inferred = inferTipoPersonaByName(nombre)
       compradores[0] = {
         ...c0,
-        // No forzar tipo_persona aquí si no está ya confirmado; pero si ya es persona_fisica, conservar.
-        tipo_persona: c0?.tipo_persona || 'persona_fisica',
-        persona_fisica: {
-          ...(c0?.persona_fisica || {}),
-          nombre,
-        },
+        // No forzar PF por default. Si inferimos PM, aplicarlo; si no, conservar tipo si ya existía.
+        tipo_persona: inferred ? inferred : (c0?.tipo_persona ?? null),
+        persona_fisica: inferred
+          ? undefined
+          : {
+              ...(c0?.persona_fisica || {}),
+              nombre,
+            },
+        persona_moral: inferred
+          ? {
+              ...(c0?.persona_moral || {}),
+              denominacion_social: nombre,
+            }
+          : (c0?.persona_moral as any),
       }
       return { compradores }
     }
@@ -925,34 +1270,28 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
     userText.match(/\bel\s+titular\s+registral\s+es\s+(.+?)\s*$/i) ||
     userText.match(/\btitular\s+registral\s+es\s+(.+?)\s*$/i)
 
-  const looksLikeJustName = (() => {
-    const t = userText.replace(/[“”"']/g, '').trim()
-    if (t.length < 6) return false
-    if (/\d{3,}/.test(t)) return false
-    if (/^(no|nel|nop)\b/i.test(t)) return false
-    if (/^(moral|fisica|f[ií]sica)\b/i.test(t)) return false
-    // Evitar capturar frases de confirmación como nombre ("sí, es persona moral", etc.)
-    if (/^s[ií]\b/i.test(t)) return false
-    if (/\bpersona\s+moral\b/i.test(t) || /\bpersona\s+f[ií]sica\b/i.test(t) || /\bmoral\b/i.test(t) || /\bf[ií]sica\b/i.test(t)) return false
-    return true
-  })()
-
   if (
     currentState === 'ESTADO_3' &&
     (blocking.includes('titular_registral_missing') || blocking.includes('vendedor_titular_mismatch')) &&
-    (titularNameMatch?.[1] || looksLikeJustName)
+    // Solo permitir "texto libre" como nombre si el asistente lo pidió explícitamente.
+    (titularNameMatch?.[1] || (looksLikeFreeName && assistantAskedTitularName))
   ) {
     const nombre = (titularNameMatch?.[1] || userText).trim().replace(/^["“]|["”]$/g, '')
     if (nombre.length >= 6) {
       const vendedores = Array.isArray(baseContext?.vendedores) ? [...baseContext.vendedores] : []
       const v0 = vendedores[0] || { party_id: null, tipo_persona: null, tiene_credito: null }
+      const inferred = inferTipoPersonaByName(nombre)
       vendedores[0] = {
         ...v0,
         titular_registral_confirmado: true,
-        tipo_persona: v0?.tipo_persona ?? null,
-        // Guardar el nombre en ambos contenedores hasta que el usuario confirme tipo_persona.
-        persona_fisica: { ...(v0?.persona_fisica || {}), nombre },
-        persona_moral: { ...(v0?.persona_moral || {}), denominacion_social: nombre },
+        tipo_persona: inferred ? inferred : (v0?.tipo_persona ?? null),
+        // Si inferimos PM, guardar solo en persona_moral; si no, conservar comportamiento conservador.
+        persona_fisica: inferred
+          ? undefined
+          : { ...(v0?.persona_fisica || {}), nombre },
+        persona_moral: inferred
+          ? { ...(v0?.persona_moral || {}), denominacion_social: nombre }
+          : { ...(v0?.persona_moral || {}), denominacion_social: nombre },
       }
       return { vendedores }
     }
@@ -1369,20 +1708,135 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
   // - "- ALICIA LOPEZ HERNANDEZ - coacreditado"
   // Objetivo: guardar también `nombre` para poder imprimir en el documento aunque no haya party_id.
   if (Array.isArray(baseContext?.creditos) && baseContext.creditos.length > 0 && /\b(acreditado|coacreditado)\b/i.test(userText)) {
-    const lines = userText.split('\n').map(l => l.trim()).filter(Boolean)
-    const parsed: Array<{ nombre: string, rol: 'acreditado' | 'coacreditado' }> = []
-
-    for (const line of lines) {
-      const cleaned = line.replace(/^\s*[-•]\s*/g, '').trim()
-      const m1 = cleaned.match(/^(.+?)\s*[–—-]\s*(acreditado|coacreditado)\s*$/i)
-      const m2 = cleaned.match(/^(.+?)\s+(acreditado|coacreditado)\s*$/i)
-      const m = m1 || m2
-      if (!m) continue
-      const nombre = String(m[1] || '').trim().replace(/^["“]|["”]$/g, '')
-      const rol = String(m[2] || '').toLowerCase() as any
-      if (!nombre || nombre.length < 6) continue
-      if (rol !== 'acreditado' && rol !== 'coacreditado') continue
-      parsed.push({ nombre, rol })
+    // Obtener nombres del comprador y cónyuge del contexto
+    const comprador0 = baseContext?.compradores?.[0]
+    const compradorNombre = comprador0?.persona_fisica?.nombre || comprador0?.persona_moral?.denominacion_social || null
+    
+    // CRÍTICO: Buscar el nombre del cónyuge en múltiples lugares:
+    // 1. compradores[0].persona_fisica.conyuge.nombre (schema v1.4)
+    // 2. compradores[1+] si el cónyuge ya existe como segundo comprador
+    // 3. documentos procesados recientemente (si el documento del cónyuge se procesó pero aún no se guardó)
+    let conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre || null
+    
+    // Si no encontramos en conyuge.nombre, buscar en compradores adicionales
+    if (!conyugeNombre && comprador0?.persona_fisica?.estado_civil === 'casado') {
+      const compradores = Array.isArray(baseContext?.compradores) ? baseContext.compradores : []
+      const comprador0Nombre = comprador0?.persona_fisica?.nombre || null
+      
+      // Buscar en compradores[1+] el nombre que NO sea del comprador principal
+      for (let i = 1; i < compradores.length; i++) {
+        const nombreSegundo = compradores[i]?.persona_fisica?.nombre || null
+        if (nombreSegundo && nombreSegundo !== comprador0Nombre) {
+          conyugeNombre = nombreSegundo
+          break
+        }
+      }
+    }
+    
+    // Si aún no encontramos, buscar en documentos procesados recientemente
+    if (!conyugeNombre && comprador0?.persona_fisica?.estado_civil === 'casado') {
+      const documentosProcesados = Array.isArray(baseContext?.documentosProcesados) ? baseContext.documentosProcesados : []
+      const comprador0Nombre = comprador0?.persona_fisica?.nombre || null
+      
+      // Buscar en documentos de identificación que no sean del comprador principal
+      for (const doc of documentosProcesados) {
+        if (doc.tipo === 'identificacion' && doc.informacionExtraida?.nombre) {
+          const nombreDoc = String(doc.informacionExtraida.nombre).trim()
+          if (nombreDoc && nombreDoc !== comprador0Nombre && nombreDoc.length >= 6) {
+            // Puede ser el cónyuge si no coincide con el comprador
+            conyugeNombre = nombreDoc
+            break
+          }
+        }
+      }
+    }
+    
+    // Primero intentar parsear frases con "y" o "and" que conectan múltiples participantes
+    // Ejemplos:
+    // - "WU, JINWEI como acreditado y su conyugue como coacreditado"
+    // - "el comprador como acreditado y su conyugue como coacreditado"
+    const multiParticipanteMatch = userText.match(/(.+?)\s+(?:como|es)\s+(acreditado|coacreditado)\s+(?:y|and)\s+(.+?)\s+(?:como|es)\s+(acreditado|coacreditado)/i)
+    
+    const parsed: Array<{ nombre: string, rol: 'acreditado' | 'coacreditado', esConyuge?: boolean }> = []
+    
+    if (multiParticipanteMatch) {
+      // Procesar ambos participantes de una vez
+      let nombre1 = String(multiParticipanteMatch[1] || '').trim().replace(/^[""]|[""]$/g, '')
+      const rol1 = String(multiParticipanteMatch[2] || '').toLowerCase() as any
+      let nombre2 = String(multiParticipanteMatch[3] || '').trim().replace(/^[""]|[""]$/g, '')
+      const rol2 = String(multiParticipanteMatch[4] || '').toLowerCase() as any
+      
+      // CRÍTICO: Detectar referencias a "el comprador" y reemplazarlas con el nombre real
+      const esComprador1 = /\b(el\s+)?comprador\b/i.test(nombre1)
+      if (esComprador1 && compradorNombre) {
+        nombre1 = compradorNombre
+      }
+      
+      // Verificar si el segundo es referencia al cónyuge o comprador
+      const esConyuge2 = /\b(su\s+)?(c[oó]nyuge|conyugue)\b/i.test(nombre2)
+      const esComprador2 = /\b(el\s+)?comprador\b/i.test(nombre2)
+      
+      let nombre2Final: string | null = nombre2
+      if (esConyuge2) {
+        if (conyugeNombre) {
+          nombre2Final = conyugeNombre
+        } else {
+          // CRÍTICO: Si el usuario menciona "su conyugue" pero no encontramos el nombre,
+          // NO crear el participante sin nombre. Dejar que el parser continúe y el LLM pida el nombre.
+          // Esto evita crear participantes inválidos.
+          nombre2Final = null
+        }
+      } else if (esComprador2 && compradorNombre) {
+        nombre2Final = compradorNombre
+      }
+      
+      // Validar y agregar participantes solo si tienen nombres válidos (no frases genéricas)
+      if (nombre1 && nombre1.length >= 6 && !/\b(como|es|acreditado|coacreditado)\b/i.test(nombre1) && (rol1 === 'acreditado' || rol1 === 'coacreditado')) {
+        parsed.push({ nombre: nombre1, rol: rol1, esConyuge: false })
+      }
+      // Solo agregar el segundo participante si tiene nombre válido (no null)
+      if (nombre2Final && nombre2Final.length >= 6 && !/\b(como|es|acreditado|coacreditado)\b/i.test(nombre2Final) && (rol2 === 'acreditado' || rol2 === 'coacreditado')) {
+        parsed.push({ nombre: nombre2Final, rol: rol2, esConyuge: esConyuge2 })
+      }
+    } else {
+      // Procesar línea por línea (formato original)
+      const lines = userText.split('\n').map(l => l.trim()).filter(Boolean)
+      
+      for (const line of lines) {
+        const cleaned = line.replace(/^\s*[-•]\s*/g, '').trim()
+        
+        // Detectar referencias a "cónyuge", "conyugue", o "comprador"
+        const esConyuge = /\b(su\s+)?(c[oó]nyuge|conyugue)\b/i.test(cleaned)
+        const esComprador = /\b(el\s+)?comprador\b/i.test(cleaned)
+        
+        const m1 = cleaned.match(/^(.+?)\s*[–—-]\s*(acreditado|coacreditado)\s*$/i)
+        const m2 = cleaned.match(/^(.+?)\s+(acreditado|coacreditado)\s*$/i)
+        const m = m1 || m2
+        if (!m) continue
+        
+        let nombre = String(m[1] || '').trim().replace(/^[""]|[""]$/g, '')
+        const rol = String(m[2] || '').toLowerCase() as any
+        
+        // Si es referencia al comprador, usar el nombre real del comprador
+        if (esComprador && compradorNombre) {
+          nombre = compradorNombre
+        }
+        // Si es referencia al cónyuge, usar el nombre del contexto
+        else if (esConyuge) {
+          if (conyugeNombre) {
+            nombre = conyugeNombre
+          } else {
+            // Si no hay nombre del cónyuge, no podemos procesar este participante
+            // El sistema debería pedir el nombre primero
+            continue
+          }
+        }
+        
+        // Validar que el nombre no contenga palabras genéricas como "como", "es", "acreditado", etc.
+        if (!nombre || nombre.length < 6 || /\b(como|es|acreditado|coacreditado)\b/i.test(nombre)) continue
+        if (rol !== 'acreditado' && rol !== 'coacreditado') continue
+        parsed.push({ nombre, rol, esConyuge })
+      }
     }
 
     if (parsed.length > 0) {
@@ -1390,7 +1844,26 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
       const vendedores = Array.isArray(baseContext?.vendedores) ? baseContext.vendedores : []
       const norm = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim()
 
-      const resolvePartyId = (nombre: string): string | null => {
+      const resolvePartyId = (nombre: string, esConyuge?: boolean): string | null => {
+        // Si es cónyuge, buscar en compradores[0].persona_fisica.conyuge
+        if (esConyuge) {
+          const c0 = compradores[0]
+          const conyugeNombreCtx = c0?.persona_fisica?.conyuge?.nombre || null
+          if (conyugeNombreCtx && norm(String(conyugeNombreCtx)) === norm(nombre)) {
+            // El cónyuge puede estar como segundo comprador o solo en conyuge.nombre
+            // Buscar si ya existe como comprador separado
+            for (let i = 1; i < compradores.length; i++) {
+              const nm = compradores[i]?.persona_fisica?.nombre || compradores[i]?.persona_moral?.denominacion_social || null
+              if (nm && norm(String(nm)) === norm(nombre)) {
+                return compradores[i].party_id || null
+              }
+            }
+            // Si no existe como comprador separado, retornar null (se usará nombre directo)
+            return null
+          }
+        }
+        
+        // Búsqueda normal por nombre
         const n = norm(nombre)
         for (const c of compradores) {
           const nm = c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social || null
@@ -1404,18 +1877,79 @@ function applyDeterministicUserInputUpdate(userTextRaw: string, context: any, pa
       }
 
       const c0 = baseContext.creditos[0] || {}
-      const participantes = parsed.map(p => ({
-        party_id: resolvePartyId(p.nombre),
-        rol: p.rol,
-        nombre: p.nombre,
-      }))
+      const participantes = parsed.map(p => {
+        const partyId = resolvePartyId(p.nombre, p.esConyuge)
+        
+        // Si es cónyuge, SIEMPRE incluir el nombre (incluso si tiene party_id)
+        // Esto asegura que se muestre en el template aunque el party_id no se resuelva correctamente
+        let nombreFinal: string | null = null
+        if (p.esConyuge) {
+          // CRÍTICO: Para cónyuges, SIEMPRE usar el nombre del contexto si está disponible
+          // Priorizar: nombre del contexto (más confiable) > nombre del parsed > null
+          // El nombre del contexto viene de compradores[0].persona_fisica.conyuge.nombre
+          nombreFinal = conyugeNombre || p.nombre || null
+          
+          // Si aún no tenemos nombre, intentar buscarlo en compradores adicionales
+          if (!nombreFinal) {
+            for (let i = 1; i < compradores.length; i++) {
+              const nm = compradores[i]?.persona_fisica?.nombre || null
+              if (nm) {
+                nombreFinal = nm
+                break
+              }
+            }
+          }
+        } else {
+          // Para no-cónyuges: solo incluir nombre si no tiene party_id
+          nombreFinal = partyId ? null : (p.nombre || null)
+        }
+        
+        return {
+          party_id: partyId,
+          rol: p.rol,
+          // CRÍTICO: Para cónyuges, siempre incluir nombre para que se muestre en el template
+          nombre: nombreFinal,
+        }
+      })
 
+      // Si hay un participante que es cónyuge y no existe como comprador separado, crear el segundo comprador
+      const conyugeParticipante = participantes.find(p => p.nombre && norm(String(p.nombre)) === norm(String(conyugeNombre || '')))
+      if (conyugeParticipante && conyugeNombre) {
+        const existingNames = compradores
+          .map((c: any) => c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social || null)
+          .filter(Boolean)
+          .map((s: any) => norm(String(s)))
+        
+        if (!existingNames.includes(norm(String(conyugeNombre)))) {
+          compradores.push({
+            party_id: null,
+            tipo_persona: 'persona_fisica',
+            persona_fisica: { nombre: conyugeNombre, rfc: null, curp: null, estado_civil: null },
+            persona_moral: undefined,
+          } as any)
+        }
+      }
+
+      // CRÍTICO: Verificar que todos los participantes coacreditados tengan nombre
+      // Si un participante es coacreditado y no tiene nombre, intentar resolverlo del contexto
+      const participantesConNombre = participantes.map((p: any) => {
+        if (p.rol === 'coacreditado' && !p.nombre && conyugeNombre) {
+          // Si es coacreditado sin nombre, usar el nombre del cónyuge del contexto
+          return {
+            ...p,
+            nombre: conyugeNombre
+          }
+        }
+        return p
+      })
+      
       const control = baseContext?.control_impresion || {}
       return {
-        creditos: [{ ...c0, participantes }, ...baseContext.creditos.slice(1)],
+        compradores: compradores.length > (baseContext?.compradores?.length || 0) ? compradores : undefined,
+        creditos: [{ ...c0, participantes: participantesConNombre }, ...baseContext.creditos.slice(1)],
         control_impresion: {
-          imprimir_conyuges: control?.imprimir_conyuges === true,
-          imprimir_coacreditados: participantes.some((p: any) => p?.rol === 'coacreditado') ? true : (control?.imprimir_coacreditados === true),
+          imprimir_conyuges: control?.imprimir_conyuges === true || conyugeParticipante ? true : undefined,
+          imprimir_coacreditados: participantesConNombre.some((p: any) => p?.rol === 'coacreditado') ? true : (control?.imprimir_coacreditados === true),
           imprimir_creditos: true,
         },
       }
@@ -1697,13 +2231,39 @@ function buildDeterministicFollowUp(state: any, context: any): string | null {
       if (tipo === 'persona_fisica' && missing.includes('compradores[0].persona_fisica.estado_civil')) {
         return askOne(`¿Me indicas el estado civil de ${nombre}? (soltero, casado, divorciado o viudo)`)
       }
+      
+      // Si el comprador está casado, verificar si ya tenemos el nombre del cónyuge
+      const estadoCivil = comprador0?.persona_fisica?.estado_civil
+      const conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre
+      const conyugeParticipa = comprador0?.persona_fisica?.conyuge?.participa === true
+      
+      // Si está casado y el cónyuge participa pero no tenemos nombre, NO pedirlo aquí (el LLM lo manejará)
+      // Pero si ya tenemos nombre, continuar sin pedir nada más del cónyuge
+      if (estadoCivil === 'casado' && conyugeParticipa && conyugeNombre) {
+        // Ya tenemos todo del cónyuge, continuar
+        return askOne('Continuamos. ¿La compraventa será de contado o con crédito?')
+      }
+      
       // Si ya hay estado_civil o es persona moral, continuar a créditos o siguiente paso.
       return askOne('Continuamos. ¿La compraventa será de contado o con crédito?')
     }
 
     // Si hay nombre pero falta tipo: pedir confirmar tipo (NO pedir nombre de nuevo)
-    if (nombre && !tipo) {
+    // PERO: si es el segundo comprador y es cónyuge, NO pedir tipo (siempre es persona_fisica)
+    const compradores = context?.compradores || []
+    const esSegundoCompradorConyuge = compradores.length > 1 && 
+      comprador0 === compradores[0] && 
+      compradores[1]?.persona_fisica?.nombre === nombre &&
+      compradores[0]?.persona_fisica?.conyuge?.nombre === nombre
+    
+    if (nombre && !tipo && !esSegundoCompradorConyuge) {
       return askOne(`Tengo capturado como comprador: "${nombre}". ¿Confirmas si es persona física o persona moral?`)
+    }
+    
+    // Si es segundo comprador cónyuge sin tipo, no preguntar (se asignará automáticamente como persona_fisica)
+    if (nombre && !tipo && esSegundoCompradorConyuge) {
+      // El tipo se asignará automáticamente en el código determinista, no preguntar aquí
+      return null
     }
 
     // Si no hay nombre: pedir nombre y tipo
@@ -1730,10 +2290,19 @@ function buildDeterministicFollowUp(state: any, context: any): string | null {
     const participantes = Array.isArray(c0?.participantes) ? c0.participantes : []
     const comprador0 = context?.compradores?.[0]
     const compradorNombre = comprador0?.persona_fisica?.nombre || comprador0?.persona_moral?.denominacion_social || null
+    const compradorCasado = comprador0?.persona_fisica?.estado_civil === 'casado'
+    const conyugeParticipa = comprador0?.persona_fisica?.conyuge?.participa === true
+    const conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre || null
 
     if (!inst) {
       return askOne('Para el crédito, indícame la institución (banco, INFONAVIT, FOVISSSTE, etc.).')
     }
+    
+    // Si el comprador está casado, el cónyuge participa, pero no tenemos el nombre del cónyuge, pedirlo primero
+    if (compradorCasado && conyugeParticipa && !conyugeNombre) {
+      return askOne('Para poder registrar al cónyuge en el crédito, necesito el nombre completo del cónyuge. Por favor indícame el nombre completo tal como aparece en su identificación oficial, o sube el documento de identificación del cónyuge.')
+    }
+    
     if (participantes.length === 0) {
       // Si ya hay comprador, sugerir flujo mínimo
       if (compradorNombre) {
@@ -1741,6 +2310,15 @@ function buildDeterministicFollowUp(state: any, context: any): string | null {
       }
       return askOne(`Para el crédito con ${inst}, dime quién(es) participan y si serán acreditado o coacreditado.`)
     }
+    
+    // Verificar si hay participantes que mencionan "cónyuge" pero no tienen nombre resuelto
+    const participantesConConyugeSinNombre = participantes.filter((p: any) => 
+      !p.nombre && !p.party_id && (p.rol === 'coacreditado' || p.rol === 'acreditado')
+    )
+    if (participantesConConyugeSinNombre.length > 0 && !conyugeNombre) {
+      return askOne('Para poder registrar al cónyuge en el crédito, necesito el nombre completo del cónyuge. Por favor indícame el nombre completo tal como aparece en su identificación oficial, o sube el documento de identificación del cónyuge.')
+    }
+    
     // Si ya hay institución + participantes, continuar (no re-pedir institución/monto)
     return askOne('Continuamos. ¿Existe algún otro crédito adicional? (sí/no)')
   }

@@ -10,6 +10,7 @@ export async function POST(req: Request) {
     const file = formData.get("file") as File | null
     const documentType = formData.get("documentType") as string | null
     const contextRaw = formData.get("context") as string | null
+    const needOcr = (formData.get("needOcr") as string | null) || null
 
     let context: any = null
     if (contextRaw) {
@@ -104,6 +105,7 @@ export async function POST(req: Request) {
     }
     
     // Validar tamaño máximo (OpenAI tiene límites)
+    // OpenAI Vision API tiene un límite de 20MB por imagen, pero recomendamos menos para mejor rendimiento
     const maxSize = 20 * 1024 * 1024 // 20MB
     if (arrayBuffer.byteLength > maxSize) {
       return NextResponse.json(
@@ -112,7 +114,52 @@ export async function POST(req: Request) {
       )
     }
     
+    // Validar tamaño mínimo (archivos muy pequeños pueden estar corruptos)
+    const minSize = 100 // 100 bytes mínimo
+    if (arrayBuffer.byteLength < minSize) {
+      return NextResponse.json(
+        { error: "invalid_file", message: "El archivo es demasiado pequeño y puede estar corrupto" },
+        { status: 400 }
+      )
+    }
+    
+    // Validar que el archivo tenga una firma válida de imagen (magic bytes)
+    const uint8Array = new Uint8Array(arrayBuffer)
+    const isValidImage = 
+      // PNG: 89 50 4E 47
+      (uint8Array[0] === 0x89 && uint8Array[1] === 0x50 && uint8Array[2] === 0x4E && uint8Array[3] === 0x47) ||
+      // JPEG: FF D8 FF
+      (uint8Array[0] === 0xFF && uint8Array[1] === 0xD8 && uint8Array[2] === 0xFF) ||
+      // GIF: 47 49 46 38 (GIF8)
+      (uint8Array[0] === 0x47 && uint8Array[1] === 0x49 && uint8Array[2] === 0x46 && uint8Array[3] === 0x38) ||
+      // WEBP: RIFF...WEBP
+      (uint8Array[0] === 0x52 && uint8Array[1] === 0x49 && uint8Array[2] === 0x46 && uint8Array[3] === 0x46 && 
+       uint8Array[8] === 0x57 && uint8Array[9] === 0x45 && uint8Array[10] === 0x42 && uint8Array[11] === 0x50)
+    
+    if (!isValidImage) {
+      // Si no tiene firma válida pero el tipo MIME dice que es imagen, intentar corregir el tipo
+      // o rechazar si definitivamente no es una imagen válida
+      console.warn(`[preaviso-process-document] Archivo no tiene firma válida de imagen. Tipo MIME: ${mimeType}, Primeros bytes: ${Array.from(uint8Array.slice(0, 12)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')}`)
+      
+      // Si el tipo MIME es correcto pero la firma no coincide, puede ser un problema de conversión
+      // Permitir continuar pero con advertencia
+      if (!mimeType.startsWith('image/')) {
+        return NextResponse.json(
+          { error: "invalid_file", message: "El archivo no parece ser una imagen válida. Por favor, verifica que el archivo sea PNG, JPEG, GIF o WEBP." },
+          { status: 400 }
+        )
+      }
+    }
+    
     const base64 = Buffer.from(arrayBuffer).toString("base64")
+    
+    // Validar que el base64 no esté vacío
+    if (!base64 || base64.length === 0) {
+      return NextResponse.json(
+        { error: "invalid_file", message: "Error al convertir el archivo a base64" },
+        { status: 400 }
+      )
+    }
     
     // Asegurar que el mimeType final sea válido
     mimeType = supportedMimeTypes[mimeType] || mimeType
@@ -182,6 +229,21 @@ IMPORTANTE:
 - Lee cuidadosamente todos los campos visibles en el documento
 - NO infieras si esta identificación corresponde a comprador o vendedor. No incluyas ese campo.`
         userPrompt = "Analiza este documento de identificación oficial y extrae TODA la información disponible que puedas leer. Sé exhaustivo y preciso."
+        break
+
+      case "acta_matrimonio":
+        systemPrompt = `Eres un experto en análisis de actas de matrimonio. Analiza el documento y extrae la siguiente información en formato JSON:
+{
+  "conyuge1": { "nombre": "nombre completo del cónyuge 1 tal como aparece" },
+  "conyuge2": { "nombre": "nombre completo del cónyuge 2 tal como aparece" },
+  "fechaMatrimonio": "fecha del matrimonio si está visible",
+  "lugarRegistro": "lugar/registro/oficialía si está visible"
+}
+
+IMPORTANTE:
+- Extrae SOLO lo que puedas leer claramente. Si no estás seguro, usa null.
+- NO infieras roles (comprador/vendedor). Solo extrae datos del acta.`
+        userPrompt = "Analiza esta acta de matrimonio y extrae los nombres completos de ambos cónyuges y la información solicitada."
         break
 
       case "inscripcion":
@@ -329,12 +391,15 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
       
       // Manejar errores específicos de formato de imagen
       if (errorData?.error?.code === 'invalid_image_format' || 
+          errorData?.error?.code === 'invalid_image' ||
           errorData?.error?.message?.includes('unsupported image') ||
-          errorData?.error?.message?.includes('image format')) {
+          errorData?.error?.message?.includes('image format') ||
+          errorData?.error?.message?.includes('Invalid image') ||
+          errorData?.error?.message?.toLowerCase().includes('invalid image')) {
         return NextResponse.json(
           { 
             error: "invalid_image_format", 
-            message: `Formato de imagen no soportado por OpenAI. El archivo debe ser PNG, JPEG, GIF o WEBP. Tipo detectado: ${mimeType}. Por favor, verifica que el archivo sea una imagen válida.` 
+            message: `Formato de imagen no válido o no soportado por OpenAI. El archivo debe ser una imagen válida en formato PNG, JPEG, GIF o WEBP. Tipo detectado: ${mimeType}. Por favor, verifica que el archivo sea una imagen válida y no esté corrupto. Si estás subiendo un PDF, asegúrate de convertirlo correctamente a imagen antes de subirlo.` 
           },
           { status: 400 }
         )
@@ -383,6 +448,75 @@ Devuelve la información en formato JSON estructurado, incluyendo un campo "form
         { error: "parse_error", message: "Error al procesar la respuesta de la IA" },
         { status: 500 }
       )
+    }
+
+    // OCR / texto plano (para RAG): opcional y acotado por tipo para no duplicar costo en todo.
+    // Se devuelve separado (NO se mergea en contexto) para evitar inflar `documentosProcesados`.
+    let ocrText: string | null = null
+    const shouldOcr =
+      needOcr === '1' &&
+      (documentType === 'identificacion' || documentType === 'inscripcion' || documentType === 'acta_matrimonio')
+
+    if (shouldOcr) {
+      try {
+        const ocrSystem = `Eres un OCR extractor. Devuelve SOLO JSON con este shape:
+{
+  "text": "transcripción del texto visible en la imagen, en orden de lectura. Si hay secciones/tablas, conserva saltos de línea. No inventes texto."
+}
+
+REGLAS:
+- Incluye TODO el texto legible.
+- No agregues comentarios ni interpretación.
+- Si no se ve claro una palabra, omítela o usa [ilegible].`
+        const ocrResp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: ocrSystem },
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: "Transcribe el texto visible en esta imagen." },
+                  { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
+                ],
+              },
+            ],
+            temperature: 0,
+            response_format: { type: "json_object" },
+            ...(model.includes("gpt-5") || model.includes("o1")
+              ? { max_completion_tokens: 1200 }
+              : { max_tokens: 1200 }),
+          }),
+        })
+        if (ocrResp.ok) {
+          const ocrData = await ocrResp.json()
+          const ocrRaw = ocrData?.choices?.[0]?.message?.content || ""
+          let parsed: any = null
+          try {
+            let jt = String(ocrRaw || '').trim()
+            if (jt.startsWith("```")) {
+              const m = jt.match(/```(?:json)?\n([\s\S]*?)\n```/)
+              if (m) jt = m[1]
+            }
+            parsed = JSON.parse(jt)
+          } catch {
+            parsed = null
+          }
+          const t = parsed?.text ? String(parsed.text) : ''
+          if (t.trim()) {
+            // límite defensivo
+            ocrText = t.length > 20000 ? t.slice(0, 20000) : t
+          }
+        }
+      } catch {
+        // No bloquear flujo principal
+        ocrText = null
+      }
     }
 
     // Segunda pasada (solo folios) cuando el modelo tiende a devolver "solo el primero" por página.
@@ -803,34 +937,79 @@ REGLAS:
         for (const f of foliosReales) addCandidate(f, 'otros')
         if (extracted?.folioReal) addCandidate(extracted.folioReal, 'otros')
 
-        // Titular registral → vendedores[0] (NO asumir tipo_persona)
+        // Helper: inferir persona moral con alta confianza a partir del nombre
+        const inferTipoPersonaByName = (rawName: string): 'persona_moral' | null => {
+          const n = String(rawName || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/[“”"']/g, '')
+            .replace(/[^a-z0-9\s.]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+
+          // Señales fuertes de persona moral (MX + comunes)
+          const pm = [
+            /\bs\.?\s*a\.?\b/,                 // S.A.
+            /\bs\.?\s*a\.?\s*de\s*c\.?\s*v\.?\b/, // S.A. de C.V.
+            /\bs\.?\s*de\s*r\.?\s*l\.?\b/,     // S. de R.L.
+            /\bs\.?\s*de\s*r\.?\s*l\.?\s*de\s*c\.?\s*v\.?\b/, // S. de R.L. de C.V.
+            /\bsapi\b/,                         // SAPI
+            /\bs\.?\s*a\.?\s*p\.?\s*i\.?\b/,   // S.A.P.I. o SAPI
+            /\ba\.?\s*c\.?\b/,                  // A.C.
+            /\bs\.?\s*c\.?\b/,                  // S.C.
+            /\bsociedad\s+anonima\b/,          // "sociedad anonima"
+            /\bsociedad\s+anonima\s+promotora\b/, // "sociedad anonima promotora"
+            /\bsociedad\s+de\s+responsabilidad\s+limitada\b/,
+            /\bsociedad\s+de\s+capital\s+variable\b/, // "sociedad de capital variable"
+            /\bsociedad\s+anonima\s+promotora\s+de\s+inversion\s+de\s+capital\s+variable\b/, // Completo
+            /\bcompania\b|\bcompania\s+.*\b/i,
+            /\bempresa\b/,
+            /\binmobiliaria\b/,                // "inmobiliaria" (común en nombres de empresas)
+            /\bdesarrolladora\b/,              // "desarrolladora" (común en nombres de empresas)
+            /\bcorporation\b|\bcorp\b|\binc\b|\bllc\b|\bltd\b/,
+            /\bsociedad\b/,                    // "sociedad" (genérico, pero común en PM)
+          ]
+          if (pm.some(r => r.test(n))) return 'persona_moral'
+          return null
+        }
+
+        // Titular registral → vendedores[0] (inferir tipo_persona si es posible)
         const propietarioNombre = extracted?.propietario?.nombre
         const propietarioRfc = extracted?.propietario?.rfc
         const propietarioCurp = extracted?.propietario?.curp
         if (propietarioNombre) {
           const vendedores = safeArray(ctx.vendedores)
           const v0 = vendedores[0] || { party_id: null, tipo_persona: null, tiene_credito: null }
+          
+          // Inferir tipo_persona desde el nombre si no está definido
+          const inferredTipo = inferTipoPersonaByName(propietarioNombre)
+          const tipoPersonaFinal = v0?.tipo_persona || inferredTipo || null
 
-          // Si ya está como persona moral, actualizar denominación/rfc; si no, dejar placeholder en persona_fisica sin asumir tipo_persona.
-          if (v0?.tipo_persona === 'persona_moral' || v0?.persona_moral) {
+          // Si es persona moral (ya definida o inferida), actualizar denominación/rfc
+          if (tipoPersonaFinal === 'persona_moral' || v0?.persona_moral) {
             vendedores[0] = {
               ...v0,
+              tipo_persona: tipoPersonaFinal,
               persona_moral: {
                 ...(v0.persona_moral || {}),
                 denominacion_social: propietarioNombre || v0?.persona_moral?.denominacion_social || null,
                 rfc: propietarioRfc || v0?.persona_moral?.rfc || null,
               },
+              persona_fisica: undefined, // Limpiar persona_fisica si es moral
             }
           } else {
+            // Si es persona física o no se puede inferir, guardar en persona_fisica
             vendedores[0] = {
               ...v0,
-              tipo_persona: v0?.tipo_persona ?? null,
+              tipo_persona: tipoPersonaFinal,
               persona_fisica: {
                 ...(v0.persona_fisica || {}),
                 nombre: propietarioNombre || v0?.persona_fisica?.nombre || null,
                 rfc: propietarioRfc || v0?.persona_fisica?.rfc || null,
                 curp: propietarioCurp || v0?.persona_fisica?.curp || null,
               },
+              persona_moral: undefined, // Limpiar persona_moral si es física
             }
           }
 
@@ -851,51 +1030,183 @@ REGLAS:
       if (docType === 'identificacion') {
         const nombre = extracted?.nombre
         if (nombre) {
-          const vendedores = safeArray(ctx.vendedores)
+          const intent = (ctx as any)?._document_intent
+          
+          // Detectar automáticamente si es documento del cónyuge:
+          // - Si hay un comprador casado y el nombre NO coincide con el comprador
+          // - O si el intent explícitamente dice 'conyuge'
           const compradores = safeArray(ctx.compradores)
-
-          const v0 = vendedores[0]
           const c0 = compradores[0]
-          const vendedorNombre = v0?.persona_fisica?.nombre || v0?.persona_moral?.denominacion_social || null
+          const compradorNombre = c0?.persona_fisica?.nombre || c0?.persona_moral?.denominacion_social || null
+          const compradorCasado = c0?.persona_fisica?.estado_civil === 'casado'
+          const conyugeParticipa = c0?.persona_fisica?.conyuge?.participa === true
+          const conyugeNombre = c0?.persona_fisica?.conyuge?.nombre || null
+          
+          // Normalizar nombres para comparación
+          const normalize = (s: string) =>
+            String(s || '')
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .toLowerCase()
+              .replace(/[“”"']/g, '')
+              .replace(/[^a-z0-9\s]/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim()
+          
+          const nombreNormalizado = normalize(String(nombre))
+          const compradorNormalizado = compradorNombre ? normalize(String(compradorNombre)) : null
+          const nombreNoEsComprador = compradorNormalizado ? nombreNormalizado !== compradorNormalizado : true
+          
+          // Si el comprador está casado, el cónyuge participa, y el nombre NO es del comprador,
+          // y aún no tenemos nombre del cónyuge, entonces es muy probable que sea el documento del cónyuge
+          const esProbableConyuge = compradorCasado && 
+                                    conyugeParticipa && 
+                                    !conyugeNombre && 
+                                    nombreNoEsComprador &&
+                                    nombreNormalizado.length >= 6
+
+          // Caso especial: estábamos esperando documento del CÓNYUGE (intent explícito o detección automática).
+          // No pisar comprador/vendedor; guardar dentro de compradores[0].persona_fisica.conyuge.
+          if (intent === 'conyuge' || esProbableConyuge) {
+            const compradores = safeArray(ctx.compradores)
+            const next = compradores.length > 0
+              ? [...compradores]
+              : [{ party_id: null, tipo_persona: 'persona_fisica', persona_fisica: { nombre: null, rfc: null, curp: null, estado_civil: null }, persona_moral: undefined }]
+            const base = next[0] || { party_id: null, tipo_persona: null }
+            const basePF = (base as any)?.persona_fisica || {}
+
+            next[0] = {
+              ...base,
+              // No forzar tipo si ya era moral; solo setear si viene vacío.
+              tipo_persona: (base as any)?.tipo_persona ?? 'persona_fisica',
+              persona_fisica: {
+                ...basePF,
+                conyuge: {
+                  nombre: String(nombre),
+                  participa: true,
+                },
+              },
+            }
+
+            update.compradores = next
+            update.control_impresion = {
+              ...(ctx?.control_impresion || {}),
+              imprimir_conyuges: true,
+            }
+            update.__targetPerson = 'conyuge'
+            update._document_intent = null
+          } else {
+            const vendedores = safeArray(ctx.vendedores)
+            const compradores = safeArray(ctx.compradores)
+
+            const v0 = vendedores[0]
+            const c0 = compradores[0]
+            const vendedorNombre = v0?.persona_fisica?.nombre || v0?.persona_moral?.denominacion_social || null
+            const compradorNombre = c0?.persona_fisica?.nombre || c0?.persona_moral?.denominacion_social || null
+
+            // Heurística (sin inferencia del modelo): si falta comprador → asignar a comprador; si comprador ya existe pero falta vendedor → asignar a vendedor; si ambos existen → asignar a comprador.
+            const target = !compradorNombre ? 'comprador' : (!vendedorNombre ? 'vendedor' : 'comprador')
+
+            // Si el documento es INE/IFE/Pasaporte/Licencia/CURP, es persona física (clasificación por tipo de documento, no por suposición).
+            const tipoDoc = String(extracted?.tipoDocumento || '').toLowerCase()
+            const esPersonaFisicaPorDoc = /(ine|ife|pasaporte|licencia|curp)/i.test(tipoDoc)
+            const tipo_persona = esPersonaFisicaPorDoc ? 'persona_fisica' : null
+
+            const personaFisica = {
+              nombre: String(nombre),
+              rfc: extracted?.rfc ? String(extracted.rfc) : null,
+              curp: extracted?.curp ? String(extracted.curp) : null,
+              estado_civil: null,
+            }
+
+            if (target === 'comprador') {
+              const next = compradores.length > 0 ? [...compradores] : [{ party_id: null, tipo_persona: null, persona_fisica: {}, persona_moral: undefined }]
+              const base = next[0] || { party_id: null, tipo_persona: null }
+              next[0] = {
+                ...base,
+                tipo_persona: base?.tipo_persona ?? tipo_persona,
+                persona_fisica: { ...(base?.persona_fisica || {}), ...personaFisica },
+              }
+              update.compradores = next
+            } else {
+              const next = vendedores.length > 0 ? [...vendedores] : [{ party_id: null, tipo_persona: null, tiene_credito: null, persona_fisica: {}, persona_moral: undefined }]
+              const base = next[0] || { party_id: null, tipo_persona: null, tiene_credito: null }
+              next[0] = {
+                ...base,
+                tipo_persona: base?.tipo_persona ?? tipo_persona,
+                persona_fisica: { ...(base?.persona_fisica || {}), ...personaFisica },
+              }
+              update.vendedores = next
+            }
+
+            // Retornar target para que el caller pueda decidir expediente lookup
+            update.__targetPerson = target
+          }
+        }
+      }
+
+      // === ACTA DE MATRIMONIO ===
+      if (docType === 'acta_matrimonio') {
+        const intent = (ctx as any)?._document_intent
+        const n1 = extracted?.conyuge1?.nombre ? String(extracted.conyuge1.nombre) : null
+        const n2 = extracted?.conyuge2?.nombre ? String(extracted.conyuge2.nombre) : null
+        const nombres = [n1, n2].filter(Boolean) as string[]
+
+        // Procesar acta de matrimonio si:
+        // 1. Hay intent explícito de 'conyuge', O
+        // 2. El comprador está casado y el cónyuge participa (detección automática)
+        const compradores = safeArray(ctx.compradores)
+        const c0 = compradores[0]
+        const compradorCasado = c0?.persona_fisica?.estado_civil === 'casado'
+        const conyugeParticipa = c0?.persona_fisica?.conyuge?.participa === true
+        const conyugeNombre = c0?.persona_fisica?.conyuge?.nombre || null
+        
+        const debeProcesarActa = intent === 'conyuge' || (compradorCasado && conyugeParticipa && !conyugeNombre && nombres.length > 0)
+
+        if (nombres.length > 0 && debeProcesarActa) {
+          const compradores = safeArray(ctx.compradores)
+          const c0 = compradores[0]
           const compradorNombre = c0?.persona_fisica?.nombre || c0?.persona_moral?.denominacion_social || null
 
-          // Heurística (sin inferencia del modelo): si falta comprador → asignar a comprador; si comprador ya existe pero falta vendedor → asignar a vendedor; si ambos existen → asignar a comprador.
-          const target = !compradorNombre ? 'comprador' : (!vendedorNombre ? 'vendedor' : 'comprador')
+          const normalize = (s: string) =>
+            String(s || '')
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .toLowerCase()
+              .replace(/[“”"']/g, '')
+              .replace(/[^a-z0-9\s]/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim()
 
-          // Si el documento es INE/IFE/Pasaporte/Licencia/CURP, es persona física (clasificación por tipo de documento, no por suposición).
-          const tipoDoc = String(extracted?.tipoDocumento || '').toLowerCase()
-          const esPersonaFisicaPorDoc = /(ine|ife|pasaporte|licencia|curp)/i.test(tipoDoc)
-          const tipo_persona = esPersonaFisicaPorDoc ? 'persona_fisica' : null
+          const compradorNorm = compradorNombre ? normalize(String(compradorNombre)) : null
+          const picked =
+            (compradorNorm ? nombres.find(n => normalize(n) !== compradorNorm) : null) ||
+            nombres[0]
 
-          const personaFisica = {
-            nombre: String(nombre),
-            rfc: extracted?.rfc ? String(extracted.rfc) : null,
-            curp: extracted?.curp ? String(extracted.curp) : null,
-            estado_civil: null,
+          const next = compradores.length > 0
+            ? [...compradores]
+            : [{ party_id: null, tipo_persona: 'persona_fisica', persona_fisica: { nombre: null, rfc: null, curp: null, estado_civil: null }, persona_moral: undefined }]
+          const base = next[0] || { party_id: null, tipo_persona: null }
+          const basePF = (base as any)?.persona_fisica || {}
+
+          next[0] = {
+            ...base,
+            tipo_persona: (base as any)?.tipo_persona ?? 'persona_fisica',
+            persona_fisica: {
+              ...basePF,
+              conyuge: {
+                nombre: String(picked),
+                participa: true,
+              },
+            },
           }
-
-          if (target === 'comprador') {
-            const next = compradores.length > 0 ? [...compradores] : [{ party_id: null, tipo_persona: null, persona_fisica: {}, persona_moral: undefined }]
-            const base = next[0] || { party_id: null, tipo_persona: null }
-            next[0] = {
-              ...base,
-              tipo_persona: base?.tipo_persona ?? tipo_persona,
-              persona_fisica: { ...(base?.persona_fisica || {}), ...personaFisica },
-            }
-            update.compradores = next
-          } else {
-            const next = vendedores.length > 0 ? [...vendedores] : [{ party_id: null, tipo_persona: null, tiene_credito: null, persona_fisica: {}, persona_moral: undefined }]
-            const base = next[0] || { party_id: null, tipo_persona: null, tiene_credito: null }
-            next[0] = {
-              ...base,
-              tipo_persona: base?.tipo_persona ?? tipo_persona,
-              persona_fisica: { ...(base?.persona_fisica || {}), ...personaFisica },
-            }
-            update.vendedores = next
+          update.compradores = next
+          update.control_impresion = {
+            ...(ctx?.control_impresion || {}),
+            imprimir_conyuges: true,
           }
-
-          // Retornar target para que el caller pueda decidir expediente lookup
-          update.__targetPerson = target
+          update.__targetPerson = 'conyuge'
+          update._document_intent = null
         }
       }
 
@@ -906,6 +1217,7 @@ REGLAS:
     let dataUpdate: any = null
     let state: any = null
     let mergedContextForState: any = null
+    let targetPerson: string | null = null
     if (context) {
       dataUpdate = mergeExtractedIntoContext(documentType, extractedData, context)
 
@@ -920,6 +1232,7 @@ REGLAS:
       ]
 
       // No exponer campos internos (__targetPerson) fuera del backend
+      targetPerson = (dataUpdate as any)?.__targetPerson || null
       const { __targetPerson, ...cleanDataUpdate } = dataUpdate || {}
       mergedContextForState = { ...context, ...cleanDataUpdate, documentosProcesados: nextDocs }
       state = computePreavisoState(mergedContextForState).state
@@ -935,8 +1248,8 @@ REGLAS:
       documentType === "identificacion" &&
       !!context &&
       !!dataUpdate &&
-      // si el merge impactó compradores, interpretamos que era identificación del comprador
-      Object.prototype.hasOwnProperty.call(dataUpdate, 'compradores')
+      // Solo hacer lookup cuando sea identificación del COMPRADOR (nunca para cónyuge)
+      (typeof (targetPerson as any) === 'string' ? targetPerson === 'comprador' : Object.prototype.hasOwnProperty.call(dataUpdate, 'compradores'))
 
     if (shouldLookupExpediente) {
       try {
@@ -981,6 +1294,7 @@ REGLAS:
       extractedData,
       fileName: file.name,
       fileType: documentType,
+      ...(ocrText ? { ocrText } : {}),
       ...(dataUpdate && { data: dataUpdate }),
       ...(expedienteExistente && { expedienteExistente }),
       ...(state && { state }),
