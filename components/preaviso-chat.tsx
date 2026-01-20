@@ -27,9 +27,24 @@ import {
   FileCheck2,
   Eye,
   EyeOff,
-  FolderOpen
+  FolderOpen,
+  MessageSquarePlus
 } from 'lucide-react'
 import { PreavisoExportOptions } from './preaviso-export-options'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 
 export interface ChatMessage {
   id: string
@@ -605,6 +620,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const [showDataPanel, setShowDataPanel] = useState(true)
   const [isDragging, setIsDragging] = useState(false)
   const [showExportOptions, setShowExportOptions] = useState(false)
+  const [showNewChatDialog, setShowNewChatDialog] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textInputRef = useRef<HTMLTextAreaElement>(null)
@@ -669,6 +685,130 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
   }, [data, onExportReady, isCompleteByServer])
+
+  const resetChat = async () => {
+    // Limpiar todos los mensajes
+    setMessages([])
+    
+    // Resetear flags de inicialización
+    initializationRef.current = false
+    setInitialMessagesSent(false)
+    messageIdCounterRef.current = 0
+    
+    // Resetear datos del preaviso a estado inicial
+    const initialData: PreavisoData = {
+      tipoOperacion: 'compraventa',
+      vendedores: [],
+      compradores: [],
+      creditos: undefined,
+      gravamenes: [],
+      inmueble: {
+        folio_real: null,
+        partidas: [],
+        all_registry_pages_confirmed: false,
+        direccion: {
+          calle: null,
+          numero: null,
+          colonia: null,
+          municipio: null,
+          estado: null,
+          codigo_postal: null
+        },
+        superficie: null,
+        valor: null,
+        datos_catastrales: {
+          lote: null,
+          manzana: null,
+          fraccionamiento: null,
+          condominio: null,
+          unidad: null,
+          modulo: null
+        }
+      },
+      control_impresion: {
+        imprimir_conyuges: false,
+        imprimir_coacreditados: false,
+        imprimir_creditos: false
+      },
+      validaciones: {
+        expediente_existente: false,
+        datos_completos: false,
+        bloqueado: true
+      },
+      actosNotariales: {
+        cancelacionCreditoVendedor: false,
+        compraventa: false,
+        aperturaCreditoComprador: false
+      },
+      documentos: []
+    }
+    setData(initialData)
+    
+    // Limpiar documentos subidos
+    setUploadedDocuments([])
+    uploadedDocumentsRef.current = []
+    
+    // Resetear estado del servidor
+    setServerState(null)
+    
+    // Resetear expediente existente
+    setExpedienteExistente(null)
+    
+    // Resetear input
+    setInput('')
+    
+    // Crear nuevo trámite
+    if (user?.id) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const headers: HeadersInit = { 'Content-Type': 'application/json' }
+        if (session?.access_token) {
+          headers['Authorization'] = `Bearer ${session.access_token}`
+        }
+
+        const response = await fetch('/api/expedientes/tramites', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            compradorId: null,
+            userId: user.id,
+            tipo: 'preaviso',
+            datos: {
+              tipoOperacion: 'compraventa',
+              vendedores: [],
+              compradores: [],
+              creditos: undefined,
+              gravamenes: [],
+              inmueble: initialData.inmueble,
+              control_impresion: initialData.control_impresion,
+              validaciones: initialData.validaciones,
+              actosNotariales: initialData.actosNotariales
+            },
+            estado: 'en_proceso',
+          }),
+        })
+
+        if (response.ok) {
+          const tramite = await response.json()
+          setActiveTramiteId(tramite.id)
+        }
+      } catch (error) {
+        console.error('Error creando nuevo trámite:', error)
+      }
+    }
+    
+    // El useEffect de inicialización se ejecutará automáticamente porque
+    // los mensajes están vacíos y initializationRef.current es false
+  }
+
+  const handleNewChat = () => {
+    setShowNewChatDialog(true)
+  }
+
+  const handleConfirmNewChat = async () => {
+    setShowNewChatDialog(false)
+    await resetChat()
+  }
 
   const handleSend = async () => {
     if (!input.trim() || isProcessing) return
@@ -2297,9 +2437,23 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       )}
       
       {/* Layout con panel de información - Parte superior */}
-      <div className="flex-1 flex gap-4 min-h-0 overflow-hidden">
+      <div className={`flex-1 flex ${!showDataPanel ? 'flex-col' : ''} gap-4 min-h-0 overflow-hidden`}>  
+        {/* Botón para mostrar panel si está oculto */}
+        {!showDataPanel && (
+          <div className='flex justify-end'>
+            <Button
+              variant="outline"
+              size="icon"
+              className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground w-fit "
+              onClick={() => setShowDataPanel(true)}
+            >
+              <Eye className="h-4 w-4" /> 
+              <span className="text-xs">Mostrar informacion capturada</span>
+            </Button>
+          </div>
+        )}
         {/* Chat principal */}
-        <Card className="flex-1 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
+        <Card className="flex-1 p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
         <CardContent className="flex-1 flex flex-col p-0 min-h-0">
           {/* Header moderno */}
           <div className="border-b border-gray-200/80 bg-gradient-to-r from-white via-gray-50/50 to-white backdrop-blur-sm px-6 py-2.5">
@@ -2337,16 +2491,26 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               
               {/* Acciones del header */}
               <div className="flex items-center space-x-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9 rounded-xl hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors"
-                  title="Más opciones"
-                >
-                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                  </svg>
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9 rounded-xl hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors"
+                      title="Más opciones"
+                    >
+                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                      </svg>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-48">
+                    <DropdownMenuItem onClick={handleNewChat} className="cursor-pointer hover:!bg-gray-100 focus:!bg-gray-100 focus:!text-gray-900">
+                      <MessageSquarePlus className="mr-2 h-4 w-4" />
+                      Nuevo chat
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
           </div>
@@ -2542,10 +2706,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             </div>
             
             {/* Indicador de tipos de archivo aceptados */}
-            <div className="mt-2 flex items-center justify-center space-x-4 text-xs text-gray-400">
+            <div className="mt-2 flex items-center justify-start space-x-4 text-xs text-gray-400">
               <span className="flex items-center space-x-1">
                 <FileText className="h-3 w-3" />
-                <span>PDF, JPG, PNG, DOCX</span>
+                <span>Sube tus archivos PDF, JPG, PNG, DOCX (Máx. 20MB)</span>
               </span>
             </div>
           </div>
@@ -2554,7 +2718,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       {/* Panel de información extraída */}
       {showDataPanel && (
-        <Card className="w-80 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
+        <Card className="w-80 p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
           <CardContent className="flex-1 flex flex-col p-0 min-h-0">
             {/* Header del panel */}
             <div className="border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white px-4 py-3">
@@ -2563,7 +2727,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7"
+                  className="h-7 w-7 hover:bg-gray-200 hover:text-foreground"
                   onClick={() => setShowDataPanel(false)}
                 >
                   <EyeOff className="h-4 w-4" />
@@ -2909,17 +3073,33 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         </div>
       )}
 
-      {/* Botón para mostrar panel si está oculto */}
-      {!showDataPanel && (
-        <Button
-          variant="outline"
-          size="icon"
-          className="fixed right-6 top-1/2 -translate-y-1/2 z-10 shadow-lg"
-          onClick={() => setShowDataPanel(true)}
-        >
-          <Eye className="h-4 w-4" />
-        </Button>
-      )}
+      {/* Dialog de confirmación para nuevo chat */}
+      <Dialog open={showNewChatDialog} onOpenChange={setShowNewChatDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>¿Iniciar un nuevo chat?</DialogTitle>
+            <DialogDescription>
+              Se perderá todo el progreso actual del chat. Esta acción no se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="cursor-pointer bg-white border hover:bg-gray-100 text-black hover:text-black py-2.5"
+              onClick={() => setShowNewChatDialog(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="default"
+              onClick={handleConfirmNewChat}
+              className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white font-bold py-2.5"
+            >
+              Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
