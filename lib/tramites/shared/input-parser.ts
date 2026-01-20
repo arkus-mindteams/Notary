@@ -1078,6 +1078,67 @@ export class InputParser {
       }
     }
 
+    // Fallback flexible para typos/respuestas cortas basadas en intención explícita
+    const normalizedForFallback = this.normalizeCommonTypos(normalizedInput)
+    const addFallbackCommand = (type: string, payload: any) => {
+      commands.push({ type, timestamp: new Date(), payload })
+    }
+
+    if (context?._last_question_intent === 'payment_method') {
+      if (/\bcontado\b/.test(normalizedForFallback)) {
+        addFallbackCommand('payment_method', { method: 'contado' })
+      } else if (/\bcredito\b/.test(normalizedForFallback)) {
+        addFallbackCommand('payment_method', { method: 'credito' })
+      }
+    }
+
+    if (context?._last_question_intent === 'estado_civil') {
+      if (/^(solter|casad|divorc|viud)/.test(normalizedForFallback)) {
+        addFallbackCommand('estado_civil', {
+          buyerIndex: 0,
+          estadoCivil: ValidationService.normalizeEstadoCivil(normalizedForFallback)
+        })
+      }
+    }
+
+    if (context?._last_question_intent === 'encumbrance') {
+      if (/\b(no|sin|libre)\b/.test(normalizedForFallback)) {
+        addFallbackCommand('encumbrance', { exists: false })
+      } else if (/\b(tiene|hay|existe)\b/.test(normalizedForFallback) && /\b(gravamen|hipoteca|embargo)\b/.test(normalizedForFallback)) {
+        addFallbackCommand('encumbrance', { exists: true })
+      }
+    }
+
+    if (context?._last_question_intent === 'encumbrance_cancellation') {
+      const saysNoCancel = /\bno\b.*\bcancel/.test(normalizedForFallback) || /\bno\s+se\s+cancel/.test(normalizedForFallback)
+      if (/\bcancel/.test(normalizedForFallback)) {
+        addFallbackCommand('encumbrance', { exists: true, cancellationConfirmed: saysNoCancel ? true : false })
+      }
+    }
+
+    if (context?._last_question_intent === 'credit_institution') {
+      const inst = this.extractInstitutionFreeform(normalizedInput)
+      if (inst) {
+        addFallbackCommand('credit_institution', { creditIndex: 0, institution: inst })
+      }
+    }
+
+    if (context?._last_question_intent === 'gravamen_acreedor') {
+      const inst = this.extractInstitutionFreeform(normalizedInput)
+      if (inst) {
+        addFallbackCommand('gravamen_acreedor', { institucion: inst })
+      }
+    }
+
+    if (commands.length > 0) {
+      return {
+        captured: true,
+        captureRule: null,
+        data: { __commands: commands },
+        needsLLM: false
+      }
+    }
+
     // Si no hay captura determinista, usar LLM
     return {
       captured: false,
@@ -1204,10 +1265,27 @@ export class InputParser {
       .replace(/\bcredti?o\b/g, 'credito')
       .replace(/\bcrediot\b/g, 'credito')
       .replace(/\bcredito+(\b|$)/g, 'credito')
+      .replace(/\bcreidto\b/g, 'credito')
       // contado
       .replace(/\bcontdao\b/g, 'contado')
       .replace(/\bcontdao\b/g, 'contado')
       .replace(/\bcontaod\b/g, 'contado')
+      // acreditado / coacreditado
+      .replace(/\bacreditdao\b/g, 'acreditado')
+      .replace(/\baco?reditado\b/g, 'acreditado')
+      .replace(/\bcoacreditdao\b/g, 'coacreditado')
+      .replace(/\bcoacredtiado\b/g, 'coacreditado')
+      // cónyuge
+      .replace(/\bconygu?e\b/g, 'conyuge')
+      .replace(/\bconugye\b/g, 'conyuge')
+      // estado civil
+      .replace(/\bcasdo\b/g, 'casado')
+      .replace(/\bcasda\b/g, 'casada')
+      .replace(/\bsolt?ero\b/g, 'soltero')
+      .replace(/\bsolt?era\b/g, 'soltera')
+      .replace(/\bdivorciado\b/g, 'divorciado')
+      .replace(/\bdivorciada\b/g, 'divorciada')
+      .replace(/\bviud[oa]\b/g, 'viudo')
       // gravamen/hipoteca
       .replace(/\bgravmen\b/g, 'gravamen')
       .replace(/\bgravamenes\b/g, 'gravamenes')

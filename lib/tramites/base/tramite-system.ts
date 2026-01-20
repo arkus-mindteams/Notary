@@ -3,10 +3,18 @@
  * No conoce detalles de trámites específicos, solo coordina plugins
  */
 
-import { TramitePlugin, Command, TramiteResponse, HandlerResult } from './types'
+import { TramitePlugin, Command, TramiteResponse, HandlerResult, LastQuestionIntent } from './types'
 import { FlexibleStateMachine } from './flexible-state-machine'
 import { CommandRouter } from './command-router'
 import { LLMService } from '../shared/services/llm-service'
+import { diffContext } from '../shared/context-diff'
+import { getPreavisoTransitionInfo } from '../plugins/preaviso/preaviso-transitions'
+import { ToolContext } from './tools'
+import {
+  getPreavisoAllowedToolIdsForState,
+  getPreavisoToolByCommandType,
+  getPreavisoToolRegistry
+} from '../plugins/preaviso/preaviso-tools'
 
 export class TramiteSystem {
   private plugins: Map<string, TramitePlugin> = new Map()
@@ -79,15 +87,20 @@ export class TramiteSystem {
 
     // 4. Si no hay captura determinista, usar LLM para interpretar (FLEXIBLE)
     if (!interpretation.captured || interpretation.needsLLM) {
+      const toolState = this.stateMachine.determineCurrentState(plugin, updatedContext)
+      const allowedToolIds = tramiteId === 'preaviso' ? getPreavisoAllowedToolIdsForState(toolState.id) : []
+      const toolContext = this.buildToolContext(context)
       const llmResult = await this.interpretWithLLM(
         userInput,
         updatedContext,
         plugin,
-        conversationHistory
+        conversationHistory,
+        { allowedToolIds, toolContext }
       )
       
       if (llmResult.commands && llmResult.commands.length > 0) {
-        commands.push(...llmResult.commands)
+        const filtered = this.filterCommandsByAllowedTools(llmResult.commands, allowedToolIds)
+        commands.push(...filtered)
       }
       
       // Actualizar contexto con lo que LLM extrajo
@@ -170,25 +183,23 @@ export class TramiteSystem {
       }
     }
 
-    // 5. Ejecutar comandos con handlers
-    for (const command of commands) {
-      try {
-        const result = await this.commandRouter.route(command, updatedContext)
-        updatedContext = { ...updatedContext, ...result.updatedContext }
-      } catch (error: any) {
-        console.error(`[TramiteSystem] Error procesando comando ${command.type}:`, error)
-        // Continuar con otros comandos aunque uno falle
-      }
-    }
+    // 5. Ejecutar comandos con handlers (con recuperación y rollback)
+    const commandExecution = await this.executeCommandsWithRecovery(commands, updatedContext)
+    updatedContext = commandExecution.updatedContext
 
     // 6. Recalcular estado (FLEXIBLE - puede saltar estados)
     const newState = this.stateMachine.determineCurrentState(plugin, updatedContext)
+    const prevStateId = context?._state_meta?.current_state || null
+    const transitionInfo =
+      tramiteId === 'preaviso'
+        ? getPreavisoTransitionInfo(prevStateId, newState.id, updatedContext)
+        : { from: prevStateId, to: newState.id, allowed: true, reason: 'default' }
 
     // 7. Validar
     const validation = plugin.validate(updatedContext)
 
     // 8. Generar respuesta (FLEXIBLE - LLM genera pregunta natural)
-    const response = await plugin.generateQuestion(newState, updatedContext, conversationHistory)
+    let response = await plugin.generateQuestion(newState, updatedContext, conversationHistory)
 
     // 8.1. Inferir intención de documento del mensaje del asistente
     // Si el asistente pregunta por el cónyuge, establecer _document_intent para guiar el procesamiento de documentos
@@ -215,7 +226,7 @@ export class TramiteSystem {
     }
 
     // 8.2. Inferir la intención de la última pregunta (para respuestas cortas y context-aware parsing)
-    const inferLastQuestionIntent = (): string | null => {
+    const inferLastQuestionIntent = (): LastQuestionIntent | null => {
       if (tramiteId !== 'preaviso') return null
 
       // Si ya está todo completo, no hay intención pendiente
@@ -282,14 +293,43 @@ export class TramiteSystem {
     }
 
     const lastIntent = inferLastQuestionIntent()
+
+    // 8.3. Guardrail anti-loop: si el usuario repite sin avanzar, forzar mensaje guiado
+    const prevCounts = (context?._state_meta?.reask_counts || {}) as Record<string, number>
+    const reaskCounts = { ...prevCounts }
+    if (prevStateId === newState.id) {
+      reaskCounts[newState.id] = (reaskCounts[newState.id] || 0) + 1
+    } else {
+      reaskCounts[newState.id] = 0
+    }
+    const loopLimit = 3
+    const loopGuardTriggered = reaskCounts[newState.id] >= loopLimit
+    if (loopGuardTriggered) {
+      response = this.buildLoopGuardMessage(newState.id, updatedContext) || response
+    }
+
     updatedContext = {
       ...updatedContext,
-      _last_question_intent: lastIntent
+      _last_question_intent: lastIntent,
+      _state_meta: {
+        current_state: newState.id,
+        previous_state: prevStateId,
+        last_transition: transitionInfo,
+        reask_counts: reaskCounts,
+        loop_guard_triggered: loopGuardTriggered,
+        updated_at: new Date().toISOString()
+      }
     }
 
     // 9. Obtener estados completados y faltantes
     const completed = this.stateMachine.getCompletedStates(plugin, updatedContext)
     const missing = this.stateMachine.getMissingStates(plugin, updatedContext)
+
+    const contextDelta = diffContext(context || {}, updatedContext || {})
+    const allowedToolsForState =
+      tramiteId === 'preaviso'
+        ? getPreavisoAllowedToolIdsForState(newState.id)
+        : []
 
     return {
       message: response,
@@ -300,7 +340,18 @@ export class TramiteSystem {
         missing,
         validation
       },
-      commands: commands.map(c => c.type) // Para debugging
+      commands: commands.map(c => c.type), // Para debugging
+      meta: {
+        transition: transitionInfo,
+        command_errors: commandExecution.errors,
+        context_diff: contextDelta,
+        allowed_tools: allowedToolsForState,
+        tool_context: {
+          state_meta: updatedContext?._state_meta || null,
+          transition_info: transitionInfo,
+          context_diff: contextDelta
+        }
+      }
     }
   }
 
@@ -312,7 +363,7 @@ export class TramiteSystem {
     file: File,
     documentType: string,
     context: any
-  ): Promise<{ data: any; commands: Command[]; extractedData?: any }> {
+  ): Promise<{ data: any; commands: Command[]; extractedData?: any; meta?: any }> {
     const plugin = this.getPlugin(tramiteId)
     if (!plugin) {
       throw new Error(`Trámite ${tramiteId} no encontrado`)
@@ -322,11 +373,26 @@ export class TramiteSystem {
     if (plugin.processDocument) {
       const result = await plugin.processDocument(file, documentType, context)
       const commands = result.commands || []
+      const toolMode =
+        (context?._state_meta?.document_tool_mode as 'strict' | 'flexible' | undefined) ||
+        'flexible'
+      const toolRegistry = tramiteId === 'preaviso' ? getPreavisoToolRegistry() : []
+      const allToolIds = toolRegistry.map((t) => t.id)
+      const toolState = this.stateMachine.determineCurrentState(plugin, context || {})
+      const allowedToolIds =
+        toolMode === 'strict'
+          ? (tramiteId === 'preaviso' ? getPreavisoAllowedToolIdsForState(toolState.id) : [])
+          : allToolIds
+      const filteredCommands = this.filterCommandsByAllowedTools(commands, allowedToolIds)
+      const droppedCommands = commands
+        .filter((c) => !filteredCommands.includes(c))
+        .map((c) => c.type)
       const extractedData = result.extractedData
       
       // Ejecutar comandos
       let updatedContext = { ...context }
-      for (const command of commands) {
+      const commandErrors: any[] = []
+      for (const command of filteredCommands) {
         try {
           console.log(`[TramiteSystem] Ejecutando comando: ${command.type}`, command.payload)
           const handlerResult = await this.commandRouter.route(command, updatedContext)
@@ -404,6 +470,10 @@ export class TramiteSystem {
           })
         } catch (error: any) {
           console.error(`[TramiteSystem] Error procesando comando ${command.type}:`, error)
+          commandErrors.push({
+            command: command.type,
+            message: error?.message || String(error)
+          })
         }
       }
 
@@ -414,8 +484,15 @@ export class TramiteSystem {
 
       return {
         data: updatedContext,
-        commands,
-        extractedData
+        commands: filteredCommands,
+        extractedData,
+        meta: {
+          command_errors: commandErrors,
+          context_diff: diffContext(context || {}, updatedContext || {}),
+          allowed_tools: allowedToolIds,
+          dropped_commands: droppedCommands,
+          tool_mode: toolMode
+        }
       }
     }
 
@@ -463,6 +540,97 @@ export class TramiteSystem {
     } as Command
   }
 
+  private async executeCommandsWithRecovery(
+    commands: Command[],
+    baseContext: any
+  ): Promise<{ updatedContext: any; errors: any[] }> {
+    let updatedContext = { ...baseContext }
+    const errors: any[] = []
+    const maxRetries = 1
+
+    for (const command of commands) {
+      const snapshot = this.safeClone(updatedContext)
+      let attempt = 0
+      let success = false
+      while (attempt <= maxRetries) {
+        try {
+          const result = await this.commandRouter.route(command, updatedContext)
+          updatedContext = { ...updatedContext, ...result.updatedContext }
+          success = true
+          break
+        } catch (error: any) {
+          attempt += 1
+          if (attempt > maxRetries) {
+            errors.push({
+              command: command.type,
+              message: error?.message || String(error),
+              retry_count: attempt - 1
+            })
+            updatedContext = snapshot
+          }
+        }
+      }
+      if (!success) {
+        console.warn('[TramiteSystem] comando fallido con rollback', { command: command.type })
+      }
+    }
+
+    return { updatedContext, errors }
+  }
+
+  private safeClone(value: any): any {
+    try {
+      return JSON.parse(JSON.stringify(value))
+    } catch {
+      return { ...value }
+    }
+  }
+
+  private filterCommandsByAllowedTools(commands: Command[], allowedToolIds: string[]): Command[] {
+    if (!allowedToolIds || allowedToolIds.length === 0) return commands
+    return commands.filter((command) => {
+      const tool = getPreavisoToolByCommandType(command.type)
+      if (!tool) return false
+      return allowedToolIds.includes(tool.id)
+    })
+  }
+
+  private buildToolContext(context: any): ToolContext {
+    return {
+      state_meta: context?._state_meta || null,
+      transition_info: context?._state_meta?.last_transition || null,
+      context_diff: null
+    }
+  }
+
+  private buildLoopGuardMessage(stateId: string, context: any): string | null {
+    if (stateId === 'ESTADO_2') {
+      return 'Para avanzar necesito datos del inmueble: folio real, partida(s) y dirección (calle y municipio). Ejemplo: “Folio 1234567, Partida 7654321, Calle X 123, Municipio Monterrey”.'
+    }
+    if (stateId === 'ESTADO_3') {
+      return 'Para avanzar necesito el/los vendedor(es) con nombre completo y tipo de persona (física o moral). Ejemplo: “Vendedor: Juan Pérez, persona física”.'
+    }
+    if (stateId === 'ESTADO_1') {
+      return 'Para avanzar necesito confirmar la forma de pago: ¿contado o crédito? Ejemplo: “Será crédito”.'
+    }
+    if (stateId === 'ESTADO_4') {
+      return 'Para avanzar necesito el nombre del comprador, tipo de persona y su estado civil. Ejemplo: “Comprador: Ana López, persona física, casada”.'
+    }
+    if (stateId === 'ESTADO_4B') {
+      return 'Para avanzar necesito el nombre completo del cónyuge. Ejemplo: “Cónyuge: María García”.'
+    }
+    if (stateId === 'ESTADO_5') {
+      return 'Para avanzar necesito la institución del crédito y los participantes (acreditado/coacreditado). Ejemplo: “Crédito BBVA; acreditado el comprador y coacreditada su cónyuge”.'
+    }
+    if (stateId === 'ESTADO_6') {
+      return 'Para avanzar necesito confirmar si el inmueble tiene gravamen/hipoteca. Ejemplo: “Sí, tiene hipoteca”.'
+    }
+    if (stateId === 'ESTADO_6B') {
+      return 'Para avanzar necesito confirmar si la hipoteca/gravamen se cancelará. Ejemplo: “Sí, se cancelará con la compraventa”.'
+    }
+    return null
+  }
+
   /**
    * Interpreta con LLM (para máxima flexibilidad)
    */
@@ -470,14 +638,24 @@ export class TramiteSystem {
     input: string,
     context: any,
     plugin: TramitePlugin,
-    history: any[]
+    history: any[],
+    opts: { allowedToolIds: string[]; toolContext: ToolContext }
   ): Promise<{ commands?: Command[]; updatedContext?: any }> {
+    const toolRegistry = plugin.id === 'preaviso' ? getPreavisoToolRegistry() : []
+    const allowedTools = toolRegistry.filter((t) => opts.allowedToolIds.includes(t.id))
+    const allowedToolsText = allowedTools.map((t) => `- ${t.id}: ${t.description}`).join('\n') || '- (ninguna)'
     // LLM interpreta input incluso si está fuera de orden
     const prompt = `
       Eres un asistente notarial ayudando con un ${plugin.name}.
       
       Contexto actual:
       ${JSON.stringify(context, null, 2)}
+
+      Tool Context (puerto único):
+      ${JSON.stringify(opts.toolContext, null, 2)}
+
+      Tools permitidas en este estado:
+      ${allowedToolsText}
       
       Historial de conversación (últimos 3 mensajes):
       ${history.slice(-3).map((m: any) => `${m.role}: ${m.content}`).join('\n')}
@@ -491,6 +669,7 @@ export class TramiteSystem {
       2. Si el usuario proporciona información de múltiples campos, captura todo
       3. Si el usuario corrige información previa, actualízala
       4. Si el usuario proporciona información implícita, infiérela (pero sé conservador)
+      5. No intentes capturar datos fuera de las tools permitidas listadas arriba
       
       Emite <DATA_UPDATE> con la información extraída en formato JSON v1.4.
       
@@ -544,6 +723,7 @@ export class TramiteSystem {
           commands.push({
             type: 'buyer_name',
             timestamp: new Date(),
+            source: 'llm',
             payload: {
               buyerIndex: 0,
               name: comprador.persona_fisica.nombre,
@@ -558,6 +738,7 @@ export class TramiteSystem {
           commands.push({
             type: 'estado_civil',
             timestamp: new Date(),
+            source: 'llm',
             payload: {
               buyerIndex: 0,
               estadoCivil: comprador.persona_fisica.estado_civil
@@ -574,6 +755,7 @@ export class TramiteSystem {
           commands.push({
             type: 'titular_registral',
             timestamp: new Date(),
+            source: 'llm',
             payload: {
               name: nombre,
               inferredTipoPersona: vendedor.tipo_persona,
@@ -590,6 +772,7 @@ export class TramiteSystem {
           commands.push({
             type: 'credit_institution',
             timestamp: new Date(),
+            source: 'llm',
             payload: {
               creditIndex: 0,
               institution: credito.institucion

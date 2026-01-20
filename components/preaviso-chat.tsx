@@ -30,6 +30,7 @@ import {
   FolderOpen
 } from 'lucide-react'
 import { PreavisoExportOptions } from './preaviso-export-options'
+import type { LastQuestionIntent } from '@/lib/tramites/base/types'
 
 export interface ChatMessage {
   id: string
@@ -138,7 +139,7 @@ export interface PreavisoData {
   tipoOperacion: 'compraventa' | null
   // Runtime (solo control de flujo; no forma parte del documento final)
   _document_intent?: 'conyuge' | null
-  _last_question_intent?: string | null
+  _last_question_intent?: LastQuestionIntent | null
   
   // Arrays según v1.4
   vendedores: VendedorElement[]

@@ -113,6 +113,7 @@ export async function POST(req: Request) {
           user_agent: req.headers.get('user-agent'),
           ts: new Date().toISOString(),
           tramite_id_raw: typeof tramiteIdRaw === 'string' ? tramiteIdRaw : null,
+          ...(result.meta || {})
         }
         // No siempre tenemos el arreglo completo de messages aquí; guardamos meta + snapshot del contexto.
         await PreavisoConversationLogService.upsert({
@@ -122,7 +123,7 @@ export async function POST(req: Request) {
           // IMPORTANT: no sobrescribir messages existentes
           lastUserMessage: `He subido el siguiente documento: ${file?.name || ''}`.trim(),
           lastAssistantMessage: 'Documento procesado correctamente',
-          context,
+          context: result.data || context,
           state: { commands: result.commands?.map((c: any) => c.type) || [] },
           meta,
         })

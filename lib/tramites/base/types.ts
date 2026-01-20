@@ -10,6 +10,7 @@ export interface Command {
   type: string
   timestamp: Date
   payload: Record<string, any>
+  source?: 'deterministic' | 'llm' | 'document'
 }
 
 // Comandos específicos de Preaviso
@@ -103,6 +104,24 @@ export interface EncumbranceCommand extends Command {
   }
 }
 
+export type LastQuestionIntent =
+  | 'payment_method'
+  | 'credit_institution'
+  | 'credit_participants'
+  | 'buyer_name'
+  | 'buyer_tipo_persona'
+  | 'estado_civil'
+  | 'conyuge_name'
+  | 'folio_real'
+  | 'partidas'
+  | 'inmueble_direccion'
+  | 'seller_name'
+  | 'seller_tipo_persona'
+  | 'encumbrance'
+  | 'gravamen_acreedor'
+  | 'encumbrance_cancellation'
+  | 'titular_registral'
+
 export interface InmuebleManualCommand extends Command {
   type: 'inmueble_manual'
   payload: {
@@ -154,8 +173,8 @@ export interface StateDefinition {
 export interface CaptureRule {
   name: string
   pattern: RegExp
-  condition: (input: string, context: any) => boolean
-  extract: (input: string, context: any) => any
+  condition: (input: string, context: any, lastAssistantMessage?: string) => boolean
+  extract: (input: string, context: any, lastAssistantMessage?: string) => any
   handler: string // Nombre del handler
 }
 
@@ -205,4 +224,5 @@ export interface TramiteResponse {
     validation: ValidationResult
   }
   commands?: string[] // Para debugging
+  meta?: Record<string, any>
 }

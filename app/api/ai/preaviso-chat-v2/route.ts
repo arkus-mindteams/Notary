@@ -5,6 +5,7 @@
 
 import { NextResponse } from 'next/server'
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
+import { getPreavisoTransitionRules } from '@/lib/tramites/plugins/preaviso/preaviso-transitions'
 import { PreavisoConversationLogService } from '@/lib/services/preaviso-conversation-log-service'
 
 export async function POST(req: Request) {
@@ -97,6 +98,7 @@ export async function POST(req: Request) {
           user_agent: req.headers.get('user-agent'),
           ts: new Date().toISOString(),
           tramite_id_raw: typeof tramiteIdFromBody === 'string' ? tramiteIdFromBody : null,
+          ...(result.meta || {})
         }
         await PreavisoConversationLogService.upsert({
           conversationId: String(conversationId),
@@ -105,7 +107,7 @@ export async function POST(req: Request) {
           messages: nextMessages as any,
           lastUserMessage,
           lastAssistantMessage,
-          context,
+          context: result.data,
           state: result.state,
           meta,
         })
@@ -116,6 +118,8 @@ export async function POST(req: Request) {
 
     // Retornar respuesta (formato compatible con frontend)
     // El frontend espera: { message(s), data, state }
+    const transitionRules = pluginId === 'preaviso' ? getPreavisoTransitionRules() : []
+
     return NextResponse.json({
       message: result.message, // String único
       messages: [result.message], // Array para compatibilidad
@@ -136,9 +140,12 @@ export async function POST(req: Request) {
         },
         required_missing: result.state.missing,
         blocking_reasons: result.state.validation.errors,
-        allowed_actions: []
+        allowed_actions: result.meta?.allowed_tools || [],
+        transition_info: result.meta?.transition || null,
+        transition_rules: transitionRules
       },
-      commands: result.commands // Para debugging
+      commands: result.commands, // Para debugging
+      meta: result.meta || null
     })
 
   } catch (error: any) {
