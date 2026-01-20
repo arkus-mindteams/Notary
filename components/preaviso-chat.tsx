@@ -2813,8 +2813,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                       <div className="mb-2">
                         <p className="text-xs text-gray-500 font-medium">Archivos pendientes (se procesarán al enviar):</p>
                       </div>
-                      <div className="w-full overflow-auto">
-                        <div className="flex gap-3 pb-2">
+                      <div className="w-full overflow-y-auto overflow-x-hidden" style={{ maxHeight: '300px', width: '100%' }}>
+                        <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-3 pb-2" style={{ width: '100%' }}>
                           {pendingFiles.map((file, index) => {
                             const fileUrl = URL.createObjectURL(file)
                             const isImage = file.type.startsWith('image/')
@@ -2888,12 +2888,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                       multiple
                       accept=".pdf,.jpg,.jpeg,.png,.docx"
                       onChange={(e) => {
-                        if (e.target.files && e.target.files.length > 0) {
+                        const files = e.target.files
+                        if (files && files.length > 0) {
                           // Solo agregar a pendientes, no procesar aún
-                          setPendingFiles(prev => [...prev, ...Array.from(e.target.files!)])
-                          // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
-                          e.target.value = ''
+                          setPendingFiles(prev => [...prev, ...Array.from(files)])
                         }
+                        // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
+                        // Usar setTimeout para asegurar que se resetee después de procesar los archivos
+                        setTimeout(() => {
+                          if (e.target) {
+                            e.target.value = ''
+                          }
+                        }, 0)
                       }}
                       className="hidden"
                     />
@@ -2915,7 +2921,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     
                     {/* Botón de adjuntar archivos dentro del input - izquierda */}
                     <Button
-                      onClick={() => fileInputRef.current?.click()}
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        // Asegurar que el input esté reseteado antes de abrir el diálogo
+                        if (fileInputRef.current) {
+                          fileInputRef.current.value = ''
+                          fileInputRef.current.click()
+                        }
+                      }}
                       variant="ghost"
                       size="icon"
                       className="absolute left-2 bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-gray-600 hover:text-blue-600 transition-colors"
