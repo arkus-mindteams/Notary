@@ -28,7 +28,8 @@ import {
   Eye,
   EyeOff,
   FolderOpen,
-  MessageSquarePlus
+  MessageSquarePlus,
+  ArrowUp
 } from 'lucide-react'
 import { PreavisoExportOptions } from './preaviso-export-options'
 import {
@@ -2460,7 +2461,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3">
                 <div className="relative group">
-                  <div className="w-12 h-12 rounded-2xl overflow-hidden bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-600 flex items-center justify-center shadow-lg ring-2 ring-blue-100 group-hover:ring-blue-200 transition-all">
+                  <div className="w-12 h-12 rounded-2xl overflow-hidden bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-600 flex items-center justify-center shadow-lg ring-2 ring-blue-100  transition-all">
                       <Image
                         src="/ai-img.png"
                         alt="Asistente Legal"
@@ -2525,7 +2526,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} group`}
                 >
                   <div
-                    className={`flex items-end space-x-2 max-w-[80%] ${
+                    className={`flex items-end space-x-2 max-w-[60ch] ${
                       message.role === 'user' ? 'flex-row-reverse space-x-reverse' : ''
                     }`}
                   >
@@ -2544,9 +2545,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     
                     {/* Mensaje moderno */}
                     <div
-                      className={`rounded-2xl px-4 py-2.5 ${
+                      className={`rounded-2xl px-4 py-2.5 max-w-full ${
                         message.role === 'user'
-                          ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg shadow-blue-500/20'
+                          ? 'bg-gray-800 text-white shadow-lg'
                           : 'bg-white text-gray-900 shadow-sm border border-gray-100'
                       }`}
                     >
@@ -2561,7 +2562,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                         }`}>
                           {message.attachments.map((file, idx) => (
                             <div key={idx} className={`flex items-center space-x-2 text-xs ${
-                              message.role === 'user' ? 'text-blue-50' : 'text-gray-600'
+                              message.role === 'user' ? 'text-gray-200' : 'text-gray-600'
                             }`}>
                               <FileCheck className="h-3.5 w-3.5" />
                               <span className="truncate">{file.name}</span>
@@ -2572,7 +2573,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                       
                       {/* Timestamp moderno */}
                       <p className={`text-[10px] mt-1.5 ${
-                        message.role === 'user' ? 'text-blue-100' : 'text-gray-400'
+                        message.role === 'user' ? 'text-gray-300' : 'text-gray-400'
                       }`}>
                         {message.timestamp.toLocaleTimeString('es-MX', { 
                           hour: '2-digit', 
@@ -2645,28 +2646,98 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
           {/* Input moderno */}
           <div className="border-t border-gray-200 bg-white px-4 py-2.5">
-            <div className="flex items-end space-x-2">
-              {/* Botón de adjuntar archivos - estilo moderno */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept=".pdf,.jpg,.jpeg,.png,.docx"
-                onChange={(e) => handleFileUpload(e.target.files)}
-                className="hidden"
-              />
-              <Button
-                onClick={() => fileInputRef.current?.click()}
-                variant="ghost"
-                size="icon"
-                className="h-10 w-10 rounded-xl hover:bg-gray-100 text-gray-600 hover:text-blue-600 transition-colors flex-shrink-0"
-                title="Adjuntar documentos"
-              >
-                <Upload className="h-5 w-5" />
-              </Button>
-
-              {/* Input de texto moderno */}
+            <div className="flex items-end">
+              {/* Input de texto moderno con iconos dentro */}
               <div className="flex-1 relative">
+
+                  {/* Panel de documentos debajo del chat y panel de información */}
+                  {uploadedDocuments.length > 0 && (
+                    <div className="flex-shrink-0">
+                      {/* Lista de documentos horizontal con diseño moderno */}
+                      <div className="p-4">
+                        <ScrollArea className="w-full">
+                          <div className="flex gap-3 pb-2">
+                            {uploadedDocuments.map((doc) => {
+                              const fileUrl = URL.createObjectURL(doc.file)
+                              const isImage = doc.type.startsWith('image/')
+                              const isPDF = doc.type === 'application/pdf' || doc.name.toLowerCase().endsWith('.pdf')
+                              
+                              return (
+                                <div
+                                  key={doc.id}
+                                  className="group relative flex-shrink-0 w-24 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-lg transition-all duration-200 overflow-hidden"
+                                >
+                                  {/* Preview */}
+                                  <div className="relative h-20 bg-gradient-to-br from-gray-50 to-gray-100">
+                                    {isImage ? (
+                                      <img
+                                        src={fileUrl}
+                                        alt={doc.name}
+                                        className="w-full h-full object-cover"
+                                      />
+                                    ) : isPDF ? (
+                                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
+                                        <FileText className="h-6 w-6 text-red-500" />
+                                      </div>
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
+                                        <FileText className="h-6 w-6 text-blue-500" />
+                                      </div>
+                                    )}
+                                    
+                                    {/* Overlay con estado */}
+                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors" />
+                                    
+                                    {/* Badge de estado */}
+                                    {doc.processed ? (
+                                      doc.error ? (
+                                        <div className="absolute top-1.5 right-1.5 bg-red-500 rounded-full p-1 shadow-lg">
+                                          <AlertCircle className="h-2.5 w-2.5 text-white" />
+                                        </div>
+                                      ) : (
+                                        <div className="absolute top-1.5 right-1.5 bg-green-500 rounded-full p-1 shadow-lg">
+                                          <CheckCircle2 className="h-2.5 w-2.5 text-white" />
+                                        </div>
+                                      )
+                                    ) : (
+                                      <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
+                                        <Loader2 className="h-2.5 w-2.5 text-white animate-spin" />
+                                      </div>
+                                    )}
+                                  </div>
+                                  
+                                  {/* Información */}
+                                  <div className="p-2 bg-white">
+                                    <p className="text-xs font-medium text-gray-900 truncate mb-0.5" title={doc.name}>
+                                      {doc.name}
+                                    </p>
+                                    <p className="text-xs text-gray-400">
+                                      {(doc.size / 1024 / 1024).toFixed(2)} MB
+                                    </p>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </ScrollArea>
+                      </div>
+                    </div>
+                  )}
+          
+
+
+
+
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept=".pdf,.jpg,.jpeg,.png,.docx"
+                  onChange={(e) => handleFileUpload(e.target.files)}
+                  className="hidden"
+                />
+                
                 <Textarea
                   ref={textInputRef}
                   value={input}
@@ -2678,31 +2749,43 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     }
                   }}
                   placeholder="Escribe tu mensaje..."
-                  className="min-h-[44px] max-h-[120px] resize-none border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-2xl bg-gray-50 focus:bg-white transition-all pr-12"
+                  className="min-h-[44px] max-h-[120px] resize-none border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-2xl bg-gray-50 focus:bg-white transition-all pl-12 pr-12"
                   disabled={isProcessing}
                 />
+                
+                {/* Botón de adjuntar archivos dentro del input - izquierda */}
+                <Button
+                  onClick={() => fileInputRef.current?.click()}
+                  variant="ghost"
+                  size="icon"
+                  className="absolute left-2 bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-gray-600 hover:text-blue-600 transition-colors"
+                  title="Adjuntar documentos"
+                >
+                  <Upload className="h-4 w-4" />
+                </Button>
+
+                {/* Botón de enviar dentro del input - derecha */}
+                <Button
+                  onClick={handleSend}
+                  disabled={!input.trim() || isProcessing}
+                  className="absolute right-2 bg-transparent bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-black disabled:opacity-50 disabled:cursor-not-allowed "
+                  size="icon"
+                  title="Enviar mensaje"
+                >
+                  {isProcessing ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ArrowUp className="h-4 w-4" />
+                  )}
+                </Button>
+                
                 {/* Contador de caracteres o indicador */}
                 {input.length > 0 && (
-                  <div className="absolute bottom-2 right-3 text-xs text-gray-400">
+                  <div className="absolute bottom-2 right-12 text-xs text-gray-400">
                     {input.length}
                   </div>
                 )}
               </div>
-
-              {/* Botón de enviar moderno */}
-              <Button
-                onClick={handleSend}
-                disabled={!input.trim() || isProcessing}
-                className="h-10 w-10 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all flex-shrink-0"
-                size="icon"
-                title="Enviar mensaje"
-              >
-                {isProcessing ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Send className="h-5 w-5" />
-                )}
-              </Button>
             </div>
             
             {/* Indicador de tipos de archivo aceptados */}
@@ -2984,94 +3067,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       )}
       </div>
 
-      {/* Panel de documentos debajo del chat y panel de información */}
-      {uploadedDocuments.length > 0 && (
-        <div className="flex-shrink-0 bg-white rounded-lg border border-gray-200 shadow-sm">
-          {/* Header moderno */}
-          <div className="px-4 py-3 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
-                  <FileText className="h-4 w-4 text-blue-600" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-900">Documentos subidos</h4>
-                  <p className="text-xs text-gray-500">{uploadedDocuments.length} {uploadedDocuments.length === 1 ? 'documento' : 'documentos'}</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Lista de documentos horizontal con diseño moderno */}
-          <div className="p-4">
-            <ScrollArea className="w-full">
-              <div className="flex gap-3 pb-2">
-                {uploadedDocuments.map((doc) => {
-                  const fileUrl = URL.createObjectURL(doc.file)
-                  const isImage = doc.type.startsWith('image/')
-                  const isPDF = doc.type === 'application/pdf' || doc.name.toLowerCase().endsWith('.pdf')
-                  
-                  return (
-                    <div
-                      key={doc.id}
-                      className="group relative flex-shrink-0 w-24 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-lg transition-all duration-200 overflow-hidden"
-                    >
-                      {/* Preview */}
-                      <div className="relative h-20 bg-gradient-to-br from-gray-50 to-gray-100">
-                        {isImage ? (
-                          <img
-                            src={fileUrl}
-                            alt={doc.name}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : isPDF ? (
-                          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
-                            <FileText className="h-6 w-6 text-red-500" />
-                          </div>
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
-                            <FileText className="h-6 w-6 text-blue-500" />
-                          </div>
-                        )}
-                        
-                        {/* Overlay con estado */}
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors" />
-                        
-                        {/* Badge de estado */}
-                        {doc.processed ? (
-                          doc.error ? (
-                            <div className="absolute top-1.5 right-1.5 bg-red-500 rounded-full p-1 shadow-lg">
-                              <AlertCircle className="h-2.5 w-2.5 text-white" />
-                            </div>
-                          ) : (
-                            <div className="absolute top-1.5 right-1.5 bg-green-500 rounded-full p-1 shadow-lg">
-                              <CheckCircle2 className="h-2.5 w-2.5 text-white" />
-                            </div>
-                          )
-                        ) : (
-                          <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
-                            <Loader2 className="h-2.5 w-2.5 text-white animate-spin" />
-                          </div>
-                        )}
-                      </div>
-                      
-                      {/* Información */}
-                      <div className="p-2 bg-white">
-                        <p className="text-xs font-medium text-gray-900 truncate mb-0.5" title={doc.name}>
-                          {doc.name}
-                        </p>
-                        <p className="text-xs text-gray-400">
-                          {(doc.size / 1024 / 1024).toFixed(2)} MB
-                        </p>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </ScrollArea>
-          </div>
-        </div>
-      )}
+     
 
       {/* Dialog de confirmación para nuevo chat */}
       <Dialog open={showNewChatDialog} onOpenChange={setShowNewChatDialog}>
