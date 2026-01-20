@@ -17,33 +17,55 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [loginSuccess, setLoginSuccess] = useState(false)
   
-  const { login, session, isLoading: authLoading } = useAuth()
+  const { login, user, session, isLoading: authLoading } = useAuth()
   const router = useRouter()
 
-  // Si ya hay sesión activa, redirigir al dashboard
+  // Redirigir si el usuario ya está autenticado
   useEffect(() => {
-    if (!authLoading && session) {
-      router.push('/dashboard')
+    if (!authLoading && session && user) {
+      router.replace('/dashboard/deslinde')
     }
-  }, [session, authLoading, router])
+  }, [session, user, authLoading, router])
+
+  // Si el login fue exitoso pero después de 3 segundos no se cargó el usuario,
+  // redirigir de todas formas (el ProtectedRoute manejará la carga)
+  useEffect(() => {
+    if (loginSuccess && !user && session) {
+      const timeout = setTimeout(() => {
+        router.replace('/dashboard/deslinde')
+        setIsLoading(false)
+      }, 3000)
+      return () => clearTimeout(timeout)
+    }
+    // Si el usuario se carga, limpiar el estado de loginSuccess
+    if (loginSuccess && user) {
+      setLoginSuccess(false)
+      setIsLoading(false)
+    }
+  }, [loginSuccess, user, session, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setIsLoading(true)
+    setLoginSuccess(false)
 
     try {
       const success = await login(email, password)
-      if (success) {
-        router.push('/dashboard')
-      } else {
+      if (!success) {
         setError('Credenciales incorrectas. Por favor, verifique su email y contraseña.')
+        setIsLoading(false)
+      } else {
+        setLoginSuccess(true)
+        // Si el login es exitoso, el useEffect se encargará de la redirección
+        // cuando user y session estén disponibles
       }
     } catch (error) {
       setError('Error al iniciar sesión. Por favor, intente nuevamente.')
-    } finally {
       setIsLoading(false)
+      setLoginSuccess(false)
     }
   }
 
@@ -67,96 +89,139 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <Card className="w-full max-w-md shadow-lg">
-        <CardHeader className="text-center space-y-4 p-0">
-          {/* Logo */}
-          <div className="w-full h-48 relative">
-            <Image
-              src="/notaria-logo.jpeg"
-              alt="Logo Notaría"
-              fill
-              className="object-contain object-center"
-              priority
-            />
-          </div>
-        </CardHeader>
+    <div className="min-h-screen flex flex-col lg:flex-row">
+      {/* Mitad gris */}
+      <div className="hidden lg:flex lg:w-1/3 relative min-h-screen bg-gradient-to-br from-gray-800 via-gray-900 to-black">
+        {/* Logo esquina superior izquierda */}
+        <div className="absolute top-6 left-6">
+          <Image
+            src="/logo.png"
+            alt="Logo Notaría"
+            width={50}
+            height={50}
+            className="object-contain"
+            priority
+          />
+        </div>
+        <div className="flex items-center justify-center h-full px-6 text-end">
+          <Label className="text-2xl lg:text-4xl font-bold text-white mb-[400px]">
+            Sistema de Interpretación Notarial de Plantas Arquitectónicas
+          </Label>
+        </div>
+      </div>
 
-        <CardContent className="space-y-6">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Campo Email */}
-            <div className="space-y-2">
-              <Label htmlFor="email" className="text-sm font-medium text-gray-700">
-                Correo Electrónico
-              </Label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <Input
-                  id="email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="pl-10"
-                  placeholder="abogado@notaria.com"
-                  required
-                />
-              </div>
+      {/* Logo móvil - solo visible en pantallas pequeñas */}
+      <div className="lg:hidden absolute top-4 left-4 z-10">
+        <Image
+          src="/logo.png"
+          alt="Logo Notaría"
+          width={40}
+          height={40}
+          className="object-contain"
+          priority
+        />
+      </div>
+
+      <div className="w-full lg:w-2/3 flex bg-gray-900">
+        <Card className="w-full min-h-screen rounded-none lg:rounded-l-[30px] lg:rounded-r-none">
+          <CardHeader className="text-center p-0">
+            {/* Logo */}
+            <div className="w-full h-32 sm:h-40 md:h-48 relative items-center justify-center flex mt-6 sm:mt-8 md:mt-10">
+             <Image
+                src="/notaria-logo-black.png"
+                alt="Logo Notaría"
+                width={400}
+                height={150}
+                className="object-contain object-center w-[280px] sm:w-[320px] md:w-[400px]"
+                priority
+              />
             </div>
-
-            {/* Campo Contraseña */}
-            <div className="space-y-2">
-              <Label htmlFor="password" className="text-sm font-medium text-gray-700">
-                Contraseña
-              </Label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <Input
-                  id="password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="pl-10 pr-10"
-                  placeholder="********"
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
+            <div className="px-4 sm:px-6">
+              <CardTitle className="text-xl sm:text-2xl font-bold text-gray-800">
+                Bienvenido
+              </CardTitle>
+              <CardDescription className="text-sm sm:text-base text-gray-600">
+                Ingresa tus credenciales para acceder a tu cuenta
+              </CardDescription>
             </div>
+          </CardHeader>
 
-            {/* Error Message */}
-            {error && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
+          <CardContent className="space-y-6 px-4 sm:px-8 md:px-14 pt-6 sm:pt-8 pb-8">
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {/* Campo Email */}
+              <div className="space-y-2">
+                <Label htmlFor="email" className="text-sm font-medium text-gray-700">
+                  Correo electrónico
+                </Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Input
+                    id="email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="pl-10 h-11 sm:h-12"
+                    placeholder="abogado@notaria.com"
+                    required
+                  />
+                </div>
+              </div>
 
-            {/* Botón de Login */}
-            <Button
-              type="submit"
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5"
-              disabled={isLoading}
-            >
-              {isLoading ? 'Iniciando sesión...' : 'Iniciar Sesión'}
-            </Button>
-          </form>
+              {/* Campo Contraseña */}
+              <div className="space-y-2">
+                <Label htmlFor="password" className="text-sm font-medium text-gray-700">
+                  Contraseña
+                </Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="pl-10 pr-10 h-11 sm:h-12"
+                    placeholder="********"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
 
-          {/* Enlace de recuperación */}
-          <div className="text-center">
-            <a
-              href="#"
-              className="text-sm text-blue-600 hover:text-blue-800 hover:underline"
-            >
-              ¿Olvidó su contraseña?
-            </a>
-          </div>
-        </CardContent>
-      </Card>
+              {/* Error Message */}
+              {error && (
+                <Alert variant="destructive">
+                  <AlertDescription className="text-sm">{error}</AlertDescription>
+                </Alert>
+              )}
+
+              {/* Botón de Login */}
+              <Button
+                type="submit"
+                className="w-full h-11 sm:h-12 bg-gray-800 hover:bg-gray-900 text-white font-bold py-2.5 text-sm sm:text-base"
+                disabled={isLoading}
+              >
+                {isLoading ? 'Iniciando sesión...' : 'Iniciar Sesión'}
+              </Button>
+            </form>
+
+            {/* Enlace de recuperación */}
+             {/* <div className="text-center">
+              <a
+                href="#"
+                className="text-sm text-gray-800 hover:text-gray-900 hover:underline"
+              >
+                ¿Olvidó su contraseña?
+              </a>
+            </div>*/}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }

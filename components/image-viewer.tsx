@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { RotateCw, ChevronLeft, ChevronRight, X } from "lucide-react"
+import { RotateCw, ChevronLeft, ChevronRight, X, EyeOff } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Slider } from "@/components/ui/slider"
@@ -9,12 +9,13 @@ import { Slider } from "@/components/ui/slider"
 interface ImageViewerProps {
   images: File[]
   onClose?: () => void
+  onHide?: () => void
   initialIndex?: number
 }
 
-export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerProps) {
+export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: ImageViewerProps) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex)
-  const [zoom, setZoom] = useState(100)
+  const [zoom, setZoom] = useState(50)
   const [rotation, setRotation] = useState(0)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const imageRef = useRef<HTMLImageElement | null>(null)
@@ -34,13 +35,27 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
 
   // Reset zoom and rotation when changing image
   useEffect(() => {
-    setZoom(100)
+    setZoom(50)
     setRotation(0)
     setImageSize(null) // Reset image size when changing images
   }, [currentIndex])
 
-  // Note: Removed automatic centering on zoom/rotation changes
-  // Users can manually scroll to view different parts of the image
+  // Center image when zoom or rotation changes
+  useEffect(() => {
+    if (scrollRef.current && imageSize && imageRef.current) {
+      const container = scrollRef.current
+      const scaledWidth = imageSize.width * (zoom / 100)
+      const scaledHeight = imageSize.height * (zoom / 100)
+      const containerWidth = container.clientWidth
+      const containerHeight = container.clientHeight
+      
+      // Only scroll if image is larger than container
+      if (scaledWidth > containerWidth || scaledHeight > containerHeight) {
+        container.scrollLeft = (scaledWidth - containerWidth) / 2
+        container.scrollTop = (scaledHeight - containerHeight) / 2
+      }
+    }
+  }, [zoom, rotation, imageSize])
 
   const currentImage = images[currentIndex]
   const currentImageUrl = imageUrls[currentIndex]
@@ -70,7 +85,7 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
   }
 
   return (
-    <Card className="flex flex-col h-full">
+    <Card className="flex flex-col h-full p-0">
       {/* Header with controls */}
       <div className="flex items-center justify-between gap-2 p-3 border-b bg-muted/30">
         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -132,6 +147,22 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
             <RotateCw className="h-4 w-4" />
           </Button>
 
+          {/* Hide button (if onHide provided) */}
+          {onHide && (
+            <>
+              <div className="w-px h-6 bg-border mx-1" />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onHide}
+                className="h-8 w-8 p-0"
+                title="Ocultar documento"
+              >
+                <EyeOff className="h-4 w-4" />
+              </Button>
+            </>
+          )}
+
           {/* Close button (if onClose provided) */}
           {onClose && (
             <>
@@ -187,31 +218,22 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
         ref={scrollRef}
         className="flex-1 overflow-auto bg-muted/10"
         style={{
-          // Ensure we can scroll to see all parts of the image
           overscrollBehavior: "contain",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
         }}
       >
         {currentImageUrl && (
           <div 
             style={{
-              // Use reasonable padding to ensure scrollability in all directions
-              // Reduced padding to minimize excessive scrolling
-              padding: imageSize 
-                ? `${Math.max(50, Math.min(100, imageSize.width * (zoom / 100) * 0.1, imageSize.height * (zoom / 100) * 0.1))}px`
-                : "1rem",
+              padding: "1rem",
               boxSizing: "border-box",
-              // Ensure container is large enough for scaled content
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              position: "relative",
-              // Minimum size to accommodate scaled image with minimal extra space for scrolling
-              minHeight: imageSize 
-                ? `${imageSize.height * (zoom / 100) + 100}px`
-                : "100%",
-              minWidth: imageSize 
-                ? `${imageSize.width * (zoom / 100) + 100}px`
-                : "100%",
+              minHeight: "100%",
+              minWidth: "100%",
             }}
           >
             <div
@@ -219,9 +241,7 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
                 transform: `scale(${zoom / 100}) rotate(${rotation}deg)`,
                 transformOrigin: "center center",
                 transition: "transform 0.2s ease-in-out",
-                // Use block to allow proper sizing
                 display: "block",
-                // Ensure the wrapper maintains the natural image size
                 width: imageSize ? `${imageSize.width}px` : "fit-content",
                 height: imageSize ? `${imageSize.height}px` : "fit-content",
               }}
@@ -236,21 +256,30 @@ export function ImageViewer({ images, onClose, initialIndex = 0 }: ImageViewerPr
                   display: "block",
                   height: "auto",
                   width: "auto",
-                  // Don't constrain width - let it be natural size
                   maxWidth: "none",
-                  // Ensure image maintains aspect ratio
                   objectFit: "contain",
                 }}
                 onLoad={(e) => {
                   const img = e.currentTarget
-                  // Store image size for container calculations
                   setImageSize({
                     width: img.naturalWidth,
                     height: img.naturalHeight,
                   })
                   
-                  // Note: Removed automatic centering on image load
-                  // Image will appear at the current scroll position
+                  // Center the image after it loads
+                  if (scrollRef.current) {
+                    const container = scrollRef.current
+                    const scaledWidth = img.naturalWidth * (zoom / 100)
+                    const scaledHeight = img.naturalHeight * (zoom / 100)
+                    const containerWidth = container.clientWidth
+                    const containerHeight = container.clientHeight
+                    
+                    // Only scroll if image is larger than container
+                    if (scaledWidth > containerWidth || scaledHeight > containerHeight) {
+                      container.scrollLeft = (scaledWidth - containerWidth) / 2
+                      container.scrollTop = (scaledHeight - containerHeight) / 2
+                    }
+                  }
                 }}
               />
             </div>

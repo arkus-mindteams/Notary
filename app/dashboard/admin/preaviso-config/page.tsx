@@ -1,16 +1,19 @@
 "use client"
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { DashboardLayout } from '@/components/dashboard-layout'
+import { ProtectedRoute } from '@/components/protected-route'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'sonner'
-import { Save, Loader2 } from 'lucide-react'
+import { Save, Loader2, Info } from 'lucide-react'
 import { createBrowserClient } from '@/lib/supabase'
 import { useMemo } from 'react'
+import { useRouter } from 'next/navigation'
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 interface PreavisoConfig {
   id: string
@@ -21,27 +24,40 @@ interface PreavisoConfig {
 }
 
 export default function AdminPreavisoConfigPage() {
-  const { user: currentUser, session } = useAuth()
+  const { user: currentUser, session, isLoading: authLoading } = useAuth()
+  const router = useRouter()
   const supabase = useMemo(() => createBrowserClient(), [])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [config, setConfig] = useState<PreavisoConfig | null>(null)
   const [prompt, setPrompt] = useState('')
   const [jsonSchema, setJsonSchema] = useState('')
+  const hasLoadedDataRef = useRef(false)
 
-  // Verificar que sea superadmin
+  // Verificar que sea superadmin (solo después de que el usuario esté cargado)
   useEffect(() => {
-    if (currentUser && currentUser.role !== 'superadmin') {
-      window.location.href = '/dashboard'
+    if (!authLoading && currentUser && currentUser.role !== 'superadmin') {
+      router.push('/dashboard')
     }
-  }, [currentUser])
+  }, [currentUser, authLoading, router])
 
-  // Cargar datos
+  // Cargar datos (montaje inicial, remount, o cambio de usuario/sesión)
   useEffect(() => {
-    if (currentUser?.role === 'superadmin' && session) {
-      loadConfig()
+    if (!authLoading && currentUser?.role === 'superadmin' && session) {
+      // Si el config está vacío (remount), necesitamos cargar
+      const configEmpty = !config
+      
+      // Cargar si es la primera vez o si el config está vacío (remount)
+      if (!hasLoadedDataRef.current || configEmpty) {
+        loadConfig()
+        hasLoadedDataRef.current = true
+      }
+    } else {
+      // Resetear el ref si no hay sesión o no es superadmin
+      hasLoadedDataRef.current = false
     }
-  }, [currentUser, session])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, session, authLoading])
 
   const loadConfig = async () => {
     try {
@@ -119,37 +135,81 @@ export default function AdminPreavisoConfigPage() {
     }
   }
 
-  if (currentUser?.role !== 'superadmin') {
-    return null
+  // Mostrar loading mientras se verifica autenticación o rol
+  if (authLoading || !currentUser) {
+    return (
+      <ProtectedRoute>
+        <DashboardLayout>
+          <div className="p-6 space-y-6">
+            <Card>
+              <CardContent className="py-8">
+                <div className="text-center">
+                  <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-primary" />
+                  <p className="text-muted-foreground">Verificando permisos...</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </DashboardLayout>
+      </ProtectedRoute>
+    )
+  }
+
+  // Verificar rol después de que el usuario esté cargado
+  if (currentUser.role !== 'superadmin') {
+    return (
+      <ProtectedRoute>
+        <DashboardLayout>
+          <div className="p-6 space-y-6">
+            <Card>
+              <CardContent className="py-8">
+                <div className="text-center">
+                  <p className="text-muted-foreground">No tienes permisos para acceder a esta sección.</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </DashboardLayout>
+      </ProtectedRoute>
+    )
   }
 
   return (
-    <DashboardLayout>
+    <ProtectedRoute>
+      <DashboardLayout>
       <div className="p-6 space-y-6">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Configuración de Preaviso</h1>
-          <p className="text-gray-600 mt-1">Edita el prompt maestro y el JSON schema canónico</p>
+          <h1 className="text-3xl font-bold text-gray-900">Configuración del Preaviso</h1>
+          <p className="text-gray-600 mt-1">Ajusta las instrucciones y la estructura que usará la IA para capturar la información.</p>
         </div>
 
         {isLoading ? (
           <Card>
-            <CardContent className="py-8">
-              <div className="text-center">Cargando...</div>
+            <CardContent className="py-8 flex flex-col items-center justify-center gap-2">
+              <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+              <span className="text-gray-500">Cargando…</span>
             </CardContent>
           </Card>
         ) : (
           <div className="space-y-6">
             {/* Prompt */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Prompt Maestro</CardTitle>
-                <CardDescription>
-                  Instrucciones que seguirá la IA durante el proceso de captura del preaviso
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            <div>
+              <div className="flex items-center gap-2 font-medium ">
+                Prompt del sistema
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Info className="h-4 w-4 cursor-pointer text-muted-foreground" />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>
+                      Instrucciones que seguirá la IA durante el proceso de captura del preaviso
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+
+              <div className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="prompt">Prompt del Sistema</Label>
                   <Textarea
                     id="prompt"
                     value={prompt}
@@ -158,8 +218,8 @@ export default function AdminPreavisoConfigPage() {
                     placeholder="Ingresa el prompt maestro..."
                   />
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
 
             {/* JSON Schema */}
             <Card>
@@ -185,7 +245,7 @@ export default function AdminPreavisoConfigPage() {
 
             {/* Botón Guardar */}
             <div className="flex justify-end">
-              <Button onClick={handleSave} disabled={isSaving} size="lg">
+              <Button onClick={handleSave} disabled={isSaving} className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white font-bold py-2.5">
                 {isSaving ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -202,7 +262,8 @@ export default function AdminPreavisoConfigPage() {
           </div>
         )}
       </div>
-    </DashboardLayout>
+      </DashboardLayout>
+    </ProtectedRoute>
   )
 }
 

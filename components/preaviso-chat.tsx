@@ -6,7 +6,6 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Progress } from '@/components/ui/progress'
 import { useAuth } from '@/lib/auth-context'
 import { createBrowserClient } from '@/lib/supabase'
@@ -27,9 +26,26 @@ import {
   FileCheck2,
   Eye,
   EyeOff,
-  FolderOpen
+  FolderOpen,
+  MessageSquarePlus,
+  ArrowUp,
+  X
 } from 'lucide-react'
 import { PreavisoExportOptions } from './preaviso-export-options'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 
 export interface ChatMessage {
   id: string
@@ -244,6 +260,85 @@ const INITIAL_MESSAGES = [
   "Para comenzar, ¿tienes la hoja de inscripción del inmueble? Necesito folio real, sección y partida. Si no la tienes, puedo capturar los datos manualmente."
 ]
 
+// Componente para mostrar miniatura de imagen
+function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasError = false }: { 
+  file: File
+  isProcessing?: boolean
+  isProcessed?: boolean
+  hasError?: boolean
+}) {
+  const [fileUrl, setFileUrl] = useState<string | null>(null)
+  const [isDialogOpen, setIsDialogOpen] = useState(false)
+  
+  useEffect(() => {
+    const url = URL.createObjectURL(file)
+    setFileUrl(url)
+    
+    return () => {
+      URL.revokeObjectURL(url)
+    }
+  }, [file])
+  
+  if (!fileUrl) return null
+  
+  return (
+    <>
+      <div className="relative group">
+        <img
+          src={fileUrl}
+          alt={file.name}
+          className="h-20 w-20 object-cover rounded-lg border-2 border-gray-200 hover:border-blue-400 transition-all cursor-pointer shadow-sm"
+          onClick={() => setIsDialogOpen(true)}
+        />
+        {/* Badge de estado */}
+        {isProcessed ? (
+          hasError ? (
+            <div className="absolute top-1.5 right-1.5 bg-red-500 rounded-full p-1 shadow-lg">
+              <AlertCircle className="h-2.5 w-2.5 text-white" />
+            </div>
+          ) : (
+            <div className="absolute top-1.5 right-1.5 bg-green-500 rounded-full p-1 shadow-lg">
+              <CheckCircle2 className="h-2.5 w-2.5 text-white" />
+            </div>
+          )
+        ) : isProcessing ? (
+          <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
+            <Loader2 className="h-2.5 w-2.5 text-white animate-spin" />
+          </div>
+        ) : null}
+        <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] px-1 py-0.5 rounded-b-lg opacity-0 group-hover:opacity-100 transition-opacity truncate">
+          {file.name}
+        </div>
+      </div>
+      
+      {/* Dialog para mostrar imagen en tamaño completo */}
+      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+        <DialogContent className="max-w-[95vw] max-h-[95vh] p-0 bg-transparent border-none">
+          <DialogTitle className="sr-only">Vista previa de imagen: {file.name}</DialogTitle>
+          <div className="relative w-full h-full flex items-center justify-center bg-black/90 rounded-lg">
+            <img
+              src={fileUrl}
+              alt={file.name}
+              className="max-w-full max-h-[95vh] object-contain"
+            />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute top-2 right-2 bg-black/50 hover:bg-black/70 text-white"
+              onClick={() => setIsDialogOpen(false)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+            <div className="absolute bottom-4 left-4 right-4 bg-black/60 text-white text-sm px-3 py-2 rounded-lg">
+              {file.name}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
 export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady }: PreavisoChatProps) {
   const stripDataUpdateBlocksForDisplay = (text: string): string => {
     if (!text) return ''
@@ -269,6 +364,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   }
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [initialMessagesSent, setInitialMessagesSent] = useState(false)
+  const initializationRef = useRef(false)
+  const lastUserIdRef = useRef<string | null>(null)
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
   const [expedienteExistente, setExpedienteExistente] = useState<{
     compradorId: string
@@ -338,12 +435,101 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   useEffect(() => {
     let mounted = true
 
+    console.log('[PreavisoChat] useEffect ejecutado - user?.id:', user?.id, 'initializationRef.current:', initializationRef.current, 'initialMessagesSent:', initialMessagesSent, 'messages.length:', messages.length)
+
     const initializeChat = async () => {
+      // Esperar a que el usuario esté disponible
       if (!user?.id) {
+        console.log('[PreavisoChat] Usuario no disponible aún, esperando...')
         return
       }
 
-      // Crear nuevo trámite siempre
+      // Si el usuario cambió, resetear flags de inicialización
+      const userChanged = user.id !== lastUserIdRef.current
+      if (userChanged) {
+        console.log('[PreavisoChat] Usuario cambió de', lastUserIdRef.current, 'a', user.id, '- reseteando estado')
+        initializationRef.current = false
+        setInitialMessagesSent(false)
+        setMessages([]) // Limpiar mensajes anteriores
+        lastUserIdRef.current = user.id
+        // Continuar con la inicialización después del reset
+      } else if (lastUserIdRef.current === null && user.id) {
+        // Primera carga: establecer el usuario actual
+        console.log('[PreavisoChat] Primera carga, estableciendo usuario:', user.id)
+        lastUserIdRef.current = user.id
+      }
+
+      // Verificar si los mensajes están vacíos - si están vacíos, necesitamos inicializar
+      // independientemente del estado de initializationRef (puede ser un remount)
+      const messagesEmpty = messages.length === 0
+      
+      if (messagesEmpty) {
+        console.log('[PreavisoChat] Mensajes vacíos, reseteando flags y procediendo con inicialización')
+        initializationRef.current = false
+        setInitialMessagesSent(false)
+      }
+
+      // Verificar si los mensajes iniciales ya están presentes
+      const hasInitialMessages = messages.length > 0 && messages.some(m => 
+        INITIAL_MESSAGES.some(initialMsg => m.content === initialMsg && m.role === 'assistant')
+      )
+      
+      if (hasInitialMessages) {
+        console.log('[PreavisoChat] Mensajes iniciales ya presentes en el estado, marcando como enviados')
+        setInitialMessagesSent(true)
+        initializationRef.current = true
+        return
+      }
+
+      // Verificar si ya se inicializó para este usuario (solo si NO hubo cambio de usuario y los mensajes no están vacíos)
+      if (!userChanged && !messagesEmpty && initializationRef.current) {
+        console.log('[PreavisoChat] Ya se inicializó para este usuario y hay mensajes, omitiendo...')
+        return
+      }
+
+      console.log('[PreavisoChat] Iniciando inicialización del chat para usuario:', user.id)
+
+      // Marcar como inicializado ANTES de enviar mensajes para evitar ejecuciones duplicadas
+      initializationRef.current = true
+
+      // Enviar mensajes iniciales primero (no dependen de la creación del trámite)
+      const sendInitialMessages = async () => {
+        console.log('[PreavisoChat] Enviando mensajes iniciales...')
+        for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
+          if (!mounted) break
+          
+          await new Promise(resolve => setTimeout(resolve, i * 400))
+          
+          if (!mounted) break
+          
+          const initialMessageId = generateMessageId('initial')
+          setMessages(prev => {
+            const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
+            if (exists) return prev
+            return [...prev, {
+              id: initialMessageId,
+              role: 'assistant',
+              content: INITIAL_MESSAGES[i],
+              timestamp: new Date()
+            }]
+          })
+        }
+        if (mounted) {
+          setInitialMessagesSent(true)
+          console.log('[PreavisoChat] Mensajes iniciales enviados correctamente')
+        }
+      }
+
+      // Enviar mensajes iniciales inmediatamente
+      try {
+        await sendInitialMessages()
+      } catch (error) {
+        console.error('[PreavisoChat] Error enviando mensajes iniciales:', error)
+        // Resetear el flag para permitir reintentos
+        initializationRef.current = false
+      }
+
+      // Crear nuevo trámite (esto puede fallar sin afectar los mensajes iniciales)
       try {
         const { data: { session } } = await supabase.auth.getSession()
         const headers: HeadersInit = { 'Content-Type': 'application/json' }
@@ -409,43 +595,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
       } catch (error) {
         console.error('Error creando nuevo trámite:', error)
+        // No bloquear la inicialización del chat si falla la creación del trámite
       }
-
-      // Enviar mensajes iniciales
-      const sendInitialMessages = async () => {
-        for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
-          if (!mounted) break
-          
-          await new Promise(resolve => setTimeout(resolve, i * 400))
-          
-          if (!mounted) break
-          
-          const initialMessageId = generateMessageId('initial')
-          setMessages(prev => {
-            const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
-            if (exists) return prev
-            return [...prev, {
-              id: initialMessageId,
-              role: 'assistant',
-              content: INITIAL_MESSAGES[i],
-              timestamp: new Date()
-            }]
-          })
-        }
-        if (mounted) {
-          setInitialMessagesSent(true)
-        }
-      }
-
-      sendInitialMessages()
     }
 
+    // Ejecutar inicialización
     initializeChat()
 
     return () => {
       mounted = false
+      // No resetear los refs aquí porque cuando el componente se desmonta completamente,
+      // React los resetea automáticamente. Solo marcamos mounted como false para
+      // cancelar cualquier operación async en curso.
     }
-  }, [user?.id])
+  }, [user?.id, supabase])
 
   // Estado de procesamiento de documentos debe declararse ANTES de cualquier useEffect que lo use
   const [isProcessingDocument, setIsProcessingDocument] = useState(false)
@@ -537,9 +700,31 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   useEffect(() => {
     uploadedDocumentsRef.current = uploadedDocuments
   }, [uploadedDocuments])
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  
+  // Limpiar URLs de objetos cuando los archivos pendientes cambien
+  useEffect(() => {
+    return () => {
+      // Los URLs se limpian cuando se eliminan archivos o cuando el componente se desmonta
+      // La limpieza se hace en el botón de eliminar y en onLoad de las imágenes
+    }
+  }, [pendingFiles])
   const [showDataPanel, setShowDataPanel] = useState(true)
+  const [hidePanelsAfterMessage, setHidePanelsAfterMessage] = useState(false)
+  const previousPendingFilesLengthRef = useRef(0)
+
+  // Permitir que los paneles vuelvan a aparecer cuando se suben nuevos archivos pendientes (solo si aumenta)
+  useEffect(() => {
+    // Solo restablecer si los archivos pendientes AUMENTAN (nuevos archivos subidos)
+    // No restablecer si disminuyen (archivos procesados)
+    if (pendingFiles.length > previousPendingFilesLengthRef.current && hidePanelsAfterMessage) {
+      setHidePanelsAfterMessage(false)
+    }
+    previousPendingFilesLengthRef.current = pendingFiles.length
+  }, [pendingFiles.length, hidePanelsAfterMessage])
   const [isDragging, setIsDragging] = useState(false)
   const [showExportOptions, setShowExportOptions] = useState(false)
+  const [showNewChatDialog, setShowNewChatDialog] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textInputRef = useRef<HTMLTextAreaElement>(null)
@@ -605,7 +790,159 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
   }, [data, onExportReady, isCompleteByServer])
 
+  const resetChat = async () => {
+    // Limpiar todos los mensajes
+    setMessages([])
+    
+    // Resetear flags de inicialización
+    initializationRef.current = false
+    setInitialMessagesSent(false)
+    messageIdCounterRef.current = 0
+    
+    // Limpiar archivos pendientes
+    setPendingFiles([])
+    
+    // Resetear datos del preaviso a estado inicial
+    const initialData: PreavisoData = {
+      tipoOperacion: 'compraventa',
+      vendedores: [],
+      compradores: [],
+      creditos: undefined,
+      gravamenes: [],
+      inmueble: {
+        folio_real: null,
+        partidas: [],
+        all_registry_pages_confirmed: false,
+        direccion: {
+          calle: null,
+          numero: null,
+          colonia: null,
+          municipio: null,
+          estado: null,
+          codigo_postal: null
+        },
+        superficie: null,
+        valor: null,
+        datos_catastrales: {
+          lote: null,
+          manzana: null,
+          fraccionamiento: null,
+          condominio: null,
+          unidad: null,
+          modulo: null
+        }
+      },
+      control_impresion: {
+        imprimir_conyuges: false,
+        imprimir_coacreditados: false,
+        imprimir_creditos: false
+      },
+      validaciones: {
+        expediente_existente: false,
+        datos_completos: false,
+        bloqueado: true
+      },
+      actosNotariales: {
+        cancelacionCreditoVendedor: false,
+        compraventa: false,
+        aperturaCreditoComprador: false
+      },
+      documentos: []
+    }
+    setData(initialData)
+    
+    // Limpiar documentos subidos
+    setUploadedDocuments([])
+    uploadedDocumentsRef.current = []
+    
+    // Resetear estado del servidor
+    setServerState(null)
+    
+    // Resetear expediente existente
+    setExpedienteExistente(null)
+    
+    // Resetear input
+    setInput('')
+    
+    // Restablecer visibilidad de paneles
+    setHidePanelsAfterMessage(false)
+    
+    // Crear nuevo trámite
+    if (user?.id) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const headers: HeadersInit = { 'Content-Type': 'application/json' }
+        if (session?.access_token) {
+          headers['Authorization'] = `Bearer ${session.access_token}`
+        }
+
+        const response = await fetch('/api/expedientes/tramites', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            compradorId: null,
+            userId: user.id,
+            tipo: 'preaviso',
+            datos: {
+              tipoOperacion: 'compraventa',
+              vendedores: [],
+              compradores: [],
+              creditos: undefined,
+              gravamenes: [],
+              inmueble: initialData.inmueble,
+              control_impresion: initialData.control_impresion,
+              validaciones: initialData.validaciones,
+              actosNotariales: initialData.actosNotariales
+            },
+            estado: 'en_proceso',
+          }),
+        })
+
+        if (response.ok) {
+          const tramite = await response.json()
+          setActiveTramiteId(tramite.id)
+        }
+      } catch (error) {
+        console.error('Error creando nuevo trámite:', error)
+      }
+    }
+    
+    // El useEffect de inicialización se ejecutará automáticamente porque
+    // los mensajes están vacíos y initializationRef.current es false
+  }
+
+  const handleNewChat = () => {
+    setShowNewChatDialog(true)
+  }
+
+  const handleConfirmNewChat = async () => {
+    setShowNewChatDialog(false)
+    await resetChat()
+  }
+
   const handleSend = async () => {
+    // Ocultar paneles inmediatamente cuando se envía un mensaje
+    setHidePanelsAfterMessage(true)
+    
+    // Si hay archivos pendientes, procesarlos primero
+    if (pendingFiles.length > 0) {
+      // Crear un FileList simulado para usar con handleFileUpload
+      const dataTransfer = new DataTransfer()
+      pendingFiles.forEach(file => dataTransfer.items.add(file))
+      const fileList = dataTransfer.files
+      
+      // Limpiar archivos pendientes antes de procesar
+      setPendingFiles([])
+      
+      // Procesar archivos
+      await handleFileUpload(fileList)
+      
+      // Si no hay texto, solo procesar archivos y salir
+      if (!input.trim()) {
+        return
+      }
+    }
+    
     if (!input.trim() || isProcessing) return
 
     const userMessage: ChatMessage = {
@@ -1490,7 +1827,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
     const files = e.dataTransfer.files
     if (files && files.length > 0) {
-      handleFileUpload(files)
+      // Solo agregar a pendientes, no procesar aún
+      setPendingFiles(prev => [...prev, ...Array.from(files)])
     }
   }
 
@@ -2373,24 +2711,34 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       )}
       
       {/* Layout con panel de información - Parte superior */}
-      <div className="flex-1 flex gap-4 min-h-0 overflow-hidden">
+      <div className={`flex-1 flex ${!showDataPanel ? 'flex-col' : ''} gap-4 min-h-0 overflow-hidden`}>  
+        {/* Botón para mostrar panel si está oculto */}
+        {!showDataPanel && (
+          <div className='flex justify-end'>
+            <Button
+              variant="outline"
+              size="icon"
+              className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground w-fit "
+              onClick={() => {
+                setShowDataPanel(true)
+                setHidePanelsAfterMessage(false)
+              }}
+            >
+              <Eye className="h-4 w-4" /> 
+              <span className="text-xs">Mostrar informacion capturada</span>
+            </Button>
+          </div>
+        )}
         {/* Chat principal */}
-        <Card className="flex-1 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
+        <Card className="flex-1 p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
         <CardContent className="flex-1 flex flex-col p-0 min-h-0">
           {/* Header moderno */}
           <div className="border-b border-gray-200/80 bg-gradient-to-r from-white via-gray-50/50 to-white backdrop-blur-sm px-6 py-2.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3">
                 <div className="relative group">
-                  <div className="w-12 h-12 rounded-2xl overflow-hidden bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-600 flex items-center justify-center shadow-lg ring-2 ring-blue-100 group-hover:ring-blue-200 transition-all">
-                      <Image
-                        src="/ai-img.png"
-                        alt="Asistente Legal"
-                        width={48}
-                        height={48}
-                        className="w-full h-full object-cover"
-                        priority
-                      />
+                  <div className="w-12 h-12 rounded-2xl overflow-hidden bg-gradient-to-br f from-slate-100 to-slate-300 flex items-center justify-center shadow-lg ring-2 ring-blue-100  transition-all">
+                      <Bot className="w-5 h-5 text-black" />
                   </div>
                   <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-white shadow-sm">
                     <div className="w-full h-full bg-green-400 rounded-full animate-pulse"></div>
@@ -2413,23 +2761,33 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               
               {/* Acciones del header */}
               <div className="flex items-center space-x-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9 rounded-xl hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors"
-                  title="Más opciones"
-                >
-                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                  </svg>
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9 rounded-xl hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors"
+                      title="Más opciones"
+                    >
+                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                      </svg>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-48">
+                    <DropdownMenuItem onClick={handleNewChat} className="cursor-pointer hover:!bg-gray-100 focus:!bg-gray-100 focus:!text-gray-900">
+                      <MessageSquarePlus className="mr-2 h-4 w-4" />
+                      Nuevo chat
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
           </div>
 
           {/* Messages con diseño moderno */}
           <div className="flex-1 overflow-hidden bg-gradient-to-b from-gray-50/50 to-white">
-            <ScrollArea className="h-full">
+            <div className="h-full overflow-auto">
               <div className="p-6 space-y-4">
               {messages.map((message) => (
                 <div
@@ -2437,28 +2795,22 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} group`}
                 >
                   <div
-                    className={`flex items-end space-x-2 max-w-[80%] ${
+                    className={`flex items-end space-x-2 max-w-[60ch] ${
                       message.role === 'user' ? 'flex-row-reverse space-x-reverse' : ''
                     }`}
                   >
                     {/* Avatar moderno */}
                     {message.role === 'assistant' && (
-                      <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
-                        <Image
-                          src="/ai-img.png"
-                          alt="Asistente Legal"
-                          width={32}
-                          height={32}
-                          className="w-full h-full object-cover"
-                        />
+                      <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-slate-100 to-slate-300 flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
+                          <Bot className="w-5 h-5 text-black bg-gray-200" />
                       </div>
                     )}
                     
                     {/* Mensaje moderno */}
                     <div
-                      className={`rounded-2xl px-4 py-2.5 ${
+                      className={`rounded-2xl px-4 py-2.5 max-w-full ${
                         message.role === 'user'
-                          ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-lg shadow-blue-500/20'
+                          ? 'bg-gray-800 text-white shadow-lg'
                           : 'bg-white text-gray-900 shadow-sm border border-gray-100'
                       }`}
                     >
@@ -2471,20 +2823,42 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                         <div className={`mt-3 pt-3 ${
                           message.role === 'user' ? 'border-t border-white/20' : 'border-t border-gray-100'
                         }`}>
-                          {message.attachments.map((file, idx) => (
-                            <div key={idx} className={`flex items-center space-x-2 text-xs ${
-                              message.role === 'user' ? 'text-blue-50' : 'text-gray-600'
-                            }`}>
-                              <FileCheck className="h-3.5 w-3.5" />
-                              <span className="truncate">{file.name}</span>
-                            </div>
-                          ))}
+                          <div className="flex flex-wrap gap-2">
+                            {message.attachments.map((file, idx) => {
+                              const isImage = file.type.startsWith('image/')
+                              // Buscar el documento correspondiente en uploadedDocuments para verificar su estado de procesamiento
+                              const correspondingDoc = uploadedDocuments.find(doc => doc.name === file.name)
+                              const isProcessing = correspondingDoc ? !correspondingDoc.processed : false
+                              const isProcessed = correspondingDoc?.processed || false
+                              const hasError = correspondingDoc?.error ? true : false
+                              
+                              return (
+                                <div key={idx}>
+                                  {isImage ? (
+                                    <ImageThumbnail 
+                                      file={file} 
+                                      isProcessing={isProcessing}
+                                      isProcessed={isProcessed}
+                                      hasError={hasError}
+                                    />
+                                  ) : (
+                                    <div className={`flex items-center space-x-2 text-xs ${
+                                      message.role === 'user' ? 'text-gray-200' : 'text-gray-600'
+                                    }`}>
+                                      <FileCheck className="h-3.5 w-3.5" />
+                                      <span className="truncate">{file.name}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
                         </div>
                       )}
                       
                       {/* Timestamp moderno */}
                       <p className={`text-[10px] mt-1.5 ${
-                        message.role === 'user' ? 'text-blue-100' : 'text-gray-400'
+                        message.role === 'user' ? 'text-gray-300' : 'text-gray-400'
                       }`}>
                         {message.timestamp.toLocaleTimeString('es-MX', { 
                           hour: '2-digit', 
@@ -2506,14 +2880,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               {isProcessing && (
                 <div className="flex justify-start">
                   <div className="flex items-end space-x-2">
-                    <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
-                      <Bot className="w-5 h-5 text-white" />
+                    <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-slate-100 to-slate-300  flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
+                      <Bot className="w-5 h-5 text-black" />
                     </div>
                     <div className="bg-white rounded-2xl px-4 py-3 shadow-sm border border-gray-100">
                       <div className="flex space-x-1.5">
-                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
                       </div>
                     </div>
                   </div>
@@ -2523,12 +2897,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               
               <div ref={scrollRef} />
             </div>
-          </ScrollArea>
+          </div>
         </div>
 
 
           {/* Indicador de progreso de procesamiento */}
-          {isProcessingDocument && (
+          {/*{isProcessingDocument && (
             <div className="border-t border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50 px-6 py-3">
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
@@ -2554,74 +2928,179 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               </div>
             </div>
           )}
+            */}
 
           {/* Input moderno */}
           <div className="border-t border-gray-200 bg-white px-4 py-2.5">
-            <div className="flex items-end space-x-2">
-              {/* Botón de adjuntar archivos - estilo moderno */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept=".pdf,.jpg,.jpeg,.png,.docx"
-                onChange={(e) => handleFileUpload(e.target.files)}
-                className="hidden"
-              />
-              <Button
-                onClick={() => fileInputRef.current?.click()}
-                variant="ghost"
-                size="icon"
-                className="h-10 w-10 rounded-xl hover:bg-gray-100 text-gray-600 hover:text-blue-600 transition-colors flex-shrink-0"
-                title="Adjuntar documentos"
-              >
-                <Upload className="h-5 w-5" />
-              </Button>
-
-              {/* Input de texto moderno */}
+            <div className="flex items-end">
+              {/* Input de texto moderno con iconos dentro */}
               <div className="flex-1 relative">
-                <Textarea
-                  ref={textInputRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      handleSend()
-                    }
-                  }}
-                  placeholder="Escribe tu mensaje..."
-                  className="min-h-[44px] max-h-[120px] resize-none border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-2xl bg-gray-50 focus:bg-white transition-all pr-12"
-                  disabled={isProcessing}
-                />
-                {/* Contador de caracteres o indicador */}
-                {input.length > 0 && (
-                  <div className="absolute bottom-2 right-3 text-xs text-gray-400">
-                    {input.length}
-                  </div>
-                )}
-              </div>
+                {/* Contenedor del input con borde y fondo */}
+                <div className="border border-gray-300 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/20 rounded-2xl bg-gray-50 focus-within:bg-white transition-all">
+                  
+                  {/* Panel de archivos pendientes dentro del input */}
+                  {pendingFiles.length > 0 && !hidePanelsAfterMessage && (
+                    <div className="px-3 pt-3 pb-2 border-b border-gray-200">
+                      <div className="mb-2">
+                        <p className="text-xs text-gray-500 font-medium">Archivos pendientes (se procesarán al enviar):</p>
+                      </div>
+                      <div className="w-full overflow-y-auto overflow-x-hidden" style={{ maxHeight: '300px', width: '100%' }}>
+                        <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-3 pb-2" style={{ width: '100%' }}>
+                          {pendingFiles.map((file, index) => {
+                            const fileUrl = URL.createObjectURL(file)
+                            const isImage = file.type.startsWith('image/')
+                            const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+                            
+                            return (
+                              <div
+                                key={`pending-${index}-${file.name}`}
+                                className="group relative flex-shrink-0 w-24 bg-white rounded-lg border-2 border-dashed border-blue-300 hover:border-blue-400 hover:shadow-lg transition-all duration-200 overflow-hidden"
+                              >
+                                {/* Preview */}
+                                <div className="relative h-20 bg-gradient-to-br from-blue-50 to-blue-100">
+                                  {isImage ? (
+                                    <img
+                                      src={fileUrl}
+                                      alt={file.name}
+                                      className="w-full h-full object-cover opacity-70"
+                                      onLoad={() => URL.revokeObjectURL(fileUrl)}
+                                    />
+                                  ) : isPDF ? (
+                                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
+                                      <FileText className="h-6 w-6 text-red-500 opacity-70" />
+                                    </div>
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
+                                      <FileText className="h-6 w-6 text-blue-500 opacity-70" />
+                                    </div>
+                                  )}
+                                  
+                                  {/* Badge de pendiente */}
+                                  <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
+                                    <Upload className="h-2.5 w-2.5 text-white" />
+                                  </div>
+                                  
+                                  {/* Botón para eliminar */}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      URL.revokeObjectURL(fileUrl)
+                                      setPendingFiles(prev => prev.filter((_, i) => i !== index))
+                                    }}
+                                    className="absolute top-1.5 left-1.5 bg-red-500 hover:bg-red-600 rounded-full p-1 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                                    title="Eliminar archivo"
+                                  >
+                                    <X className="h-2.5 w-2.5 text-white" />
+                                  </button>
+                                </div>
+                                
+                                {/* Información */}
+                                <div className="p-2 bg-white">
+                                  <p className="text-xs font-medium text-gray-900 truncate mb-0.5" title={file.name}>
+                                    {file.name}
+                                  </p>
+                                  <p className="text-xs text-gray-400">
+                                    {(file.size / 1024 / 1024).toFixed(2)} MB
+                                  </p>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
-              {/* Botón de enviar moderno */}
-              <Button
-                onClick={handleSend}
-                disabled={!input.trim() || isProcessing}
-                className="h-10 w-10 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all flex-shrink-0"
-                size="icon"
-                title="Enviar mensaje"
-              >
-                {isProcessing ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Send className="h-5 w-5" />
-                )}
-              </Button>
+                  {/* Contenedor relativo para el textarea y los iconos */}
+                  <div className="relative">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      accept=".pdf,.jpg,.jpeg,.png,.docx"
+                      onChange={(e) => {
+                        const files = e.target.files
+                        if (files && files.length > 0) {
+                          // Solo agregar a pendientes, no procesar aún
+                          setPendingFiles(prev => [...prev, ...Array.from(files)])
+                        }
+                        // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
+                        // Usar setTimeout para asegurar que se resetee después de procesar los archivos
+                        setTimeout(() => {
+                          if (e.target) {
+                            e.target.value = ''
+                          }
+                        }, 0)
+                      }}
+                      className="hidden"
+                    />
+                    
+                    <Textarea
+                      ref={textInputRef}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault()
+                          handleSend()
+                        }
+                      }}
+                      placeholder="Escribe tu mensaje..."
+                      className="min-h-[44px] max-h-[120px] resize-none border-0 bg-transparent focus:ring-0 focus-visible:ring-0 pl-12 pr-12 py-3"
+                      disabled={isProcessing}
+                    />
+                    
+                    {/* Botón de adjuntar archivos dentro del input - izquierda */}
+                    <Button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        // Asegurar que el input esté reseteado antes de abrir el diálogo
+                        if (fileInputRef.current) {
+                          fileInputRef.current.value = ''
+                          fileInputRef.current.click()
+                        }
+                      }}
+                      variant="ghost"
+                      size="icon"
+                      className="absolute left-2 bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-gray-600 hover:text-blue-600 transition-colors"
+                      title="Adjuntar documentos"
+                    >
+                      <Upload className="h-4 w-4" />
+                    </Button>
+
+                    {/* Botón de enviar dentro del input - derecha */}
+                    <Button
+                      onClick={handleSend}
+                      disabled={(!input.trim() && pendingFiles.length === 0) || isProcessing}
+                      className="absolute right-2 bg-transparent bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-black disabled:opacity-50 disabled:cursor-not-allowed "
+                      size="icon"
+                      title={pendingFiles.length > 0 ? "Procesar archivos y enviar" : "Enviar mensaje"}
+                    >
+                      {isProcessing ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <ArrowUp className="h-4 w-4" />
+                      )}
+                    </Button>
+                    
+                    {/* Contador de caracteres o indicador */}
+                    {input.length > 0 && (
+                      <div className="absolute bottom-2 right-12 text-xs text-gray-400">
+                        {input.length}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
             
             {/* Indicador de tipos de archivo aceptados */}
-            <div className="mt-2 flex items-center justify-center space-x-4 text-xs text-gray-400">
+            <div className="mt-2 flex items-center justify-start space-x-4 text-xs text-gray-400">
               <span className="flex items-center space-x-1">
                 <FileText className="h-3 w-3" />
-                <span>PDF, JPG, PNG, DOCX</span>
+                <span>Sube tus archivos PDF, JPG, PNG, DOCX (Máx. 20MB)</span>
               </span>
             </div>
           </div>
@@ -2629,8 +3108,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       </Card>
 
       {/* Panel de información extraída */}
-      {showDataPanel && (
-        <Card className="w-80 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
+      {showDataPanel  && (
+        <Card className="w-80 p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
           <CardContent className="flex-1 flex flex-col p-0 min-h-0">
             {/* Header del panel */}
             <div className="border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white px-4 py-3">
@@ -2639,7 +3118,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7"
+                  className="h-7 w-7 hover:bg-gray-200 hover:text-foreground"
                   onClick={() => setShowDataPanel(false)}
                 >
                   <EyeOff className="h-4 w-4" />
@@ -2656,7 +3135,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
             {/* Contenido del panel */}
             <div className="flex-1 min-h-0 overflow-hidden">
-              <ScrollArea className="h-full">
+              <div className="h-full overflow-auto">
                 <div className="p-4 space-y-4">
                 {/* PASO 1 – OPERACIÓN Y FORMA DE PAGO */}
                 <div className="space-y-2">
@@ -2962,113 +3441,42 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 </div>
 
                 </div>
-              </ScrollArea>
+              </div>
             </div>
           </CardContent>
         </Card>
       )}
       </div>
 
-      {/* Panel de documentos debajo del chat y panel de información */}
-      {uploadedDocuments.length > 0 && (
-        <div className="flex-shrink-0 bg-white rounded-lg border border-gray-200 shadow-sm">
-          {/* Header moderno */}
-          <div className="px-4 py-3 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
-                  <FileText className="h-4 w-4 text-blue-600" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-900">Documentos subidos</h4>
-                  <p className="text-xs text-gray-500">{uploadedDocuments.length} {uploadedDocuments.length === 1 ? 'documento' : 'documentos'}</p>
-                </div>
-              </div>
-            </div>
-          </div>
+     
 
-          {/* Lista de documentos horizontal con diseño moderno */}
-          <div className="p-4">
-            <ScrollArea className="w-full">
-              <div className="flex gap-3 pb-2">
-                {uploadedDocuments.map((doc) => {
-                  const fileUrl = URL.createObjectURL(doc.file)
-                  const isImage = doc.type.startsWith('image/')
-                  const isPDF = doc.type === 'application/pdf' || doc.name.toLowerCase().endsWith('.pdf')
-                  
-                  return (
-                    <div
-                      key={doc.id}
-                      className="group relative flex-shrink-0 w-24 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-lg transition-all duration-200 overflow-hidden"
-                    >
-                      {/* Preview */}
-                      <div className="relative h-20 bg-gradient-to-br from-gray-50 to-gray-100">
-                        {isImage ? (
-                          <img
-                            src={fileUrl}
-                            alt={doc.name}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : isPDF ? (
-                          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
-                            <FileText className="h-6 w-6 text-red-500" />
-                          </div>
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
-                            <FileText className="h-6 w-6 text-blue-500" />
-                          </div>
-                        )}
-                        
-                        {/* Overlay con estado */}
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors" />
-                        
-                        {/* Badge de estado */}
-                        {doc.processed ? (
-                          doc.error ? (
-                            <div className="absolute top-1.5 right-1.5 bg-red-500 rounded-full p-1 shadow-lg">
-                              <AlertCircle className="h-2.5 w-2.5 text-white" />
-                            </div>
-                          ) : (
-                            <div className="absolute top-1.5 right-1.5 bg-green-500 rounded-full p-1 shadow-lg">
-                              <CheckCircle2 className="h-2.5 w-2.5 text-white" />
-                            </div>
-                          )
-                        ) : (
-                          <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
-                            <Loader2 className="h-2.5 w-2.5 text-white animate-spin" />
-                          </div>
-                        )}
-                      </div>
-                      
-                      {/* Información */}
-                      <div className="p-2 bg-white">
-                        <p className="text-xs font-medium text-gray-900 truncate mb-0.5" title={doc.name}>
-                          {doc.name}
-                        </p>
-                        <p className="text-xs text-gray-400">
-                          {(doc.size / 1024 / 1024).toFixed(2)} MB
-                        </p>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </ScrollArea>
-          </div>
-        </div>
-      )}
-
-      {/* Botón para mostrar panel si está oculto */}
-      {!showDataPanel && (
-        <Button
-          variant="outline"
-          size="icon"
-          className="fixed right-6 top-1/2 -translate-y-1/2 z-10 shadow-lg"
-          onClick={() => setShowDataPanel(true)}
-        >
-          <Eye className="h-4 w-4" />
-        </Button>
-      )}
+      {/* Dialog de confirmación para nuevo chat */}
+      <Dialog open={showNewChatDialog} onOpenChange={setShowNewChatDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>¿Iniciar un nuevo chat?</DialogTitle>
+            <DialogDescription>
+              Se perderá todo el progreso actual del chat. Esta acción no se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="cursor-pointer bg-white border hover:bg-gray-100 text-black hover:text-black py-2.5"
+              onClick={() => setShowNewChatDialog(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="default"
+              onClick={handleConfirmNewChat}
+              className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white font-bold py-2.5"
+            >
+              Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

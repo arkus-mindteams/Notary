@@ -51,8 +51,30 @@ export function createBrowserClient(): SupabaseClient {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
+  // Durante build time (SSR/SSG), las variables pueden no estar disponibles
+  // En ese caso, crear un cliente con valores dummy que solo se usará en build
+  // El cliente real se creará en runtime cuando las variables estén disponibles
   if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error('Missing Supabase environment variables')
+    // Si estamos en el navegador (runtime), las variables deberían estar disponibles
+    // Si no, es un error real de configuración
+    if (typeof window !== 'undefined') {
+      throw new Error('Missing Supabase environment variables')
+    }
+    
+    // Durante build time (server-side), crear un cliente dummy
+    // Este cliente nunca se usará realmente, solo permite que el código se compile
+    // Next.js necesita que los módulos se puedan importar sin errores durante build
+    const placeholderUrl = 'https://placeholder.supabase.co'
+    const placeholderKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBsYWNlaG9sZGVyIiwicm9sZSI6ImFub24iLCJpYXQiOjE2NDUxOTIwMDAsImV4cCI6MTk2MDc2ODAwMH0.placeholder'
+    
+    browserClientInstance = createClient(placeholderUrl, placeholderKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    })
+    return browserClientInstance
   }
 
   // Crear instancia única
