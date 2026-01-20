@@ -29,7 +29,8 @@ import {
   EyeOff,
   FolderOpen,
   MessageSquarePlus,
-  ArrowUp
+  ArrowUp,
+  X
 } from 'lucide-react'
 import { PreavisoExportOptions } from './preaviso-export-options'
 import {
@@ -618,6 +619,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   useEffect(() => {
     uploadedDocumentsRef.current = uploadedDocuments
   }, [uploadedDocuments])
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  
+  // Limpiar URLs de objetos cuando los archivos pendientes cambien
+  useEffect(() => {
+    return () => {
+      // Los URLs se limpian cuando se eliminan archivos o cuando el componente se desmonta
+      // La limpieza se hace en el botón de eliminar y en onLoad de las imágenes
+    }
+  }, [pendingFiles])
   const [showDataPanel, setShowDataPanel] = useState(true)
   const [isDragging, setIsDragging] = useState(false)
   const [showExportOptions, setShowExportOptions] = useState(false)
@@ -695,6 +705,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     initializationRef.current = false
     setInitialMessagesSent(false)
     messageIdCounterRef.current = 0
+    
+    // Limpiar archivos pendientes
+    setPendingFiles([])
     
     // Resetear datos del preaviso a estado inicial
     const initialData: PreavisoData = {
@@ -812,6 +825,25 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   }
 
   const handleSend = async () => {
+    // Si hay archivos pendientes, procesarlos primero
+    if (pendingFiles.length > 0) {
+      // Crear un FileList simulado para usar con handleFileUpload
+      const dataTransfer = new DataTransfer()
+      pendingFiles.forEach(file => dataTransfer.items.add(file))
+      const fileList = dataTransfer.files
+      
+      // Limpiar archivos pendientes antes de procesar
+      setPendingFiles([])
+      
+      // Procesar archivos
+      await handleFileUpload(fileList)
+      
+      // Si no hay texto, solo procesar archivos y salir
+      if (!input.trim()) {
+        return
+      }
+    }
+    
     if (!input.trim() || isProcessing) return
 
     const userMessage: ChatMessage = {
@@ -1555,7 +1587,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
     const files = e.dataTransfer.files
     if (files && files.length > 0) {
-      handleFileUpload(files)
+      // Solo agregar a pendientes, no procesar aún
+      setPendingFiles(prev => [...prev, ...Array.from(files)])
     }
   }
 
@@ -2617,7 +2650,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
 
           {/* Indicador de progreso de procesamiento */}
-          {isProcessingDocument && (
+          {/*{isProcessingDocument && (
             <div className="border-t border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50 px-6 py-3">
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
@@ -2643,12 +2676,88 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               </div>
             </div>
           )}
+            */}
 
           {/* Input moderno */}
           <div className="border-t border-gray-200 bg-white px-4 py-2.5">
             <div className="flex items-end">
               {/* Input de texto moderno con iconos dentro */}
               <div className="flex-1 relative">
+
+                  {/* Panel de archivos pendientes */}
+                  {pendingFiles.length > 0 && (
+                    <div className="flex-shrink-0">
+                      <div className="p-4">
+                        <div className="mb-2">
+                          <p className="text-xs text-gray-500 font-medium">Archivos pendientes (se procesarán al enviar):</p>
+                        </div>
+                        <ScrollArea className="w-full">
+                          <div className="flex gap-3 pb-2">
+                            {pendingFiles.map((file, index) => {
+                              const fileUrl = URL.createObjectURL(file)
+                              const isImage = file.type.startsWith('image/')
+                              const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+                              
+                              return (
+                                <div
+                                  key={`pending-${index}-${file.name}`}
+                                  className="group relative flex-shrink-0 w-24 bg-white rounded-lg border-2 border-dashed border-blue-300 hover:border-blue-400 hover:shadow-lg transition-all duration-200 overflow-hidden"
+                                >
+                                  {/* Preview */}
+                                  <div className="relative h-20 bg-gradient-to-br from-blue-50 to-blue-100">
+                                    {isImage ? (
+                                      <img
+                                        src={fileUrl}
+                                        alt={file.name}
+                                        className="w-full h-full object-cover opacity-70"
+                                        onLoad={() => URL.revokeObjectURL(fileUrl)}
+                                      />
+                                    ) : isPDF ? (
+                                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
+                                        <FileText className="h-6 w-6 text-red-500 opacity-70" />
+                                      </div>
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
+                                        <FileText className="h-6 w-6 text-blue-500 opacity-70" />
+                                      </div>
+                                    )}
+                                    
+                                    {/* Badge de pendiente */}
+                                    <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
+                                      <Upload className="h-2.5 w-2.5 text-white" />
+                                    </div>
+                                    
+                                    {/* Botón para eliminar */}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        URL.revokeObjectURL(fileUrl)
+                                        setPendingFiles(prev => prev.filter((_, i) => i !== index))
+                                      }}
+                                      className="absolute top-1.5 left-1.5 bg-red-500 hover:bg-red-600 rounded-full p-1 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                                      title="Eliminar archivo"
+                                    >
+                                      <X className="h-2.5 w-2.5 text-white" />
+                                    </button>
+                                  </div>
+                                  
+                                  {/* Información */}
+                                  <div className="p-2 bg-white">
+                                    <p className="text-xs font-medium text-gray-900 truncate mb-0.5" title={file.name}>
+                                      {file.name}
+                                    </p>
+                                    <p className="text-xs text-gray-400">
+                                      {(file.size / 1024 / 1024).toFixed(2)} MB
+                                    </p>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </ScrollArea>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Panel de documentos debajo del chat y panel de información */}
                   {uploadedDocuments.length > 0 && (
@@ -2734,7 +2843,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   type="file"
                   multiple
                   accept=".pdf,.jpg,.jpeg,.png,.docx"
-                  onChange={(e) => handleFileUpload(e.target.files)}
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      // Solo agregar a pendientes, no procesar aún
+                      setPendingFiles(prev => [...prev, ...Array.from(e.target.files!)])
+                      // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
+                      e.target.value = ''
+                    }
+                  }}
                   className="hidden"
                 />
                 
@@ -2767,10 +2883,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 {/* Botón de enviar dentro del input - derecha */}
                 <Button
                   onClick={handleSend}
-                  disabled={!input.trim() || isProcessing}
+                  disabled={(!input.trim() && pendingFiles.length === 0) || isProcessing}
                   className="absolute right-2 bg-transparent bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-black disabled:opacity-50 disabled:cursor-not-allowed "
                   size="icon"
-                  title="Enviar mensaje"
+                  title={pendingFiles.length > 0 ? "Procesar archivos y enviar" : "Enviar mensaje"}
                 >
                   {isProcessing ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
