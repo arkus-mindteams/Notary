@@ -6,7 +6,7 @@ import type { UpdateUsuarioRequest } from '@/lib/types/auth-types'
 // PUT - Actualizar usuario (solo superadmin)
 export async function PUT(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> | { id: string } }
 ) {
   try {
     const supabase = createServerClient()
@@ -37,8 +37,18 @@ export async function PUT(
       )
     }
 
+    // Manejar params como Promise o objeto directo (compatibilidad con Next.js 13+ y 15+)
+    const resolvedParams = params instanceof Promise ? await params : params
+    
+    if (!resolvedParams.id) {
+      return NextResponse.json(
+        { error: 'bad_request', message: 'ID de usuario es requerido' },
+        { status: 400 }
+      )
+    }
+
     const body: UpdateUsuarioRequest = await req.json()
-    const usuarioActualizado = await UsuarioService.updateUsuario(params.id, body)
+    const usuarioActualizado = await UsuarioService.updateUsuario(resolvedParams.id, body)
     
     return NextResponse.json(usuarioActualizado)
   } catch (error: any) {
@@ -53,7 +63,7 @@ export async function PUT(
 // DELETE - Desactivar usuario (solo superadmin)
 export async function DELETE(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> | { id: string } }
 ) {
   try {
     const supabase = createServerClient()
@@ -84,15 +94,25 @@ export async function DELETE(
       )
     }
 
+    // Manejar params como Promise o objeto directo (compatibilidad con Next.js 13+ y 15+)
+    const resolvedParams = params instanceof Promise ? await params : params
+    
+    if (!resolvedParams.id) {
+      return NextResponse.json(
+        { error: 'bad_request', message: 'ID de usuario es requerido' },
+        { status: 400 }
+      )
+    }
+
     // No permitir desactivarse a sí mismo
-    if (params.id === usuario.id) {
+    if (resolvedParams.id === usuario.id) {
       return NextResponse.json(
         { error: 'bad_request', message: 'No puedes desactivarte a ti mismo' },
         { status: 400 }
       )
     }
 
-    await UsuarioService.deactivateUsuario(params.id)
+    await UsuarioService.deactivateUsuario(resolvedParams.id)
     return NextResponse.json({ success: true })
   } catch (error: any) {
     console.error('[api/admin/usuarios/[id]] Error:', error)

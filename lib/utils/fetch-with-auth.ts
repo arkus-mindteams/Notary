@@ -1,7 +1,21 @@
 import { createBrowserClient } from '@/lib/supabase'
 
 // Instancia singleton para el helper (no hook)
-const supabaseClient = createBrowserClient()
+// Lazy-load para evitar ejecución durante build time
+let supabaseClient: ReturnType<typeof createBrowserClient> | null = null
+
+function getSupabaseClient() {
+  if (!supabaseClient) {
+    // Solo crear el cliente si estamos en el navegador y las variables están disponibles
+    if (typeof window !== 'undefined') {
+      supabaseClient = createBrowserClient()
+    } else {
+      // Durante build time, retornar null y manejar en fetchWithAuth
+      return null
+    }
+  }
+  return supabaseClient
+}
 
 /**
  * Helper para hacer peticiones fetch con autenticación automática
@@ -11,7 +25,14 @@ export async function fetchWithAuth(
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  const { data: { session } } = await supabaseClient.auth.getSession()
+  const client = getSupabaseClient()
+  
+  // Si no hay cliente (build time), hacer fetch sin auth
+  if (!client) {
+    return fetch(url, options)
+  }
+  
+  const { data: { session } } = await client.auth.getSession()
 
   const headers = new Headers(options.headers)
 

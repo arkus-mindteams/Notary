@@ -108,6 +108,10 @@ export class UsuarioService {
    * Busca un usuario por ID
    */
   static async findUsuarioById(id: string): Promise<Usuario | null> {
+    if (!id || id === 'undefined' || id === 'null') {
+      throw new Error('ID de usuario inválido')
+    }
+    
     const supabase = createServerClient()
     
     const { data, error } = await supabase
@@ -170,6 +174,10 @@ export class UsuarioService {
    * Actualiza un usuario
    */
   static async updateUsuario(id: string, updates: UpdateUsuarioRequest): Promise<Usuario> {
+    if (!id || id === 'undefined' || id === 'null') {
+      throw new Error('ID de usuario inválido')
+    }
+    
     const supabase = createServerClient()
     
     // Validar constraints si se actualiza rol o notaria_id
