@@ -1366,12 +1366,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Convertir FileList a array si es necesario
     const filesArray = Array.isArray(files) ? files : Array.from(files)
 
-    // Si skipProcessingDocumentFlag es true, significa que hay un mensaje pendiente
-    // y queremos mostrar todo como un solo proceso bloqueado (usando solo isProcessing)
-    const shouldSetProcessingDocument = !skipProcessingDocumentFlag
-    if (shouldSetProcessingDocument) {
-      setIsProcessingDocument(true)
-    }
+    // Siempre establecer isProcessingDocument para mostrar la barra de progreso
+    // incluso si hay un mensaje pendiente
+    setIsProcessingDocument(true)
     setProcessingProgress(0)
     cancelDocumentBatchRequestedRef.current = false
     // Cancelar cualquier batch anterior colgado
@@ -1431,9 +1428,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     try {
       const session = await ensureSession()
       if (!session?.access_token) {
-        if (shouldSetProcessingDocument) {
-          setIsProcessingDocument(false)
-        }
+        setIsProcessingDocument(false)
         setProcessingProgress(0)
         setProcessingFileName(null)
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
@@ -1445,9 +1440,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return
       }
     } catch (e) {
-      if (shouldSetProcessingDocument) {
-        setIsProcessingDocument(false)
-      }
+      setIsProcessingDocument(false)
       setProcessingProgress(0)
       setProcessingFileName(null)
       setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
@@ -1483,9 +1476,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
       } catch (error) {
         console.error('Error convirtiendo PDFs:', error)
-        if (shouldSetProcessingDocument) {
-          setIsProcessingDocument(false)
-        }
+        setIsProcessingDocument(false)
         setProcessingProgress(0)
         setProcessingFileName(null)
         const errorMessage: ChatMessage = {
@@ -1606,9 +1597,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       const totalFiles = items.length
       if (totalFiles === 0) {
-        if (shouldSetProcessingDocument) {
-          setIsProcessingDocument(false)
-        }
+        setIsProcessingDocument(false)
         setProcessingProgress(0)
         setProcessingFileName(null)
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
@@ -2387,10 +2376,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     } finally {
       setIsProcessing(false)
-      // Solo limpiar isProcessingDocument si lo activamos al inicio
-      if (shouldSetProcessingDocument) {
-        setIsProcessingDocument(false)
-      }
+      setIsProcessingDocument(false)
       setProcessingProgress(0)
       setProcessingFileName(null)
       // Limpiar abort controller del batch actual
@@ -3421,9 +3407,28 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                           : 'bg-white text-gray-900 shadow-sm border border-gray-100'
                       }`}
                     >
-                      <p className={`text-sm leading-relaxed whitespace-pre-wrap ${
-                        message.role === 'user' ? 'text-white' : 'text-gray-800'
-                      }`}>{message.content}</p>
+                      {/* Ocultar el texto si es "Procesando documento..." */}
+                      {!(message.role === 'assistant' && message.content === 'Procesando documento...') && (
+                        <p className={`text-sm leading-relaxed whitespace-pre-wrap ${
+                          message.role === 'user' ? 'text-white' : 'text-gray-800'
+                        }`}>{message.content}</p>
+                      )}
+                      
+                      {/* Barra de progreso para mensajes de procesamiento */}
+                      {message.role === 'assistant' && 
+                       message.content === 'Procesando documento...' &&
+                       isProcessingDocument && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-gray-600 font-medium flex items-center space-x-2">
+                              <Loader2 className="h-3 w-3 animate-spin text-blue-600" />
+                              <span>{processingFileName ? `Procesando: ${processingFileName}` : 'Procesando documento...'}</span>
+                            </span>
+                            <span className="text-blue-600 font-semibold pl-6">{Math.round(processingProgress)}%</span>
+                          </div>
+                          <Progress value={processingProgress} className="h-1.5 bg-blue-100" />
+                        </div>
+                      )}
                       
                       {/* Adjuntos */}
                       {message.attachments && message.attachments.length > 0 && (
@@ -3507,35 +3512,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           </div>
         </div>
 
-
-          {/* Indicador de progreso de procesamiento */}
-          {/*{isProcessingDocument && (
-            <div className="border-t border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50 px-6 py-3">
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-700 font-medium flex items-center space-x-2">
-                    <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
-                    <span>{processingFileName ? `Procesando: ${processingFileName}` : 'Procesando documento...'}</span>
-                  </span>
-                  <div className="flex items-center gap-3">
-                    <span className="text-blue-600 font-semibold">{Math.round(processingProgress)}%</span>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={cancelDocumentProcessing}
-                      className="h-8 px-3"
-                      title="Cancelar subida/procesamiento"
-                    >
-                      Cancelar
-                    </Button>
-                  </div>
-                </div>
-                <Progress value={processingProgress} className="h-1.5 bg-blue-100" />
-              </div>
-            </div>
-          )}
-            */}
 
           {/* Input moderno */}
           <div className="border-t border-gray-200 bg-white px-4 py-2.5">
