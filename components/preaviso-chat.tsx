@@ -259,6 +259,7 @@ interface UploadedDocument {
   type: string
   size: number
   processed: boolean
+  cancelled?: boolean // Indica si el procesamiento fue cancelado
   extractedData?: any
   error?: string
   documentType?: string // Tipo detectado: 'escritura', 'plano', 'identificacion', etc.
@@ -276,11 +277,12 @@ const INITIAL_MESSAGES = [
 ]
 
 // Componente para mostrar miniatura de imagen
-function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasError = false }: { 
+function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasError = false, isCancelled = false }: { 
   file: File
   isProcessing?: boolean
   isProcessed?: boolean
   hasError?: boolean
+  isCancelled?: boolean
 }) {
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -307,7 +309,11 @@ function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasEr
         />
         {/* Badge de estado */}
         {isProcessed ? (
-          hasError ? (
+          isCancelled ? (
+            <div className="absolute top-1.5 right-1.5 bg-orange-500 rounded-full p-1 shadow-lg">
+              <X className="h-2.5 w-2.5 text-white" />
+            </div>
+          ) : hasError ? (
             <div className="absolute top-1.5 right-1.5 bg-red-500 rounded-full p-1 shadow-lg">
               <AlertCircle className="h-2.5 w-2.5 text-white" />
             </div>
@@ -693,6 +699,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
       return filtered
     })
+    
+    // Marcar documentos no procesados como cancelados para quitar el círculo de procesamiento
+    setUploadedDocuments(prev => 
+      prev.map(doc => 
+        !doc.processed ? { ...doc, processed: true, cancelled: true } : doc
+      )
+    )
     
     // Limpiar estado completamente
     setProcessingFileName(null)
@@ -3443,6 +3456,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                               const isProcessing = correspondingDoc ? !correspondingDoc.processed : false
                               const isProcessed = correspondingDoc?.processed || false
                               const hasError = correspondingDoc?.error ? true : false
+                              const isCancelled = correspondingDoc?.cancelled || false
                               
                               return (
                                 <div key={idx}>
@@ -3452,6 +3466,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                                       isProcessing={isProcessing}
                                       isProcessed={isProcessed}
                                       hasError={hasError}
+                                      isCancelled={isCancelled}
                                     />
                                   ) : (
                                     <div className={`flex items-center space-x-2 text-xs ${
