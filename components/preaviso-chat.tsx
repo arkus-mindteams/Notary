@@ -1546,8 +1546,42 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       const pending = new Map<number, any>()
       let nextToApply = 0
 
+      let sessionExpired = false
+      let errorCount = 0
+      const errorMessages: string[] = []
+      const classifyProcessError = (res: any): string => {
+        if (!res || !res.__error) return ''
+        const status = res.status
+        if (status === 401) {
+          return 'Tu sesión expiró mientras se procesaba el documento. Por favor actualiza la página e inicia sesión de nuevo.'
+        }
+        if (status === 408) {
+          return 'Timeout procesando el documento. Intenta de nuevo o sube imágenes individuales.'
+        }
+        if (status >= 500) {
+          return 'El backend no pudo procesar el documento. Intenta de nuevo en unos minutos.'
+        }
+        if (status === 0 || !status) {
+          return 'No se pudo iniciar el procesamiento en el backend. Verifica tu conexión y vuelve a intentar.'
+        }
+        return 'Error procesando el documento. Por favor, intenta nuevamente.'
+      }
+
       const applyResult = async (item: ImgItem, processResult: any) => {
         if (batchAbort.signal.aborted) return
+        if (processResult?.__error && processResult?.status === 401) {
+          sessionExpired = true
+          try {
+            documentBatchAbortRef.current?.abort()
+          } catch {}
+          return
+        }
+        if (processResult?.__error) {
+          errorCount++
+          const msg = classifyProcessError(processResult)
+          if (msg) errorMessages.push(msg)
+          return
+        }
         if (processResult?.state) setServerState(processResult.state as ServerStateSnapshot)
         if (processResult?.expedienteExistente) setExpedienteExistente(processResult.expedienteExistente)
 
@@ -2043,6 +2077,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }))
 
         const { data: { session } } = await supabase.auth.getSession()
+        if (!session?.access_token) {
+          return { __error: true, status: 401, text: 'session_expired' }
+        }
         const headers: HeadersInit = {}
         if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
 
@@ -2131,6 +2168,40 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
       if (idItems.length > 0) {
         await runPool(idItems, 1)
+      }
+
+      if (sessionExpired) {
+        setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
+          id: generateMessageId('session-expired'),
+          role: 'assistant',
+          content: 'Tu sesión expiró mientras se procesaba el documento. Por favor actualiza la página e inicia sesión de nuevo.',
+          timestamp: new Date()
+        }]))
+        setIsProcessingDocument(false)
+        setProcessingProgress(0)
+        setProcessingFileName(null)
+        setIsProcessing(false)
+        return
+      }
+
+      if (errorCount > 0) {
+        const uniqueErrors = Array.from(new Set(errorMessages))
+        const fallback = 'Error procesando el documento. Por favor, intenta nuevamente.'
+        const message =
+          errorCount >= totalFiles
+            ? (uniqueErrors[0] || fallback)
+            : `Algunas páginas no se procesaron (${errorCount}/${totalFiles}). ${uniqueErrors[0] || fallback}`
+        setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
+          id: generateMessageId('doc-error'),
+          role: 'assistant',
+          content: message,
+          timestamp: new Date()
+        }]))
+        setIsProcessingDocument(false)
+        setProcessingProgress(0)
+        setProcessingFileName(null)
+        setIsProcessing(false)
+        return
       }
 
       if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
