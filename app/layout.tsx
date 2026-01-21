@@ -15,7 +15,7 @@ export const metadata: Metadata = {
   description: "Sistema profesional para la interpretación y redacción notarial de medidas y colindancias",
   generator: "v0.app",
   icons: {
-    icon: "/logo.png",
+    icon: "/image.jpeg",
   },
 }
 

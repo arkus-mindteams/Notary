@@ -29,7 +29,8 @@ import {
   FolderOpen,
   MessageSquarePlus,
   ArrowUp,
-  X
+  X,
+  Square
 } from 'lucide-react'
 import { PreavisoExportOptions } from './preaviso-export-options'
 import type { LastQuestionIntent } from '@/lib/tramites/base/types'
@@ -698,11 +699,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     setProcessingProgress(0)
     setIsProcessingDocument(false)
     setIsProcessing(false)
+    
+    // Si había un mensaje pendiente, cancelarlo también
+    try {
+      messageAbortRef.current?.abort()
+      messageAbortRef.current = null
+    } catch {}
   }
 
   // Abort global para cancelar un batch completo de carga/procesamiento
   const documentBatchAbortRef = useRef<AbortController | null>(null)
   const cancelDocumentBatchRequestedRef = useRef(false)
+  
+  // Abort controller para cancelar peticiones de mensajes de chat
+  const messageAbortRef = useRef<AbortController | null>(null)
 
   // Guardar progreso automáticamente cuando cambian los datos
   useEffect(() => {
@@ -1026,12 +1036,53 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     await resetChat()
   }
 
+  const cancelMessageRequest = () => {
+    // Si se está procesando un documento, cancelar el procesamiento de documentos
+    // (esto también puede cancelar un mensaje pendiente si se enviaron juntos)
+    if (isProcessingDocument) {
+      cancelDocumentProcessing()
+      // Si también estaba procesando un mensaje, cancelarlo también
+      if (isProcessing) {
+        try {
+          messageAbortRef.current?.abort()
+        } catch {}
+        setIsProcessing(false)
+      }
+      return
+    }
+    // Si se está procesando un mensaje, cancelar el mensaje
+    if (!isProcessing) return
+    try {
+      messageAbortRef.current?.abort()
+    } catch {}
+    setIsProcessing(false)
+    const cancelMessage: ChatMessage = {
+      id: generateMessageId('cancel'),
+      role: 'assistant',
+      content: 'Solicitud cancelada. Puedes enviar un nuevo mensaje cuando gustes.',
+      timestamp: new Date()
+    }
+    setMessages(prev => [...prev, cancelMessage])
+  }
+
   const handleSend = async () => {
     // Ocultar paneles inmediatamente cuando se envía un mensaje
     setHidePanelsAfterMessage(true)
     
+    const hasFiles = pendingFiles.length > 0
+    const hasMessage = input.trim().length > 0
+    
+    if (!hasFiles && !hasMessage) return
+    if (isProcessing || isProcessingDocument) return
+
+    // Si hay archivos pendientes Y mensaje, marcar como procesando desde el inicio
+    // para que se muestre como un solo proceso bloqueado
+    if (hasFiles && hasMessage) {
+      setIsProcessing(true)
+    }
+    
     // Si hay archivos pendientes, procesarlos primero
-    if (pendingFiles.length > 0) {
+    if (hasFiles) {
       // Crear un FileList simulado para usar con handleFileUpload
       const dataTransfer = new DataTransfer()
       pendingFiles.forEach(file => dataTransfer.items.add(file))
@@ -1040,16 +1091,27 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Limpiar archivos pendientes antes de procesar
       setPendingFiles([])
       
-      // Procesar archivos
-      await handleFileUpload(fileList)
+      // Procesar archivos (pasar true para no activar isProcessingDocument cuando hay mensaje pendiente)
+      await handleFileUpload(fileList, true)
       
       // Si no hay texto, solo procesar archivos y salir
-      if (!input.trim()) {
+      if (!hasMessage) {
+        // Si estaba marcado como procesando, limpiarlo
+        setIsProcessing(false)
+        return
+      }
+      
+      // Si había mensaje pero se canceló el procesamiento de documentos, salir
+      if (cancelDocumentBatchRequestedRef.current) {
+        setIsProcessing(false)
         return
       }
     }
     
-    if (!input.trim() || isProcessing) return
+    // Si solo hay mensaje (sin archivos), marcar como procesando ahora
+    if (hasMessage && !hasFiles) {
+      setIsProcessing(true)
+    }
 
     const userMessage: ChatMessage = {
       id: generateMessageId('user'),
@@ -1061,7 +1123,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     setMessages(prev => [...prev, userMessage])
     const currentInput = input.trim()
     setInput('')
-    setIsProcessing(true)
+
+    // Cancelar cualquier petición anterior
+    if (messageAbortRef.current) {
+      try { messageAbortRef.current.abort() } catch {}
+    }
+    const messageAbort = new AbortController()
+    messageAbortRef.current = messageAbort
 
     try {
       // Llamar al agente de IA (usando Plugin System V2)
@@ -1070,6 +1138,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         headers: {
           'Content-Type': 'application/json',
         },
+        signal: messageAbort.signal,
           body: JSON.stringify({
           messages: [
             ...messages.map(m => ({ role: m.role, content: m.content })),
@@ -1266,6 +1335,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
 
     } catch (error) {
+      // No mostrar error si fue cancelado por el usuario
+      if ((error as any)?.name === 'AbortError' || messageAbort.signal.aborted) {
+        return
+      }
       console.error('Error en chat:', error)
       const errorMessage: ChatMessage = {
         id: generateMessageId('error'),
@@ -1276,6 +1349,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       setMessages(prev => [...prev, errorMessage])
     } finally {
       setIsProcessing(false)
+      // Limpiar abort controller si es el actual
+      if (messageAbortRef.current === messageAbort) {
+        messageAbortRef.current = null
+      }
       // Restaurar foco en el input después de procesar
       setTimeout(() => {
         textInputRef.current?.focus()
@@ -1283,13 +1360,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
   }
 
-  const handleFileUpload = async (files: FileList | File[] | null) => {
+  const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false) => {
     if (!files || files.length === 0) return
     
     // Convertir FileList a array si es necesario
     const filesArray = Array.isArray(files) ? files : Array.from(files)
 
-    setIsProcessingDocument(true)
+    // Si skipProcessingDocumentFlag es true, significa que hay un mensaje pendiente
+    // y queremos mostrar todo como un solo proceso bloqueado (usando solo isProcessing)
+    const shouldSetProcessingDocument = !skipProcessingDocumentFlag
+    if (shouldSetProcessingDocument) {
+      setIsProcessingDocument(true)
+    }
     setProcessingProgress(0)
     cancelDocumentBatchRequestedRef.current = false
     // Cancelar cualquier batch anterior colgado
@@ -1349,7 +1431,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     try {
       const session = await ensureSession()
       if (!session?.access_token) {
-        setIsProcessingDocument(false)
+        if (shouldSetProcessingDocument) {
+          setIsProcessingDocument(false)
+        }
         setProcessingProgress(0)
         setProcessingFileName(null)
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
@@ -1361,7 +1445,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return
       }
     } catch (e) {
-      setIsProcessingDocument(false)
+      if (shouldSetProcessingDocument) {
+        setIsProcessingDocument(false)
+      }
       setProcessingProgress(0)
       setProcessingFileName(null)
       setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
@@ -1397,7 +1483,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
       } catch (error) {
         console.error('Error convirtiendo PDFs:', error)
-        setIsProcessingDocument(false)
+        if (shouldSetProcessingDocument) {
+          setIsProcessingDocument(false)
+        }
         setProcessingProgress(0)
         setProcessingFileName(null)
         const errorMessage: ChatMessage = {
@@ -1518,7 +1606,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       const totalFiles = items.length
       if (totalFiles === 0) {
-        setIsProcessingDocument(false)
+        if (shouldSetProcessingDocument) {
+          setIsProcessingDocument(false)
+        }
         setProcessingProgress(0)
         setProcessingFileName(null)
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
@@ -2297,7 +2387,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     } finally {
       setIsProcessing(false)
-      setIsProcessingDocument(false)
+      // Solo limpiar isProcessingDocument si lo activamos al inicio
+      if (shouldSetProcessingDocument) {
+        setIsProcessingDocument(false)
+      }
       setProcessingProgress(0)
       setProcessingFileName(null)
       // Limpiar abort controller del batch actual
@@ -3562,7 +3655,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                       }}
                       placeholder="Escribe tu mensaje o pega una imagen (Ctrl+V / Cmd+V)..."
                       className="min-h-[44px] max-h-[120px] resize-none border-0 bg-transparent focus:ring-0 focus-visible:ring-0 pl-12 pr-12 py-3"
-                      disabled={isProcessing}
+                      disabled={isProcessing || isProcessingDocument}
                     />
                     
                     {/* Botón de adjuntar archivos dentro del input - izquierda */}
@@ -3587,14 +3680,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
                     {/* Botón de enviar dentro del input - derecha */}
                     <Button
-                      onClick={handleSend}
-                      disabled={(!input.trim() && pendingFiles.length === 0) || isProcessing}
+                      onClick={(isProcessing || isProcessingDocument) ? cancelMessageRequest : handleSend}
+                      disabled={!(isProcessing || isProcessingDocument) && (!input.trim() && pendingFiles.length === 0)}
                       className="absolute right-2 bg-transparent bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-black disabled:opacity-50 disabled:cursor-not-allowed "
                       size="icon"
-                      title={pendingFiles.length > 0 ? "Procesar archivos y enviar" : "Enviar mensaje"}
+                      title={(isProcessing || isProcessingDocument) ? "Cancelar solicitud" : (pendingFiles.length > 0 ? "Procesar archivos y enviar" : "Enviar mensaje")}
                     >
-                      {isProcessing ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
+                      {(isProcessing || isProcessingDocument) ? (
+                        <Square className="h-4 w-4 fill-current" />
                       ) : (
                         <ArrowUp className="h-4 w-4" />
                       )}
