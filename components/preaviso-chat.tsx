@@ -1101,11 +1101,27 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       pendingFiles.forEach(file => dataTransfer.items.add(file))
       const fileList = dataTransfer.files
       
+      // Guardar archivos antes de limpiar para incluirlos en el mensaje
+      const filesToAttach = [...pendingFiles]
+      
       // Limpiar archivos pendientes antes de procesar
       setPendingFiles([])
       
-      // Procesar archivos (pasar true para no activar isProcessingDocument cuando hay mensaje pendiente)
-      await handleFileUpload(fileList, true)
+      // Si hay mensaje de texto, crear un solo mensaje multimodal con texto + archivos
+      if (hasMessage) {
+        const userMessage: ChatMessage = {
+          id: generateMessageId('user'),
+          role: 'user',
+          content: input.trim(),
+          timestamp: new Date(),
+          attachments: filesToAttach
+        }
+        setMessages(prev => [...prev, userMessage])
+      }
+      
+      // Procesar archivos (pasar true para no activar isProcessingDocument cuando hay mensaje pendiente,
+      // y true para skipUserMessage cuando hay texto para evitar mensaje duplicado)
+      await handleFileUpload(fileList, true, hasMessage)
       
       // Si no hay texto, solo procesar archivos y salir
       if (!hasMessage) {
@@ -1119,21 +1135,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         setIsProcessing(false)
         return
       }
-    }
-    
-    // Si solo hay mensaje (sin archivos), marcar como procesando ahora
-    if (hasMessage && !hasFiles) {
+    } else {
+      // Si solo hay mensaje (sin archivos), marcar como procesando ahora
       setIsProcessing(true)
+      
+      const userMessage: ChatMessage = {
+        id: generateMessageId('user'),
+        role: 'user',
+        content: input.trim(),
+        timestamp: new Date()
+      }
+      setMessages(prev => [...prev, userMessage])
     }
-
-    const userMessage: ChatMessage = {
-      id: generateMessageId('user'),
-      role: 'user',
-      content: input.trim(),
-      timestamp: new Date()
-    }
-
-    setMessages(prev => [...prev, userMessage])
     const currentInput = input.trim()
     setInput('')
 
@@ -1280,6 +1293,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         setShowExportOptions(true)
       }
       
+      // Obtener el último mensaje del usuario para copiar attachments si tiene imágenes
+      const lastUserMessage = messages.findLast(m => m.role === 'user')
+      const userImageAttachments = lastUserMessage?.attachments?.filter(f => f.type.startsWith('image/')) || []
+      
       // Agregar mensajes con delay para efecto conversacional
       for (let i = 0; i < messagesToAdd.length; i++) {
         await new Promise(resolve => setTimeout(resolve, i * 300)) // 300ms entre mensajes
@@ -1287,7 +1304,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           id: generateMessageId('ai'),
           role: 'assistant',
           content: toUserFacingAssistantText(messagesToAdd[i]),
-          timestamp: new Date()
+          timestamp: new Date(),
+          // Incluir imágenes del mensaje del usuario en la respuesta del asistente si hay
+          attachments: userImageAttachments.length > 0 ? userImageAttachments : undefined
         }
         setMessages(prev => {
           // Verificar que no esté duplicado
@@ -1373,7 +1392,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
   }
 
-  const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false) => {
+  const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false, skipUserMessage = false) => {
     if (!files || files.length === 0) return
     
     // Convertir FileList a array si es necesario
@@ -1408,16 +1427,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }))
     setUploadedDocuments(prev => [...prev, ...originalDocs])
 
-    // Mensaje de usuario
+    // Obtener nombres de archivos para uso en toda la función
     const fileNames = filesArray.map(f => f.name)
-    const fileMessage: ChatMessage = {
-      id: generateMessageId('file'),
-      role: 'user',
-      content: `He subido el siguiente documento: ${fileNames.join(', ')}`,
-      timestamp: new Date(),
-      attachments: filesArray
+
+    // Mensaje de usuario solo si no se debe omitir (cuando hay texto pendiente, el mensaje se crea en handleSend)
+    if (!skipUserMessage) {
+      const fileMessage: ChatMessage = {
+        id: generateMessageId('file'),
+        role: 'user',
+        content: `He subido el siguiente documento: ${fileNames.join(', ')}`,
+        timestamp: new Date(),
+        attachments: filesArray
+      }
+      setMessages(prev => [...prev, fileMessage])
     }
-    setMessages(prev => [...prev, fileMessage])
 
     // Mensaje de procesamiento
     const processingMessage: ChatMessage = {
@@ -2344,6 +2367,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
         const messagesToAdd = result.messages || [result.message]
         
+        // Obtener el último mensaje del usuario con attachments para copiar imágenes
+        const lastUserMessage = messages.findLast(m => m.role === 'user' && m.attachments && m.attachments.length > 0)
+        const userImageAttachments = lastUserMessage?.attachments?.filter(f => f.type.startsWith('image/')) || []
+        
         // Remover mensaje de procesamiento y agregar respuesta del agente
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
         
@@ -2354,7 +2381,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             id: `file-${baseTimestamp}-${i}`,
             role: 'assistant',
             content: toUserFacingAssistantText(messagesToAdd[i]),
-            timestamp: new Date()
+            timestamp: new Date(),
+            // Incluir imágenes del mensaje del usuario en la respuesta del asistente si hay
+            attachments: userImageAttachments.length > 0 ? userImageAttachments : undefined
           }
           setMessages(prev => {
             const exists = prev.some(m => m.id === assistantMessage.id || 
