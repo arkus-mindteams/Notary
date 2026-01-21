@@ -34,6 +34,22 @@ const tools: ToolDefinition[] = [
     outputSchema: { compradores: '...persona_fisica|persona_moral.nombre' }
   },
   {
+    id: 'document_people_detected',
+    commandType: 'document_people_detected',
+    description: 'Registrar personas detectadas en documentos para confirmación.',
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
+    inputSchema: { persons: 'array', source: 'string?' },
+    outputSchema: { _document_people_pending: '...persons[]' }
+  },
+  {
+    id: 'document_people_selection',
+    commandType: 'document_people_selection',
+    description: 'Seleccionar comprador a partir de personas detectadas.',
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
+    inputSchema: { buyerIndex: 'number?', otherIndex: 'number?', buyerName: 'string?', otherName: 'string?', relation: 'string?', source: 'string?' },
+    outputSchema: { compradores: '...persona_fisica.nombre', _document_people_pending: 'resolved' }
+  },
+  {
     id: 'estado_civil',
     commandType: 'estado_civil',
     description: 'Capturar estado civil del comprador.',
@@ -48,6 +64,14 @@ const tools: ToolDefinition[] = [
     allowedStates: ['ESTADO_4B'],
     inputSchema: { buyerIndex: 'number', name: 'string' },
     outputSchema: { compradores: '...persona_fisica.conyuge.nombre' }
+  },
+  {
+    id: 'buyer_conyuge_swap',
+    commandType: 'buyer_conyuge_swap',
+    description: 'Corregir comprador/cónyuge cuando están invertidos.',
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
+    inputSchema: { compradorNombre: 'string?', conyugeNombre: 'string?', swap: 'boolean?' },
+    outputSchema: { compradores: '...persona_fisica.nombre/conyuge.nombre' }
   },
   {
     id: 'titular_registral',
@@ -74,10 +98,18 @@ const tools: ToolDefinition[] = [
     outputSchema: { inmueble: 'folio_real_confirmed' }
   },
   {
+    id: 'multiple_folios_detected',
+    commandType: 'multiple_folios_detected',
+    description: 'Registrar folios detectados desde documento para selección.',
+    allowedStates: ['ESTADO_2'],
+    inputSchema: { folios: 'string[]', foliosConInfo: 'array', scope: 'object' },
+    outputSchema: { folios: '...candidates[]' }
+  },
+  {
     id: 'encumbrance',
     commandType: 'encumbrance',
     description: 'Confirmar gravamen/hipoteca.',
-    allowedStates: ['ESTADO_6'],
+    allowedStates: ['ESTADO_6', 'ESTADO_6B'],
     inputSchema: { exists: 'boolean' },
     outputSchema: { inmueble: 'existe_hipoteca' }
   },

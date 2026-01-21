@@ -653,6 +653,10 @@ export class InputParser {
       pattern: /^(.+?)\s+(acreditad[oa]|coacreditad[oa])\s*$/i,
       condition: (input, context) => {
         // Igual que el caso etiquetado: roles explícitos implican crédito.
+        // Guardrail: si el texto contiene "como" o menciona ambos roles, no usar esta regla.
+        const t = String(input || '').toLowerCase()
+        if (t.includes(' como ')) return false
+        if (/acreditad[oa].*coacreditad[oa]|coacreditad[oa].*acreditad[oa]/i.test(t)) return false
         return /(acreditad[oa]|coacreditad[oa])/i.test(input)
       },
       extract: (input, context) => {
@@ -939,6 +943,160 @@ export class InputParser {
         return { exists: true, cancellationConfirmed: saysNoCancel ? true : false }
       },
       handler: 'EncumbranceHandler'
+    })
+
+    // 8C.1 Selección de comprador cuando se detectan dos personas en documentos
+    this.rules.push({
+      name: 'document_people_selection',
+      pattern: /.+/i,
+      condition: (input, context) => {
+        const pending = context?._document_people_pending
+        if (!pending || pending?.status !== 'pending') return false
+        const persons = Array.isArray(pending?.persons) ? pending.persons : []
+        if (persons.length < 1) return false
+        return context?._last_question_intent === 'document_people_select_buyer'
+      },
+      extract: (input, context) => {
+        const pending = context?._document_people_pending
+        const persons = Array.isArray(pending?.persons) ? pending.persons : []
+        const text = String(input || '').trim()
+        const normInput = ConyugeService.normalizeName(text)
+        const normName = (n: string) => ConyugeService.normalizeName(n || '')
+
+        if (persons.length === 1) {
+          const yes = /^(si|sí|confirmo|confirmado|correcto)$/i.test(text)
+          const matchesName =
+            normInput && normName(persons[0]?.name || '') && normInput.includes(normName(persons[0]?.name || ''))
+          if (!yes && !matchesName) return null
+          return {
+            __commands: [
+              {
+                type: 'document_people_selection',
+                timestamp: new Date(),
+                payload: {
+                  buyerIndex: 0,
+                  otherIndex: null,
+                  buyerName: persons[0]?.name || null,
+                  otherName: null,
+                  relation: null,
+                  source: pending?.source || null
+                }
+              }
+            ]
+          }
+        }
+
+        if (persons.length < 2) return null
+
+        let buyerIndex: number | null = null
+        let otherIndex: number | null = null
+
+        const persona1 = /\bpersona\s*1\b|\bpersona\s*uno\b|\bprimera\s+persona\b/i.test(text)
+        const persona2 = /\bpersona\s*2\b|\bpersona\s*dos\b|\bsegunda\s+persona\b/i.test(text)
+        if (persona1) buyerIndex = 0
+        if (persona2) buyerIndex = 1
+
+        if (buyerIndex === null) {
+          const idx = persons.findIndex((p: any) => {
+            const n = normName(p?.name || '')
+            return n && normInput.includes(n)
+          })
+          if (idx >= 0) buyerIndex = idx
+        }
+
+        if (buyerIndex === null) return null
+        otherIndex = buyerIndex === 0 ? 1 : 0
+
+        const relationMatch = (() => {
+          if (/\b(c[oó]nyuge|conyuge|espos[oa]|pareja)\b/i.test(text)) return 'conyuge'
+          if (/\b(herman[oa])\b/i.test(text)) return 'hermano'
+          if (/\b(madre|mam[aá])\b/i.test(text)) return 'madre'
+          if (/\b(padre|pap[aá])\b/i.test(text)) return 'padre'
+          if (/\b(hij[oa])\b/i.test(text)) return 'hijo'
+          if (/\b(socio|socia)\b/i.test(text)) return 'socio'
+          if (/\b(apoderad[oa])\b/i.test(text)) return 'apoderado'
+          if (/\b(otro|otra)\b/i.test(text)) return 'otro'
+          return null
+        })()
+
+        return {
+          __commands: [
+            {
+              type: 'document_people_selection',
+              timestamp: new Date(),
+              payload: {
+                buyerIndex,
+                otherIndex,
+                buyerName: persons[buyerIndex]?.name || null,
+                otherName: persons[otherIndex]?.name || null,
+                relation: pending?.source === 'acta_matrimonio' ? 'conyuge' : relationMatch,
+                source: pending?.source || null
+              }
+            }
+          ]
+        }
+      },
+      handler: 'DocumentPeopleSelectionHandler'
+    })
+
+    // 8D. Corrección explícita de comprador/cónyuge cuando están invertidos
+    // Ej: "el comprador será QIAOZHEN ZHANG y su cónyuge JINWEI WU"
+    this.rules.push({
+      name: 'buyer_conyuge_swap_names',
+      pattern: /\b(comprador|compradora)\b.*?\b(ser[aá]|es)\b/i,
+      condition: (input, context) => {
+        const buyer = context?.compradores?.[0]
+        const buyerNombre = buyer?.persona_fisica?.nombre
+        const conyugeNombre = buyer?.persona_fisica?.conyuge?.nombre
+        if (!buyerNombre && !conyugeNombre) return false
+        const t = String(input || '').toLowerCase()
+        return t.includes('comprador') && (t.includes('conyuge') || t.includes('cónyuge'))
+      },
+      extract: (input) => {
+        const t = String(input || '').trim()
+        const re = /comprador[a]?\s+(?:ser[aá]|es)\s+([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ'\-.\s]{2,120}?)\s+(?:y|e)\s+(?:su\s+)?c[oó]nyuge\s+([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ'\-.\s]{2,120})/i
+        const m = t.match(re)
+        if (!m) return null
+        const compradorNombre = m[1].trim()
+        const conyugeNombre = m[2].trim()
+        if (!compradorNombre || !conyugeNombre) return null
+        return {
+          __commands: [
+            {
+              type: 'buyer_conyuge_swap',
+              timestamp: new Date(),
+              payload: {
+                compradorNombre,
+                conyugeNombre
+              }
+            }
+          ]
+        }
+      },
+      handler: 'BuyerConyugeSwapHandler'
+    })
+
+    // 8E. Corrección por "están al revés" sin repetir nombres (swap directo)
+    this.rules.push({
+      name: 'buyer_conyuge_swap',
+      pattern: /\b(al\s+reves|al\s+rev[eé]s|invertid[oa]s|intercambiados?)\b/i,
+      condition: (input, context) => {
+        const buyer = context?.compradores?.[0]
+        const buyerNombre = buyer?.persona_fisica?.nombre
+        const conyugeNombre = buyer?.persona_fisica?.conyuge?.nombre
+        if (!buyerNombre || !conyugeNombre) return false
+        return /\b(al\s+reves|al\s+rev[eé]s|invertid[oa]s|intercambiados?)\b/i.test(String(input || ''))
+      },
+      extract: () => ({
+        __commands: [
+          {
+            type: 'buyer_conyuge_swap',
+            timestamp: new Date(),
+            payload: { swap: true }
+          }
+        ]
+      }),
+      handler: 'BuyerConyugeSwapHandler'
     })
 
     // 9. Nombre de cónyuge (cuando se escribe manualmente)

@@ -156,6 +156,18 @@ export interface PreavisoData {
   // Runtime (solo control de flujo; no forma parte del documento final)
   _document_intent?: 'conyuge' | null
   _last_question_intent?: LastQuestionIntent | null
+  _document_people_pending?: {
+    status: 'pending' | 'resolved'
+    source?: 'identificacion' | 'acta_matrimonio' | 'documento'
+    persons: Array<{
+      name: string
+      rfc?: string | null
+      curp?: string | null
+      source?: string | null
+    }>
+    other_person?: { name: string; relation?: string | null } | null
+    other_relationship?: string | null
+  } | null
   
   // Arrays según v1.4
   vendedores: VendedorElement[]
@@ -359,6 +371,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const supabase = useMemo(() => createBrowserClient(), [])
   const messageIdCounterRef = useRef(0)
   const conversationIdRef = useRef<string | null>(null)
+  const documentProcessCacheRef = useRef<Map<string, any>>(new Map())
   
   // Función helper para generar IDs únicos para mensajes
   const generateMessageId = (prefix: string = 'msg'): string => {
@@ -380,6 +393,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const [data, setData] = useState<PreavisoData>({
     tipoOperacion: 'compraventa', // Siempre es compraventa en este sistema
     _document_intent: null,
+    _document_people_pending: null,
     vendedores: [],
     compradores: [],
     creditos: undefined,
@@ -888,6 +902,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     initializationRef.current = false
     setInitialMessagesSent(false)
     messageIdCounterRef.current = 0
+    documentProcessCacheRef.current.clear()
     
     // Limpiar archivos pendientes
     setPendingFiles([])
@@ -895,6 +910,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Resetear datos del preaviso a estado inicial
     const initialData: PreavisoData = {
       tipoOperacion: 'compraventa',
+      _document_people_pending: null,
       vendedores: [],
       compradores: [],
       creditos: undefined,
@@ -1064,6 +1080,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             // Esto permite que el backend detecte correctamente qué información ya está capturada
             conversation_id: conversationIdRef.current,
             _document_intent: (data as any)._document_intent ?? null,
+            _document_people_pending: (data as any)._document_people_pending ?? null,
             _last_question_intent: (data as any)._last_question_intent ?? null,
             tramiteId: activeTramiteId,
             vendedores: data.vendedores || [],
@@ -1107,6 +1124,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
           if (d.tipoOperacion !== undefined) nextData.tipoOperacion = d.tipoOperacion
           if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (nextData as any)._document_intent = (d as any)._document_intent
+          if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) (nextData as any)._document_people_pending = (d as any)._document_people_pending
           if (d.vendedores !== undefined) nextData.vendedores = d.vendedores as any
           if (d.compradores !== undefined) nextData.compradores = d.compradores as any
           if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
@@ -1569,6 +1587,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             const d = processResult.data
             if (d.tipoOperacion !== undefined) updated.tipoOperacion = d.tipoOperacion
             if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (updated as any)._document_intent = (d as any)._document_intent
+            if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) (updated as any)._document_people_pending = (d as any)._document_people_pending
             
             // CRÍTICO: Merge inteligente de vendedores (no sobrescribir si ya existen)
             if (d.vendedores !== undefined) {
@@ -1823,6 +1842,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) {
             (workingData as any)._document_intent = (d as any)._document_intent
           }
+          if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) {
+            (workingData as any)._document_people_pending = (d as any)._document_people_pending
+          }
         }
 
         // S3 upload (solo 1 por archivo original)
@@ -1970,11 +1992,21 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         workingData = dataRef.current
         workingDocs = uploadedDocumentsRef.current
 
+        const cacheableTypes = new Set(['inscripcion', 'escritura', 'plano'])
+        const cacheKey = `${item.originalKey}:${item.imageFile.name}:${item.docType}`
+        if (cacheableTypes.has(item.docType)) {
+          const cached = documentProcessCacheRef.current.get(cacheKey)
+          if (cached && !cached.__error) {
+            return cached
+          }
+        }
+
         // DEBUG: verificar _document_intent en el momento exacto de procesar documento
         console.log('[PreavisoChat] processOne -> context snapshot', {
           file: item?.originalFile?.name,
           docType: item?.docType,
           _document_intent: (workingData as any)?._document_intent ?? null,
+          _document_people_pending: (workingData as any)?._document_people_pending ?? null,
           comprador0: workingData?.compradores?.[0]?.persona_fisica?.nombre || workingData?.compradores?.[0]?.persona_moral?.denominacion_social || null,
           comprador0EstadoCivil: workingData?.compradores?.[0]?.persona_fisica?.estado_civil || null,
           conyuge: workingData?.compradores?.[0]?.persona_fisica?.conyuge?.nombre || null,
@@ -1991,6 +2023,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           conversation_id: conversationIdRef.current,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
+          _document_people_pending: (workingData as any)._document_people_pending ?? null,
           tramiteId: activeTramiteId,
           vendedores: workingData.vendedores || [],
           compradores: workingData.compradores || [],
@@ -2047,7 +2080,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (!processResponse.ok) {
           return { __error: true, status: processResponse.status, text: await processResponse.text() }
         }
-        return await processResponse.json()
+        const json = await processResponse.json()
+        if (cacheableTypes.has(item.docType) && !json?.__error) {
+          documentProcessCacheRef.current.set(cacheKey, json)
+        }
+        return json
       }
 
       // Pool runner (concurrencia limitada)
@@ -2110,6 +2147,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // DEBUG: verificar que el chat reciba el contexto actualizado (incluye _document_intent y cónyuge si ya fue capturado)
       console.log('[PreavisoChat] before /preaviso-chat-v2 -> context snapshot', {
         _document_intent: (workingData as any)?._document_intent ?? null,
+        _document_people_pending: (workingData as any)?._document_people_pending ?? null,
         comprador0: workingData?.compradores?.[0]?.persona_fisica?.nombre || workingData?.compradores?.[0]?.persona_moral?.denominacion_social || null,
         comprador0EstadoCivil: workingData?.compradores?.[0]?.persona_fisica?.estado_civil || null,
         conyuge: workingData?.compradores?.[0]?.persona_fisica?.conyuge?.nombre || null,
@@ -2152,6 +2190,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           context: {
             // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
             _document_intent: (workingData as any)._document_intent ?? null,
+            _document_people_pending: (workingData as any)._document_people_pending ?? null,
             _last_question_intent: (workingData as any)._last_question_intent ?? null,
             tramiteId: activeTramiteId,
             vendedores: workingData.vendedores || [],
@@ -2188,6 +2227,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             const d = result.data
             if (d.tipoOperacion !== undefined) nextData.tipoOperacion = d.tipoOperacion
             if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (nextData as any)._document_intent = (d as any)._document_intent
+            if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) (nextData as any)._document_people_pending = (d as any)._document_people_pending
             if (Object.prototype.hasOwnProperty.call(d, '_last_question_intent')) (nextData as any)._last_question_intent = (d as any)._last_question_intent
           if (Object.prototype.hasOwnProperty.call(d, '_last_question_intent')) (nextData as any)._last_question_intent = (d as any)._last_question_intent
             if (d.vendedores !== undefined) nextData.vendedores = d.vendedores as any
@@ -3735,9 +3775,24 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                         {data.vendedores[0].persona_fisica?.curp && (
                           <div><span className="font-medium">CURP:</span> {data.vendedores[0].persona_fisica.curp}</div>
                         )}
-                        {data.vendedores[0].tiene_credito !== null && (
-                          <div><span className="font-medium">Crédito pendiente:</span> {data.vendedores[0].tiene_credito ? 'Sí' : 'No'}</div>
-                        )}
+                        {(() => {
+                          const vendedor = data.vendedores[0]
+                          const tieneCredito = vendedor?.tiene_credito
+                          const hasGravamen =
+                            data.inmueble?.existe_hipoteca === true ||
+                            (Array.isArray(data.gravamenes) && data.gravamenes.length > 0)
+
+                          if (tieneCredito === true) {
+                            return <div><span className="font-medium">Crédito pendiente:</span> Sí</div>
+                          }
+                          if (tieneCredito === false && !hasGravamen) {
+                            return <div><span className="font-medium">Crédito pendiente:</span> No</div>
+                          }
+                          if (hasGravamen) {
+                            return <div><span className="font-medium">Crédito pendiente:</span> Sí (por gravamen/hipoteca)</div>
+                          }
+                          return null
+                        })()}
                       </>
                     )}
                     {(!data.vendedores || data.vendedores.length === 0 || (!data.vendedores[0].persona_fisica?.nombre && !data.vendedores[0].persona_moral?.denominacion_social)) && (

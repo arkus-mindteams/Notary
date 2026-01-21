@@ -228,6 +228,50 @@ export class PreavisoPlugin implements TramitePlugin {
     context: any,
     conversationHistory: any[] = []
   ): Promise<string> {
+    const pendingPeople = context?._document_people_pending
+    const pendingPersons = Array.isArray(pendingPeople?.persons) ? pendingPeople.persons : []
+    if (pendingPeople?.status === 'pending' && pendingPersons.length >= 2) {
+      const list = pendingPersons
+        .slice(0, 2)
+        .map((p: any, idx: number) => `Persona ${idx + 1}: ${p?.name || ''}`.trim())
+        .join('\n')
+      if (pendingPeople?.source === 'acta_matrimonio') {
+        return `Detecté dos personas en el acta de matrimonio:\n${list}\n\n¿Quién es el comprador? (La otra persona se tomará como cónyuge).`
+      }
+      return `Detecté dos identificaciones:\n${list}\n\n¿Quién es el comprador y qué parentesco tiene la otra persona? (por ejemplo: "El comprador es Persona 1 y la otra es su cónyuge").`
+    }
+
+    if (pendingPeople?.status === 'pending' && pendingPersons.length === 1) {
+      const nombre = pendingPersons[0]?.name || ''
+      if (pendingPeople?.source === 'acta_matrimonio') {
+        return `Detecté este nombre en el acta de matrimonio: ${nombre}. ¿Es el comprador?`
+      }
+      return `Detecté una identificación a nombre de ${nombre}. ¿Es el comprador?`
+    }
+
+    // Guardrail determinista: si hay múltiples folios detectados y no hay selección,
+    // siempre listar opciones (no depender del LLM).
+    const folioCandidates = Array.isArray(context?.folios?.candidates)
+      ? context.folios.candidates
+      : []
+    const selectedFolio = context?.folios?.selection?.selected_folio
+    if (folioCandidates.length > 1 && !selectedFolio) {
+      const folioList = folioCandidates
+        .map((f: any) => {
+          const folio = typeof f === 'string' ? f : f.folio
+          return `- Folio ${folio}`
+        })
+        .join('\n')
+      return `En la hoja de inscripción detecté más de un folio real. Por favor, indícame exactamente cuál es el folio real que vamos a utilizar para este trámite:\n\n${folioList}\n\n(responde con el número del folio exactamente)`
+    }
+
+    // Si hay un solo candidato sin confirmación explícita, pedir confirmación.
+    if (folioCandidates.length === 1 && !selectedFolio) {
+      const folio = typeof folioCandidates[0] === 'string' ? folioCandidates[0] : folioCandidates[0]?.folio
+      if (folio) {
+        return `Detecté el folio real ${folio} en la hoja de inscripción. ¿Confirmas que usemos ese folio para este trámite?`
+      }
+    }
     // Si ya está todo completo (listo para generar), NO hacer más preguntas.
     // Responder de forma determinista para evitar que el LLM invente "condiciones especiales", "más compradores", etc.
     const missingNow = this.getMissingFields(state, context)

@@ -229,6 +229,15 @@ export class TramiteSystem {
     const inferLastQuestionIntent = (): LastQuestionIntent | null => {
       if (tramiteId !== 'preaviso') return null
 
+      const pendingPeople = updatedContext?._document_people_pending
+      if (
+        pendingPeople?.status === 'pending' &&
+        Array.isArray(pendingPeople?.persons) &&
+        pendingPeople.persons.length >= 1
+      ) {
+        return 'document_people_select_buyer'
+      }
+
       // Si ya está todo completo, no hay intención pendiente
       const missingNow = this.stateMachine.getMissingStates(plugin, updatedContext)
       if (missingNow.length === 0) return null

@@ -120,6 +120,7 @@ export type LastQuestionIntent =
   | 'encumbrance'
   | 'gravamen_acreedor'
   | 'encumbrance_cancellation'
+  | 'document_people_select_buyer'
   | 'titular_registral'
 
 export interface InmuebleManualCommand extends Command {

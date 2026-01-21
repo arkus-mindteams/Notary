@@ -57,6 +57,21 @@ export class BuyerNameHandler {
 
     const buyer = compradores[buyerIndex]
     
+    const pickLongerName = (a?: string | null, b?: string | null) => {
+      const aa = (a || '').trim()
+      const bb = (b || '').trim()
+      if (!aa) return bb || null
+      if (!bb) return aa || null
+      const aTokens = aa.split(/\s+/).length
+      const bTokens = bb.split(/\s+/).length
+      if (bTokens > aTokens) return bb
+      if (aTokens > bTokens) return aa
+      return bb.length >= aa.length ? bb : aa
+    }
+
+    const currentName = buyer.persona_fisica?.nombre || null
+    const finalName = pickLongerName(currentName, command.payload.name)
+
     compradores[buyerIndex] = {
       ...buyer,
       party_id: buyer.party_id || (buyerIndex === 0 ? 'comprador_1' : null),
@@ -64,7 +79,7 @@ export class BuyerNameHandler {
       persona_fisica: tipoPersona === 'persona_fisica'
         ? {
             ...buyer.persona_fisica,
-            nombre: command.payload.name,
+            nombre: finalName,
             rfc: command.payload.rfc || buyer.persona_fisica?.rfc || null,
             curp: command.payload.curp || buyer.persona_fisica?.curp || null
           }

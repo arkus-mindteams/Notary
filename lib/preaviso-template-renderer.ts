@@ -825,6 +825,13 @@ export class PreavisoTemplateRenderer {
    * Calcula automáticamente los actos notariales basándose en los datos si no están definidos
    */
   static convertFromPreavisoData(data: PreavisoData): PreavisoSimplifiedJSON {
+    const normalizePartida = (p: any): string | null => {
+      if (typeof p === 'string') return p
+      if (!p) return null
+      const v = p.partida || p.numero || p.folio || p.value
+      return v ? String(v) : null
+    }
+
     // Convertir v1.4 (arrays) a PreavisoSimplifiedJSON
     const primerVendedor = data.vendedores?.[0]
     const primerComprador = data.compradores?.[0]

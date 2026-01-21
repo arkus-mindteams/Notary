@@ -128,12 +128,14 @@ export async function convertPdfToImages(
   const totalPages = pdf.numPages
   const files: File[] = []
   
+  const renderScale = 2.0
+
   // Convert each page to image
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     const page = await pdf.getPage(pageNum)
     // Performance: 3.0 + PNG sin compresión es MUY pesado y lento (especialmente en PDFs largos).
     // Para Vision/OCR suele ser suficiente ~2.0–2.2 y JPEG de alta calidad.
-    const viewport = page.getViewport({ scale: 2.1, rotation: rotationDeg as any })
+    const viewport = page.getViewport({ scale: renderScale, rotation: rotationDeg as any })
     
     // Create canvas element
     const canvas = document.createElement("canvas")

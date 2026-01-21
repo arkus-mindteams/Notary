@@ -18,6 +18,9 @@ import { CreditParticipantHandler } from '../plugins/preaviso/handlers/credit-pa
 import { EncumbranceHandler } from '../plugins/preaviso/handlers/encumbrance-handler'
 import { InmuebleManualHandler } from '../plugins/preaviso/handlers/inmueble-manual-handler'
 import { GravamenAcreedorHandler } from '../plugins/preaviso/handlers/gravamen-acreedor-handler'
+import { BuyerConyugeSwapHandler } from '../plugins/preaviso/handlers/buyer-conyuge-swap-handler'
+import { DocumentPeopleDetectedHandler } from '../plugins/preaviso/handlers/document-people-detected-handler'
+import { DocumentPeopleSelectionHandler } from '../plugins/preaviso/handlers/document-people-selection-handler'
 
 export class CommandRouter {
   private handlers: Map<string, any> = new Map()
@@ -34,6 +37,10 @@ export class CommandRouter {
     this.handlers.set('credit_institution', CreditInstitutionHandler)
     this.handlers.set('credit_participant', CreditParticipantHandler)
     this.handlers.set('encumbrance', EncumbranceHandler)
+    this.handlers.set('encumbrance_cancellation', EncumbranceHandler)
+    this.handlers.set('buyer_conyuge_swap', BuyerConyugeSwapHandler)
+    this.handlers.set('document_people_detected', DocumentPeopleDetectedHandler)
+    this.handlers.set('document_people_selection', DocumentPeopleSelectionHandler)
     this.handlers.set('inmueble_manual', InmuebleManualHandler)
     this.handlers.set('gravamen_acreedor', GravamenAcreedorHandler)
   }

@@ -620,6 +620,28 @@ REGLAS:
     const intent = this.determineDocumentIntent(nombre, context)
     console.log('[DocumentProcessor] Intent detectado:', intent, 'para nombre:', nombre)
 
+    // Si aún no hay comprador y no hay intención explícita, no asumir: registrar personas pendientes
+    const hasBuyer = !!context.compradores?.[0]?.persona_fisica?.nombre
+    const explicitIntent = (context as any)?._document_intent
+    if (!hasBuyer && !explicitIntent) {
+      commands.push({
+        type: 'document_people_detected',
+        timestamp: new Date(),
+        payload: {
+          source: 'identificacion',
+          persons: [
+            {
+              name: nombre,
+              rfc: extracted.rfc,
+              curp: extracted.curp,
+              source: 'documento_identificacion'
+            }
+          ]
+        }
+      })
+      return commands
+    }
+
     switch (intent) {
       case 'buyer':
         commands.push({
@@ -685,6 +707,22 @@ REGLAS:
       const compradorNombre = context.compradores?.[0]?.persona_fisica?.nombre
       const comprador = context.compradores?.[0]
 
+      // Si no hay comprador aún, NO asumir roles. Pedir confirmación al usuario.
+      if (!compradorNombre) {
+        commands.push({
+          type: 'document_people_detected',
+          timestamp: new Date(),
+          payload: {
+            source: 'acta_matrimonio',
+            persons: nombres.map((n: string) => ({
+              name: n,
+              source: 'documento_acta_matrimonio'
+            }))
+          }
+        })
+        return commands
+      }
+
       // CRÍTICO: si viene acta de matrimonio, asegurar estado civil CASADO antes de guardar cónyuge
       // (el handler de cónyuge exige buyer.estado_civil === 'casado').
       const estadoCivilActual = comprador?.persona_fisica?.estado_civil
@@ -715,41 +753,6 @@ REGLAS:
               }
             })
           }
-        }
-      } else {
-        // Si no hay comprador aún, usar el primer nombre como comprador y el segundo como cónyuge.
-        // Orden de comandos: buyer_name -> estado_civil -> conyuge_name.
-        if (nombres[0]) {
-          commands.push({
-            type: 'buyer_name',
-            timestamp: new Date(),
-            payload: {
-              buyerIndex: 0,
-              name: nombres[0],
-              inferredTipoPersona: 'persona_fisica',
-              source: 'documento_acta_matrimonio'
-            }
-          })
-        }
-        commands.push({
-          type: 'estado_civil',
-          timestamp: new Date(),
-          payload: {
-            buyerIndex: 0,
-            estadoCivil: 'casado',
-            source: 'documento_acta_matrimonio'
-          }
-        })
-        if (nombres[1]) {
-          commands.push({
-            type: 'conyuge_name',
-            timestamp: new Date(),
-            payload: {
-              buyerIndex: 0,
-              name: nombres[1],
-              source: 'documento_acta_matrimonio'
-            }
-          })
         }
       }
       // Nota: ya se aseguró estado civil arriba para evitar errores de orden.
@@ -837,9 +840,9 @@ REGLAS:
       return 'conyuge'
     }
 
-    // PRIORIDAD 5: Si no hay comprador → probablemente es del comprador
+    // PRIORIDAD 5: Si no hay comprador → no asumir (esperar confirmación)
     if (!compradorNombre) {
-      return 'buyer'
+      return 'unknown'
     }
 
     // PRIORIDAD 6: Si hay comprador casado y el nombre no es del comprador → probablemente cónyuge

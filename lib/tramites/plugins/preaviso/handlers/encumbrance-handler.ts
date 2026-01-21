@@ -10,15 +10,20 @@ export class EncumbranceHandler {
     context: any
   ): Promise<HandlerResult> {
     const updatedContext = { ...context }
-    
+    const existingExists = updatedContext?.inmueble?.existe_hipoteca
+    const inferredExists =
+      command.payload.exists !== undefined
+        ? command.payload.exists
+        : (command.payload.cancellationConfirmed !== undefined ? true : existingExists)
+
     // Actualizar inmueble
     updatedContext.inmueble = {
       ...updatedContext.inmueble,
-      existe_hipoteca: command.payload.exists
+      existe_hipoteca: inferredExists
     }
 
     // Actualizar gravámenes
-    if (command.payload.exists) {
+    if (inferredExists) {
       const gravamenes = [...(context.gravamenes || [])]
       
       if (gravamenes.length === 0) {
