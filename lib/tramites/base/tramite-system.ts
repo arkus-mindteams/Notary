@@ -198,34 +198,7 @@ export class TramiteSystem {
     // 7. Validar
     const validation = plugin.validate(updatedContext)
 
-    // 8. Generar respuesta (FLEXIBLE - LLM genera pregunta natural)
-    let response = await plugin.generateQuestion(newState, updatedContext, conversationHistory)
-
-    // 8.1. Inferir intención de documento del mensaje del asistente
-    // Si el asistente pregunta por el cónyuge, establecer _document_intent para guiar el procesamiento de documentos
-    const inferDocumentIntentFromAssistant = (assistantText: string): any | null => {
-      const t = String(assistantText || '').toLowerCase()
-      const mentionsConyuge = /\bc[oó]nyuge\b/.test(t)
-      if (!mentionsConyuge) return null
-      const asksName = /(nombre\s+completo|ind[ií]came\s+por\s+favor|para\s+poder\s+captur(ar|arlo)|para\s+continuar\s+necesito|me\s+indicas)/i.test(assistantText)
-      const mentionsId = /\b(identificaci[oó]n|credencial|pasaporte|ine|ife|licencia|curp)\b/i.test(assistantText)
-      const mentionsActa = /\b(acta\s+de\s+matrimonio|matrimonio)\b/i.test(assistantText)
-      if (asksName || mentionsId || mentionsActa) {
-        return { _document_intent: 'conyuge' }
-      }
-      return null
-    }
-
-    const documentIntentUpdate = inferDocumentIntentFromAssistant(response)
-    if (documentIntentUpdate) {
-      console.log('[TramiteSystem] _document_intent inferred from assistant message', {
-        inferred: documentIntentUpdate,
-        assistantText: response
-      })
-      updatedContext = { ...updatedContext, ...documentIntentUpdate }
-    }
-
-    // 8.2. Inferir la intención de la última pregunta (para respuestas cortas y context-aware parsing)
+    // 8. Inferir intención de la última pregunta (para respuestas cortas y context-aware parsing)
     const inferLastQuestionIntent = (): LastQuestionIntent | null => {
       if (tramiteId !== 'preaviso') return null
 
@@ -303,7 +276,48 @@ export class TramiteSystem {
 
     const lastIntent = inferLastQuestionIntent()
 
-    // 8.3. Guardrail anti-loop: si el usuario repite sin avanzar, forzar mensaje guiado
+    // 9. Generar respuesta (FLEXIBLE - LLM genera pregunta natural)
+    let response = await plugin.generateQuestion(newState, updatedContext, conversationHistory)
+
+    // 9.1. Respuestas más humanas ante saludos o inputs no entendidos
+    const preMetaDelta = diffContext(context || {}, updatedContext || {})
+    const noProgress = commands.length === 0 && preMetaDelta.length === 0
+    const greetingOnly = this.isGreetingOnly(userInput)
+    if (greetingOnly) {
+      const lastAssistantMessage = this.getLastAssistantMessage(conversationHistory)
+      response = this.buildGreetingResponse(lastAssistantMessage || response)
+    } else if (noProgress) {
+      const clarification = this.buildClarificationMessage(userInput, lastIntent)
+      if (clarification) {
+        response = clarification
+      }
+    }
+
+    // 9.2. Inferir intención de documento del mensaje del asistente
+    // Si el asistente pregunta por el cónyuge, establecer _document_intent para guiar el procesamiento de documentos
+    const inferDocumentIntentFromAssistant = (assistantText: string): any | null => {
+      const t = String(assistantText || '').toLowerCase()
+      const mentionsConyuge = /\bc[oó]nyuge\b/.test(t)
+      if (!mentionsConyuge) return null
+      const asksName = /(nombre\s+completo|ind[ií]came\s+por\s+favor|para\s+poder\s+captur(ar|arlo)|para\s+continuar\s+necesito|me\s+indicas)/i.test(assistantText)
+      const mentionsId = /\b(identificaci[oó]n|credencial|pasaporte|ine|ife|licencia|curp)\b/i.test(assistantText)
+      const mentionsActa = /\b(acta\s+de\s+matrimonio|matrimonio)\b/i.test(assistantText)
+      if (asksName || mentionsId || mentionsActa) {
+        return { _document_intent: 'conyuge' }
+      }
+      return null
+    }
+
+    const documentIntentUpdate = inferDocumentIntentFromAssistant(response)
+    if (documentIntentUpdate) {
+      console.log('[TramiteSystem] _document_intent inferred from assistant message', {
+        inferred: documentIntentUpdate,
+        assistantText: response
+      })
+      updatedContext = { ...updatedContext, ...documentIntentUpdate }
+    }
+
+    // 9.3. Guardrail anti-loop: si el usuario repite sin avanzar, forzar mensaje guiado
     const prevCounts = (context?._state_meta?.reask_counts || {}) as Record<string, number>
     const reaskCounts = { ...prevCounts }
     if (prevStateId === newState.id) {
@@ -636,6 +650,77 @@ export class TramiteSystem {
     }
     if (stateId === 'ESTADO_6B') {
       return 'Para avanzar necesito confirmar si la hipoteca/gravamen se cancelará. Ejemplo: “Sí, se cancelará con la compraventa”.'
+    }
+    return null
+  }
+
+  private buildGreetingResponse(nextQuestion: string): string {
+    const q = String(nextQuestion || '').trim()
+    if (!q) return 'Hola, ¿en qué puedo ayudarte?'
+    return `Hola, con gusto. ${q}`
+  }
+
+  private buildClarificationMessage(input: string, lastIntent: LastQuestionIntent | null): string | null {
+    const normalized = this.normalizeForComparison(input)
+    if (!normalized) return null
+
+    if (lastIntent === 'payment_method') {
+      const looksCredit = /\b(cred|redit|credit|creid|credt)\b/.test(normalized)
+      const looksContado = /\b(conta|contad|cont)\b/.test(normalized)
+      if (looksCredit && !looksContado) {
+        return 'Parece que intentaste decir "crédito". ¿La compraventa será con crédito o de contado?'
+      }
+      if (looksContado && !looksCredit) {
+        return 'Parece que intentaste decir "contado". ¿La compraventa será de contado o con crédito?'
+      }
+      return 'No entendí bien la forma de pago. ¿Es de contado o con crédito?'
+    }
+    if (lastIntent === 'estado_civil') {
+      return 'No entendí el estado civil. ¿Es soltero/a, casado/a, divorciado/a o viudo/a?'
+    }
+    if (lastIntent === 'credit_institution') {
+      return 'No entendí el nombre del banco o institución. ¿Con qué banco o institución se va a tramitar el crédito?'
+    }
+    if (lastIntent === 'encumbrance') {
+      return 'No entendí si hay hipoteca o gravamen. ¿El inmueble tiene hipoteca/gravamen o está libre?'
+    }
+    if (lastIntent === 'gravamen_acreedor') {
+      return 'No entendí la institución acreedora. ¿Cuál es la institución a la que se le debe el gravamen/hipoteca?'
+    }
+    if (lastIntent === 'encumbrance_cancellation') {
+      return 'No entendí cómo se cancelará la hipoteca/gravamen. ¿Se cancelará antes de la compraventa o con motivo de esta operación en la misma escritura?'
+    }
+
+    return 'No entendí bien. ¿Podrías indicarlo de nuevo?'
+  }
+
+  private isGreetingOnly(input: string): boolean {
+    const normalized = this.normalizeForComparison(input)
+    if (!normalized) return false
+
+    let remaining = ` ${normalized} `
+    remaining = remaining.replace(/\b(hola|saludos|hey)\b/g, ' ')
+    remaining = remaining.replace(/\b(buenas|buenos|dias|tardes|noches)\b/g, ' ')
+    remaining = remaining.replace(/\b(que|qué|tal)\b/g, ' ')
+    remaining = remaining.replace(/\s+/g, ' ').trim()
+    return remaining.length === 0
+  }
+
+  private normalizeForComparison(input: string): string {
+    return String(input || '')
+      .toLowerCase()
+      .replace(/[^a-záéíóúñ0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  private getLastAssistantMessage(history: any[]): string | null {
+    if (!Array.isArray(history) || history.length === 0) return null
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const msg = history[i]
+      if (msg?.role === 'assistant' && typeof msg?.content === 'string') {
+        return msg.content.trim()
+      }
     }
     return null
   }

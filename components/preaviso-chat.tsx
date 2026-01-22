@@ -490,9 +490,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       const effectiveUserId = user?.id ?? session?.user?.id
       if (!effectiveUserId) {
-        return
-      }
-
+          return
+        }
+        
       // Si el usuario cambió, resetear flags de inicialización
       const userChanged = effectiveUserId !== lastUserIdRef.current
       if (userChanged) {
@@ -542,29 +542,29 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       initializationRef.current = true
 
       // Enviar mensajes iniciales primero (no dependen de la creación del trámite)
-      const sendInitialMessages = async () => {
+    const sendInitialMessages = async () => {
         console.log('[PreavisoChat] Enviando mensajes iniciales...')
-        for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
-          if (!mounted) break
-          
-          await new Promise(resolve => setTimeout(resolve, i * 400))
-          
-          if (!mounted) break
-          
-          const initialMessageId = generateMessageId('initial')
-          setMessages(prev => {
-            const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
-            if (exists) return prev
-            return [...prev, {
-              id: initialMessageId,
-              role: 'assistant',
-              content: INITIAL_MESSAGES[i],
-              timestamp: new Date()
-            }]
-          })
-        }
-        if (mounted) {
-          setInitialMessagesSent(true)
+      for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
+        if (!mounted) break
+        
+        await new Promise(resolve => setTimeout(resolve, i * 400))
+        
+        if (!mounted) break
+        
+        const initialMessageId = generateMessageId('initial')
+        setMessages(prev => {
+          const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
+          if (exists) return prev
+          return [...prev, {
+            id: initialMessageId,
+            role: 'assistant',
+            content: INITIAL_MESSAGES[i],
+            timestamp: new Date()
+          }]
+        })
+      }
+      if (mounted) {
+        setInitialMessagesSent(true)
           console.log('[PreavisoChat] Mensajes iniciales enviados correctamente')
         }
       }
@@ -880,7 +880,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       if (onExportReady) {
         onExportReady(data, true)
       }
-    } else {
+        } else {
       setShowExportOptions(false)
       if (onExportReady) {
         onExportReady(data, false)
@@ -981,7 +981,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     setData(initialData)
     
     // Limpiar documentos subidos
-    setUploadedDocuments([])
+      setUploadedDocuments([])
     uploadedDocumentsRef.current = []
     
     // Resetear estado del servidor
@@ -996,23 +996,23 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Restablecer visibilidad de paneles
     setHidePanelsAfterMessage(false)
     
-    // Crear nuevo trámite
-    if (user?.id) {
-      try {
-        const { data: { session } } = await supabase.auth.getSession()
-        const headers: HeadersInit = { 'Content-Type': 'application/json' }
-        if (session?.access_token) {
-          headers['Authorization'] = `Bearer ${session.access_token}`
-        }
+      // Crear nuevo trámite
+      if (user?.id) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession()
+          const headers: HeadersInit = { 'Content-Type': 'application/json' }
+          if (session?.access_token) {
+            headers['Authorization'] = `Bearer ${session.access_token}`
+          }
 
-        const response = await fetch('/api/expedientes/tramites', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            compradorId: null,
+          const response = await fetch('/api/expedientes/tramites', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              compradorId: null,
             userId: effectiveUserId,
-            tipo: 'preaviso',
-            datos: {
+              tipo: 'preaviso',
+              datos: {
               tipoOperacion: 'compraventa',
               vendedores: [],
               compradores: [],
@@ -1022,20 +1022,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               control_impresion: initialData.control_impresion,
               validaciones: initialData.validaciones,
               actosNotariales: initialData.actosNotariales
-            },
-            estado: 'en_proceso',
-          }),
-        })
+              },
+              estado: 'en_proceso',
+            }),
+          })
 
-        if (response.ok) {
-          const tramite = await response.json()
-          setActiveTramiteId(tramite.id)
+          if (response.ok) {
+            const tramite = await response.json()
+            setActiveTramiteId(tramite.id)
+          }
+        } catch (error) {
+          console.error('Error creando nuevo trámite:', error)
         }
-      } catch (error) {
-        console.error('Error creando nuevo trámite:', error)
       }
-    }
-    
+
     // El useEffect de inicialización se ejecutará automáticamente porque
     // los mensajes están vacíos y initializationRef.current es false
   }
@@ -1071,9 +1071,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     setIsProcessing(false)
     const cancelMessage: ChatMessage = {
       id: generateMessageId('cancel'),
-      role: 'assistant',
+            role: 'assistant',
       content: 'Solicitud cancelada. Puedes enviar un nuevo mensaje cuando gustes.',
-      timestamp: new Date()
+            timestamp: new Date()
     }
     setMessages(prev => [...prev, cancelMessage])
   }
@@ -1088,14 +1088,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     if (!hasFiles && !hasMessage) return
     if (isProcessing || isProcessingDocument) return
 
-    // Si hay archivos pendientes Y mensaje, marcar como procesando desde el inicio
-    // para que se muestre como un solo proceso bloqueado
-    if (hasFiles && hasMessage) {
-      setIsProcessing(true)
-    }
-    
-    // Si hay archivos pendientes, procesarlos primero
+    // Si hay archivos pendientes, procesarlos (texto + archivos se manejan juntos)
     if (hasFiles) {
+      if (hasMessage) {
+        setIsProcessing(true)
+      }
       // Crear un FileList simulado para usar con handleFileUpload
       const dataTransfer = new DataTransfer()
       pendingFiles.forEach(file => dataTransfer.items.add(file))
@@ -1107,34 +1104,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Limpiar archivos pendientes antes de procesar
       setPendingFiles([])
       
-      // Si hay mensaje de texto, crear un solo mensaje multimodal con texto + archivos
-      if (hasMessage) {
-        const userMessage: ChatMessage = {
-          id: generateMessageId('user'),
-          role: 'user',
-          content: input.trim(),
-          timestamp: new Date(),
-          attachments: filesToAttach
-        }
-        setMessages(prev => [...prev, userMessage])
-      }
-      
-      // Procesar archivos (pasar true para no activar isProcessingDocument cuando hay mensaje pendiente,
-      // y true para skipUserMessage cuando hay texto para evitar mensaje duplicado)
-      await handleFileUpload(fileList, true, hasMessage)
-      
-      // Si no hay texto, solo procesar archivos y salir
-      if (!hasMessage) {
-        // Si estaba marcado como procesando, limpiarlo
-        setIsProcessing(false)
-        return
-      }
-      
-      // Si había mensaje pero se canceló el procesamiento de documentos, salir
-      if (cancelDocumentBatchRequestedRef.current) {
-        setIsProcessing(false)
-        return
-      }
+      const currentInput = input.trim()
+      setInput('')
+
+      // Procesar archivos y texto en un solo flujo
+      await handleFileUpload(fileList, false, false, currentInput)
+      return
     } else {
       // Si solo hay mensaje (sin archivos), marcar como procesando ahora
       setIsProcessing(true)
@@ -1328,17 +1303,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // IMPORTANTE: No re-extraer/reescribir datos en frontend si el backend ya entregó `data`.
       // El extractor local no conserva banderas internas (ej. titular_registral_confirmado) y puede revertir pasos.
       if (!hasServerData) {
-        const allAIMessages = (previousAIMessages ? previousAIMessages + '\n\n' : '') + messagesToAdd.join('\n\n')
-        const extractedData = extractDataFromMessage(allAIMessages, currentInput, data)
-        if (extractedData) {
-          setData(prevData => {
-            const newData = { ...prevData }
-            
-            // Actualizar tipoOperacion
-            if (extractedData.tipoOperacion !== undefined) {
-              newData.tipoOperacion = extractedData.tipoOperacion
-            }
-
+      const allAIMessages = (previousAIMessages ? previousAIMessages + '\n\n' : '') + messagesToAdd.join('\n\n')
+      const extractedData = extractDataFromMessage(allAIMessages, currentInput, data)
+      if (extractedData) {
+        setData(prevData => {
+          const newData = { ...prevData }
+          
+          // Actualizar tipoOperacion
+          if (extractedData.tipoOperacion !== undefined) {
+            newData.tipoOperacion = extractedData.tipoOperacion
+          }
+          
             // v1.4: arrays y estructura de inmueble
             if (extractedData.vendedores !== undefined) {
               newData.vendedores = extractedData.vendedores as any
@@ -1353,16 +1328,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             if (extractedData.gravamenes !== undefined) {
               newData.gravamenes = extractedData.gravamenes as any
             }
-            if (extractedData.inmueble) {
+          if (extractedData.inmueble) {
               newData.inmueble = extractedData.inmueble as any
-            }
-            
-            // Determinar actos notariales
-            const actos = determineActosNotariales(newData)
-            newData.actosNotariales = actos
-            
-            return newData
-          })
+          }
+          
+          // Determinar actos notariales
+          const actos = determineActosNotariales(newData)
+          newData.actosNotariales = actos
+          
+          return newData
+        })
         }
       }
 
@@ -1392,9 +1367,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
   }
 
-  const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false, skipUserMessage = false) => {
+  const handleFileUpload = async (
+    files: FileList | File[] | null,
+    skipProcessingDocumentFlag = false,
+    skipUserMessage = false,
+    userText?: string
+  ) => {
     if (!files || files.length === 0) return
-    
+
     // Convertir FileList a array si es necesario
     const filesArray = Array.isArray(files) ? files : Array.from(files)
 
@@ -1430,16 +1410,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Obtener nombres de archivos para uso en toda la función
     const fileNames = filesArray.map(f => f.name)
 
-    // Mensaje de usuario solo si no se debe omitir (cuando hay texto pendiente, el mensaje se crea en handleSend)
+    const combinedUserContent = userText && userText.trim().length > 0
+      ? `${userText.trim()}\n\nHe subido el siguiente documento: ${fileNames.join(', ')}`
+      : `He subido el siguiente documento: ${fileNames.join(', ')}`
+
+    // Mensaje de usuario solo si no se debe omitir
     if (!skipUserMessage) {
-      const fileMessage: ChatMessage = {
-        id: generateMessageId('file'),
-        role: 'user',
-        content: `He subido el siguiente documento: ${fileNames.join(', ')}`,
-        timestamp: new Date(),
+    const fileMessage: ChatMessage = {
+      id: generateMessageId('file'),
+      role: 'user',
+        content: combinedUserContent,
+      timestamp: new Date(),
         attachments: filesArray
-      }
-      setMessages(prev => [...prev, fileMessage])
+    }
+    setMessages(prev => [...prev, fileMessage])
     }
 
     // Mensaje de procesamiento
@@ -1674,8 +1658,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             const headers: HeadersInit = { 'Content-Type': 'application/json' }
             if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
             return await fetch(input, {
-              method: 'POST',
-              headers,
+            method: 'POST',
+            headers,
               body: JSON.stringify(body),
               signal: controller.signal,
             })
@@ -1849,15 +1833,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   ? prevF.selection  // Preservar selección previa confirmada
                   : (nextF.selection || prevF.selection)  // Usar nueva selección o preservar previa
               }
-              updated.folios = {
-                candidates: Array.from(map.values()),
-                // selection: el backend es autoridad (pero si no viene, conservar la previa)
-                selection: nextF.selection || prevF.selection,
-              }
             }
             updated.actosNotariales = determineActosNotariales(updated)
             // CRÍTICO: Actualizar workingData con la versión actualizada ANTES de continuar
             workingData = updated
+            dataRef.current = updated
             return updated
           })
           
@@ -1996,15 +1976,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             }
             const expedienteTipo = mapToExpedienteTipo(item.docType, processResult?.data)
 
-            const { data: { session } } = await supabase.auth.getSession()
-            const headers: HeadersInit = {}
+                const { data: { session } } = await supabase.auth.getSession()
+                const headers: HeadersInit = {}
             if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
 
-            const uploadFormData = new FormData()
+                const uploadFormData = new FormData()
             uploadFormData.append('file', item.originalFile)
             uploadFormData.append('compradorId', '')
             uploadFormData.append('tipo', expedienteTipo)
-            uploadFormData.append('tramiteId', activeTramiteId)
+                uploadFormData.append('tramiteId', activeTramiteId)
             uploadFormData.append('metadata', JSON.stringify({
               preaviso_subtype: item.docType,
               original_name: item.originalFile.name,
@@ -2012,9 +1992,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
             // Timeout para evitar que el pipeline se quede colgado si S3/upload se bloquea.
             const uploadResp = await fetchWithTimeout('/api/expedientes/documentos/upload', {
-              method: 'POST',
-              headers,
-              body: uploadFormData,
+                  method: 'POST',
+                  headers,
+                  body: uploadFormData,
             }, 45_000, batchAbort.signal)
 
             try {
@@ -2044,8 +2024,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               }
             } catch {
               // no bloquear
-            }
-          } catch (uploadError) {
+                }
+              } catch (uploadError) {
             console.error(`Error subiendo documento ${item.originalFile.name} a S3:`, uploadError)
             // No bloquear; no reintentar en este lote
           }
@@ -2299,7 +2279,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             ...messages.filter(m => m.id !== processingMessage.id).map(m => ({ role: m.role, content: m.content })),
             { 
               role: 'user' as const, 
-              content: `He subido el siguiente documento: ${fileNames.join(', ')}`
+              content: combinedUserContent
             }
           ],
           context: {
@@ -2487,7 +2467,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (jsonData.compradores && Array.isArray(jsonData.compradores)) {
           // Agregar nuevos compradores al array existente
           updates.compradores = [...(currentData.compradores || []), ...jsonData.compradores]
-          hasUpdates = true
+            hasUpdates = true
         } else if (jsonData.comprador) {
           // Compatibilidad: convertir formato antiguo (singular) a array
           const compradorElement: CompradorElement = {
@@ -2508,13 +2488,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             } : undefined
           }
           updates.compradores = [...(currentData.compradores || []), compradorElement]
-          hasUpdates = true
-        }
+            hasUpdates = true
+          }
 
         // Procesar vendedores (array v1.4)
         if (jsonData.vendedores && Array.isArray(jsonData.vendedores)) {
           updates.vendedores = [...(currentData.vendedores || []), ...jsonData.vendedores]
-          hasUpdates = true
+            hasUpdates = true
         } else if (jsonData.vendedor) {
           // Compatibilidad: convertir formato antiguo (singular) a array
           const vendedorElement: VendedorElement = {
@@ -2540,8 +2520,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             } : undefined
           }
           updates.vendedores = [...(currentData.vendedores || []), vendedorElement]
-          hasUpdates = true
-        }
+            hasUpdates = true
+          }
 
         // Procesar créditos (array v1.4)
         if (jsonData.creditos && Array.isArray(jsonData.creditos)) {
@@ -2589,13 +2569,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           }).filter(c => c.institucion !== null) // Filtrar créditos sin institución válida
 
           updates.creditos = [...(currentData.creditos || []), ...normalizedCreditos]
-          hasUpdates = true
-        }
+            hasUpdates = true
+          }
 
         // Procesar gravámenes (array v1.4)
         if (jsonData.gravamenes && Array.isArray(jsonData.gravamenes)) {
           updates.gravamenes = [...(currentData.gravamenes || []), ...jsonData.gravamenes]
-          hasUpdates = true
+            hasUpdates = true
         }
 
         // Procesar inmueble (estructura v1.4)
@@ -2665,8 +2645,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           if (jsonData.inmueble.colonia) inmuebleUpdates.direccion.colonia = jsonData.inmueble.colonia
 
           updates.inmueble = inmuebleUpdates
-          hasUpdates = true
-        }
+            hasUpdates = true
+          }
 
         // Procesar control_impresion
         if (jsonData.control_impresion) {
@@ -2678,8 +2658,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             }),
             ...jsonData.control_impresion
           }
-          hasUpdates = true
-        }
+            hasUpdates = true
+          }
 
         // Procesar validaciones
         if (jsonData.validaciones) {
@@ -2691,7 +2671,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             }),
             ...jsonData.validaciones
           }
-          hasUpdates = true
+            hasUpdates = true
         }
 
       } catch (error) {
@@ -2755,8 +2735,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               }
             }
             updates.inmueble.partidas = [...(updates.inmueble.partidas || partidasActuales), partida]
-            hasUpdates = true
-          }
+          hasUpdates = true
+        }
         }
           hasUpdates = true
         }
@@ -2925,7 +2905,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 i === 0 ? { ...c, institucion: inst } : c
               )
             }
-            hasUpdates = true
+          hasUpdates = true
             institucionEncontrada = true
             break
           }
@@ -2991,7 +2971,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   i === 0 ? { ...c, institucion: institucion.toUpperCase() } : c
                 )
               }
-              hasUpdates = true
+          hasUpdates = true
             }
           }
         }
@@ -3052,7 +3032,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               i === 0 ? { ...c, institucion: inst } : c
             )
           }
-          hasUpdates = true
+        hasUpdates = true
           institucionEncontrada2 = true
           break
         }
@@ -3148,7 +3128,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 i === 0 ? { ...c, institucion: institucion.toUpperCase() } : c
               )
             }
-            hasUpdates = true
+        hasUpdates = true
           }
         }
       }
@@ -3304,7 +3284,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           }
         }
         hasUpdates = true
-      }
+    }
 
     return hasUpdates ? updates : null
   }
@@ -3398,16 +3378,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               <div className="flex items-center space-x-1">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-9 w-9 rounded-xl hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors"
-                      title="Más opciones"
-                    >
-                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                      </svg>
-                    </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9 rounded-xl hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors"
+                  title="Más opciones"
+                >
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                  </svg>
+                </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-48">
                     <DropdownMenuItem onClick={handleNewChat} className="cursor-pointer hover:!bg-gray-100 focus:!bg-gray-100 focus:!text-gray-900">
@@ -3451,9 +3431,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     >
                       {/* Ocultar el texto si es "Procesando documento..." */}
                       {!(message.role === 'assistant' && message.content === 'Procesando documento...') && (
-                        <p className={`text-sm leading-relaxed whitespace-pre-wrap ${
-                          message.role === 'user' ? 'text-white' : 'text-gray-800'
-                        }`}>{message.content}</p>
+                      <p className={`text-sm leading-relaxed whitespace-pre-wrap ${
+                        message.role === 'user' ? 'text-white' : 'text-gray-800'
+                      }`}>{message.content}</p>
                       )}
                       
                       {/* Barra de progreso para mensajes de procesamiento */}
@@ -3500,10 +3480,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                                   ) : (
                                     <div className={`flex items-center space-x-2 text-xs ${
                                       message.role === 'user' ? 'text-gray-200' : 'text-gray-600'
-                                    }`}>
-                                      <FileCheck className="h-3.5 w-3.5" />
-                                      <span className="truncate">{file.name}</span>
-                                    </div>
+                            }`}>
+                              <FileCheck className="h-3.5 w-3.5" />
+                              <span className="truncate">{file.name}</span>
+                            </div>
                                   )}
                                 </div>
                               )
@@ -3570,7 +3550,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     <div className="px-3 pt-3 pb-2 border-b border-gray-200">
                       <div className="mb-2">
                         <p className="text-xs text-gray-500 font-medium">Archivos pendientes (se procesarán al enviar):</p>
-                      </div>
+                </div>
                       <div className="w-full overflow-y-auto overflow-x-hidden" style={{ maxHeight: '300px', width: '100%' }}>
                         <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-3 pb-2" style={{ width: '100%' }}>
                           {pendingFiles.map((file, index) => {
@@ -3595,13 +3575,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                                   ) : isPDF ? (
                                     <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
                                       <FileText className="h-6 w-6 text-red-500 opacity-70" />
-                                    </div>
+              </div>
                                   ) : (
                                     <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
                                       <FileText className="h-6 w-6 text-blue-500 opacity-70" />
-                                    </div>
-                                  )}
-                                  
+            </div>
+          )}
+
                                   {/* Badge de pendiente */}
                                   <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
                                     <Upload className="h-2.5 w-2.5 text-white" />
@@ -3640,11 +3620,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
                   {/* Contenedor relativo para el textarea y los iconos */}
                   <div className="relative">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      accept=".pdf,.jpg,.jpeg,.png,.docx"
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".pdf,.jpg,.jpeg,.png,.docx"
                       onChange={(e) => {
                         const files = e.target.files
                         if (files && files.length > 0) {
@@ -3659,27 +3639,27 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                           }
                         }, 0)
                       }}
-                      className="hidden"
-                    />
+                className="hidden"
+              />
                     
-                    <Textarea
-                      ref={textInputRef}
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
+                <Textarea
+                  ref={textInputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
                       onPaste={handlePaste}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault()
-                          handleSend()
-                        }
-                      }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleSend()
+                    }
+                  }}
                       placeholder="Escribe tu mensaje o pega una imagen (Ctrl+V / Cmd+V)..."
                       className="min-h-[44px] max-h-[120px] resize-none border-0 bg-transparent focus:ring-0 focus-visible:ring-0 pl-12 pr-12 py-3"
                       disabled={isProcessing || isProcessingDocument}
                     />
                     
                     {/* Botón de adjuntar archivos dentro del input - izquierda */}
-                    <Button
+              <Button
                       type="button"
                       onClick={(e) => {
                         e.preventDefault()
@@ -3691,7 +3671,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                         }
                       }}
                       variant="ghost"
-                      size="icon"
+                size="icon"
                       className="absolute left-2 bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-gray-600 hover:text-blue-600 transition-colors"
                       title="Adjuntar documentos"
                     >
@@ -3710,8 +3690,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                         <Square className="h-4 w-4 fill-current" />
                       ) : (
                         <ArrowUp className="h-4 w-4" />
-                      )}
-                    </Button>
+                )}
+              </Button>
                     
                     {/* Contador de caracteres o indicador */}
                     {input.length > 0 && (
@@ -4027,9 +4007,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
                     {serverState?.state_status?.ESTADO_5 === 'completed' || serverState?.state_status?.ESTADO_5 === 'not_applicable' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                        <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : serverState?.state_status?.ESTADO_5 === 'incomplete' ? (
-                      <AlertCircle className="h-4 w-4 text-yellow-500" />
+                        <AlertCircle className="h-4 w-4 text-yellow-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
                     )}
@@ -4054,13 +4034,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                                 <div><span className="font-medium">Monto {data.creditos.length > 1 ? `(${idx + 1})` : ''}:</span> {credito.monto}</div>
                               )}
                               {!credito.institucion && (
-                                <div className="text-yellow-600 italic">Información pendiente</div>
-                              )}
+                              <div className="text-yellow-600 italic">Información pendiente</div>
+                            )}
                             </div>
                           ))}
-                        </>
+                          </>
                       ) : data.creditos !== undefined && data.creditos.length === 0 ? (
-                        <div className="text-gray-500">No aplica (pago de contado)</div>
+                          <div className="text-gray-500">No aplica (pago de contado)</div>
                       ) : (
                         <div className="text-gray-400 italic">Pendiente: aún no se ha confirmado si será crédito o contado</div>
                       )
@@ -4074,9 +4054,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 <div className="space-y-2">
                   <div className="flex items-center space-x-2">
                     {serverState?.state_status?.ESTADO_6 === 'completed' || serverState?.state_status?.ESTADO_6 === 'not_applicable' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                          <CheckCircle2 className="h-4 w-4 text-green-500" />
                     ) : serverState?.state_status?.ESTADO_6 === 'incomplete' ? (
-                      <AlertCircle className="h-4 w-4 text-yellow-500" />
+                          <AlertCircle className="h-4 w-4 text-yellow-500" />
                     ) : (
                       <AlertCircle className="h-4 w-4 text-gray-400" />
                     )}
@@ -4143,13 +4123,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button
-              variant="outline"
+        <Button
+          variant="outline"
               className="cursor-pointer bg-white border hover:bg-gray-100 text-black hover:text-black py-2.5"
               onClick={() => setShowNewChatDialog(false)}
-            >
+        >
               Cancelar
-            </Button>
+        </Button>
             <Button
               variant="default"
               onClick={handleConfirmNewChat}

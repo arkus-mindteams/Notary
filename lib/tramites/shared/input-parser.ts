@@ -250,21 +250,31 @@ export class InputParser {
       handler: 'FolioSelectionHandler'
     })
 
-    // 4B. Folio real mencionado en frase (captura manual)
+    // 4B. Folio mencionado en frase (captura manual o selección de candidatos)
     this.rules.push({
       name: 'folio_selection_phrase',
-      pattern: /folio\s+real\s*[:#]?\s*(\d{6,8})/i,
+      pattern: /folio(?:\s+real)?\s*[:#]?\s*(\d{6,8})/i,
       condition: (input, context) => {
-        // Solo si no hay folio ya capturado de forma efectiva
-        return !context?.inmueble?.folio_real
+        const selection = context?.folios?.selection
+        const confirmed = selection?.confirmed_by_user === true && !!selection?.selected_folio
+        if (confirmed) return false
+        // Permitir si aún no hay folio efectivo o si hay candidatos para selección
+        const hasCandidates = (context?.folios?.candidates || []).length > 0
+        return !context?.inmueble?.folio_real || hasCandidates
       },
-      extract: (input) => {
-        const m = input.match(/folio\s+real\s*[:#]?\s*(\d{6,8})/i)
+      extract: (input, context) => {
+        const m = input.match(/folio(?:\s+real)?\s*[:#]?\s*(\d{6,8})/i)
         if (!m) return null
-        return {
-          selectedFolio: m[1],
-          confirmedByUser: true
+        const selectedFolio = m[1]
+        const folios = context?.folios?.candidates || []
+        if (folios.length > 0) {
+          const folioExists = folios.some((f: any) => {
+            const folioValue = typeof f === 'string' ? f : f.folio
+            return String(folioValue).replace(/\D/g, '') === selectedFolio.replace(/\D/g, '')
+          })
+          if (!folioExists) return null
         }
+        return { selectedFolio, confirmedByUser: true }
       },
       handler: 'FolioSelectionHandler'
     })
@@ -1160,9 +1170,12 @@ export class InputParser {
   ): Promise<InterpretationResult> {
     const normalizedInput = input.trim()
 
-    // Filtrar mensajes auto-generados
+    // Filtrar mensajes auto-generados si NO contienen datos del usuario
     if (/\bhe\s+subido\s+el\s+siguiente\s+documento\b/i.test(normalizedInput)) {
-      return { captured: false, needsLLM: false }
+      const hasUserData = /\b(folio|partida|direccion|seccion|comprador|vendedor|credito|hipoteca|gravamen)\b/i.test(normalizedInput)
+      if (!hasUserData) {
+        return { captured: false, needsLLM: false }
+      }
     }
 
     // Intentar captura determinista (MULTI-INTENT):
@@ -1422,6 +1435,7 @@ export class InputParser {
       .replace(/\bcreditp\b/g, 'credito')
       .replace(/\bcredti?o\b/g, 'credito')
       .replace(/\bcrediot\b/g, 'credito')
+      .replace(/\breditoc\b/g, 'credito')
       .replace(/\bcredito+(\b|$)/g, 'credito')
       .replace(/\bcreidto\b/g, 'credito')
       // contado
