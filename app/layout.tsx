@@ -27,12 +27,12 @@ export default function RootLayout({
   return (
     <html lang="es" suppressHydrationWarning>
       <body className={`font-sans antialiased`}>
-        <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
-          <AuthProvider>
+        <AuthProvider>
+          <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
             {children}
-          </AuthProvider>
+          </ThemeProvider>
           <Toaster />
-        </ThemeProvider>
+        </AuthProvider>
         <Analytics />
       </body>
     </html>
