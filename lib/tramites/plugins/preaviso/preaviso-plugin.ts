@@ -272,6 +272,31 @@ export class PreavisoPlugin implements TramitePlugin {
         return `Detecté el folio real ${folio} en la hoja de inscripción. ¿Confirmas que usemos ese folio para este trámite?`
       }
     }
+
+    // Confirmación cuando se acaba de seleccionar un folio
+    // Verificar si hay un folio seleccionado y confirmado, y si está en inmueble.folio_real
+    const folioConfirmed = context?.folios?.selection?.confirmed_by_user === true
+    const folioInInmueble = context?.inmueble?.folio_real === selectedFolio
+    const folioJustSelected = selectedFolio && folioConfirmed && folioInInmueble
+    
+    // Verificar si la confirmación ya se mostró en el último mensaje del asistente
+    const lastAssistantMessage = Array.isArray(conversationHistory) 
+      ? conversationHistory.filter((m: any) => m?.role === 'assistant').slice(-1)?.[0]?.content || ''
+      : ''
+    const confirmationAlreadyShown = lastAssistantMessage.includes('encontré y registré el folio real')
+    
+    // Si el folio fue seleccionado recientemente y está confirmado, mostrar confirmación antes de continuar
+    if (folioJustSelected && !confirmationAlreadyShown && state.id === 'ESTADO_2') {
+      const folioInfo = folioCandidates.find((f: any) => {
+        const fValue = typeof f === 'string' ? f : f.folio
+        return String(fValue) === String(selectedFolio)
+      })
+      const attrs = typeof folioInfo === 'object' ? folioInfo?.attrs : {}
+      const unidad = attrs?.unidad ? `, Unidad ${attrs.unidad}` : ''
+      const condominio = attrs?.condominio ? `, ${attrs.condominio}` : ''
+      return `Perfecto, encontré y registré el folio real ${selectedFolio}${unidad}${condominio} en la hoja de inscripción. Continuemos con el trámite.`
+    }
+
     // Si ya está todo completo (listo para generar), NO hacer más preguntas.
     // Responder de forma determinista para evitar que el LLM invente "condiciones especiales", "más compradores", etc.
     const missingNow = this.getMissingFields(state, context)
