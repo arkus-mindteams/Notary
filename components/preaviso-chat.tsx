@@ -1293,10 +1293,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         setShowExportOptions(true)
       }
       
-      // Obtener el último mensaje del usuario para copiar attachments si tiene imágenes
-      const lastUserMessage = messages.findLast(m => m.role === 'user')
-      const userImageAttachments = lastUserMessage?.attachments?.filter(f => f.type.startsWith('image/')) || []
-      
       // Agregar mensajes con delay para efecto conversacional
       for (let i = 0; i < messagesToAdd.length; i++) {
         await new Promise(resolve => setTimeout(resolve, i * 300)) // 300ms entre mensajes
@@ -1304,9 +1300,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           id: generateMessageId('ai'),
           role: 'assistant',
           content: toUserFacingAssistantText(messagesToAdd[i]),
-          timestamp: new Date(),
-          // Incluir imágenes del mensaje del usuario en la respuesta del asistente si hay
-          attachments: userImageAttachments.length > 0 ? userImageAttachments : undefined
+          timestamp: new Date()
         }
         setMessages(prev => {
           // Verificar que no esté duplicado
@@ -2367,10 +2361,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
         const messagesToAdd = result.messages || [result.message]
         
-        // Obtener el último mensaje del usuario con attachments para copiar imágenes
-        const lastUserMessage = messages.findLast(m => m.role === 'user' && m.attachments && m.attachments.length > 0)
-        const userImageAttachments = lastUserMessage?.attachments?.filter(f => f.type.startsWith('image/')) || []
-        
         // Remover mensaje de procesamiento y agregar respuesta del agente
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
         
@@ -2381,9 +2371,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             id: `file-${baseTimestamp}-${i}`,
             role: 'assistant',
             content: toUserFacingAssistantText(messagesToAdd[i]),
-            timestamp: new Date(),
-            // Incluir imágenes del mensaje del usuario en la respuesta del asistente si hay
-            attachments: userImageAttachments.length > 0 ? userImageAttachments : undefined
+            timestamp: new Date()
           }
           setMessages(prev => {
             const exists = prev.some(m => m.id === assistantMessage.id || 
