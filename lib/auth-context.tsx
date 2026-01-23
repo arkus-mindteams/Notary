@@ -24,7 +24,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const fetchingRef = useRef(false) // Ref para evitar llamadas duplicadas
   const pendingFetchRef = useRef<Promise<void> | null>(null) // Promise compartida para evitar "early return" con loading pegado
 
-  const fetchUser = useCallback(async (authUserId: string) => {
+  const fetchUser = useCallback(async (authUserId: string, existingSession?: Session | null) => {
     // Evitar llamadas duplicadas simultáneas: si ya hay una en curso, esperar la misma.
     if (fetchingRef.current && pendingFetchRef.current) {
       return await pendingFetchRef.current
@@ -33,13 +33,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const run = async () => {
       try {
         fetchingRef.current = true
-      
-        // Obtener token de la sesión actual.
-        // IMPORTANTE: no usar timeouts aquí; getSession es local (storage) y un timeout puede provocar
-        // falsos "deslogueos" si por cualquier razón tarda más de lo esperado.
-        const { data: { session: currentSession } } = await supabase.auth.getSession()
-      
-        if (!currentSession?.access_token) {
+
+        let accessToken = existingSession?.access_token
+
+        // Si no se pasó una sesión, intentar obtenerla
+        if (!accessToken) {
+          // Verificar sesión existente con manejo de errores (sin "timeouts" que provoquen redirects falsos).
+          const { data: { session: currentSession } } = await supabase.auth.getSession()
+          accessToken = currentSession?.access_token
+        }
+
+        if (!accessToken) {
           setUser(null)
           setSession(null)
           setIsLoading(false)
@@ -53,14 +57,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         try {
           response = await fetch('/api/auth/me', {
             headers: {
-              'Authorization': `Bearer ${currentSession.access_token}`,
+              'Authorization': `Bearer ${accessToken}`,
             },
             signal: controller.signal,
           })
         } finally {
           clearTimeout(timeoutId)
         }
-      
+
         if (response && response.ok) {
           const data = await response.json()
           setUser(data.user)
@@ -92,34 +96,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Verificar sesión al cargar
   useEffect(() => {
     let mounted = true
-    
-    // Verificar sesión existente con manejo de errores (sin "timeouts" que provoquen redirects falsos).
-    ;(async () => {
-      try {
-        const { data: { session }, error } = await supabase.auth.getSession()
-        if (!mounted) return
-        
-        if (error) {
-          console.error('[Auth] Error obteniendo sesión:', error)
-          setIsLoading(false)
-          return
+
+      // Verificar sesión existente con manejo de errores (sin "timeouts" que provoquen redirects falsos).
+      ; (async () => {
+        try {
+          console.log('[Auth] Initial check: starting...')
+
+          // Wrapper con timeout para getSession
+          const getSessionPromise = supabase.auth.getSession()
+          const timeoutPromise = new Promise<{ data: { session: null }; error: { message: string } }>((_, reject) =>
+            setTimeout(() => reject(new Error('Auth check timeout')), 4000)
+          )
+
+          const { data: { session }, error } = await Promise.race([
+            getSessionPromise,
+            timeoutPromise
+          ]) as any // Type assertion needed for mixed return types race
+
+          console.log('[Auth] Initial check: result', { hasSession: !!session, error })
+
+          if (!mounted) return
+
+          if (error) {
+            console.error('[Auth] Error obteniendo sesión:', error)
+            setIsLoading(false)
+            return
+          }
+
+          if (session) {
+            console.log('[Auth] Initial check: Session found, fetching user...')
+            setSession(session)
+            await fetchUser(session.user.id, session)
+          } else {
+            console.log('[Auth] Initial check: No session found, stopping loading')
+            setSession(null)
+            setUser(null)
+            setIsLoading(false)
+          }
+        } catch (error) {
+          console.error('[Auth] Error inesperado obteniendo sesión:', error)
+          if (mounted) {
+            setIsLoading(false)
+          }
         }
-        
-        if (session) {
-          setSession(session)
-          await fetchUser(session.user.id)
-        } else {
-          setSession(null)
-          setUser(null)
-          setIsLoading(false)
-        }
-      } catch (error) {
-        console.error('[Auth] Error inesperado obteniendo sesión:', error)
-        if (mounted) {
-          setIsLoading(false)
-        }
-      }
-    })()
+      })()
 
     // Escuchar cambios en la autenticación
     const {
@@ -131,7 +151,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (session) {
         setSession(session)
         // onAuthStateChange se dispara después del login, así que llamamos fetchUser
-        await fetchUser(session.user.id)
+        await fetchUser(session.user.id, session)
       } else {
         setSession(null)
         setUser(null)
@@ -148,7 +168,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = async (email: string, password: string): Promise<boolean> => {
     try {
       setIsLoading(true)
-      
+
       // Autenticar directamente con Supabase
       const { data: sessionData, error: authError } = await supabase.auth.signInWithPassword({
         email,
@@ -163,14 +183,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // No llamar a /api/auth/me aquí, onAuthStateChange lo hará automáticamente
       // Solo actualizar la sesión y esperar a que onAuthStateChange complete
       setSession(sessionData.session)
-      
+
       // Actualizar último login (llamar a login API para registrar)
       await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
-      }).catch(() => {}) // Ignorar errores en actualización de login
-      
+      }).catch(() => { }) // Ignorar errores en actualización de login
+
       // Esperar a que onAuthStateChange complete el fetchUser
       // Esto evita llamadas duplicadas
       return true
