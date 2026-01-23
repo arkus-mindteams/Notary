@@ -389,6 +389,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const [initialMessagesSent, setInitialMessagesSent] = useState(false)
   const initializationRef = useRef(false)
   const lastUserIdRef = useRef<string | null>(null)
+  const isManualResetRef = useRef(false)
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
   const [expedienteExistente, setExpedienteExistente] = useState<{
     compradorId: string
@@ -484,6 +485,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     console.log('[PreavisoChat] useEffect ejecutado - user?.id:', user?.id, 'initializationRef.current:', initializationRef.current, 'initialMessagesSent:', initialMessagesSent, 'messages.length:', messages.length)
 
     const initializeChat = async () => {
+      // Si estamos haciendo un reset manual, no interferir
+      if (isManualResetRef.current) {
+        console.log('[PreavisoChat] Reset manual en progreso, omitiendo inicialización automática')
+        return
+      }
+      
       if (!session?.access_token) {
         return
       }
@@ -918,6 +925,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   }
 
   const resetChat = async () => {
+    // Marcar que estamos haciendo un reset manual
+    isManualResetRef.current = true
+    
     // Limpiar todos los mensajes
     setMessages([])
     
@@ -929,6 +939,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     
     // Limpiar archivos pendientes
     setPendingFiles([])
+    
+    // Resetear estado de procesamiento
+    setIsProcessingDocument(false)
+    setProcessingProgress(0)
+    setProcessingFileName(null)
     
     // Resetear datos del preaviso a estado inicial
     const initialData: PreavisoData = {
@@ -996,13 +1011,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Restablecer visibilidad de paneles
     setHidePanelsAfterMessage(false)
     
+    // Obtener el userId correcto
+    const effectiveUserId = user?.id ?? session?.user?.id
+    
     // Crear nuevo trámite
-    if (user?.id) {
+    if (effectiveUserId) {
       try {
-        const { data: { session } } = await supabase.auth.getSession()
+        const { data: { session: currentSession } } = await supabase.auth.getSession()
         const headers: HeadersInit = { 'Content-Type': 'application/json' }
-        if (session?.access_token) {
-          headers['Authorization'] = `Bearer ${session.access_token}`
+        if (currentSession?.access_token) {
+          headers['Authorization'] = `Bearer ${currentSession.access_token}`
         }
 
         const response = await fetch('/api/expedientes/tramites', {
@@ -1036,8 +1054,49 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
     
-    // El useEffect de inicialización se ejecutará automáticamente porque
-    // los mensajes están vacíos y initializationRef.current es false
+    // Enviar mensajes iniciales directamente
+    // Enviar el primer mensaje inmediatamente, luego los demás con delay
+    const sendInitialMessages = async () => {
+      // Enviar el primer mensaje inmediatamente
+      const firstMessageId = generateMessageId('initial')
+      setMessages(prev => {
+        const exists = prev.some(m => m.content === INITIAL_MESSAGES[0] && m.role === 'assistant')
+        if (exists) return prev
+        return [...prev, {
+          id: firstMessageId,
+          role: 'assistant',
+          content: INITIAL_MESSAGES[0],
+          timestamp: new Date()
+        }]
+      })
+      
+      // Enviar los demás mensajes con delay
+      for (let i = 1; i < INITIAL_MESSAGES.length; i++) {
+        await new Promise(resolve => setTimeout(resolve, 400))
+        const initialMessageId = generateMessageId('initial')
+        setMessages(prev => {
+          // Verificar si el mensaje ya existe para evitar duplicados
+          const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
+          if (exists) return prev
+          return [...prev, {
+            id: initialMessageId,
+            role: 'assistant',
+            content: INITIAL_MESSAGES[i],
+            timestamp: new Date()
+          }]
+        })
+      }
+      setInitialMessagesSent(true)
+      initializationRef.current = true
+      // Marcar que el reset manual terminó
+      isManualResetRef.current = false
+    }
+    
+    // Usar setTimeout con 0ms para asegurar que React haya procesado el setMessages([])
+    // y luego enviar los mensajes en el siguiente tick del event loop
+    setTimeout(() => {
+      sendInitialMessages()
+    }, 0)
   }
 
   const handleNewChat = () => {
@@ -1391,6 +1450,101 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     
     // Convertir FileList a array si es necesario
     const filesArray = Array.isArray(files) ? files : Array.from(files)
+
+    // Verificar que activeTramiteId esté establecido antes de procesar
+    // Si no está, intentar crearlo o esperar un momento
+    if (!activeTramiteId && user?.id) {
+      try {
+        const { data: { session: currentSession } } = await supabase.auth.getSession()
+        const headers: HeadersInit = { 'Content-Type': 'application/json' }
+        if (currentSession?.access_token) {
+          headers['Authorization'] = `Bearer ${currentSession.access_token}`
+        }
+
+        const response = await fetch('/api/expedientes/tramites', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            compradorId: null,
+            userId: user.id,
+            tipo: 'preaviso',
+            datos: {
+              tipoOperacion: 'compraventa',
+              vendedores: [],
+              compradores: [],
+              creditos: undefined,
+              gravamenes: [],
+              inmueble: {
+                folio_real: null,
+                partidas: [],
+                all_registry_pages_confirmed: false,
+                direccion: {
+                  calle: null,
+                  numero: null,
+                  colonia: null,
+                  municipio: null,
+                  estado: null,
+                  codigo_postal: null
+                },
+                superficie: null,
+                valor: null,
+                datos_catastrales: {
+                  lote: null,
+                  manzana: null,
+                  fraccionamiento: null,
+                  condominio: null,
+                  unidad: null,
+                  modulo: null
+                }
+              },
+              control_impresion: {
+                imprimir_conyuges: false,
+                imprimir_coacreditados: false,
+                imprimir_creditos: false
+              },
+              validaciones: {
+                expediente_existente: false,
+                datos_completos: false,
+                bloqueado: true
+              },
+              actosNotariales: {
+                cancelacionCreditoVendedor: false,
+                compraventa: false,
+                aperturaCreditoComprador: false
+              }
+            },
+            estado: 'en_proceso',
+          }),
+        })
+
+        if (response.ok) {
+          const tramite = await response.json()
+          setActiveTramiteId(tramite.id)
+        } else {
+          console.error('Error creando trámite para carga de archivo')
+          setIsProcessingDocument(false)
+          setProcessingProgress(0)
+          setMessages(prev => [...prev, {
+            id: generateMessageId('error'),
+            role: 'assistant',
+            content: 'No se pudo inicializar el trámite. Por favor, intente nuevamente.',
+            timestamp: new Date()
+          }])
+          return
+        }
+      } catch (error) {
+        console.error('Error creando trámite para carga de archivo:', error)
+        setIsProcessingDocument(false)
+        setProcessingProgress(0)
+        setMessages(prev => [...prev, {
+          id: generateMessageId('error'),
+          role: 'assistant',
+          content: 'No se pudo inicializar el trámite. Por favor, intente nuevamente.',
+          timestamp: new Date()
+        }])
+        return
+      }
+    }
 
     // Siempre establecer isProcessingDocument para mostrar la barra de progreso
     // incluso si hay un mensaje pendiente
