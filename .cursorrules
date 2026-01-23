@@ -384,3 +384,241 @@ When in doubt:
 - Refuse to make ambiguous changes
 - Preserve separation of concerns
 
+====================================================
+FRONTEND STYLING RULES — BUTTONS & UI COMPONENTS
+====================================================
+
+BUTTON STYLES — MANDATORY PATTERNS
+────────────────────────────────────────
+
+PRIMARY BUTTONS (Main actions: Submit, Save, Continue, Confirm):
+- REQUIRED classes: cursor-pointer bg-gray-800 hover:bg-gray-700 text-white py-2.5
+- Use for: Primary actions, form submissions, main CTAs
+- Example: <Button className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white py-2.5">Guardar</Button>
+
+SECONDARY BUTTONS (Cancel, Back, Close, Cancel actions):
+- REQUIRED classes: cursor-pointer bg-white border hover:bg-gray-100 text-black py-2.5
+- Use for: Cancel, Atrás, Cerrar, Cancelar, secondary actions
+- Example: <Button className="cursor-pointer bg-white border hover:bg-gray-100 text-black py-2.5">Cancelar</Button>
+
+PRIMARY COLOR:
+- Primary color MUST be: bg-gray-800
+- Use bg-gray-800 for primary buttons, not theme primary color
+- This overrides default shadcn/ui primary color
+
+BUTTON USAGE RULES:
+- ALWAYS include cursor-pointer for all buttons
+- ALWAYS use py-2.5 for consistent vertical padding
+- Primary buttons: bg-gray-800 (dark gray background)
+- Secondary buttons: bg-white with border (outlined style)
+- NEVER mix primary and secondary styles
+- NEVER use theme primary color (--primary) for buttons
+
+EXAMPLES:
+✅ CORRECT Primary: className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white py-2.5"
+✅ CORRECT Secondary: className="cursor-pointer bg-white border hover:bg-gray-100 text-black py-2.5"
+❌ WRONG: className="bg-primary text-primary-foreground"
+❌ WRONG: Missing cursor-pointer or py-2.5
+❌ WRONG: Using theme colors instead of gray-800
+
+====================================================
+LOADING STATES — MANDATORY PATTERN
+====================================================
+
+LOADER COMPONENT — REQUIRED FORMAT:
+────────────────────────────────────────
+
+ALL loading states MUST use this exact pattern:
+- NEVER wrap loaders in Card components
+- ALWAYS use this structure directly (no Card wrapper)
+
+REQUIRED CODE:
+<div className="flex flex-col items-center justify-center space-y-4 py-10">
+  <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+  <p>Cargando usuarios...</p>
+</div>
+
+RULES:
+- Loader2 icon from lucide-react: import { Loader2 } from 'lucide-react'
+- Icon size: h-8 w-8 (32px)
+- Animation: animate-spin
+- Icon color: text-gray-500
+- Container: flex flex-col items-center justify-center space-y-4 py-10
+- Text: Update "Cargando usuarios..." to match context (e.g., "Cargando documentos...", "Cargando datos...")
+- NO Card wrapper around loader
+- NO additional containers unless absolutely necessary
+
+EXAMPLES:
+✅ CORRECT:
+<div className="flex flex-col items-center justify-center space-y-4 py-10">
+  <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+  <p>Cargando documentos...</p>
+</div>
+
+❌ WRONG (with Card):
+<Card>
+  <div className="flex flex-col items-center justify-center space-y-4 py-10">
+    <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+    <p>Cargando...</p>
+  </div>
+</Card>
+
+❌ WRONG (different icon):
+<div className="flex flex-col items-center justify-center space-y-4 py-10">
+  <Spinner className="h-8 w-8 animate-spin text-gray-500" />
+  <p>Cargando...</p>
+</div>
+
+❌ WRONG (different size/color):
+<div className="flex flex-col items-center justify-center space-y-4 py-10">
+  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+  <p>Cargando...</p>
+</div>
+
+====================================================
+FRONTEND ARCHITECTURE — COMPONENT STRUCTURE
+====================================================
+
+COMPONENT ORGANIZATION:
+- All components MUST be in /components directory
+- UI primitives (shadcn/ui) MUST be in /components/ui
+- Business logic components in /components root
+- Use "use client" directive ONLY when necessary (interactivity, hooks, browser APIs)
+- Server Components by default (Next.js 15 App Router)
+
+COMPONENT NAMING:
+- PascalCase for component files: MyComponent.tsx
+- Match component name to file name exactly
+- Use descriptive names: PreavisoChat.tsx, not Chat.tsx
+- Interface/type names: ComponentNameProps, ComponentNameState
+
+FILE STRUCTURE:
+- One component per file
+- Export default for page components
+- Named exports for reusable components
+- Co-locate types/interfaces with components when component-specific
+
+====================================================
+STYLING RULES — TAILWIND CSS v4
+====================================================
+
+STYLING APPROACH:
+- Use Tailwind CSS utility classes exclusively
+- NO inline styles (style={{}})
+- NO CSS modules unless absolutely necessary
+- Use CSS variables from globals.css for theming
+- Follow shadcn/ui "new-york" style variant
+
+COLOR SYSTEM:
+- Use semantic color tokens: bg-primary, text-foreground, border-border
+- NEVER hardcode colors: oklch(), hex, rgb (except for buttons as specified above)
+- Use theme variables: var(--primary), var(--background)
+- Dark mode: Use .dark class, rely on CSS variables
+- BUTTONS: Use gray-800 for primary, white for secondary (see BUTTON STYLES above)
+
+RESPONSIVE DESIGN:
+- Mobile-first approach
+- Use hooks: useIsMobile(), useIsTablet() from /hooks
+- Breakpoints: sm, md, lg, xl (Tailwind defaults)
+- Test on mobile viewport (375px minimum)
+
+SPACING & LAYOUT:
+- Use Tailwind spacing scale: p-4, m-2, gap-6
+- Consistent spacing: 4px base unit (0.25rem)
+- Use flex/grid utilities, avoid absolute positioning when possible
+
+====================================================
+UI COMPONENT LIBRARY — shadcn/ui
+====================================================
+
+COMPONENT USAGE:
+- ALWAYS use shadcn/ui components from /components/ui
+- NEVER create custom buttons, dialogs, inputs when shadcn/ui exists
+- Import from '@/components/ui/[component-name]'
+- Follow shadcn/ui API patterns exactly
+- BUTTONS: Override default styles with mandatory button classes (see BUTTON STYLES)
+
+REQUIRED COMPONENTS:
+- Button: Use mandatory button classes (see BUTTON STYLES section)
+- Dialog: For modals and overlays
+- Card: For content containers
+- Input/Textarea: For form fields
+- Badge: For status indicators
+- Progress: For loading states
+- Toast: Use sonner for notifications
+
+ICONS:
+- Use lucide-react icons exclusively
+- Import specific icons: import { Send, Bot } from 'lucide-react'
+- NO icon libraries other than lucide-react
+- Icon size: Use size prop or className="w-4 h-4"
+
+====================================================
+FORMS & INPUT LABELS — REQUIRED FIELDS
+====================================================
+
+REQUIRED FIELD LABELS — MANDATORY PATTERN
+────────────────────────────────────────
+
+ALL required input fields MUST display a red asterisk in the label:
+- REQUIRED pattern: <Label htmlFor="fieldName">Label Text <span className="text-red-500">*</span></Label>
+- Use for: All form fields that are required
+- The asterisk MUST be inside a span with className="text-red-500"
+- The asterisk MUST have a space before it
+
+REQUIRED CODE:
+<Label htmlFor="rol">Rol del sistema <span className="text-red-500">*</span></Label>
+
+RULES:
+- Label component from shadcn/ui: import { Label } from '@/components/ui/label'
+- Required fields MUST show red asterisk: <span className="text-red-500">*</span>
+- Optional fields: NO asterisk
+- Always use htmlFor attribute matching the input id
+- Space between label text and asterisk
+
+EXAMPLES:
+✅ CORRECT (Required field):
+<Label htmlFor="rol">Rol del sistema <span className="text-red-500">*</span></Label>
+<Input id="rol" required />
+
+✅ CORRECT (Optional field):
+<Label htmlFor="email">Correo electrónico</Label>
+<Input id="email" />
+
+❌ WRONG (Missing asterisk for required):
+<Label htmlFor="rol">Rol del sistema</Label>
+<Input id="rol" required />
+
+❌ WRONG (Wrong color for asterisk):
+<Label htmlFor="rol">Rol del sistema <span className="text-red-600">*</span></Label>
+
+❌ WRONG (No space before asterisk):
+<Label htmlFor="rol">Rol del sistema<span className="text-red-500">*</span></Label>
+
+====================================================
+COMMON FRONTEND MISTAKES TO AVOID
+====================================================
+
+❌ WRONG: Using theme primary color for buttons
+✅ RIGHT: Use bg-gray-800 for primary buttons (see BUTTON STYLES)
+
+❌ WRONG: Missing cursor-pointer or py-2.5 on buttons
+✅ RIGHT: Always include cursor-pointer bg-gray-800 hover:bg-gray-700 text-white py-2.5 for primary
+
+❌ WRONG: Wrapping loaders in Card components
+✅ RIGHT: Use loader pattern directly without Card wrapper (see LOADING STATES)
+
+❌ WRONG: Creating custom button when Button exists
+✅ RIGHT: Use Button from @/components/ui/button with mandatory classes
+
+❌ WRONG: Inline styles style={{ color: 'blue' }}
+✅ RIGHT: Use Tailwind classes className="text-primary"
+
+❌ WRONG: Using useState for server data
+✅ RIGHT: Fetch in Server Component or use API route
+
+❌ WRONG: Missing loading/error states
+✅ RIGHT: Always show loading spinner and error handling
+
+❌ WRONG: Not using "use client" when needed
+✅ RIGHT: Add "use client" for hooks, event handlers, browser APIs
