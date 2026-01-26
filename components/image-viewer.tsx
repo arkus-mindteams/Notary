@@ -242,8 +242,8 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
                 transformOrigin: "center center",
                 transition: "transform 0.2s ease-in-out",
                 display: "block",
-                width: imageSize ? `${imageSize.width}px` : "fit-content",
-                height: imageSize ? `${imageSize.height}px` : "fit-content",
+                width:"100px",
+                height:"100px",
               }}
               className="relative"
             >
