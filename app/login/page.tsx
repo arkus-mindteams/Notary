@@ -105,7 +105,7 @@ export default function LoginPage() {
         </div>
         <div className="flex items-center justify-center h-full px-6 text-end">
           <Label className="text-2xl lg:text-4xl font-bold text-white mb-[400px]">
-            Sistema de Interpretación Notarial de Plantas Arquitectónicas
+            Sistema de Gestión Notarial
           </Label>
         </div>
       </div>
