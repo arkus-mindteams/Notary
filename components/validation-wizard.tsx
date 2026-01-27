@@ -6,11 +6,12 @@ import { ImageViewer } from "./image-viewer"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText, Save, X, Eye, EyeOff, Copy, RefreshCw } from "lucide-react"
+import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText, X, Eye, EyeOff, Copy, RefreshCw } from "lucide-react"
 import type { TransformedSegment } from "@/lib/text-transformer"
 import type { PropertyUnit } from "@/lib/ocr-simulator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { generateNotarialDocument, downloadDocument, generateFilename } from "@/lib/document-exporter"
+import { toast } from "sonner"
 import {
   Dialog,
   DialogContent,
@@ -85,12 +86,9 @@ export function ValidationWizard({
   // Estados para rastrear valores guardados y cambios no guardados
   const [savedColindanciasByUnit, setSavedColindanciasByUnit] = useState<Map<string, string>>(new Map())
   const [savedNotarialTextByUnit, setSavedNotarialTextByUnit] = useState<Map<string, string>>(new Map())
-  const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false)
-  const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null)
   const [isViewerCollapsed, setIsViewerCollapsed] = useState(false)
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
   const [manuallyEditedNotarial, setManuallyEditedNotarial] = useState<Set<string>>(new Set())
-  const [showAuthorizeDialog, setShowAuthorizeDialog] = useState(false)
   const [showUnauthorizeDialog, setShowUnauthorizeDialog] = useState(false)
 
   // Auto-format colindancias text with proper indentation
@@ -215,57 +213,6 @@ export function ValidationWizard({
     setLastSaved(new Date())
   }
 
-  // Confirmar navegación si hay cambios sin guardar
-  const confirmNavigation = (navigationFn: () => void) => {
-    if (hasUnsavedChanges()) {
-      setPendingNavigation(() => navigationFn)
-      setShowUnsavedChangesDialog(true)
-    } else {
-      navigationFn()
-    }
-  }
-
-  // Aceptar navegación descartando cambios
-  const handleDiscardAndNavigate = () => {
-    if (pendingNavigation) {
-      setShowUnsavedChangesDialog(false)
-      // Restaurar valores guardados
-      if (currentUnit) {
-        const savedColindancias = savedColindanciasByUnit.get(currentUnit.id) || ""
-        const savedNotarial = savedNotarialTextByUnit.get(currentUnit.id) || ""
-        
-        setAiTextByUnit((prev) => {
-          const next = new Map(prev)
-          next.set(currentUnit.id, savedColindancias)
-          return next
-        })
-        
-        setNotarialTextByUnit((prev) => {
-          const next = new Map(prev)
-          next.set(currentUnit.id, savedNotarial)
-          return next
-        })
-      }
-      pendingNavigation()
-      setPendingNavigation(null)
-    }
-  }
-
-  // Cancelar navegación
-  const handleCancelNavigation = () => {
-    setShowUnsavedChangesDialog(false)
-    setPendingNavigation(null)
-  }
-
-  // Guardar y navegar
-  const handleSaveAndNavigate = () => {
-    handleSaveChanges()
-    if (pendingNavigation) {
-      setShowUnsavedChangesDialog(false)
-      pendingNavigation()
-      setPendingNavigation(null)
-    }
-  }
 
   const getUnitRegionId = (unitId: string): string => {
     const unitIdMap: Record<string, string> = {
@@ -301,7 +248,17 @@ export function ValidationWizard({
     const newAuthorizedUnits = new Set(authorizedUnits)
     newAuthorizedUnits.add(currentUnit.id)
     setAuthorizedUnits(newAuthorizedUnits)
-    setShowAuthorizeDialog(false)
+    
+    // Mostrar toast de confirmación
+    toast.success("Unidad autorizada", {
+      description: `${currentUnit.name} ha sido autorizada exitosamente`,
+      duration: 3000,
+    })
+    
+    // Avanzar a la siguiente unidad si no estamos en la última
+    if (!isLastUnit) {
+      setCurrentUnitIndex(currentUnitIndex + 1)
+    }
   }
 
   const handleUnauthorizeUnit = () => {
@@ -312,7 +269,7 @@ export function ValidationWizard({
   }
 
   const handleRequestAuthorize = () => {
-    setShowAuthorizeDialog(true)
+    handleAuthorizeUnit()
   }
 
   const handleRequestUnauthorize = () => {
@@ -321,17 +278,13 @@ export function ValidationWizard({
 
   const handleNext = () => {
     if (!isLastUnit) {
-      confirmNavigation(() => {
-        setCurrentUnitIndex(currentUnitIndex + 1)
-      })
+      setCurrentUnitIndex(currentUnitIndex + 1)
     }
   }
 
   const handlePrevious = () => {
     if (!isFirstUnit) {
-      confirmNavigation(() => {
-        setCurrentUnitIndex(currentUnitIndex - 1)
-      })
+      setCurrentUnitIndex(currentUnitIndex - 1)
     }
   }
 
@@ -556,7 +509,7 @@ export function ValidationWizard({
                 return (
                   <button
                     key={`${unit.id}-${index}`}
-                    onClick={() => confirmNavigation(() => setCurrentUnitIndex(index))}
+                    onClick={() => setCurrentUnitIndex(index)}
                     className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all whitespace-nowrap shrink-0 flex items-center gap-1 ${
                       isCurrent && isAuthorized
                         ? "bg-green-600 text-white ring-1 ring-green-400"
@@ -864,44 +817,6 @@ export function ValidationWizard({
         totalLotSurface={totalLotSurface || undefined}
       />
 
-      {/* Dialog de confirmación de cambios sin guardar */}
-      <AlertDialog open={showUnsavedChangesDialog} onOpenChange={setShowUnsavedChangesDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2">
-              <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400" />
-              Cambios sin guardar
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              Tienes cambios sin guardar en esta unidad. ¿Qué deseas hacer?
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
-            <div className="flex gap-2 w-full sm:w-auto order-1">
-              <AlertDialogCancel
-                onClick={handleCancelNavigation}
-                className="flex-1 sm:flex-initial hover:bg-gray-200 hover:text-foreground"
-              >
-                Cancelar
-              </AlertDialogCancel>
-              <Button
-                onClick={handleDiscardAndNavigate}
-                className="flex-1 sm:flex-initial"
-                variant="destructive"
-              >
-                Descartar
-              </Button>
-            </div>
-            <Button
-              onClick={handleSaveAndNavigate}
-              className="w-full sm:w-auto gap-2 bg-gray-800 hover:bg-gray-700 text-white font-semibold order-2"
-            >
-              <Save className="h-4 w-4" />
-              Guardar y continuar
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       {/* Modal for Complete Notarial Text */}
       <Dialog open={showCompleteTextModal} onOpenChange={setShowCompleteTextModal}>
@@ -990,35 +905,6 @@ export function ValidationWizard({
           </div>
         </DialogContent>
       </Dialog>
-
-      {/* Dialog de confirmación para autorizar */}
-      <AlertDialog open={showAuthorizeDialog} onOpenChange={setShowAuthorizeDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2">
-              <ShieldCheck className="h-5 w-5 text-green-600" />
-              Confirmar autorización
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              ¿Estás seguro de que deseas autorizar la unidad <strong>{currentUnit?.name}</strong>?
-              <br />
-              Una vez autorizada, la unidad quedará bloqueada para edición y se incluirá en la exportación.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="hover:bg-gray-200 hover:text-foreground">
-              Cancelar
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleAuthorizeUnit}
-              className="bg-gray-800 hover:bg-gray-700 text-white font-bold gap-1.5"
-            >
-              <ShieldCheck className="h-3.5 w-3.5" />
-              <span>AUTORIZAR</span>
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       {/* Dialog de confirmación para desautorizar */}
       <AlertDialog open={showUnauthorizeDialog} onOpenChange={setShowUnauthorizeDialog}>
