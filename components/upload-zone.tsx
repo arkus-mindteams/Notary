@@ -12,9 +12,10 @@ interface UploadZoneProps {
   onFilesChange?: (files: File[]) => void
   onProcess?: () => void
   files?: File[] // External files for synchronization
+  disableProcess?: boolean // Disable the process button (e.g., when PDF selector modal is open)
 }
 
-export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: externalFiles }: UploadZoneProps) {
+export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: externalFiles, disableProcess = false }: UploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [thumbnailUrls, setThumbnailUrls] = useState<Map<number, string>>(new Map())
@@ -296,7 +297,11 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
             </Button>
           </div>
            {selectedFiles.length > 0 && onProcess && (
-              <Button onClick={onProcess} className="w-full sm:w-auto cursor-pointer h-10 sm:h-12 bg-gray-800 hover:bg-gray-700 text-white font-bold py-2 sm:py-2.5 px-4 sm:px-6 text-sm sm:text-base">
+              <Button 
+                onClick={onProcess} 
+                disabled={disableProcess}
+                className="w-full sm:w-auto cursor-pointer h-10 sm:h-12 bg-gray-800 hover:bg-gray-700 text-white font-bold py-2 sm:py-2.5 px-4 sm:px-6 text-sm sm:text-base disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 <Play className="h-4 w-4 mr-2" />
                 <span className="hidden sm:inline">Procesar imágenes </span>
                 <span>({selectedFiles.length})</span>
