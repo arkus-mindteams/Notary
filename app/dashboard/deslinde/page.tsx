@@ -391,12 +391,27 @@ function DeslindePageInner() {
     }
     
     // Add regular image files immediately (not from PDF conversion)
+    // IMPORTANT: Do NOT add PDFs to selectedFiles - they will be replaced by converted images
     if (imageFiles.length > 0) {
+      // Remove any PDFs that might be in selectedFiles (they should be converted to images)
+      const currentFilesWithoutPdfs = selectedFiles.filter(
+        (file) => !(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      )
+      const updatedFiles = [...currentFilesWithoutPdfs, ...imageFiles]
+      handleFilesChange(updatedFiles)
+      
       // Update preview with first image if we didn't have one
-      if (selectedFiles.length === 0 && (!documentUrl || documentUrl.startsWith("/"))) {
-        const url = URL.createObjectURL(imageFiles[0])
+      if (updatedFiles.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
+        const url = URL.createObjectURL(updatedFiles[0])
         setDocumentUrl(url)
       }
+    } else if (pdfFiles.length > 0) {
+      // If only PDFs were uploaded, remove any existing PDFs from selectedFiles
+      // (they will be replaced by converted images when user confirms)
+      const currentFilesWithoutPdfs = selectedFiles.filter(
+        (file) => !(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      )
+      handleFilesChange(currentFilesWithoutPdfs)
     }
   }
 
@@ -413,13 +428,26 @@ function DeslindePageInner() {
   }
   
   const handleConfirmPdfImageSelection = async () => {
+    // Validate that we have selected images
+    if (selectedPdfImages.size === 0) {
+      toast.error("Debes seleccionar al menos una imagen", {
+        description: "Por favor selecciona las páginas del PDF que deseas procesar.",
+        duration: 4000,
+      })
+      return
+    }
+    
     // Add only selected images from PDF conversion with rotations and crops applied
     const selectedIndices = Array.from(selectedPdfImages)
     const processedImages: File[] = []
     
     for (const index of selectedIndices) {
       let image = pdfConvertedImages[index]
-      if (!image) continue
+      // Validate image exists and is valid
+      if (!image || !(image instanceof File) || image.size === 0) {
+        console.warn(`[deslinde] Skipping invalid image at index ${index}`)
+        continue
+      }
       
       // Apply rotation first
       const rotation = imageRotations.get(index) || 0
@@ -453,7 +481,12 @@ function DeslindePageInner() {
     }
     
     if (processedImages.length > 0) {
-      const combinedFiles = [...selectedFiles, ...processedImages]
+      // Remove any PDFs from selectedFiles before adding converted images
+      // PDFs should be replaced by their converted images, not kept alongside them
+      const filesWithoutPdfs = selectedFiles.filter(
+        (file) => !(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      )
+      const combinedFiles = [...filesWithoutPdfs, ...processedImages]
       handleFilesChange(combinedFiles)
     }
     
@@ -547,6 +580,16 @@ function DeslindePageInner() {
   const handleProcessImages = () => {
     if (selectedFiles.length === 0) return
     
+    // Prevent processing when PDF selector modal is open
+    // This ensures only confirmed/selected PDF images are processed
+    if (showPdfImageSelector) {
+      toast.error("Por favor confirma la selección de imágenes del PDF primero", {
+        description: "Debes seleccionar y confirmar las páginas del PDF que deseas procesar.",
+        duration: 5000,
+      })
+      return
+    }
+    
     setProcessingStarted(false)
     setAiStructuredText(null)
     setUnits([])
@@ -557,6 +600,13 @@ function DeslindePageInner() {
 
   const handleProcessingComplete = async (update?: (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => void) => {
     if (!selectedFiles || selectedFiles.length === 0) return
+    
+    // Prevent processing when PDF selector modal is open
+    if (showPdfImageSelector) {
+      console.log("[deslinde] PDF selector modal is open, skipping processing")
+      return
+    }
+    
     if (processingStarted) {
       console.log("[deslinde] processing already started, skipping duplicate run")
       return
@@ -569,14 +619,34 @@ function DeslindePageInner() {
 
     // Send images directly to OpenAI Vision API
     try {
-      update?.("ai", "in_progress", `Analizando ${selectedFiles.length} imagen(es)...`)
+      // Count only image files (exclude PDFs)
+      const imageFilesCount = selectedFiles.filter(
+        (file) => !(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      ).length
+      
+      update?.("ai", "in_progress", `Analizando ${imageFilesCount} imagen(es)...`)
       
       // Send images as FormData
       // Add forceRefresh parameter to bypass cache if needed
       // You can add a UI toggle to control this
       const formData = new FormData()
-      selectedFiles.forEach((image) => {
-        formData.append("images", image)
+      
+      // Filter out PDFs - only process images (PDFs should have been converted to images)
+      const imageFilesOnly = selectedFiles.filter(
+        (file) => !(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      )
+      
+      if (imageFilesOnly.length === 0) {
+        throw new Error("No hay imágenes válidas para procesar. Por favor, asegúrate de haber seleccionado imágenes del PDF o subir imágenes directamente.")
+      }
+      
+      imageFilesOnly.forEach((image) => {
+        // Validate that the image file exists and is valid before adding
+        if (image && image instanceof File && image.size > 0) {
+          formData.append("images", image)
+        } else {
+          console.warn("[deslinde] Skipping invalid image file:", image)
+        }
       })
       // Optionally force refresh to bypass cache (useful for debugging)
       // formData.append("forceRefresh", "true")
@@ -1337,6 +1407,7 @@ function DeslindePageInner() {
                   onFilesChange={handleFilesChange}
                   onProcess={handleProcessImages}
                   files={selectedFiles}
+                  disableProcess={showPdfImageSelector}
                 />
               </div>
             </div>
@@ -1344,7 +1415,14 @@ function DeslindePageInner() {
 
 
           {/* PDF Image Selection Modal */}
-          <Dialog open={showPdfImageSelector} onOpenChange={setShowPdfImageSelector}>
+          <Dialog open={showPdfImageSelector} onOpenChange={(open) => {
+            if (!open) {
+              // When modal is closed (via ESC, click outside, etc.), cancel the selection
+              handleCancelPdfImageSelection()
+            } else {
+              setShowPdfImageSelector(true)
+            }
+          }}>
             <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Selecciona las imágenes del PDF</DialogTitle>
