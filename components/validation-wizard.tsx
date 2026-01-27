@@ -11,6 +11,7 @@ import type { TransformedSegment } from "@/lib/text-transformer"
 import type { PropertyUnit } from "@/lib/ocr-simulator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { generateNotarialDocument, downloadDocument, generateFilename } from "@/lib/document-exporter"
+import { toast } from "sonner"
 import {
   Dialog,
   DialogContent,
@@ -90,7 +91,6 @@ export function ValidationWizard({
   const [isViewerCollapsed, setIsViewerCollapsed] = useState(false)
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
   const [manuallyEditedNotarial, setManuallyEditedNotarial] = useState<Set<string>>(new Set())
-  const [showAuthorizeDialog, setShowAuthorizeDialog] = useState(false)
   const [showUnauthorizeDialog, setShowUnauthorizeDialog] = useState(false)
 
   // Auto-format colindancias text with proper indentation
@@ -301,7 +301,17 @@ export function ValidationWizard({
     const newAuthorizedUnits = new Set(authorizedUnits)
     newAuthorizedUnits.add(currentUnit.id)
     setAuthorizedUnits(newAuthorizedUnits)
-    setShowAuthorizeDialog(false)
+    
+    // Mostrar toast de confirmación
+    toast.success("Unidad autorizada", {
+      description: `${currentUnit.name} ha sido autorizada exitosamente`,
+      duration: 3000,
+    })
+    
+    // Avanzar a la siguiente unidad si no estamos en la última
+    if (!isLastUnit) {
+      setCurrentUnitIndex(currentUnitIndex + 1)
+    }
   }
 
   const handleUnauthorizeUnit = () => {
@@ -312,7 +322,7 @@ export function ValidationWizard({
   }
 
   const handleRequestAuthorize = () => {
-    setShowAuthorizeDialog(true)
+    handleAuthorizeUnit()
   }
 
   const handleRequestUnauthorize = () => {
@@ -990,35 +1000,6 @@ export function ValidationWizard({
           </div>
         </DialogContent>
       </Dialog>
-
-      {/* Dialog de confirmación para autorizar */}
-      <AlertDialog open={showAuthorizeDialog} onOpenChange={setShowAuthorizeDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2">
-              <ShieldCheck className="h-5 w-5 text-green-600" />
-              Confirmar autorización
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              ¿Estás seguro de que deseas autorizar la unidad <strong>{currentUnit?.name}</strong>?
-              <br />
-              Una vez autorizada, la unidad quedará bloqueada para edición y se incluirá en la exportación.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="hover:bg-gray-200 hover:text-foreground">
-              Cancelar
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleAuthorizeUnit}
-              className="bg-gray-800 hover:bg-gray-700 text-white font-bold gap-1.5"
-            >
-              <ShieldCheck className="h-3.5 w-3.5" />
-              <span>AUTORIZAR</span>
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       {/* Dialog de confirmación para desautorizar */}
       <AlertDialog open={showUnauthorizeDialog} onOpenChange={setShowUnauthorizeDialog}>
