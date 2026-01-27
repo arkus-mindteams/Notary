@@ -9,7 +9,7 @@ import type { PreavisoSimplifiedJSON } from './types/preaviso-simplified'
 import type { PreavisoData } from '@/components/preaviso-chat'
 
 // Helper para convertir número a romano
-Handlebars.registerHelper('toRoman', function(num: number) {
+Handlebars.registerHelper('toRoman', function (num: number) {
   const romanNumerals: { [key: number]: string } = {
     1: 'I', 2: 'II', 3: 'III', 4: 'IV', 5: 'V',
     6: 'VI', 7: 'VII', 8: 'VIII', 9: 'IX', 10: 'X'
@@ -18,7 +18,7 @@ Handlebars.registerHelper('toRoman', function(num: number) {
 })
 
 // Helper para comparar valores (expresión helper para usar en {{#if}})
-Handlebars.registerHelper('eq', function(a: any, b: any, options?: any) {
+Handlebars.registerHelper('eq', function (a: any, b: any, options?: any) {
   // Si se usa como bloque helper ({{#eq a b}}...{{/eq}})
   if (options && typeof options === 'object' && 'fn' in options) {
     return a === b ? options.fn(this) : options.inverse(this)
@@ -28,22 +28,22 @@ Handlebars.registerHelper('eq', function(a: any, b: any, options?: any) {
 })
 
 // Helper para verificar si un array tiene elementos
-Handlebars.registerHelper('hasItems', function(array: any) {
+Handlebars.registerHelper('hasItems', function (array: any) {
   return Array.isArray(array) && array.length > 0
 })
 
 // Helper para incrementar (útil para @index en templates)
-Handlebars.registerHelper('inc', function(value: any) {
+Handlebars.registerHelper('inc', function (value: any) {
   const n = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(n) ? n + 1 : value
 })
 
 // Helper para formatear fecha
-Handlebars.registerHelper('formatDate', function(date: Date, format: string) {
+Handlebars.registerHelper('formatDate', function (date: Date, format: string) {
   const day = date.getDate()
   const month = date.toLocaleDateString('es-MX', { month: 'long' })
   const year = date.getFullYear()
-  
+
   if (format === 'dia') return day.toString()
   if (format === 'mes') return month
   if (format === 'ano') return year.toString()
@@ -72,7 +72,7 @@ export interface PreavisoTemplateData extends PreavisoSimplifiedJSON {
 export class PreavisoTemplateRenderer {
   private static readonly NOTARIA = {
     numero: '3',
-    nombre: 'XAVIER IBAÑEZ VERAMENDI',
+    nombre: 'PEDRO CHÁVEZ SÁNCHEZ',
     ciudad: 'Tijuana',
     estado: 'Baja California'
   }
@@ -85,7 +85,7 @@ export class PreavisoTemplateRenderer {
     errors: string[]
   } {
     const errors: string[] = []
-    
+
     // Validar que existe al menos un vendedor
     if (!data.vendedores || data.vendedores.length === 0) {
       errors.push('Falta al menos un vendedor')
@@ -95,7 +95,7 @@ export class PreavisoTemplateRenderer {
         errors.push('El vendedor requiere nombre o denominación social')
       }
     }
-    
+
     // Validar que existe al menos un comprador
     if (!data.compradores || data.compradores.length === 0) {
       errors.push('Falta al menos un comprador')
@@ -105,7 +105,7 @@ export class PreavisoTemplateRenderer {
         errors.push('El comprador requiere nombre o denominación social')
       }
     }
-    
+
     // Validar que existe inmueble
     if (!data.inmueble) {
       errors.push('Falta información del inmueble')
@@ -114,7 +114,7 @@ export class PreavisoTemplateRenderer {
         errors.push('El inmueble requiere folio real o dirección')
       }
     }
-    
+
     // Validar que los actos tienen los datos necesarios
     if (data.actos.cancelacionHipoteca) {
       const g0 = data.gravamenes?.[0]
@@ -125,7 +125,7 @@ export class PreavisoTemplateRenderer {
         errors.push('Acto de cancelación de hipoteca requiere que la cancelación esté pendiente (cancelacion_confirmada=false)')
       }
     }
-    
+
     if (data.actos.aperturaCreditoComprador) {
       if (!data.creditos || data.creditos.length === 0) {
         errors.push('Acto de apertura de crédito requiere al menos un crédito')
@@ -138,7 +138,7 @@ export class PreavisoTemplateRenderer {
         })
       }
     }
-    
+
     const normalizePartida = (p: any): string | null => {
       if (typeof p === 'string') return p
       if (!p) return null
@@ -175,11 +175,11 @@ export class PreavisoTemplateRenderer {
     }>
   } {
     const now = new Date()
-    
+
     // Extraer primer vendedor y comprador para compatibilidad con templates
     const vendedor = data.vendedores?.[0] || null
     const comprador = data.compradores?.[0] || null
-    
+
     // Calcular numeración de actos jurídicos
     const actosNumerados: Array<{
       numero: number
@@ -187,13 +187,13 @@ export class PreavisoTemplateRenderer {
       tipo: 'cancelacionHipoteca' | 'compraventa' | 'aperturaCreditoComprador'
       creditos?: Array<PreavisoSimplifiedJSON['creditos'][0]>
     }> = []
-    
+
     let actoNum = 1
     const romanNumerals: { [key: number]: string } = {
       1: 'I', 2: 'II', 3: 'III', 4: 'IV', 5: 'V',
       6: 'VI', 7: 'VII', 8: 'VIII', 9: 'IX', 10: 'X'
     }
-    
+
     // Acto 1: Cancelación de hipoteca (si aplica)
     if (data.actos.cancelacionHipoteca) {
       actosNumerados.push({
@@ -203,7 +203,7 @@ export class PreavisoTemplateRenderer {
       })
       actoNum++
     }
-    
+
     // Acto 2: Compraventa (siempre presente)
     if (data.actos.compraventa) {
       actosNumerados.push({
@@ -213,7 +213,7 @@ export class PreavisoTemplateRenderer {
       })
       actoNum++
     }
-    
+
     // Acto 3: Apertura de crédito (UN SOLO ACTO) con listado de créditos y participantes
     // Requisito: no generar múltiples actos, sino un solo contrato con varios créditos dentro.
     if (data.actos.aperturaCreditoComprador && data.creditos && data.creditos.length > 0) {
@@ -265,7 +265,7 @@ export class PreavisoTemplateRenderer {
               }
             }
           }
-          
+
           // Si no tiene party_id pero es coacreditado, buscar por nombre en compradores[0].persona_fisica.conyuge
           // o buscar en todos los compradores por nombre si ya existe
           // IMPORTANTE: También verificar si tiene party_id pero es coacreditado (puede ser cónyuge con party_id)
@@ -274,11 +274,11 @@ export class PreavisoTemplateRenderer {
             if ((p as any)?.nombre && String((p as any).nombre).trim().length >= 3) {
               return p
             }
-            
+
             // Buscar el nombre del cónyuge en el contexto
             const comprador0 = data.compradores[0]
             const conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre || null
-            
+
             if (conyugeNombre) {
               // Buscar si ya existe como comprador separado
               const conyugeComprador = data.compradores.find((c, idx) => {
@@ -286,7 +286,7 @@ export class PreavisoTemplateRenderer {
                 const nm = c.nombre || c.denominacion_social || null
                 return nm && nm.toLowerCase().trim() === conyugeNombre.toLowerCase().trim()
               })
-              
+
               if (conyugeComprador) {
                 return {
                   ...p,
@@ -294,7 +294,7 @@ export class PreavisoTemplateRenderer {
                   nombre: (p as any)?.nombre || conyugeComprador.nombre || conyugeComprador.denominacion_social || conyugeNombre
                 }
               }
-              
+
               // Si no existe como comprador separado, usar el nombre del cónyuge
               // CRÍTICO: Incluir nombre incluso si tiene party_id (para cónyuges que fueron creados como compradores)
               return {
@@ -303,7 +303,7 @@ export class PreavisoTemplateRenderer {
                 nombre: (p as any)?.nombre || conyugeNombre
               }
             }
-            
+
             // Si no hay nombre del cónyuge en el contexto pero el participante es coacreditado,
             // buscar en todos los compradores (puede ser que el cónyuge esté como segundo comprador)
             if (data.compradores.length > 1) {
@@ -326,7 +326,7 @@ export class PreavisoTemplateRenderer {
               return { ...p, nombre: c0Nombre }
             }
           }
-          
+
           return p
         })
         // Guardrail: si no hay acreditado explícito, usar comprador principal
@@ -361,10 +361,10 @@ export class PreavisoTemplateRenderer {
       actoNum++
     }
     // NOTA: No hay fallback - si no hay créditos en el array, no se muestra el acto
-    
+
     // Determinar si se incluye Artículo 139
     const includeArticle139 = data.inmueble?.all_registry_pages_confirmed === true || false
-    
+
     return {
       ...data,
       vendedor,
@@ -376,10 +376,10 @@ export class PreavisoTemplateRenderer {
         dia: now.getDate().toString(),
         mes: now.toLocaleDateString('es-MX', { month: 'long' }),
         ano: now.getFullYear().toString(),
-        completa: now.toLocaleDateString('es-MX', { 
-          year: 'numeric', 
-          month: 'long', 
-          day: 'numeric' 
+        completa: now.toLocaleDateString('es-MX', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
         })
       },
       notaria: this.NOTARIA
@@ -420,7 +420,7 @@ export class PreavisoTemplateRenderer {
       if (!validation.isValid) {
         throw new Error(`No se puede generar el documento. Errores: ${validation.errors.join(', ')}`)
       }
-      
+
       const templateData = this.prepareTemplateData(data)
       const template = await this.loadTemplate('word')
       const renderedText = template(templateData)
@@ -431,7 +431,7 @@ export class PreavisoTemplateRenderer {
 
       lines.forEach((line) => {
         const trimmedLine = line.trim()
-        
+
         // Detectar títulos y encabezados centrados
         const isCenteredHeader =
           trimmedLine.includes('LIC.') ||
@@ -446,9 +446,9 @@ export class PreavisoTemplateRenderer {
           trimmedLine.startsWith('FOLIO REAL:')
 
         // Detectar títulos
-        if (trimmedLine.includes('SOLICITUD DE CERTIFICADO') || 
-            trimmedLine.includes('OBJETO DE LA COMPRAVENTA') ||
-            trimmedLine.includes('CERTIFICO:')) {
+        if (trimmedLine.includes('SOLICITUD DE CERTIFICADO') ||
+          trimmedLine.includes('OBJETO DE LA COMPRAVENTA') ||
+          trimmedLine.includes('CERTIFICO:')) {
           paragraphs.push(
             new Paragraph({
               children: [
@@ -649,7 +649,7 @@ export class PreavisoTemplateRenderer {
       if (!validation.isValid) {
         throw new Error(`No se puede generar el documento. Errores: ${validation.errors.join(', ')}`)
       }
-      
+
       const templateData = this.prepareTemplateData(data)
       const template = await this.loadTemplate('pdf')
       const renderedHTML = template(templateData)
@@ -663,8 +663,8 @@ export class PreavisoTemplateRenderer {
       iframe.style.width = '900px'
       iframe.style.height = '10px'
       iframe.style.border = '0'
-      // Aislar del CSS del sitio
-      ;(iframe as any).sandbox = 'allow-same-origin'
+        // Aislar del CSS del sitio
+        ; (iframe as any).sandbox = 'allow-same-origin'
       document.body.appendChild(iframe)
 
       const loadIframe = async () => {
@@ -764,7 +764,7 @@ export class PreavisoTemplateRenderer {
       if (!validation.isValid) {
         throw new Error(`No se puede generar el documento. Errores: ${validation.errors.join(', ')}`)
       }
-      
+
       const templateData = this.prepareTemplateData(data)
       const template = await this.loadTemplate('word') // Usar template de word para texto
       const renderedText = template(templateData)
@@ -786,7 +786,7 @@ export class PreavisoTemplateRenderer {
       if (!validation.isValid) {
         throw new Error(`No se puede generar el documento. Errores: ${validation.errors.join(', ')}`)
       }
-      
+
       const templateData = this.prepareTemplateData(data)
       const template = await this.loadTemplate('pdf') // Usar template de PDF para HTML
       const renderedHTML = template(templateData)
@@ -811,12 +811,12 @@ export class PreavisoTemplateRenderer {
    */
   static generateFileName(data: PreavisoSimplifiedJSON, extension: 'docx' | 'pdf' | 'txt'): string {
     const date = new Date().toISOString().split('T')[0]
-    const vendedorName = data.vendedores?.[0]?.nombre?.split(' ')[0] || 
-                         data.vendedores?.[0]?.denominacion_social?.split(' ')[0] || 
-                         'Vendedor'
-    const compradorName = data.compradores?.[0]?.nombre?.split(' ')[0] || 
-                          data.compradores?.[0]?.denominacion_social?.split(' ')[0] || 
-                          'Comprador'
+    const vendedorName = data.vendedores?.[0]?.nombre?.split(' ')[0] ||
+      data.vendedores?.[0]?.denominacion_social?.split(' ')[0] ||
+      'Vendedor'
+    const compradorName = data.compradores?.[0]?.nombre?.split(' ')[0] ||
+      data.compradores?.[0]?.denominacion_social?.split(' ')[0] ||
+      'Comprador'
     return `Pre-Aviso_${vendedorName}_${compradorName}_${date}.${extension}`
   }
 
@@ -848,7 +848,7 @@ export class PreavisoTemplateRenderer {
       gravamenesArr.length > 0 &&
       gravamenesArr.every((g: any) => g?.cancelacion_confirmada === true)
     const necesitaCancelacionHipoteca = tieneGravamen && !cancelacionYaInscrita
-    
+
     // Calcular actos notariales para el renderer (NO usar data.actosNotariales directo,
     // porque ese objeto legacy no incluye cancelacionHipoteca y causaba omitir el acto).
     const actos = {
@@ -856,15 +856,15 @@ export class PreavisoTemplateRenderer {
       aperturaCreditoComprador: !!tieneCreditos,
       cancelacionHipoteca: !!necesitaCancelacionHipoteca
     }
-    
+
     // Construir direccion como string
     const direccion = data.inmueble?.direccion
-    const direccionStr = typeof direccion === 'string' 
-      ? direccion 
-      : direccion?.calle 
+    const direccionStr = typeof direccion === 'string'
+      ? direccion
+      : direccion?.calle
         ? `${direccion.calle}${direccion.numero ? ' ' + direccion.numero : ''}${direccion.colonia ? ', ' + direccion.colonia : ''}${direccion.municipio ? ', ' + direccion.municipio : ''}${direccion.estado ? ', ' + direccion.estado : ''}`.trim()
         : null
-    
+
     return {
       tipoOperacion: data.tipoOperacion,
       vendedores: data.vendedores?.map(v => ({
