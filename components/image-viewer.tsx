@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { RotateCw, ChevronLeft, ChevronRight, X, EyeOff } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -15,12 +15,14 @@ interface ImageViewerProps {
 
 export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: ImageViewerProps) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex)
-  const [zoom, setZoom] = useState(20)
+  const [zoom, setZoom] = useState(50)
   const [rotation, setRotation] = useState(0)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const imageRef = useRef<HTMLImageElement | null>(null)
   const [imageUrls, setImageUrls] = useState<string[]>([])
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null)
+  const previousRotationRef = useRef<number>(0)
+  const shouldPreserveScrollRef = useRef<boolean>(false)
 
   // Create object URLs for all images
   useEffect(() => {
@@ -35,31 +37,127 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
 
   // Reset zoom and rotation when changing image
   useEffect(() => {
-    setZoom(20)
+    setZoom(50)
     setRotation(0)
     setImageSize(null) // Reset image size when changing images
+    previousRotationRef.current = 0
+    shouldPreserveScrollRef.current = false
   }, [currentIndex])
 
-  // Center image when zoom or rotation changes
+  // Center image on initial load, preserve scroll position during rotation
   useEffect(() => {
     if (scrollRef.current && imageSize && imageRef.current) {
       const container = scrollRef.current
-      const scaledWidth = imageSize.width * (zoom / 100)
-      const scaledHeight = imageSize.height * (zoom / 100)
       const containerWidth = container.clientWidth
       const containerHeight = container.clientHeight
       
-      // Calculate the center position of the scaled image
-      const scrollX = Math.max(0, (scaledWidth - containerWidth) / 2)
-      const scrollY = Math.max(0, (scaledHeight - containerHeight) / 2)
+      // Check if this is a rotation change (not initial load or zoom change)
+      const isRotationChange = previousRotationRef.current !== rotation && shouldPreserveScrollRef.current
       
-      // Use requestAnimationFrame to ensure smooth centering
-      requestAnimationFrame(() => {
-        if (scrollRef.current) {
-          scrollRef.current.scrollLeft = scrollX
-          scrollRef.current.scrollTop = scrollY
+      if (isRotationChange) {
+        // Preserve scroll position during rotation
+        const prevRotation = previousRotationRef.current
+        const rotationDelta = ((rotation - prevRotation) % 360 + 360) % 360 // Normalize to 0-360
+        
+        // Get current scroll position
+        const currentScrollX = container.scrollLeft
+        const currentScrollY = container.scrollTop
+        
+        // Calculate what point in the image (in image pixel coordinates) is at viewport center
+        const viewportCenterX = currentScrollX + containerWidth / 2
+        const viewportCenterY = currentScrollY + containerHeight / 2
+        
+        // Calculate image dimensions before rotation (accounting for previous rotation)
+        const isPrev90or270 = (prevRotation % 180) === 90
+        const prevScaledWidth = isPrev90or270 
+          ? imageSize.height * (zoom / 100) 
+          : imageSize.width * (zoom / 100)
+        const prevScaledHeight = isPrev90or270 
+          ? imageSize.width * (zoom / 100) 
+          : imageSize.height * (zoom / 100)
+        
+        // Find the point in image coordinates (0 to 1) that's at viewport center
+        // The image is centered in the scroll container, so we need to account for that
+        const imageCenterX = prevScaledWidth / 2
+        const imageCenterY = prevScaledHeight / 2
+        
+        // Calculate offset from image center in scroll coordinates
+        const offsetX = viewportCenterX - imageCenterX
+        const offsetY = viewportCenterY - imageCenterY
+        
+        // Convert to normalized coordinates (-1 to 1) relative to image center
+        const normalizedX = prevScaledWidth > 0 ? offsetX / (prevScaledWidth / 2) : 0
+        const normalizedY = prevScaledHeight > 0 ? offsetY / (prevScaledHeight / 2) : 0
+        
+        // Apply rotation transformation to normalized coordinates
+        // Rotation is around the center, so we rotate the offset vector
+        let newNormalizedX = normalizedX
+        let newNormalizedY = normalizedY
+        
+        if (rotationDelta === 90) {
+          // Rotate 90° clockwise: (x, y) -> (-y, x)
+          [newNormalizedX, newNormalizedY] = [-normalizedY, normalizedX]
+        } else if (rotationDelta === 180) {
+          // Rotate 180°: (x, y) -> (-x, -y)
+          [newNormalizedX, newNormalizedY] = [-normalizedX, -normalizedY]
+        } else if (rotationDelta === 270) {
+          // Rotate 270° clockwise: (x, y) -> (y, -x)
+          [newNormalizedX, newNormalizedY] = [normalizedY, -normalizedX]
         }
-      })
+        
+        // Calculate image dimensions after rotation
+        const is90or270 = (rotation % 180) === 90
+        const newScaledWidth = is90or270 
+          ? imageSize.height * (zoom / 100) 
+          : imageSize.width * (zoom / 100)
+        const newScaledHeight = is90or270 
+          ? imageSize.width * (zoom / 100) 
+          : imageSize.height * (zoom / 100)
+        
+        // Convert back to scroll coordinates
+        const newImageCenterX = newScaledWidth / 2
+        const newImageCenterY = newScaledHeight / 2
+        const newOffsetX = newNormalizedX * (newScaledWidth / 2)
+        const newOffsetY = newNormalizedY * (newScaledHeight / 2)
+        
+        // Calculate new viewport center position
+        const newViewportCenterX = newImageCenterX + newOffsetX
+        const newViewportCenterY = newImageCenterY + newOffsetY
+        
+        // Calculate new scroll position
+        const newScrollX = Math.max(0, Math.min(newViewportCenterX - containerWidth / 2, Math.max(0, newScaledWidth - containerWidth)))
+        const newScrollY = Math.max(0, Math.min(newViewportCenterY - containerHeight / 2, Math.max(0, newScaledHeight - containerHeight)))
+        
+        // Apply new scroll position after DOM update
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (scrollRef.current) {
+              scrollRef.current.scrollLeft = newScrollX
+              scrollRef.current.scrollTop = newScrollY
+            }
+          })
+        })
+        
+        previousRotationRef.current = rotation
+      } else {
+        // Initial load or zoom change - center the image
+        const is90or270 = (rotation % 180) === 90
+        const scaledWidth = is90or270 ? imageSize.height * (zoom / 100) : imageSize.width * (zoom / 100)
+        const scaledHeight = is90or270 ? imageSize.width * (zoom / 100) : imageSize.height * (zoom / 100)
+        
+        const scrollX = Math.max(0, (scaledWidth - containerWidth) / 2)
+        const scrollY = Math.max(0, (scaledHeight - containerHeight) / 2)
+        
+        requestAnimationFrame(() => {
+          if (scrollRef.current) {
+            scrollRef.current.scrollLeft = scrollX
+            scrollRef.current.scrollTop = scrollY
+          }
+        })
+        
+        previousRotationRef.current = rotation
+        shouldPreserveScrollRef.current = true // Enable scroll preservation for future rotations
+      }
     }
   }, [zoom, rotation, imageSize])
 
@@ -85,6 +183,27 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
   const handleRotate = () => {
     setRotation((r) => (r + 90) % 360)
   }
+
+  // Calculate container dimensions based on image size, zoom, and rotation
+  const containerDimensions = useMemo(() => {
+    if (!imageSize) {
+      return { width: "100%", height: "100%" }
+    }
+    
+    const is90or270 = (rotation % 180) === 90
+    const scaledWidth = is90or270 
+      ? imageSize.height * (zoom / 100) 
+      : imageSize.width * (zoom / 100)
+    const scaledHeight = is90or270 
+      ? imageSize.width * (zoom / 100) 
+      : imageSize.height * (zoom / 100)
+    
+    // Add padding (1rem = 16px on each side = 32px total)
+    return {
+      width: Math.max(scaledWidth + 32, "100%"),
+      height: Math.max(scaledHeight + 32, "100%"),
+    }
+  }, [imageSize, zoom, rotation])
 
   if (images.length === 0) {
     return null
@@ -225,9 +344,6 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
         className="flex-1 overflow-auto bg-muted/10"
         style={{
           overscrollBehavior: "contain",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
         }}
       >
         {currentImageUrl && (
@@ -238,6 +354,8 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
+              width: containerDimensions.width,
+              height: containerDimensions.height,
               minHeight: "100%",
               minWidth: "100%",
             }}
@@ -248,8 +366,8 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
                 transformOrigin: "center center",
                 transition: "transform 0.2s ease-in-out",
                 display: "block",
-                width: "100px",
-                height: "100px",
+                width: imageSize?.width || "auto",
+                height: imageSize?.height || "auto",
               }}
               className="relative"
             >
@@ -278,14 +396,17 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
                     requestAnimationFrame(() => {
                       if (scrollRef.current) {
                         const container = scrollRef.current
-                        const scaledWidth = img.naturalWidth * (zoom / 100)
-                        const scaledHeight = img.naturalHeight * (zoom / 100)
+                        const is90or270 = (rotation % 180) === 90
+                        const scaledWidth = is90or270 
+                          ? img.naturalHeight * (zoom / 100) 
+                          : img.naturalWidth * (zoom / 100)
+                        const scaledHeight = is90or270 
+                          ? img.naturalWidth * (zoom / 100) 
+                          : img.naturalHeight * (zoom / 100)
                         const containerWidth = container.clientWidth
                         const containerHeight = container.clientHeight
                         
                         // Calculate scroll position to center the scaled image
-                        // The wrapper (100px) is centered, and image scales from its center
-                        // Scroll to show the center of the scaled image in the center of viewport
                         const scrollX = Math.max(0, (scaledWidth - containerWidth) / 2)
                         const scrollY = Math.max(0, (scaledHeight - containerHeight) / 2)
                         
