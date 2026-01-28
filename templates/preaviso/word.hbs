@@ -1,0 +1,87 @@
+{{! Template para generar Pre-Aviso en formato Word }}
+{{! Estructura según PROMPT 2: ESTRUCTURA FIJA DEL PRE-AVISO }}
+
+{{! 1. Encabezado del notario }}
+NOTARÍA PÚBLICA NÚMERO {{notaria.numero}}
+{{notaria.nombre}}
+{{notaria.ciudad}}, {{notaria.estado}}
+
+{{! 2. Título del documento }}
+SOLICITUD DE CERTIFICADO CON EFECTO DE PRE-AVISO
+
+{{! 3. ANTECEDENTES REGISTRALES }}
+En {{notaria.ciudad}}, {{notaria.estado}}, a los {{fecha.dia}} días del mes de {{fecha.mes}} de {{fecha.ano}}.
+
+C. DIRECTOR DEL REGISTRO PÚBLICO
+DE LA PROPIEDAD Y DEL COMERCIO.
+P R E S E N T E.
+
+{{! 4. Párrafo legal del art. 2885 }}
+Con fundamento en lo dispuesto en el artículo 2,885 del Código Civil del Estado de Baja California, ante mi fe se pretenden otorgar LOS SIGUIENTES ACTOS JURÍDICOS:
+
+{{! 5. Actos jurídicos numerados (romanos) }}
+{{#if actos.cancelacionHipoteca}}
+I. CANCELACIÓN DEL CRÉDITO DEL VENDEDOR:
+   - Vendedor: {{vendedor.nombre}}{{#if vendedor.denominacion_social}} ({{vendedor.denominacion_social}}){{/if}}
+   {{#if vendedor.institucionCredito}}- Institución crediticia: {{vendedor.institucionCredito}}{{/if}}
+   {{#if vendedor.numeroCredito}}- Número de crédito: {{vendedor.numeroCredito}}{{/if}}
+   - Objeto: Cancelar el crédito o hipoteca que grava el inmueble objeto de la compraventa.
+{{/if}}
+
+{{#if actos.compraventa}}
+{{#if actos.cancelacionHipoteca}}II{{else}}I{{/if}}. COMPRAVENTA DE INMUEBLE:
+   - Vendedor: {{vendedor.nombre}}{{#if vendedor.denominacion_social}} ({{vendedor.denominacion_social}}){{/if}}
+   - Comprador: {{comprador.nombre}}{{#if comprador.denominacion_social}} ({{comprador.denominacion_social}}){{/if}}
+   - Inmueble: {{inmueble.direccion}}
+   - Valor: ${{inmueble.valor}}
+   - Objeto: Transmitir la propiedad del inmueble del vendedor al comprador.
+{{/if}}
+
+{{#if actos.aperturaCreditoComprador}}
+{{#if actos.cancelacionHipoteca}}{{#if actos.compraventa}}III{{else}}II{{/if}}{{else}}{{#if actos.compraventa}}II{{else}}I{{/if}}{{/if}}. APERTURA DE CRÉDITO DEL COMPRADOR:
+   - Comprador: {{comprador.nombre}}{{#if comprador.denominacion_social}} ({{comprador.denominacion_social}}){{/if}}
+   {{#if comprador.institucionCredito}}- Institución crediticia: {{comprador.institucionCredito}}{{/if}}
+   {{#if comprador.montoCredito}}- Monto: {{comprador.montoCredito}}{{/if}}
+   - Objeto: Constituir hipoteca o garantía sobre el inmueble adquirido para garantizar el crédito otorgado.
+{{/if}}
+
+{{! 6. OBJETO DE LA COMPRAVENTA / TRANSMISIÓN Y GARANTÍA }}
+{{#if actos.aperturaCreditoComprador}}
+OBJETO DE LA COMPRAVENTA Y GARANTÍA
+{{else}}
+OBJETO DE LA COMPRAVENTA
+{{/if}}
+
+{{! 7. Descripción del inmueble (factual, sin interpretar) }}
+El inmueble objeto de la presente solicitud se identifica de la siguiente manera:
+
+1. UBICACIÓN: {{inmueble.direccion}}
+2. FOLIO REAL: {{inmueble.folioReal}}{{#if inmueble.seccion}}, Sección {{inmueble.seccion}}{{/if}}{{#if inmueble.partida}}, Partida {{inmueble.partida}}{{/if}}
+3. SUPERFICIE: {{inmueble.superficie}} metros cuadrados
+4. VALOR DE LA OPERACIÓN: ${{inmueble.valor}}
+{{#if inmueble.lote}}5. LOTE: {{inmueble.lote}}{{/if}}
+{{#if inmueble.manzana}}6. MANZANA: {{inmueble.manzana}}{{/if}}
+{{#if inmueble.fraccionamiento}}7. FRACCIONAMIENTO: {{inmueble.fraccionamiento}}{{/if}}
+{{#if inmueble.colonia}}8. COLONIA: {{inmueble.colonia}}{{/if}}
+{{#if inmueble.condominio}}9. CONDOMINIO: {{inmueble.condominio}}{{/if}}
+{{#if inmueble.unidad}}10. UNIDAD: {{inmueble.unidad}}{{/if}}
+{{#if inmueble.modulo}}11. MÓDULO: {{inmueble.modulo}}{{/if}}
+
+El inmueble se encuentra debidamente inscrito en el Registro Público de la Propiedad y del Comercio del Estado de Baja California.
+
+{{! 8. Cierre }}
+TIJUANA, B. C., AL MOMENTO DE SU PRESENTACIÓN.
+
+{{! 9. Firma del notario }}
+_________________________________
+{{notaria.nombre}}
+NOTARIO PÚBLICO NÚMERO {{notaria.numero}}
+{{notaria.ciudad}}, {{notaria.estado}}
+
+CERTIFICO: Que la presente solicitud ha sido debidamente autorizada y firmada en mi presencia, en la fecha y lugar antes señalados.
+
+_________________________________
+{{notaria.nombre}}
+NOTARIO PÚBLICO NÚMERO {{notaria.numero}}
+{{notaria.ciudad}}, {{notaria.estado}}
+

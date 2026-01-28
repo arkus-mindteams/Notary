@@ -1,0 +1,624 @@
+# CURSOR RULES — NOTARIAL AI PROMPT ARCHITECTURE
+
+This project uses a STRICT 4-layer prompt architecture for a notarial AI system.
+Your primary responsibility is to PREVENT prompt responsibility leakage and unintended modifications.
+
+====================================================
+CRITICAL GOAL
+====================================================
+
+When future changes are requested (by a human or by you), you MUST know:
+- WHICH prompt is allowed to change
+- WHICH prompt is FORBIDDEN to change
+- WHEN logic belongs in code instead of prompts
+
+Most past bugs were caused by modifying the WRONG prompt.
+This file exists to PREVENT that.
+
+====================================================
+PROMPT ARCHITECTURE — SOURCE OF TRUTH
+====================================================
+
+There are EXACTLY four prompts. Their responsibilities are NON-OVERLAPPING.
+
+----------------------------------------------------
+PROMPT 1 — SYSTEM CORE (Identity & Cognition)
+----------------------------------------------------
+Location:
+- app/api/ai/preaviso-chat/route.ts
+- Constant: PROMPT_1_SYSTEM_CORE
+
+Purpose:
+- Agent identity
+- Cognitive constraints
+- Communication style
+- Conversation rules
+- Order of questioning (high-level, human-facing)
+
+MAY CHANGE IF AND ONLY IF the change is about:
+- Tone or language style
+- Conversation etiquette
+- Question phrasing rules
+- Identity constraints (e.g. "you are not a lawyer")
+- Human-facing flow order (in natural language terms)
+
+MUST NEVER CHANGE FOR:
+- Business rules
+- Legal validation
+- State machines
+- Blocking logic
+- JSON schema
+- Output formatting
+- Domain terminology definitions
+
+----------------------------------------------------
+PROMPT 2 — BUSINESS RULES (Domain & Legal Logic)
+----------------------------------------------------
+Location:
+- Database: preaviso_config.prompt
+
+Purpose:
+- Legal definitions
+- Domain terminology
+- State definitions
+- Blocking rules
+- Persona moral rules
+- Registry validation rules
+- What is allowed vs forbidden legally
+
+MAY CHANGE IF AND ONLY IF the change is about:
+- Legal requirements
+- Notarial domain rules
+- State definitions or transitions (conceptually)
+- Blocking conditions
+- Validation logic
+- Persona moral constraints
+- Registry / folio / hipoteca rules
+
+MUST NEVER CHANGE FOR:
+- Conversation tone
+- Question phrasing
+- Output JSON formatting
+- Technical schema constraints
+- Runtime session context
+
+HOW TO UPDATE:
+- Create a new migration SQL file in supabase/migrations/
+- Update preaviso_config.prompt via SQL UPDATE
+- NEVER modify PROMPT 2 in code files
+
+----------------------------------------------------
+PROMPT 3 — TASK / STATE (Dynamic Runtime Context)
+----------------------------------------------------
+Location:
+- app/api/ai/preaviso-chat/route.ts
+- Function: buildSystemPrompts
+
+Purpose:
+- Current state snapshot
+- Captured data
+- Missing data
+- Blocking reasons
+- Allowed actions THIS TURN
+
+MAY CHANGE IF AND ONLY IF the change is about:
+- What runtime context is shown to the model
+- State snapshot structure
+- Flags like completed / blocked / missing
+- Authoritative session data representation
+
+MUST NEVER CHANGE FOR:
+- Business rules
+- Legal definitions
+- Identity or tone
+- Output JSON rules
+- State transition logic (that belongs in code)
+
+IMPORTANT:
+- PROMPT 3 is DESCRIPTIVE, never PRESCRIPTIVE
+- It describes reality; it does not decide what happens next
+- State determination logic belongs in CODE, not in the prompt text
+
+----------------------------------------------------
+PROMPT 4 — TECHNICAL OUTPUT (Output Contract)
+----------------------------------------------------
+Location:
+- app/api/ai/preaviso-chat/route.ts
+- Constant: PROMPT_4_TECHNICAL_OUTPUT
+
+Purpose:
+- Enforce <DATA_UPDATE> contract
+- Control JSON output
+- Prevent inference
+- Prevent carry-over
+- Guarantee schema safety
+
+MAY CHANGE IF AND ONLY IF the change is about:
+- JSON schema fields
+- Output validation rules
+- Emission constraints
+- Failure modes
+- Output safety
+
+MUST NEVER CHANGE FOR:
+- Conversation flow
+- Business logic
+- Legal rules
+- State definitions
+- Tone or language
+
+====================================================
+ABSOLUTE RULES FOR CURSOR
+====================================================
+
+1) NEVER move rules between prompts.
+2) NEVER duplicate logic across prompts.
+3) NEVER "fix" a bug by editing the wrong prompt.
+4) NEVER add state machine logic to PROMPT 1 or PROMPT 3.
+5) NEVER add legal rules to PROMPT 4.
+6) NEVER add output formatting rules to PROMPT 1 or PROMPT 2.
+7) NEVER add conversation rules to PROMPT 2 or PROMPT 4.
+8) NEVER add runtime context to PROMPT 1, PROMPT 2, or PROMPT 4.
+
+====================================================
+PROMPT AUTHORITY & GOVERNANCE RULES
+(STRICT — NON NEGOTIABLE)
+====================================================
+
+This project uses a FIXED 4-PROMPT ARCHITECTURE.
+Each prompt has EXCLUSIVE RESPONSIBILITY.
+
+Cursor MUST classify every change BEFORE modifying any file.
+
+────────────────────────────────────────
+PROMPT RESPONSIBILITY MATRIX
+────────────────────────────────────────
+
+PROMPT 1 — SYSTEM CORE (Identity & Cognition)
+Allowed changes ONLY IF:
+- Change affects tone, communication style, cognition, or non-inference principles
+- Change affects how the assistant speaks to users
+
+PROHIBITED:
+- Business rules
+- State logic
+- JSON schema
+- Credit logic
+- Legal domain constraints
+
+────────────────────────────────────────
+
+PROMPT 2 — BUSINESS RULES (Domain & Legal)
+Allowed changes ONLY IF:
+- Change affects legal rules
+- Change affects blocking conditions
+- Change affects credit logic, coacreditados, gravámenes
+- Change affects what is legally required or prohibited
+
+PROHIBITED:
+- Conversation style
+- Output formatting
+- JSON structure
+- Dynamic state rendering
+
+────────────────────────────────────────
+
+PROMPT 3 — TASK / STATE (Dynamic Context)
+Allowed changes ONLY IF:
+- Change affects state transitions
+- Change affects flow order
+- Change affects what question is asked next
+- Change affects dynamic completeness checks
+
+PROHIBITED:
+- Legal rules
+- Domain interpretations
+- JSON structure
+- Output formatting
+
+────────────────────────────────────────
+
+PROMPT 4 — TECHNICAL OUTPUT (JSON Contract)
+Allowed changes ONLY IF:
+- Change affects JSON schema
+- Change affects output validation
+- Change affects <DATA_UPDATE> rules
+- Change affects canonical versioning
+
+PROHIBITED:
+- Business logic
+- State logic
+- Conversation flow
+- Legal interpretation
+
+────────────────────────────────────────
+MANDATORY CHANGE CLASSIFICATION
+────────────────────────────────────────
+
+Before implementing ANY change, Cursor MUST answer:
+
+1. What type of change is this?
+   - Communication / Cognition
+   - Business / Legal
+   - Flow / State
+   - Output / JSON
+
+2. Which PROMPT owns this responsibility?
+
+3. Which PROMPTS are explicitly FORBIDDEN to modify?
+
+If more than one prompt appears relevant:
+→ STOP
+→ Ask for clarification
+→ Do NOT guess
+
+────────────────────────────────────────
+VERSIONING RULES
+────────────────────────────────────────
+
+- PROMPT 2 and PROMPT 4 version bumps MUST be explicit (v1.4 → v1.5)
+- PROMPT 1 and PROMPT 3 changes MUST NOT alter domain behavior
+
+────────────────────────────────────────
+ABSOLUTE RULE
+────────────────────────────────────────
+
+Cursor is NOT allowed to:
+- Move rules across prompts
+- Duplicate logic across prompts
+- "Fix" behavior by touching multiple prompts
+- Introduce domain assumptions
+
+Violation of this rule is considered a critical regression.
+
+====================================================
+WHEN A CHANGE IS REQUESTED
+====================================================
+
+Before making ANY change, you MUST:
+
+1) Classify the change into EXACTLY ONE category:
+   - Identity / Conversation
+   - Legal / Business Rule
+   - Runtime State Context
+   - Output / Schema / JSON
+
+2) Map the category to the correct prompt:
+   - Identity / Conversation → PROMPT 1
+   - Legal / Business Rule → PROMPT 2
+   - Runtime State Context → PROMPT 3
+   - Output / Schema / JSON → PROMPT 4
+
+3) If the change spans more than one category:
+   - STOP
+   - Ask the human to split the request
+   - Explain which parts belong to which prompt
+
+4) Verify the target prompt location:
+   - PROMPT 1: app/api/ai/preaviso-chat/route.ts (constant)
+   - PROMPT 2: Database (create migration SQL)
+   - PROMPT 3: app/api/ai/preaviso-chat/route.ts (function buildSystemPrompts)
+   - PROMPT 4: app/api/ai/preaviso-chat/route.ts (constant)
+
+====================================================
+CODE VS PROMPT RULE
+====================================================
+
+If the change involves:
+- State transitions
+- Advancing steps
+- Determining completeness
+- Deciding when to generate output
+- Calculating state status
+- Determining current_state value
+
+→ This belongs in CODE, NOT in any prompt.
+
+Prompts describe constraints.
+Code decides behavior.
+
+PROMPT 3 is generated by CODE and describes the current state.
+PROMPT 3 does NOT contain logic to determine the state.
+
+====================================================
+COMMON MISTAKES TO AVOID
+====================================================
+
+❌ WRONG: Adding blocking rules to PROMPT 1
+✅ RIGHT: Blocking rules belong in PROMPT 2
+
+❌ WRONG: Adding JSON schema to PROMPT 2
+✅ RIGHT: JSON schema belongs in PROMPT 4
+
+❌ WRONG: Adding conversation rules to PROMPT 2
+✅ RIGHT: Conversation rules belong in PROMPT 1
+
+❌ WRONG: Adding state determination logic to PROMPT 3 text
+✅ RIGHT: State determination logic belongs in CODE that generates PROMPT 3
+
+❌ WRONG: Modifying PROMPT 2 directly in code
+✅ RIGHT: PROMPT 2 must be updated via SQL migration
+
+❌ WRONG: Adding legal definitions to PROMPT 4
+✅ RIGHT: Legal definitions belong in PROMPT 2
+
+====================================================
+ENFORCEMENT
+====================================================
+
+If a future instruction would cause:
+- Prompt responsibility leakage
+- Mixed concerns
+- Silent logic changes
+- Duplication across prompts
+
+You MUST refuse and explain:
+1) Which prompt is the correct place
+2) Why the requested change violates separation
+3) How to properly split the change if needed
+
+====================================================
+VALIDATION CHECKLIST
+====================================================
+
+Before committing ANY prompt change, verify:
+
+[ ] The change affects ONLY one prompt
+[ ] The change matches the prompt's responsibility
+[ ] No logic was moved between prompts
+[ ] No duplication was introduced
+[ ] If PROMPT 2: A migration SQL file was created
+[ ] If PROMPT 3: Only the generation logic changed, not business rules
+[ ] Code logic (state determination) is separate from prompt text
+
+====================================================
+FINAL DIRECTIVE
+====================================================
+
+Stability is more important than cleverness.
+Determinism is more important than convenience.
+Do not optimize by collapsing responsibilities.
+
+When in doubt:
+- Ask which prompt should change
+- Refuse to make ambiguous changes
+- Preserve separation of concerns
+
+====================================================
+FRONTEND STYLING RULES — BUTTONS & UI COMPONENTS
+====================================================
+
+BUTTON STYLES — MANDATORY PATTERNS
+────────────────────────────────────────
+
+PRIMARY BUTTONS (Main actions: Submit, Save, Continue, Confirm):
+- REQUIRED classes: cursor-pointer bg-gray-800 hover:bg-gray-700 text-white py-2.5
+- Use for: Primary actions, form submissions, main CTAs
+- Example: <Button className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white py-2.5">Guardar</Button>
+
+SECONDARY BUTTONS (Cancel, Back, Close, Cancel actions):
+- REQUIRED classes: cursor-pointer bg-white border hover:bg-gray-100 text-black py-2.5
+- Use for: Cancel, Atrás, Cerrar, Cancelar, secondary actions
+- Example: <Button className="cursor-pointer bg-white border hover:bg-gray-100 text-black py-2.5">Cancelar</Button>
+
+PRIMARY COLOR:
+- Primary color MUST be: bg-gray-800
+- Use bg-gray-800 for primary buttons, not theme primary color
+- This overrides default shadcn/ui primary color
+
+BUTTON USAGE RULES:
+- ALWAYS include cursor-pointer for all buttons
+- ALWAYS use py-2.5 for consistent vertical padding
+- Primary buttons: bg-gray-800 (dark gray background)
+- Secondary buttons: bg-white with border (outlined style)
+- NEVER mix primary and secondary styles
+- NEVER use theme primary color (--primary) for buttons
+
+EXAMPLES:
+✅ CORRECT Primary: className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-white py-2.5"
+✅ CORRECT Secondary: className="cursor-pointer bg-white border hover:bg-gray-100 text-black py-2.5"
+❌ WRONG: className="bg-primary text-primary-foreground"
+❌ WRONG: Missing cursor-pointer or py-2.5
+❌ WRONG: Using theme colors instead of gray-800
+
+====================================================
+LOADING STATES — MANDATORY PATTERN
+====================================================
+
+LOADER COMPONENT — REQUIRED FORMAT:
+────────────────────────────────────────
+
+ALL loading states MUST use this exact pattern:
+- NEVER wrap loaders in Card components
+- ALWAYS use this structure directly (no Card wrapper)
+
+REQUIRED CODE:
+<div className="flex flex-col items-center justify-center space-y-4 py-10">
+  <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+  <p>Cargando usuarios...</p>
+</div>
+
+RULES:
+- Loader2 icon from lucide-react: import { Loader2 } from 'lucide-react'
+- Icon size: h-8 w-8 (32px)
+- Animation: animate-spin
+- Icon color: text-gray-500
+- Container: flex flex-col items-center justify-center space-y-4 py-10
+- Text: Update "Cargando usuarios..." to match context (e.g., "Cargando documentos...", "Cargando datos...")
+- NO Card wrapper around loader
+- NO additional containers unless absolutely necessary
+
+EXAMPLES:
+✅ CORRECT:
+<div className="flex flex-col items-center justify-center space-y-4 py-10">
+  <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+  <p>Cargando documentos...</p>
+</div>
+
+❌ WRONG (with Card):
+<Card>
+  <div className="flex flex-col items-center justify-center space-y-4 py-10">
+    <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+    <p>Cargando...</p>
+  </div>
+</Card>
+
+❌ WRONG (different icon):
+<div className="flex flex-col items-center justify-center space-y-4 py-10">
+  <Spinner className="h-8 w-8 animate-spin text-gray-500" />
+  <p>Cargando...</p>
+</div>
+
+❌ WRONG (different size/color):
+<div className="flex flex-col items-center justify-center space-y-4 py-10">
+  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+  <p>Cargando...</p>
+</div>
+
+====================================================
+FRONTEND ARCHITECTURE — COMPONENT STRUCTURE
+====================================================
+
+COMPONENT ORGANIZATION:
+- All components MUST be in /components directory
+- UI primitives (shadcn/ui) MUST be in /components/ui
+- Business logic components in /components root
+- Use "use client" directive ONLY when necessary (interactivity, hooks, browser APIs)
+- Server Components by default (Next.js 15 App Router)
+
+COMPONENT NAMING:
+- PascalCase for component files: MyComponent.tsx
+- Match component name to file name exactly
+- Use descriptive names: PreavisoChat.tsx, not Chat.tsx
+- Interface/type names: ComponentNameProps, ComponentNameState
+
+FILE STRUCTURE:
+- One component per file
+- Export default for page components
+- Named exports for reusable components
+- Co-locate types/interfaces with components when component-specific
+
+====================================================
+STYLING RULES — TAILWIND CSS v4
+====================================================
+
+STYLING APPROACH:
+- Use Tailwind CSS utility classes exclusively
+- NO inline styles (style={{}})
+- NO CSS modules unless absolutely necessary
+- Use CSS variables from globals.css for theming
+- Follow shadcn/ui "new-york" style variant
+
+COLOR SYSTEM:
+- Use semantic color tokens: bg-primary, text-foreground, border-border
+- NEVER hardcode colors: oklch(), hex, rgb (except for buttons as specified above)
+- Use theme variables: var(--primary), var(--background)
+- Dark mode: Use .dark class, rely on CSS variables
+- BUTTONS: Use gray-800 for primary, white for secondary (see BUTTON STYLES above)
+
+RESPONSIVE DESIGN:
+- Mobile-first approach
+- Use hooks: useIsMobile(), useIsTablet() from /hooks
+- Breakpoints: sm, md, lg, xl (Tailwind defaults)
+- Test on mobile viewport (375px minimum)
+
+SPACING & LAYOUT:
+- Use Tailwind spacing scale: p-4, m-2, gap-6
+- Consistent spacing: 4px base unit (0.25rem)
+- Use flex/grid utilities, avoid absolute positioning when possible
+
+====================================================
+UI COMPONENT LIBRARY — shadcn/ui
+====================================================
+
+COMPONENT USAGE:
+- ALWAYS use shadcn/ui components from /components/ui
+- NEVER create custom buttons, dialogs, inputs when shadcn/ui exists
+- Import from '@/components/ui/[component-name]'
+- Follow shadcn/ui API patterns exactly
+- BUTTONS: Override default styles with mandatory button classes (see BUTTON STYLES)
+
+REQUIRED COMPONENTS:
+- Button: Use mandatory button classes (see BUTTON STYLES section)
+- Dialog: For modals and overlays
+- Card: For content containers
+- Input/Textarea: For form fields
+- Badge: For status indicators
+- Progress: For loading states
+- Toast: Use sonner for notifications
+
+ICONS:
+- Use lucide-react icons exclusively
+- Import specific icons: import { Send, Bot } from 'lucide-react'
+- NO icon libraries other than lucide-react
+- Icon size: Use size prop or className="w-4 h-4"
+
+====================================================
+FORMS & INPUT LABELS — REQUIRED FIELDS
+====================================================
+
+REQUIRED FIELD LABELS — MANDATORY PATTERN
+────────────────────────────────────────
+
+ALL required input fields MUST display a red asterisk in the label:
+- REQUIRED pattern: <Label htmlFor="fieldName">Label Text <span className="text-red-500">*</span></Label>
+- Use for: All form fields that are required
+- The asterisk MUST be inside a span with className="text-red-500"
+- The asterisk MUST have a space before it
+
+REQUIRED CODE:
+<Label htmlFor="rol">Rol del sistema <span className="text-red-500">*</span></Label>
+
+RULES:
+- Label component from shadcn/ui: import { Label } from '@/components/ui/label'
+- Required fields MUST show red asterisk: <span className="text-red-500">*</span>
+- Optional fields: NO asterisk
+- Always use htmlFor attribute matching the input id
+- Space between label text and asterisk
+
+EXAMPLES:
+✅ CORRECT (Required field):
+<Label htmlFor="rol">Rol del sistema <span className="text-red-500">*</span></Label>
+<Input id="rol" required />
+
+✅ CORRECT (Optional field):
+<Label htmlFor="email">Correo electrónico</Label>
+<Input id="email" />
+
+❌ WRONG (Missing asterisk for required):
+<Label htmlFor="rol">Rol del sistema</Label>
+<Input id="rol" required />
+
+❌ WRONG (Wrong color for asterisk):
+<Label htmlFor="rol">Rol del sistema <span className="text-red-600">*</span></Label>
+
+❌ WRONG (No space before asterisk):
+<Label htmlFor="rol">Rol del sistema<span className="text-red-500">*</span></Label>
+
+====================================================
+COMMON FRONTEND MISTAKES TO AVOID
+====================================================
+
+❌ WRONG: Using theme primary color for buttons
+✅ RIGHT: Use bg-gray-800 for primary buttons (see BUTTON STYLES)
+
+❌ WRONG: Missing cursor-pointer or py-2.5 on buttons
+✅ RIGHT: Always include cursor-pointer bg-gray-800 hover:bg-gray-700 text-white py-2.5 for primary
+
+❌ WRONG: Wrapping loaders in Card components
+✅ RIGHT: Use loader pattern directly without Card wrapper (see LOADING STATES)
+
+❌ WRONG: Creating custom button when Button exists
+✅ RIGHT: Use Button from @/components/ui/button with mandatory classes
+
+❌ WRONG: Inline styles style={{ color: 'blue' }}
+✅ RIGHT: Use Tailwind classes className="text-primary"
+
+❌ WRONG: Using useState for server data
+✅ RIGHT: Fetch in Server Component or use API route
+
+❌ WRONG: Missing loading/error states
+✅ RIGHT: Always show loading spinner and error handling
+
+❌ WRONG: Not using "use client" when needed
+✅ RIGHT: Add "use client" for hooks, event handlers, browser APIs

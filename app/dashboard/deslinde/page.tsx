@@ -18,6 +18,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Checkbox } from "@/components/ui/checkbox"
 import { toast } from "sonner"
 import Link from "next/link"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { useIsTablet } from "@/hooks/use-tablet"
 type AppState = "upload" | "processing" | "validation"
 
 // Helper function to format numbers preserving original decimal places
@@ -301,10 +303,11 @@ function PdfImageCard({
 }
 
 function DeslindePageInner() {
+  const isMobile = useIsMobile()
+  const isTablet = useIsTablet()
   const [appState, setAppState] = useState<AppState>("upload")
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [documentUrl, setDocumentUrl] = useState<string>("")
-  const [thumbnailUrls, setThumbnailUrls] = useState<Map<number, string>>(new Map())
   const [units, setUnits] = useState<PropertyUnit[]>([])
   const [unitSegments, setUnitSegments] = useState<Map<string, TransformedSegment[]>>(new Map())
   const [processingStarted, setProcessingStarted] = useState(false)
@@ -332,59 +335,13 @@ function DeslindePageInner() {
       if (documentUrl && !documentUrl.startsWith("/")) {
         URL.revokeObjectURL(documentUrl)
       }
-      // Clean up thumbnail URLs
-      setThumbnailUrls((prev) => {
-        prev.forEach((url) => {
-          if (!url.startsWith("/")) {
-            URL.revokeObjectURL(url)
-          }
-        })
-        return new Map()
-      })
       router.replace("/dashboard/deslinde")
     }
   }, [searchParams, documentUrl, router])
 
-  // Create thumbnail URLs when files change
-  useEffect(() => {
-    setThumbnailUrls((prev) => {
-      const newThumbnailUrls = new Map<number, string>()
-      
-      selectedFiles.forEach((file, index) => {
-        if (prev.has(index)) {
-          // Keep existing URL
-          newThumbnailUrls.set(index, prev.get(index)!)
-        } else {
-          // Create new URL
-          const url = URL.createObjectURL(file)
-          newThumbnailUrls.set(index, url)
-        }
-      })
-      
-      // Clean up URLs for removed files
-      prev.forEach((url, index) => {
-        if (!newThumbnailUrls.has(index)) {
-          if (!url.startsWith("/")) {
-            URL.revokeObjectURL(url)
-          }
-        }
-      })
-      
-      return newThumbnailUrls
-    })
-  }, [selectedFiles])
-
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      setThumbnailUrls((prev) => {
-        prev.forEach((url) => {
-          if (!url.startsWith("/")) {
-            URL.revokeObjectURL(url)
-          }
-        })
-        return new Map()
-      })
       if (documentUrl && !documentUrl.startsWith("/")) {
         URL.revokeObjectURL(documentUrl)
       }
@@ -434,38 +391,63 @@ function DeslindePageInner() {
     }
     
     // Add regular image files immediately (not from PDF conversion)
+    // IMPORTANT: Do NOT add PDFs to selectedFiles - they will be replaced by converted images
     if (imageFiles.length > 0) {
-      setSelectedFiles((prevFiles) => {
-        const existingFiles = prevFiles || []
-        const newFiles = imageFiles.filter(
-          (newFile) =>
-            !existingFiles.some(
-              (existingFile) =>
-                existingFile.name === newFile.name && existingFile.size === newFile.size
-            )
-        )
-        
-        const combinedFiles = [...existingFiles, ...newFiles]
-        
-        // Update preview with first image if we didn't have one
-        if (combinedFiles.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
-          const url = URL.createObjectURL(combinedFiles[0])
-          setDocumentUrl(url)
-        }
-        
-        return combinedFiles
-      })
+      // Remove any PDFs that might be in selectedFiles (they should be converted to images)
+      const currentFilesWithoutPdfs = selectedFiles.filter(
+        (file) => !(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      )
+      const updatedFiles = [...currentFilesWithoutPdfs, ...imageFiles]
+      handleFilesChange(updatedFiles)
+      
+      // Update preview with first image if we didn't have one
+      if (updatedFiles.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
+        const url = URL.createObjectURL(updatedFiles[0])
+        setDocumentUrl(url)
+      }
+    } else if (pdfFiles.length > 0) {
+      // If only PDFs were uploaded, remove any existing PDFs from selectedFiles
+      // (they will be replaced by converted images when user confirms)
+      const currentFilesWithoutPdfs = selectedFiles.filter(
+        (file) => !(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      )
+      handleFilesChange(currentFilesWithoutPdfs)
+    }
+  }
+
+  const handleFilesChange = (files: File[]) => {
+    setSelectedFiles(files)
+    // Update preview with first image if we have files
+    if (files.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
+      const url = URL.createObjectURL(files[0])
+      setDocumentUrl(url)
+    } else if (files.length === 0 && documentUrl && !documentUrl.startsWith("/")) {
+      URL.revokeObjectURL(documentUrl)
+      setDocumentUrl("")
     }
   }
   
   const handleConfirmPdfImageSelection = async () => {
+    // Validate that we have selected images
+    if (selectedPdfImages.size === 0) {
+      toast.error("Debes seleccionar al menos una imagen", {
+        description: "Por favor selecciona las páginas del PDF que deseas procesar.",
+        duration: 4000,
+      })
+      return
+    }
+    
     // Add only selected images from PDF conversion with rotations and crops applied
     const selectedIndices = Array.from(selectedPdfImages)
     const processedImages: File[] = []
     
     for (const index of selectedIndices) {
       let image = pdfConvertedImages[index]
-      if (!image) continue
+      // Validate image exists and is valid
+      if (!image || !(image instanceof File) || image.size === 0) {
+        console.warn(`[deslinde] Skipping invalid image at index ${index}`)
+        continue
+      }
       
       // Apply rotation first
       const rotation = imageRotations.get(index) || 0
@@ -499,26 +481,13 @@ function DeslindePageInner() {
     }
     
     if (processedImages.length > 0) {
-      setSelectedFiles((prevFiles) => {
-        const existingFiles = prevFiles || []
-        const newFiles = processedImages.filter(
-          (newFile) =>
-            !existingFiles.some(
-              (existingFile) =>
-                existingFile.name === newFile.name && existingFile.size === newFile.size
-            )
-        )
-        
-        const combinedFiles = [...existingFiles, ...newFiles]
-        
-        // Update preview with first image if we didn't have one
-        if (combinedFiles.length > 0 && (!documentUrl || documentUrl.startsWith("/"))) {
-          const url = URL.createObjectURL(combinedFiles[0])
-          setDocumentUrl(url)
-        }
-        
-        return combinedFiles
-      })
+      // Remove any PDFs from selectedFiles before adding converted images
+      // PDFs should be replaced by their converted images, not kept alongside them
+      const filesWithoutPdfs = selectedFiles.filter(
+        (file) => !(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      )
+      const combinedFiles = [...filesWithoutPdfs, ...processedImages]
+      handleFilesChange(combinedFiles)
     }
     
     // Close modal and reset
@@ -607,31 +576,19 @@ function DeslindePageInner() {
     setSelectedPdfImages(new Set())
   }
 
-  const handleRemoveFile = (index: number) => {
-    setSelectedFiles((prevFiles) => {
-      const newFiles = prevFiles.filter((_, i) => i !== index)
-      
-      // Update preview if we removed the first image
-      if (newFiles.length > 0 && index === 0) {
-        if (documentUrl && !documentUrl.startsWith("/")) {
-          URL.revokeObjectURL(documentUrl)
-        }
-        const url = URL.createObjectURL(newFiles[0])
-        setDocumentUrl(url)
-      } else if (newFiles.length === 0) {
-        // No more files, revoke URL
-    if (documentUrl && !documentUrl.startsWith("/")) {
-      URL.revokeObjectURL(documentUrl)
-    }
-        setDocumentUrl("")
-      }
-      
-      return newFiles
-    })
-  }
 
   const handleProcessImages = () => {
     if (selectedFiles.length === 0) return
+    
+    // Prevent processing when PDF selector modal is open
+    // This ensures only confirmed/selected PDF images are processed
+    if (showPdfImageSelector) {
+      toast.error("Por favor confirma la selección de imágenes del PDF primero", {
+        description: "Debes seleccionar y confirmar las páginas del PDF que deseas procesar.",
+        duration: 5000,
+      })
+      return
+    }
     
     setProcessingStarted(false)
     setAiStructuredText(null)
@@ -643,6 +600,13 @@ function DeslindePageInner() {
 
   const handleProcessingComplete = async (update?: (key: string, status: "pending" | "in_progress" | "done" | "error", detail?: string) => void) => {
     if (!selectedFiles || selectedFiles.length === 0) return
+    
+    // Prevent processing when PDF selector modal is open
+    if (showPdfImageSelector) {
+      console.log("[deslinde] PDF selector modal is open, skipping processing")
+      return
+    }
+    
     if (processingStarted) {
       console.log("[deslinde] processing already started, skipping duplicate run")
       return
@@ -655,14 +619,34 @@ function DeslindePageInner() {
 
     // Send images directly to OpenAI Vision API
     try {
-      update?.("ai", "in_progress", `Analizando ${selectedFiles.length} imagen(es)...`)
+      // Count only image files (exclude PDFs)
+      const imageFilesCount = selectedFiles.filter(
+        (file) => !(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      ).length
+      
+      update?.("ai", "in_progress", `Analizando ${imageFilesCount} imagen(es)...`)
       
       // Send images as FormData
       // Add forceRefresh parameter to bypass cache if needed
       // You can add a UI toggle to control this
       const formData = new FormData()
-      selectedFiles.forEach((image) => {
-        formData.append("images", image)
+      
+      // Filter out PDFs - only process images (PDFs should have been converted to images)
+      const imageFilesOnly = selectedFiles.filter(
+        (file) => !(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+      )
+      
+      if (imageFilesOnly.length === 0) {
+        throw new Error("No hay imágenes válidas para procesar. Por favor, asegúrate de haber seleccionado imágenes del PDF o subir imágenes directamente.")
+      }
+      
+      imageFilesOnly.forEach((image) => {
+        // Validate that the image file exists and is valid before adding
+        if (image && image instanceof File && image.size > 0) {
+          formData.append("images", image)
+        } else {
+          console.warn("[deslinde] Skipping invalid image file:", image)
+        }
       })
       // Optionally force refresh to bypass cache (useful for debugging)
       // formData.append("forceRefresh", "true")
@@ -942,11 +926,11 @@ function DeslindePageInner() {
         // Add last group
           if (currentGroup.length > 0) {
             groups.push(currentGroup)
-          }
-          
+        }
+        
           // Format each group
           for (const group of groups) {
-            const firstBoundary = group[0]
+          const firstBoundary = group[0]
             const directionName = getSpanishDirectionName(firstBoundary)
           
           for (let i = 0; i < group.length; i++) {
@@ -1247,6 +1231,22 @@ function DeslindePageInner() {
     URL.revokeObjectURL(url)
   }
 
+  // Show mobile/tablet message - must be after all hooks
+  if (isMobile || isTablet) {
+    return (
+      <ProtectedRoute>
+        <DashboardLayout>
+          <div className="min-h-screen flex items-center justify-center p-6">
+            <div className="text-center space-y-4">
+              <h1 className="text-2xl font-bold text-gray-900">Vista disponible para web</h1>
+              <p className="text-gray-600">Por favor, accede desde un dispositivo de escritorio para usar esta funcionalidad.</p>
+            </div>
+          </div>
+        </DashboardLayout>
+      </ProtectedRoute>
+    )
+  }
+
   if (appState === "processing") {
     const watchdogMs = 120000 // 2 minutes for image processing
     const processSteps = [
@@ -1319,145 +1319,110 @@ function DeslindePageInner() {
           <div className="mb-6">
             <h1 className="text-2xl font-bold text-gray-900 break-words">Lectura de Plantas Arquitectónicas</h1>
             <p className="text-gray-600 text-sm mt-1">
-              Procesa plantas arquitectónicas y genera texto notarial automáticamente
+              Sube tus planos y genera descripciones notariales precisas en segundos.
             </p>
           </div>
-
-          {/* Main Layout: Upload Zone (prominent) then Selected Images below */}
-          <div className="space-y-6">
-            {/* Large Upload Zone - Main Focus */}
-            <div className="min-h-[450px] flex flex-col items-center justify-center">
-              <div className="w-full max-w-2xl">
-                <UploadZone onFilesSelect={handleFilesSelect} />
-              </div>
+          {/* How it Works Section - Bottom */}
+          <div className="bg-gradient-to-br from-primary/5 via-primary/3 to-background rounded-lg border border-primary/10 p-4 md:p-5">
+            <div className="mb-3">
+              <h2 className="text-lg font-semibold text-foreground mb-1">¿Cómo empezar?</h2>
+              <p className="text-xs text-muted-foreground">
+                Sigue estos pasos y deja que nuestra IA redacte la descripción notarial por ti.
+              </p>
             </div>
-
-            {/* Selected Images List - Below upload */}
-            {selectedFiles.length > 0 && (
-              <Card className="p-4">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-foreground">
-                      Documentos seleccionados ({selectedFiles.length})
-                    </h3>
-                    <Button onClick={handleProcessImages} size="lg" className="gap-2">
-                      <Play className="h-4 w-4" />
-                      Procesar imágenes
-                    </Button>
-                  </div>
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                    {selectedFiles.map((file, index) => {
-                      const imageUrl = thumbnailUrls.get(index)
-                      return (
-                        <Card key={`${file.name}-${file.size}-${index}`} className="p-2 relative group border">
-                          <div className="space-y-2">
-                            <div className="relative aspect-video rounded-md bg-muted flex items-center justify-center overflow-hidden">
-                              {imageUrl ? (
-                                <img
-                                  src={imageUrl}
-                                  alt={file.name}
-                                  className="w-full h-full object-contain"
-                                />
-                              ) : (
-                                <ImageIcon className="h-6 w-6 text-muted-foreground" />
-                              )}
-                              <Button
-                                variant="destructive"
-                                size="icon"
-                                className="absolute top-1 right-1 h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                                onClick={() => handleRemoveFile(index)}
-                              >
-                                <X className="h-3 w-3" />
-                              </Button>
-                            </div>
-                            <div className="space-y-1">
-                              <p className="text-xs font-medium truncate" title={file.name}>
-                                {file.name}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                {(file.size / 1024 / 1024).toFixed(2)} MB
-                              </p>
-                            </div>
-                          </div>
-                        </Card>
-                      )
-                    })}
-                  </div>
-                </div>
-              </Card>
-            )}
-
-            {/* How it Works Section - Bottom */}
-            <div className="bg-gradient-to-br from-primary/5 via-primary/3 to-background rounded-lg border border-primary/10 p-4 md:p-5">
-              <div className="mb-3">
-                <h2 className="text-lg font-semibold text-foreground mb-1">¿Cómo funciona?</h2>
-                <p className="text-xs text-muted-foreground">
-                  Sigue estos pasos simples para procesar tus plantas arquitectónicas
-                </p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                  <div className="flex flex-col items-start gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-gray-800  w-7 h-7 flex items-center justify-center flex-shrink-0">
+                      <div className="rounded-full bg-blue-500/30 text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
                         1
                       </div>
-                      <h3 className="font-medium text-sm">Sube tus documentos</h3>
                     </div>
-                    <p className="text-xs text-muted-foreground leading-snug">
-                      Arrastra imágenes o PDFs. También puedes pegarlas desde el portapapeles.
-                    </p>
+                    <h3 className="font-medium text-sm">Sube tus documentos</h3>
                   </div>
-                </Card>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    Arrastra imágenes o PDFs. También puedes pegarlas desde el portapapeles.
+                  </p>
+                </div>
+              </Card>
 
-                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                  <div className="flex flex-col items-start gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-gray-800  w-7 h-7 flex items-center justify-center flex-shrink-0">
+                      <div className="rounded-full bg-blue-500/30 text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
                         2
                       </div>
-                      <h3 className="font-medium text-sm">Procesa con IA</h3>
                     </div>
-                    <p className="text-xs text-muted-foreground leading-snug">
-                      La IA extrae automáticamente medidas, colindancias y superficies.
-                    </p>
+                    <h3 className="font-medium text-sm">Procesa con IA</h3>
                   </div>
-                </Card>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    La IA extrae automáticamente medidas, colindancias y superficies.
+                  </p>
+                </div>
+              </Card>
 
-                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                  <div className="flex flex-col items-start gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-gray-800  w-7 h-7 flex items-center justify-center flex-shrink-0">
+                      <div className="rounded-full bg-blue-500/30 text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
                         3
                       </div>
-                      <h3 className="font-medium text-sm">Revisa y edita</h3>
                     </div>
-                    <p className="text-xs text-muted-foreground leading-snug">
-                      Valida la información y edita el texto notarial según tus necesidades.
-                    </p>
+                    <h3 className="font-medium text-sm">Revisa y edita</h3>
                   </div>
-                </Card>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    Valida la información y edita el texto notarial según tus necesidades.
+                  </p>
+                </div>
+              </Card>
 
-                <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
-                  <div className="flex flex-col items-start gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className="rounded-full bg-primary text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+              <Card className="p-3 border border-primary/20 bg-card/50 hover:border-primary/40 transition-all">
+                <div className="flex flex-col items-start gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-full bg-gray-800  w-7 h-7 flex items-center justify-center flex-shrink-0">
+                      <div className="rounded-full bg-blue-500/30 text-primary-foreground w-7 h-7 flex items-center justify-center font-semibold text-sm flex-shrink-0">
                         4
                       </div>
-                      <h3 className="font-medium text-sm">Exporta el resultado</h3>
                     </div>
-                    <p className="text-xs text-muted-foreground leading-snug">
-                      Obtén tu documento final en formato notarial listo para usar.
-                    </p>
+                    <h3 className="font-medium text-sm">Exporta el resultado</h3>
                   </div>
-                </Card>
+                  <p className="text-xs text-muted-foreground leading-snug">
+                    Obtén tu documento final en formato notarial listo para usar.
+                  </p>
+                </div>
+              </Card>
+            </div>
+          </div>
+
+          {/* Main Layout: Upload Zone (prominent) with Selected Images inside */}
+          <div className="space-y-6 mt-4">
+            {/* Upload Zone with Selected Images inside */}
+            <div className="min-h-[450px] flex flex-col items-center justify-center">
+              <div className="w-full">
+                <UploadZone 
+                  onFilesSelect={handleFilesSelect}
+                  onFilesChange={handleFilesChange}
+                  onProcess={handleProcessImages}
+                  files={selectedFiles}
+                  disableProcess={showPdfImageSelector}
+                />
               </div>
             </div>
           </div>
 
 
           {/* PDF Image Selection Modal */}
-          <Dialog open={showPdfImageSelector} onOpenChange={setShowPdfImageSelector}>
+          <Dialog open={showPdfImageSelector} onOpenChange={(open) => {
+            if (!open) {
+              // When modal is closed (via ESC, click outside, etc.), cancel the selection
+              handleCancelPdfImageSelection()
+            } else {
+              setShowPdfImageSelector(true)
+            }
+          }}>
             <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Selecciona las imágenes del PDF</DialogTitle>
@@ -1474,6 +1439,7 @@ function DeslindePageInner() {
                       variant="outline"
                       size="sm"
                       onClick={selectAllPdfImages}
+                      className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground"
                     >
                       Seleccionar todas
                     </Button>
@@ -1481,13 +1447,11 @@ function DeslindePageInner() {
                       variant="outline"
                       size="sm"
                       onClick={deselectAllPdfImages}
+                      className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground"
                     >
                       Deseleccionar todas
                     </Button>
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    {selectedPdfImages.size} de {pdfConvertedImages.length} seleccionadas
-                  </p>
                 </div>
 
                 {/* Images Grid */}
@@ -1509,18 +1473,24 @@ function DeslindePageInner() {
                     )
                   })}
                 </div>
+
+                <p className="text-sm text-muted-foreground">
+                  {selectedPdfImages.size} de {pdfConvertedImages.length} seleccionadas
+                </p>
               </div>
 
               <DialogFooter>
                 <Button
                   variant="outline"
                   onClick={handleCancelPdfImageSelection}
+                  className="gap-1 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground"
                 >
                   Cancelar
                 </Button>
                 <Button
                   onClick={handleConfirmPdfImageSelection}
                   disabled={selectedPdfImages.size === 0}
+                  className="bg-gray-800 hover:bg-gray-700 text-white font-bold p-2.5"
                 >
                   Agregar {selectedPdfImages.size > 0 ? `${selectedPdfImages.size} ` : ''}imagen{selectedPdfImages.size !== 1 ? 'es' : ''}
                 </Button>

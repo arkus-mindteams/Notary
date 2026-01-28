@@ -11,14 +11,16 @@ interface ProtectedRouteProps {
 }
 
 export function ProtectedRoute({ children }: ProtectedRouteProps) {
-  const { user, isLoading } = useAuth()
+  const { user, session, isLoading } = useAuth()
   const router = useRouter()
 
   useEffect(() => {
-    if (!isLoading && !user) {
+    // Importante: proteger por sesión (fuente de verdad).
+    // `user` puede ser null temporalmente si /api/auth/me falla, pero la sesión sigue válida.
+    if (!isLoading && !session) {
       router.push('/login')
     }
-  }, [user, isLoading, router])
+  }, [session, isLoading, router])
 
   if (isLoading) {
     return (
@@ -33,7 +35,12 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
     )
   }
 
-  if (!user) {
+  // Si hay sesión pero el perfil no cargó, permitir continuar para evitar bloqueos largos.
+  if (session && !user) {
+    return <>{children}</>
+  }
+
+  if (!session) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <Card className="w-full max-w-md">
@@ -48,4 +55,3 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
 
   return <>{children}</>
 }
-

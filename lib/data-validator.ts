@@ -15,19 +15,14 @@ export interface ValidationResult {
 }
 
 export class DataValidator {
-  // Validación de RFC
-  static validateRFC(rfc: string): ValidationResult {
+  // Validación de RFC (OPCIONAL - solo valida formato si existe)
+  static validateRFC(rfc: string | null | undefined): ValidationResult {
     const errors: ValidationError[] = []
     const warnings: ValidationError[] = []
     
+    // RFC es OPCIONAL: si está vacío o null, es válido (no es error)
     if (!rfc || rfc.trim() === '') {
-      errors.push({
-        field: 'rfc',
-        message: 'RFC es requerido',
-        type: 'error',
-        severity: 'high'
-      })
-      return { isValid: false, errors, warnings, score: 0 }
+      return { isValid: true, errors: [], warnings: [], score: 100 }
     }
 
     const cleanRFC = rfc.trim().toUpperCase()

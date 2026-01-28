@@ -3,7 +3,7 @@ async function rasterizePdfPageToPng(file: File, pageNumber: number = 1, rotatio
     throw new Error("pdf_rasterize_on_server")
   }
   console.log("[ocr-client] Rasterizing PDF → PNG", { name: file.name, pageNumber })
-  const pdfjsModule: any = await import("pdfjs-dist/legacy/build/pdf")
+  const pdfjsModule: any = await import("pdfjs-dist/build/pdf")
   const pdfjs = pdfjsModule?.default || pdfjsModule
   
   if (!pdfjs?.getDocument || !pdfjs.GlobalWorkerOptions) {
@@ -87,8 +87,8 @@ export async function convertPdfToImages(
 
   console.log("[ocr-client] Converting PDF to images in browser", { name: file.name })
   
-  // Import pdfjs-dist dynamically
-  const pdfjsModule: any = await import("pdfjs-dist/legacy/build/pdf")
+  // Import pdfjs-dist dynamically (same path as pdf-canvas-viewer.tsx which works)
+  const pdfjsModule: any = await import("pdfjs-dist/build/pdf")
   const pdfjs = pdfjsModule?.default || pdfjsModule
   
   if (!pdfjs?.getDocument || !pdfjs.GlobalWorkerOptions) {
@@ -128,12 +128,14 @@ export async function convertPdfToImages(
   const totalPages = pdf.numPages
   const files: File[] = []
   
+  const renderScale = 2.0
+
   // Convert each page to image
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     const page = await pdf.getPage(pageNum)
-    // Increase scale for better OCR quality (3.0 instead of 2.0)
-    // Higher resolution improves text recognition accuracy
-    const viewport = page.getViewport({ scale: 3.0, rotation: rotationDeg as any })
+    // Performance: 3.0 + PNG sin compresión es MUY pesado y lento (especialmente en PDFs largos).
+    // Para Vision/OCR suele ser suficiente ~2.0–2.2 y JPEG de alta calidad.
+    const viewport = page.getViewport({ scale: renderScale, rotation: rotationDeg as any })
     
     // Create canvas element
     const canvas = document.createElement("canvas")
@@ -162,18 +164,21 @@ export async function convertPdfToImages(
       annotationLayer: false
     }).promise
     
-    // Convert canvas to blob with maximum quality
+    // Convert canvas to blob (JPEG de alta calidad para reducir tamaño/tiempo)
     const blob: Blob = await new Promise((resolve, reject) => {
-      // PNG compression: 1.0 = no compression (best quality, larger file)
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob_failed"))), "image/png", 1.0)
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error("toBlob_failed"))),
+        "image/jpeg",
+        0.9
+      )
     })
     
     // Create File object
     const fileName = file.name.replace(/\.[^.]+$/, "") || "document"
     const imageFile = new File(
       [blob],
-      `${fileName}-page-${pageNum}.png`,
-      { type: "image/png" }
+      `${fileName}-page-${pageNum}.jpg`,
+      { type: "image/jpeg" }
     )
     
     files.push(imageFile)

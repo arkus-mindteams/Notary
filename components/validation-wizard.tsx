@@ -6,11 +6,12 @@ import { ImageViewer } from "./image-viewer"
 import { ExportDialog, type ExportMetadata } from "./export-dialog"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText, Save, X, Eye, EyeOff, Copy } from "lucide-react"
+import { Download, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ShieldCheck, AlertCircle, FileText, X, Eye, EyeOff, Copy, RefreshCw } from "lucide-react"
 import type { TransformedSegment } from "@/lib/text-transformer"
 import type { PropertyUnit } from "@/lib/ocr-simulator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { generateNotarialDocument, downloadDocument, generateFilename } from "@/lib/document-exporter"
+import { toast } from "sonner"
 import {
   Dialog,
   DialogContent,
@@ -18,6 +19,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 
 interface ValidationWizardProps {
   documentUrl: string
@@ -75,11 +86,10 @@ export function ValidationWizard({
   // Estados para rastrear valores guardados y cambios no guardados
   const [savedColindanciasByUnit, setSavedColindanciasByUnit] = useState<Map<string, string>>(new Map())
   const [savedNotarialTextByUnit, setSavedNotarialTextByUnit] = useState<Map<string, string>>(new Map())
-  const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false)
-  const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null)
   const [isViewerCollapsed, setIsViewerCollapsed] = useState(false)
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
   const [manuallyEditedNotarial, setManuallyEditedNotarial] = useState<Set<string>>(new Set())
+  const [showUnauthorizeDialog, setShowUnauthorizeDialog] = useState(false)
 
   // Auto-format colindancias text with proper indentation
   const autoFormatColindancias = (text: string): string => {
@@ -203,57 +213,6 @@ export function ValidationWizard({
     setLastSaved(new Date())
   }
 
-  // Confirmar navegación si hay cambios sin guardar
-  const confirmNavigation = (navigationFn: () => void) => {
-    if (hasUnsavedChanges()) {
-      setPendingNavigation(() => navigationFn)
-      setShowUnsavedChangesDialog(true)
-    } else {
-      navigationFn()
-    }
-  }
-
-  // Aceptar navegación descartando cambios
-  const handleDiscardAndNavigate = () => {
-    if (pendingNavigation) {
-      setShowUnsavedChangesDialog(false)
-      // Restaurar valores guardados
-      if (currentUnit) {
-        const savedColindancias = savedColindanciasByUnit.get(currentUnit.id) || ""
-        const savedNotarial = savedNotarialTextByUnit.get(currentUnit.id) || ""
-        
-        setAiTextByUnit((prev) => {
-          const next = new Map(prev)
-          next.set(currentUnit.id, savedColindancias)
-          return next
-        })
-        
-        setNotarialTextByUnit((prev) => {
-          const next = new Map(prev)
-          next.set(currentUnit.id, savedNotarial)
-          return next
-        })
-      }
-      pendingNavigation()
-      setPendingNavigation(null)
-    }
-  }
-
-  // Cancelar navegación
-  const handleCancelNavigation = () => {
-    setShowUnsavedChangesDialog(false)
-    setPendingNavigation(null)
-  }
-
-  // Guardar y navegar
-  const handleSaveAndNavigate = () => {
-    handleSaveChanges()
-    if (pendingNavigation) {
-      setShowUnsavedChangesDialog(false)
-      pendingNavigation()
-      setPendingNavigation(null)
-    }
-  }
 
   const getUnitRegionId = (unitId: string): string => {
     const unitIdMap: Record<string, string> = {
@@ -289,27 +248,43 @@ export function ValidationWizard({
     const newAuthorizedUnits = new Set(authorizedUnits)
     newAuthorizedUnits.add(currentUnit.id)
     setAuthorizedUnits(newAuthorizedUnits)
+    
+    // Mostrar toast de confirmación
+    toast.success("Unidad autorizada", {
+      description: `${currentUnit.name} ha sido autorizada exitosamente`,
+      duration: 3000,
+    })
+    
+    // Avanzar a la siguiente unidad si no estamos en la última
+    if (!isLastUnit) {
+      setCurrentUnitIndex(currentUnitIndex + 1)
+    }
   }
 
   const handleUnauthorizeUnit = () => {
     const newAuthorizedUnits = new Set(authorizedUnits)
     newAuthorizedUnits.delete(currentUnit.id)
     setAuthorizedUnits(newAuthorizedUnits)
+    setShowUnauthorizeDialog(false)
+  }
+
+  const handleRequestAuthorize = () => {
+    handleAuthorizeUnit()
+  }
+
+  const handleRequestUnauthorize = () => {
+    setShowUnauthorizeDialog(true)
   }
 
   const handleNext = () => {
     if (!isLastUnit) {
-      confirmNavigation(() => {
-        setCurrentUnitIndex(currentUnitIndex + 1)
-      })
+      setCurrentUnitIndex(currentUnitIndex + 1)
     }
   }
 
   const handlePrevious = () => {
     if (!isFirstUnit) {
-      confirmNavigation(() => {
-        setCurrentUnitIndex(currentUnitIndex - 1)
-      })
+      setCurrentUnitIndex(currentUnitIndex - 1)
     }
   }
 
@@ -469,40 +444,43 @@ export function ValidationWizard({
                 <ArrowLeft className="h-4 w-4 sm:mr-1" />
                 <span className="hidden sm:inline text-sm">Volver</span>
               </Button>
-              <div className="min-w-0 flex-1 sm:flex-initial">
-                <h1 className="text-base sm:text-lg font-semibold truncate">Validación de Plantas Arquitectónicas</h1>
-                <p className="text-xs text-muted-foreground hidden lg:block">
-                  Revisa y autoriza cada unidad antes de exportar
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-2 w-full sm:w-auto">
-              {allUnitsAuthorized && (
-                <Button
-                  onClick={handleOpenCompleteTextModal}
-                  size="sm"
-                  variant="outline"
-                  className="gap-1.5 h-8 px-3"
-                >
-                  <FileText className="h-3.5 w-3.5" />
-                  <span className="text-xs sm:text-sm">Texto Completo</span>
-                </Button>
-              )}
-              <Button
-                onClick={() => setShowExportDialog(true)}
-                size="sm"
-                className="gap-1.5 h-8 px-3 flex-1 sm:flex-initial"
-                disabled={!allUnitsAuthorized}
-                variant={allUnitsAuthorized ? "default" : "secondary"}
-              >
-                <Download className="h-3.5 w-3.5" />
-                <span className="text-xs sm:text-sm">Exportar</span>
-              </Button>
             </div>
           </div>
 
+        <div className="flex items-center justify-between gap-2 pb-4 pt-2 border-b">
+          <div className="min-w-0 flex-1 sm:flex-initial">
+            <h1 className="text-base sm:text-lg font-semibold truncate">Validación de Plantas Arquitectónicas</h1>
+            <p className="text-xs text-muted-foreground hidden lg:block">
+              Revisa y autoriza cada unidad antes de exportar
+            </p>
+          </div>
+
+          <div className="flex gap-2 w-full sm:w-auto">
+            {allUnitsAuthorized && (
+              <Button
+                onClick={handleOpenCompleteTextModal}
+                size="sm"
+                variant="outline"
+                className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                <span className="text-xs sm:text-sm">Texto Completo</span>
+              </Button>
+            )}
+            <Button
+              onClick={() => setShowExportDialog(true)}
+              size="sm"
+              className="bg-gray-800 hover:bg-gray-700 text-white font-bold p-2.5"
+              disabled={!allUnitsAuthorized}
+              variant={allUnitsAuthorized ? "default" : "secondary"}
+            >
+              <Download className="h-3.5 w-3.5" />
+              <span className="text-xs sm:text-sm">Exportar</span>
+            </Button>
+          </div>
+        </div>
           {/* Progress Bar - Compact */}
-          <div className="space-y-1.5">
+          <div className="space-y-1.5 py-4">
             <div className="flex items-center justify-between text-xs">
               <span className="font-medium">
                 Unidad {currentUnitIndex + 1} de {units.length}
@@ -531,7 +509,7 @@ export function ValidationWizard({
                 return (
                   <button
                     key={`${unit.id}-${index}`}
-                    onClick={() => confirmNavigation(() => setCurrentUnitIndex(index))}
+                    onClick={() => setCurrentUnitIndex(index)}
                     className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all whitespace-nowrap shrink-0 flex items-center gap-1 ${
                       isCurrent && isAuthorized
                         ? "bg-green-600 text-white ring-1 ring-green-400"
@@ -551,6 +529,7 @@ export function ValidationWizard({
           </div>
         </div>
       </header>
+
 
       {/* Status Alert - Compact and dismissible */}
       {typeof ocrConfidence === "number" && ocrConfidence < 0.7 && !dismissedAlerts.has("ocr-confidence") && (
@@ -586,28 +565,31 @@ export function ValidationWizard({
             {/* Document/Image Viewer - Left Side with Toggle */}
             {!isViewerCollapsed && (
               <div className="h-[300px] sm:h-[400px] lg:h-full overflow-auto relative group">
-                {/* Toggle Button */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="absolute top-2 right-2 z-10 h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity bg-background/90 shadow-sm"
-                  onClick={() => setIsViewerCollapsed(true)}
-                  title="Ocultar documento"
-                >
-                  <EyeOff className="h-3.5 w-3.5" />
-                </Button>
                 {images && images.length > 0 ? (
                   <ImageViewer 
                     images={images}
                     initialIndex={0}
+                    onHide={() => setIsViewerCollapsed(true)}
                   />
                 ) : (
-                  <DocumentViewer 
-                    documentUrl={documentUrl} 
-                    highlightedRegion={displayRegion} 
-                    onRegionHover={() => {}} 
-                    fileName={fileName}
-                  />
+                  <>
+                    {/* Toggle Button for DocumentViewer */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="absolute top-2 right-2 z-10 h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity bg-background/90 shadow-sm"
+                      onClick={() => setIsViewerCollapsed(true)}
+                      title="Ocultar documento"
+                    >
+                      <EyeOff className="h-3.5 w-3.5" />
+                    </Button>
+                    <DocumentViewer 
+                      documentUrl={documentUrl} 
+                      highlightedRegion={displayRegion} 
+                      onRegionHover={() => {}} 
+                      fileName={fileName}
+                    />
+                  </>
                 )}
               </div>
             )}
@@ -620,7 +602,7 @@ export function ValidationWizard({
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-7 gap-1.5"
+                    className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground "
                     onClick={() => setIsViewerCollapsed(false)}
                   >
                     <Eye className="h-3.5 w-3.5" />
@@ -628,71 +610,24 @@ export function ValidationWizard({
                   </Button>
                 </div>
               )}
-              <Card className="flex flex-col h-full">
-                <div className="px-3 py-1.5 border-b bg-muted/30 shrink-0">
+              <Card className="flex flex-col h-full p-0 gap-0">
+                <div className="py-2 px-3 border-b bg-muted/30 shrink-0 ">
                   <div className="space-y-1.5">
                     {/* Header con información de la unidad - Compact */}
-                    <div className="flex items-center justify-between gap-1.5">
+                    <div className="flex items-center justify-between gap-1.5 h-[40px] justify-center">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <h2 className="text-xs sm:text-sm font-semibold truncate">{currentUnit.name}</h2>
                           <span className="text-xs text-muted-foreground shrink-0">• {currentUnit.surface}</span>
                         </div>
                       </div>
-                      {isCurrentUnitAuthorized ? (
-                        <Button 
-                          onClick={handleUnauthorizeUnit} 
-                          size="sm" 
-                          variant="outline"
-                          className="gap-1.5 h-8 px-3 shrink-0 border-orange-200 bg-orange-50 hover:bg-orange-100 dark:border-orange-800 dark:bg-orange-900/20 dark:hover:bg-orange-900/30"
-                        >
-                          <AlertCircle className="h-3.5 w-3.5 text-orange-600 dark:text-orange-400" />
-                          <span className="text-xs text-orange-700 dark:text-orange-300">Desautorizar</span>
-                        </Button>
-                      ) : (
-                        <Button onClick={handleAuthorizeUnit} size="sm" className="gap-1.5 h-8 px-3 shrink-0">
-                          <ShieldCheck className="h-3.5 w-3.5" />
-                          <span className="text-xs">Autorizar</span>
-                        </Button>
-                      )}
+                     
                     </div>
-
-                    {/* Botones de navegación - Compacto y centrado */}
-                    <div className="flex items-center justify-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handlePrevious}
-                        disabled={isFirstUnit}
-                        className="gap-1 h-8 px-2 shrink-0"
-                      >
-                        <ChevronLeft className="h-4 w-4" />
-                        <span className="text-xs font-medium">Anterior</span>
-                      </Button>
-
-                      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-muted/50 border border-border rounded-md shrink-0">
-                        <span className="text-xs font-semibold text-foreground">{currentUnitIndex + 1}</span>
-                        <span className="text-xs text-muted-foreground">/</span>
-                        <span className="text-xs text-muted-foreground">{units.length}</span>
-                      </div>
-
-                      <Button
-                        variant="default"
-                        size="sm"
-                        onClick={handleNext}
-                        disabled={isLastUnit}
-                        className="gap-1 h-8 px-2 shrink-0"
-                      >
-                        <span className="text-xs font-medium">Siguiente</span>
-                        <ChevronRight className="h-4 w-4" />
-                      </Button>
-                    </div>
-
                   </div>
                 </div>
                 {/* Content area to expand inputs */}
-                <div className="flex-1 px-3 pt-1 pb-2 overflow-hidden">
-                  <div className="flex flex-col gap-2 h-full">
+                <div className="flex-1 px-3 pt-1 pb-2 overflow-y-auto">
+                  <div className="flex flex-col gap-2 h-full overflow-y-auto">
                     {/* Colindancias (editable) - Always shown when unit is selected */}
                     <div className="flex flex-col h-1/2 min-h-[150px]">
                       <div className="text-sm font-semibold text-foreground mb-1 flex items-center gap-1">
@@ -799,6 +734,60 @@ export function ValidationWizard({
                     </div>
                   </div>
                 </div>
+                {/* Botones de navegación - Sticky en la parte inferior de la card */}
+                <div className="sticky bottom-0 border-t bg-card py-2 px-3 shrink-0 rounded-b-md">
+                  <div className="flex flex-row justify-between items-center gap-2">
+                    {/* Botones de navegación - Compacto y centrado */}
+                    <div className="flex items-center justify-center gap-2 w-fit">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handlePrevious}
+                        disabled={isFirstUnit}
+                        className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground "
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        <span className="text-xs font-medium">Anterior</span>
+                      </Button>
+
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-muted/50 border border-border rounded-md shrink-0">
+                        <span className="text-xs font-semibold text-foreground">{currentUnitIndex + 1}</span>
+                        <span className="text-xs text-muted-foreground">/</span>
+                        <span className="text-xs text-muted-foreground">{units.length}</span>
+                      </div>
+
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleNext}
+                        disabled={isLastUnit}
+                        className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground "
+                      >
+                        <span className="text-xs font-medium">Siguiente</span>
+                        <ChevronRight className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    {/* Botón de autorización - Centrado */}
+                    <div className="flex items-center justify-center w-fit">
+                      {isCurrentUnitAuthorized ? (
+                        <Button 
+                          onClick={handleRequestUnauthorize} 
+                          size="sm" 
+                          variant="outline"
+                          className="gap-1.5 h-8 px-3 shrink-0 border-orange-200 bg-orange-50 hover:bg-orange-100 dark:border-orange-800 dark:bg-orange-900/20 dark:hover:bg-orange-900/30"
+                        >
+                          <AlertCircle className="h-3.5 w-3.5 text-orange-600 dark:text-orange-400" />
+                          <span className="text-xs text-orange-700 dark:text-orange-300">Desautorizar</span>
+                        </Button>
+                      ) : (
+                        <Button onClick={handleRequestAuthorize} size="sm" className="w-full bg-gray-800 hover:bg-gray-700 text-white font-bold p-2.5">
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                          <span className="text-xs">AUTORIZAR</span>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </Card>
             </div>
           </div>
@@ -809,8 +798,9 @@ export function ValidationWizard({
       <footer className="border-t bg-card">
         <div className="container mx-auto px-3 sm:px-4 py-1.5">
           <div className="flex items-center justify-center">
-            <div className="text-xs text-muted-foreground">
-              Auto-guardado {getTimeSinceLastSave()}
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <RefreshCw className="h-3 w-3" />
+              <span>Auto-guardado {getTimeSinceLastSave()}</span>
             </div>
           </div>
         </div>
@@ -827,44 +817,6 @@ export function ValidationWizard({
         totalLotSurface={totalLotSurface || undefined}
       />
 
-      {/* Dialog de confirmación de cambios sin guardar */}
-      <Dialog open={showUnsavedChangesDialog} onOpenChange={setShowUnsavedChangesDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertCircle className="h-5 w-5 text-warning" />
-              Cambios sin guardar
-            </DialogTitle>
-            <DialogDescription>
-              Tienes cambios sin guardar en esta unidad. ¿Qué deseas hacer?
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-2 pt-4">
-            <Button
-              onClick={handleSaveAndNavigate}
-              className="w-full gap-2"
-              variant="default"
-            >
-              <Save className="h-4 w-4" />
-              Guardar y continuar
-            </Button>
-            <Button
-              onClick={handleDiscardAndNavigate}
-              className="w-full gap-2"
-              variant="destructive"
-            >
-              Descartar cambios y continuar
-            </Button>
-            <Button
-              onClick={handleCancelNavigation}
-              className="w-full"
-              variant="outline"
-            >
-              Cancelar
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Modal for Complete Notarial Text */}
       <Dialog open={showCompleteTextModal} onOpenChange={setShowCompleteTextModal}>
@@ -916,6 +868,7 @@ export function ValidationWizard({
                 }
               }}
               disabled={!completeNotarialText || isGeneratingCompleteText}
+              className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground "
             >
               <Copy className="h-4 w-4 mr-2" />
               Copiar texto
@@ -924,6 +877,7 @@ export function ValidationWizard({
               <Button
                 variant="outline"
                 onClick={() => setShowCompleteTextModal(false)}
+                className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground "
               >
                 Cerrar
               </Button>
@@ -941,6 +895,7 @@ export function ValidationWizard({
                     URL.revokeObjectURL(url)
                   }
                 }}
+                className="bg-gray-800 hover:bg-gray-700 text-white font-bold p-2.5"
                 disabled={!completeNotarialText || isGeneratingCompleteText}
               >
                 <Download className="h-4 w-4 mr-2" />
@@ -950,6 +905,34 @@ export function ValidationWizard({
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Dialog de confirmación para desautorizar */}
+      <AlertDialog open={showUnauthorizeDialog} onOpenChange={setShowUnauthorizeDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-orange-600" />
+              Confirmar desautorización
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              ¿Estás seguro de que deseas desautorizar la unidad <strong>{currentUnit?.name}</strong>?
+              <br />
+              La unidad volverá a estar disponible para edición y no se incluirá en la exportación hasta que sea autorizada nuevamente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="hover:bg-gray-200 hover:text-foreground">
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleUnauthorizeUnit}
+              className="bg-orange-600 hover:bg-orange-700"
+            >
+              Desautorizar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
