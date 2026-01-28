@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Save, Settings, FileText, AlertCircle, CheckCircle2, Loader2 } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { useAuth } from "@/lib/auth-context"
 
 interface RulesData {
   notarial: {
@@ -25,6 +26,7 @@ export default function SettingsPage() {
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"success" | "error" | null>(null)
   const [saveMessage, setSaveMessage] = useState("")
+  const { user } = useAuth()
 
   useEffect(() => {
     loadRules()
@@ -74,7 +76,7 @@ export default function SettingsPage() {
       setRules(result.rules)
       setSaveStatus("success")
       setSaveMessage("Reglas guardadas correctamente.")
-      
+
       // Clear success message after 3 seconds
       setTimeout(() => {
         setSaveStatus(null)
@@ -112,7 +114,7 @@ export default function SettingsPage() {
               <h1 className="text-3xl font-bold text-gray-900">Configuración</h1>
             </div>
             <p className="text-gray-600">
-              Gestiona las reglas utilizadas por la IA para la generación de texto notarial. Las reglas de colindancias son internas y no son modificables.
+              Gestiona las reglas y configuraciones del sistema.
             </p>
           </div>
 
