@@ -116,13 +116,13 @@ export async function POST(req: Request) {
       try {
         const apiKey = process.env.OPENAI_API_KEY
         const model = process.env.OPENAI_MODEL || "gpt-4o"
-        
+
         if (!apiKey) {
           throw new Error("OPENAI_API_KEY missing")
         }
 
         const prompt = buildNotarialPrompt(colindanciasText, unitName)
-        
+
         // Call OpenAI API
         const url = `https://api.openai.com/v1/chat/completions`
         const resp = await fetch(url, {
@@ -169,6 +169,11 @@ export async function POST(req: Request) {
         }
 
         result = notarialText
+        // Return result and usage
+        return NextResponse.json({
+          notarialText: result,
+          usage: data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+        })
       } catch (aiError: any) {
         console.warn("[notarialize] AI error, falling back to deterministic formatter:", aiError.message)
         // Fallback to deterministic formatter
@@ -179,7 +184,7 @@ export async function POST(req: Request) {
       result = notarialize(colindanciasText, unitName)
     }
 
-    return NextResponse.json({ notarialText: result })
+    return NextResponse.json({ notarialText: result }) // Fallback return for non-AI or error cases
   } catch (err: any) {
     console.error("[notarialize] error:", err)
     return NextResponse.json(
