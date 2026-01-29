@@ -425,29 +425,237 @@ export class PreavisoTemplateRenderer {
       const template = await this.loadTemplate('word')
       const renderedText = template(templateData)
 
+      const DEFAULT_FONT = 'Tahoma'
+      const DEFAULT_FONT_SIZE = 20
+      const HEADER_FONT_SIZE = 24
+      const DEFAULT_SPACING_AFTER = 120
+      const TITLE_SPACING_AFTER = 300
+      const HEADER_SPACING_AFTER = 200
+      const ACT_SPACING_BEFORE = 200
+      const SIGNATURE_SPACING_BEFORE = 400
+      const LIST_INDENT_LEFT = 720
+      const HEADER_LINE1_FONT_SIZE = 36
+      const HEADER_LINE2_FONT_SIZE = 28
+      const HEADER_LINE3_FONT_SIZE = 20
+      const HEADER_LINE4_FONT_SIZE = 20
+      const ANTECEDENTE_FONT_SIZE = 22
+      const PARTIDA_SECCION_FOLIO_FONT_SIZE = 20
+      const DESTINATARIO_LINE1_FONT_SIZE = 24
+      const DESTINATARIO_LINE2_FONT_SIZE = 22
+      const DESTINATARIO_LINE3_FONT_SIZE = 24
+      const PARRAFO_NOTARIO_FONT_SIZE = 20
+      const OBJETO_FONT_SIZE = 20
+
       // Convertir texto renderizado a párrafos de Word
       const paragraphs: Paragraph[] = []
       const lines = renderedText.split('\n').filter(line => line.trim())
 
-      lines.forEach((line) => {
+      // Procesar líneas con índice para identificar las primeras 4 líneas
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+        const line = lines[lineIndex]
         const trimmedLine = line.trim()
+        const currentLineNumber = lineIndex + 1 // Línea 1, 2, 3, 4...
         
-        // Detectar títulos y encabezados centrados
+        // Primeras 4 líneas del encabezado del notario
+        // Línea 1: LIC. XAVIER IBAÑEZ VERAMENDI - 18pts, negrita, centrado
+        if (currentLineNumber === 1 && trimmedLine.includes('LIC.')) {
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: HEADER_LINE1_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              alignment: AlignmentType.CENTER,
+              spacing: { after: DEFAULT_SPACING_AFTER }
+            })
+          )
+          continue // Saltar al siguiente ciclo para no procesar esta línea en otros bloques
+        }
+        
+        // Línea 2: NOTARIO ADSCRITO... - 14pts, negrita, centrado
+        if (currentLineNumber === 2 && trimmedLine.includes('NOTARIO ADSCRITO')) {
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: HEADER_LINE2_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              alignment: AlignmentType.CENTER,
+              spacing: { after: DEFAULT_SPACING_AFTER }
+            })
+          )
+          continue // Saltar al siguiente ciclo
+        }
+        
+        // Línea 3: CALLE ANTONIO CASO... - 10pts, negrita, centrado
+        if (currentLineNumber === 3 && trimmedLine.includes('CALLE ANTONIO CASO')) {
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: HEADER_LINE3_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              alignment: AlignmentType.CENTER,
+              spacing: { after: DEFAULT_SPACING_AFTER }
+            })
+          )
+          continue // Saltar al siguiente ciclo
+        }
+        
+        // Línea 4: TEL:... - 10pts, negrita, centrado
+        if (currentLineNumber === 4 && trimmedLine.startsWith('TEL:')) {
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: HEADER_LINE4_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              alignment: AlignmentType.CENTER,
+              spacing: { after: DEFAULT_SPACING_AFTER }
+            })
+          )
+          continue // Saltar al siguiente ciclo
+        }
+        
+        // Línea "ANTECEDENTE REGISTRAL"
+        if (trimmedLine.includes('ANTECEDENTE REGISTRAL')) {
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: ANTECEDENTE_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              alignment: AlignmentType.CENTER,
+              spacing: { after: DEFAULT_SPACING_AFTER }
+            })
+          )
+          continue // Saltar al siguiente ciclo para no procesar esta línea en otros bloques
+        }
+        
+        // PARTIDA NO, SECCIÓN CIVIL, FOLIO REAL
+        if (trimmedLine.startsWith('PARTIDA NO:') || trimmedLine.startsWith('SECCIÓN') || trimmedLine.startsWith('FOLIO REAL:')) {
+          const sizeTwips = PARTIDA_SECCION_FOLIO_FONT_SIZE
+          let children: TextRun[] = []
+          if (trimmedLine.startsWith('PARTIDA NO:')) {
+            const label = 'PARTIDA NO: '
+            const numbers = trimmedLine.slice(label.length).trim()
+            children = [
+              new TextRun({ text: label, bold: true, size: sizeTwips, font: DEFAULT_FONT }),
+              new TextRun({ text: numbers, bold: false, size: sizeTwips, font: DEFAULT_FONT })
+            ]
+          } else if (trimmedLine.startsWith('FOLIO REAL:')) {
+            const label = 'FOLIO REAL: '
+            const numbers = trimmedLine.slice(label.length).trim()
+            children = [
+              new TextRun({ text: label, bold: true, size: sizeTwips, font: DEFAULT_FONT }),
+              new TextRun({ text: numbers, bold: false, size: sizeTwips, font: DEFAULT_FONT })
+            ]
+          } else {
+            // SECCIÓN CIVIL (o SECCIÓN ...) - todo en negrita, sin números
+            children = [
+              new TextRun({ text: trimmedLine, bold: true, size: sizeTwips, font: DEFAULT_FONT })
+            ]
+          }
+          paragraphs.push(
+            new Paragraph({
+              children,
+              alignment: AlignmentType.CENTER,
+              spacing: { after: DEFAULT_SPACING_AFTER }
+            })
+          )
+          continue
+        }
+        
+        // Párrafo legal del notario (LICENCIADO... NOTARIO ADSCRITO...)
+        // 10pt; LIC. y nombre en negrita; solo "NOTARIO ADSCRITO" subrayado; "NÚMERO X" en negrita; "siguientes actos jurídicos" en negrita; resto normal
+        if (
+          trimmedLine.startsWith('LICENCIADO') &&
+          trimmedLine.includes('NOTARIO ADSCRITO') &&
+          trimmedLine.includes('NÚMERO') &&
+          trimmedLine.includes('SE PRETENDEN OTORGAR')
+        ) {
+          const sizeTwips = PARRAFO_NOTARIO_FONT_SIZE
+          const runs: TextRun[] = []
+          let iComma1 = trimmedLine.indexOf(',')
+          if (iComma1 === -1) iComma1 = trimmedLine.length
+          const partLicNombre = trimmedLine.substring(0, iComma1 + 1) // "LICENCIADO XAVIER...,"
+          runs.push(new TextRun({ text: partLicNombre, bold: true, size: sizeTwips, font: DEFAULT_FONT }))
+          const iNotarioAdscrito = trimmedLine.indexOf('NOTARIO ADSCRITO', iComma1)
+          const iNumero = trimmedLine.indexOf('NÚMERO ', iComma1)
+          if (iNotarioAdscrito !== -1 && iNumero !== -1) {
+            const beforeNotarioAdscrito = trimmedLine.substring(iComma1 + 1, iNotarioAdscrito) // " " o " "
+            if (beforeNotarioAdscrito) runs.push(new TextRun({ text: beforeNotarioAdscrito, size: sizeTwips, font: DEFAULT_FONT }))
+            runs.push(new TextRun({ text: 'NOTARIO ADSCRITO', underline: {}, size: sizeTwips, font: DEFAULT_FONT }))
+            const afterNotarioAdscrito = trimmedLine.substring(iNotarioAdscrito + 'NOTARIO ADSCRITO'.length, iNumero) // " A LA NOTARÍA "
+            if (afterNotarioAdscrito) runs.push(new TextRun({ text: afterNotarioAdscrito, size: sizeTwips, font: DEFAULT_FONT }))
+            const iDeAfterNum = trimmedLine.indexOf(' DE ', iNumero)
+            const endNumero = iDeAfterNum !== -1 ? iDeAfterNum : trimmedLine.indexOf(',', iNumero)
+            const partNumero = endNumero !== -1 ? trimmedLine.substring(iNumero, endNumero) : trimmedLine.substring(iNumero)
+            if (partNumero) runs.push(new TextRun({ text: partNumero, bold: true, size: sizeTwips, font: DEFAULT_FONT }))
+            const iPara = trimmedLine.indexOf(', PARA LOS EFECTOS', iNumero)
+            if (iDeAfterNum !== -1 && iPara !== -1) {
+              const partDeMunicipalidad = trimmedLine.substring(iDeAfterNum, iPara)
+              if (partDeMunicipalidad) runs.push(new TextRun({ text: partDeMunicipalidad, size: sizeTwips, font: DEFAULT_FONT }))
+            }
+            if (iPara !== -1) {
+              const iSePretenden = trimmedLine.indexOf('SE PRETENDEN OTORGAR', iPara)
+              const partParaEfectos = iSePretenden !== -1 ? trimmedLine.substring(iPara, iSePretenden) : trimmedLine.substring(iPara)
+              if (partParaEfectos) runs.push(new TextRun({ text: partParaEfectos, size: sizeTwips, font: DEFAULT_FONT }))
+              if (iSePretenden !== -1) {
+                const iCuyas = trimmedLine.indexOf(', CUYAS CARACTERÍSTICAS', iSePretenden)
+                const partActos = iCuyas !== -1 ? trimmedLine.substring(iSePretenden, iCuyas) : trimmedLine.substring(iSePretenden)
+                if (partActos) runs.push(new TextRun({ text: partActos, bold: true, size: sizeTwips, font: DEFAULT_FONT }))
+                if (iCuyas !== -1) {
+                  const partCuyas = trimmedLine.substring(iCuyas)
+                  if (partCuyas) runs.push(new TextRun({ text: partCuyas, size: sizeTwips, font: DEFAULT_FONT }))
+                }
+              }
+            }
+          }
+          if (runs.length === 1) {
+            runs.push(new TextRun({ text: trimmedLine.substring(partLicNombre.length), size: sizeTwips, font: DEFAULT_FONT }))
+          }
+          paragraphs.push(
+            new Paragraph({
+              children: runs,
+              alignment: AlignmentType.JUSTIFIED,
+              spacing: { after: DEFAULT_SPACING_AFTER }
+            })
+          )
+          continue
+        }
+        
+        // Detectar títulos y encabezados centrados (para líneas que no son las primeras 4 ni ANTECEDENTE REGISTRAL ni PARTIDA/SECCIÓN/FOLIO)
         const isCenteredHeader =
-          trimmedLine.includes('LIC.') ||
-          trimmedLine.includes('NOTARIO ADSCRITO') ||
+          (currentLineNumber > 4 && trimmedLine.includes('LIC.')) ||
+          (currentLineNumber > 4 && trimmedLine.includes('NOTARIO ADSCRITO')) ||
           trimmedLine.includes('NOTARIO TITULAR') ||
-          trimmedLine.includes('CALLE ANTONIO CASO') ||
-          trimmedLine.startsWith('TEL:') ||
-          trimmedLine.includes('SOLICITUD DE CERTIFICADO') ||
-          trimmedLine.includes('ANTECEDENTE REGISTRAL') ||
-          trimmedLine.startsWith('PARTIDA NO:') ||
-          trimmedLine.startsWith('SECCIÓN') ||
-          trimmedLine.startsWith('FOLIO REAL:')
+          (currentLineNumber > 4 && trimmedLine.includes('CALLE ANTONIO CASO')) ||
+          (currentLineNumber > 4 && trimmedLine.startsWith('TEL:')) ||
+          trimmedLine.includes('SOLICITUD DE CERTIFICADO')
 
-        // Detectar títulos
+        // Detectar títulos (OBJETO DE LA COMPRAVENTA se procesa más abajo en su propio bloque: justificado, 10pt, solo etiqueta en negrita)
         if (trimmedLine.includes('SOLICITUD DE CERTIFICADO') || 
-            trimmedLine.includes('OBJETO DE LA COMPRAVENTA') ||
             trimmedLine.includes('CERTIFICO:')) {
           paragraphs.push(
             new Paragraph({
@@ -455,29 +663,77 @@ export class PreavisoTemplateRenderer {
                 new TextRun({
                   text: trimmedLine,
                   bold: true,
-                  size: trimmedLine.includes('SOLICITUD') ? 32 : 28,
-                  font: 'Times New Roman'
+                  size: trimmedLine.includes('SOLICITUD') ? HEADER_FONT_SIZE : HEADER_FONT_SIZE,
+                  font: DEFAULT_FONT
                 })
               ],
               heading: trimmedLine.includes('SOLICITUD') ? HeadingLevel.TITLE : undefined,
-              alignment: isCenteredHeader ? AlignmentType.CENTER : AlignmentType.LEFT,
-              spacing: { after: 300 }
+              alignment: isCenteredHeader ? AlignmentType.CENTER : AlignmentType.CENTER,
+              spacing: { after: TITLE_SPACING_AFTER }
             })
           )
-        } else if (trimmedLine.startsWith('NOTARÍA') || trimmedLine.startsWith('C. DIRECTOR')) {
-          // Encabezado y destinatario
+        } else if (trimmedLine.startsWith('C. DIRECTOR')) {
+          // C. DIRECTOR DEL REGISTRO PÚBLICO
           paragraphs.push(
             new Paragraph({
               children: [
                 new TextRun({
                   text: trimmedLine,
                   bold: true,
-                  size: 24,
-                  font: 'Times New Roman'
+                  size: DESTINATARIO_LINE1_FONT_SIZE,
+                  font: DEFAULT_FONT
                 })
               ],
-              alignment: AlignmentType.CENTER,
-              spacing: { after: 200 }
+              alignment: AlignmentType.JUSTIFIED,
+              spacing: { after: DEFAULT_SPACING_AFTER }
+            })
+          )
+        } else if (trimmedLine.startsWith('DE LA PROPIEDAD')) {
+          // DE LA PROPIEDAD Y DEL COMERCIO.
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: DESTINATARIO_LINE2_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              alignment: AlignmentType.JUSTIFIED,
+              spacing: { after: DEFAULT_SPACING_AFTER }
+            })
+          )
+        } else if (trimmedLine.includes('P R E S E N T E')) {
+          // P R E S E N T E.
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: DESTINATARIO_LINE3_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              alignment: AlignmentType.JUSTIFIED,
+              spacing: { after: HEADER_SPACING_AFTER }
+            })
+          )
+        } else if (trimmedLine.startsWith('NOTARÍA')) {
+          // Encabezado NOTARÍA (solo cuando no es C. DIRECTOR)
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: HEADER_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              alignment: AlignmentType.JUSTIFIED,
+              spacing: { after: HEADER_SPACING_AFTER }
             })
           )
         } else if (isCenteredHeader) {
@@ -487,30 +743,85 @@ export class PreavisoTemplateRenderer {
               children: [
                 new TextRun({
                   text: trimmedLine,
-                  bold: true,
-                  size: 24,
-                  font: 'Times New Roman'
+                  bold: false,
+                  size: DEFAULT_FONT_SIZE,
+                  font: DEFAULT_FONT
                 })
               ],
-              alignment: AlignmentType.CENTER,
-              spacing: { after: 120 }
+              alignment: AlignmentType.JUSTIFIED,
+              spacing: { after: DEFAULT_SPACING_AFTER }
             })
           )
         } else if (trimmedLine.match(/^[IVX]+\./)) {
-          // Actos jurídicos (números romanos)
+          // Actos jurídicos (número romano + título en negrita)
           paragraphs.push(
             new Paragraph({
               children: [
                 new TextRun({
                   text: trimmedLine,
                   bold: true,
-                  size: 24,
-                  font: 'Times New Roman'
+                  size: DEFAULT_FONT_SIZE,
+                  font: DEFAULT_FONT
                 })
               ],
-              spacing: { before: 200, after: 120 }
+              spacing: { before: ACT_SPACING_BEFORE, after: DEFAULT_SPACING_AFTER }
             })
           )
+        } else if (
+          /^(ACREEDOR|DEUDOR|VENDEDOR|COMPRADOR|ACREDITANTE|ACREDITADO|COACREDITADO|OBLIGADO SOLIDARIO Y GARANTE HIPOTECARIO):/i.test(trimmedLine) ||
+          /\(PROPIETARIO\(S\)\)VENDEDOR:/i.test(trimmedLine)
+        ) {
+          // Etiquetas de actos (solo etiqueta en negrita)
+          const labelPatterns = [
+            'OBLIGADO SOLIDARIO Y GARANTE HIPOTECARIO:',
+            '(PROPIETARIO(S))VENDEDOR:',
+            'ACREEDOR:',
+            'DEUDOR:',
+            'VENDEDOR:',
+            'COMPRADOR:',
+            'ACREDITANTE:',
+            'COACREDITADO:',
+            'ACREDITADO:'
+          ]
+          let labelStart = -1
+          let labelLen = 0
+          for (const lab of labelPatterns) {
+            const idx = trimmedLine.indexOf(lab)
+            if (idx !== -1) {
+              labelStart = idx
+              labelLen = lab.length
+              break
+            }
+            const idxUpper = trimmedLine.toUpperCase().indexOf(lab.toUpperCase())
+            if (idxUpper !== -1) {
+              labelStart = idxUpper
+              labelLen = lab.length
+              break
+            }
+          }
+          const sizeTwips = DEFAULT_FONT_SIZE
+          if (labelStart !== -1) {
+            const beforeLabel = trimmedLine.substring(0, labelStart)
+            const labelText = trimmedLine.substring(labelStart, labelStart + labelLen)
+            const afterLabel = trimmedLine.substring(labelStart + labelLen)
+            const children: TextRun[] = []
+            if (beforeLabel) children.push(new TextRun({ text: beforeLabel, size: sizeTwips, font: DEFAULT_FONT }))
+            children.push(new TextRun({ text: labelText, bold: true, size: sizeTwips, font: DEFAULT_FONT }))
+            if (afterLabel) children.push(new TextRun({ text: afterLabel, size: sizeTwips, font: DEFAULT_FONT }))
+            paragraphs.push(
+              new Paragraph({
+                children,
+                spacing: { after: DEFAULT_SPACING_AFTER }
+              })
+            )
+          } else {
+            paragraphs.push(
+              new Paragraph({
+                children: [new TextRun({ text: trimmedLine, size: sizeTwips, font: DEFAULT_FONT })],
+                spacing: { after: DEFAULT_SPACING_AFTER }
+              })
+            )
+          }
         } else if (trimmedLine.startsWith('-')) {
           // Lista de detalles
           paragraphs.push(
@@ -518,12 +829,13 @@ export class PreavisoTemplateRenderer {
               children: [
                 new TextRun({
                   text: trimmedLine,
-                  size: 24,
-                  font: 'Times New Roman'
+                  size: DEFAULT_FONT_SIZE,
+                  font: DEFAULT_FONT,
+                  bold: false
                 })
               ],
-              spacing: { after: 120 },
-              indent: { left: 720 } // 0.5 inch
+              spacing: { after: 240 },
+              indent: { left: LIST_INDENT_LEFT }
             })
           )
         } else if (trimmedLine.match(/^\d+\./)) {
@@ -533,11 +845,12 @@ export class PreavisoTemplateRenderer {
               children: [
                 new TextRun({
                   text: trimmedLine,
-                  size: 24,
-                  font: 'Times New Roman'
+                  size: DEFAULT_FONT_SIZE,
+                  font: DEFAULT_FONT,
+                  bold: false
                 })
               ],
-              spacing: { after: 120 }
+              spacing: { after: 240 }
             })
           )
         } else if (trimmedLine === '4501E') {
@@ -547,12 +860,12 @@ export class PreavisoTemplateRenderer {
                 new TextRun({
                   text: trimmedLine,
                   bold: true,
-                  size: 24,
-                  font: 'Times New Roman'
+                  size: DEFAULT_FONT_SIZE,
+                  font: DEFAULT_FONT
                 })
               ],
-              alignment: AlignmentType.RIGHT,
-              spacing: { after: 120 }
+              alignment: AlignmentType.JUSTIFIED,
+              spacing: { after: DEFAULT_SPACING_AFTER }
             })
           )
         } else if (trimmedLine.includes('_________________________________')) {
@@ -562,40 +875,152 @@ export class PreavisoTemplateRenderer {
               children: [
                 new TextRun({
                   text: '_________________________________',
-                  size: 24,
-                  font: 'Times New Roman'
+                  size: DEFAULT_FONT_SIZE,
+                  font: DEFAULT_FONT
                 })
               ],
-              spacing: { before: 400, after: 200 }
+              spacing: { before: SIGNATURE_SPACING_BEFORE, after: HEADER_SPACING_AFTER }
+            })
+          )
+        } else if (trimmedLine.startsWith('OBJETO DE LA COMPRAVENTA')) {
+          // OBJETO DE LA COMPRAVENTA + descripción (un solo párrafo, solo etiqueta en negrita)
+          // La plantilla (punto 7) emite todo en una sola línea (sin \n), igual que el párrafo 4; si vinieran varias líneas, se unen aquí.
+          let merged = trimmedLine
+          let nextIndex = lineIndex + 1
+          while (nextIndex < lines.length) {
+            const nextLine = lines[nextIndex].trim()
+            if (!nextLine || nextLine.startsWith('Asimismo') || nextLine.startsWith('TIJUANA') || nextLine.startsWith('LIC. ')) break
+            merged += ' ' + nextLine
+            nextIndex++
+          }
+          lineIndex = nextIndex - 1
+          const sizeTwips = OBJETO_FONT_SIZE
+          // Buscar específicamente "OBJETO DE LA COMPRAVENTA Y GARANTIA HIPOTECARIA:" (hasta ese dos puntos)
+          const labelPattern = 'OBJETO DE LA COMPRAVENTA Y GARANTIA HIPOTECARIA:'
+          const mergedUpper = merged.toUpperCase()
+          const labelPatternUpper = labelPattern.toUpperCase()
+          let labelText = ''
+          let restText = ''
+          if (mergedUpper.startsWith(labelPatternUpper)) {
+            // La línea empieza exactamente con el patrón
+            labelText = merged.substring(0, labelPattern.length)
+            restText = merged.substring(labelPattern.length).trim()
+            // Asegurar espacio después del dos puntos si no hay
+            if (restText && !restText.startsWith(' ')) {
+              restText = ' ' + restText
+            }
+          } else {
+            // Buscar el patrón en cualquier posición (por si hay espacios antes)
+            const labelIdx = mergedUpper.indexOf(labelPatternUpper)
+            if (labelIdx !== -1) {
+              labelText = merged.substring(labelIdx, labelIdx + labelPattern.length)
+              restText = (merged.substring(0, labelIdx) + merged.substring(labelIdx + labelPattern.length)).trim()
+              if (restText && !restText.startsWith(' ')) {
+                restText = ' ' + restText
+              }
+            } else {
+              // Fallback: buscar hasta el primer ":" después de "OBJETO DE LA COMPRAVENTA"
+              const colonIdx = merged.indexOf(':')
+              if (colonIdx !== -1) {
+                labelText = merged.substring(0, colonIdx + 1)
+                restText = merged.substring(colonIdx + 1).trim()
+                if (restText && !restText.startsWith(' ')) {
+                  restText = ' ' + restText
+                }
+              } else {
+                labelText = merged
+                restText = ''
+              }
+            }
+          }
+          const children: TextRun[] = [
+            new TextRun({ text: labelText, bold: true, size: sizeTwips, font: DEFAULT_FONT })
+          ]
+          if (restText) {
+            children.push(new TextRun({ text: restText, bold: false, size: sizeTwips, font: DEFAULT_FONT }))
+          }
+          paragraphs.push(
+            new Paragraph({
+              children,
+              alignment: AlignmentType.JUSTIFIED, // 10pt, solo etiqueta en negrita
+              spacing: { after: DEFAULT_SPACING_AFTER }
+            })
+          )
+        } else if (trimmedLine.startsWith('MUNICIPIO:')) {
+          // MUNICIPIO: ya se incluyó en el párrafo OBJETO si venía después; si aparece solo, mostrar normal
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  size: DEFAULT_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              spacing: { after: DEFAULT_SPACING_AFTER },
+              alignment: AlignmentType.JUSTIFIED
+            })
+          )
+        } else if (trimmedLine.startsWith('Asimismo') && trimmedLine.includes('Artículo 139')) {
+          // Párrafo Artículo 139 (subrayado)
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  underline: {},
+                  size: DEFAULT_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              spacing: { after: 240 },
+              alignment: AlignmentType.JUSTIFIED
+            })
+          )
+        } else if (
+          (trimmedLine.includes('TIJUANA') && trimmedLine.includes('MOMENTO DE SU PRESENTACION')) ||
+          (currentLineNumber > 1 && trimmedLine.startsWith('LIC. ') && !trimmedLine.includes('NOTARIO ADSCRITO'))
+        ) {
+          // Puntos 8 y 9: cierre y firma del notario (negrita)
+          paragraphs.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: trimmedLine,
+                  bold: true,
+                  size: DEFAULT_FONT_SIZE,
+                  font: DEFAULT_FONT
+                })
+              ],
+              spacing: { after: 1200 },
+              alignment: AlignmentType.JUSTIFIED
             })
           )
         } else if (trimmedLine) {
           // Párrafo normal
-          const isLeft =
-            trimmedLine.startsWith('OBJETO DE LA COMPRAVENTA') ||
-            trimmedLine.startsWith('MUNICIPIO:')
+          const isLeft = trimmedLine.startsWith('MUNICIPIO:')
           const isBoldLabel =
-            /^(ACREEDOR|DEUDOR|VENDEDOR|COMPRADOR|ACREDITANTE|ACREDITADO|COACREDITADO|OBJETO DE LA COMPRAVENTA)/.test(trimmedLine)
+            /^(ACREEDOR|DEUDOR|VENDEDOR|COMPRADOR|ACREDITANTE|ACREDITADO|COACREDITADO)/.test(trimmedLine)
           paragraphs.push(
             new Paragraph({
               children: [
                 new TextRun({
                   text: trimmedLine,
                   bold: isBoldLabel,
-                  size: 24,
-                  font: 'Times New Roman'
+                  size: DEFAULT_FONT_SIZE,
+                  font: DEFAULT_FONT
                 })
               ],
-              spacing: { after: 120 },
+              spacing: { after: DEFAULT_SPACING_AFTER },
               alignment: isLeft
-                ? AlignmentType.LEFT
+                ? AlignmentType.JUSTIFIED
                 : trimmedLine.includes('TIJUANA')
-                  ? AlignmentType.CENTER
+                  ? AlignmentType.JUSTIFIED
                   : AlignmentType.JUSTIFIED
             })
           )
         }
-      })
+      }
 
       // Crear documento Word
       const doc = new Document({
@@ -603,7 +1028,7 @@ export class PreavisoTemplateRenderer {
           properties: {
             page: {
               margin: {
-                top: 1440, // 1 inch
+                top: 1440,
                 bottom: 1440,
                 left: 1440,
                 right: 1440

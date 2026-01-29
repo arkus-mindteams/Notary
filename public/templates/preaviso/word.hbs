@@ -49,26 +49,15 @@ COMPRADOR: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{..
 
 {{/each}}
 
-{{! 6. OBJETO DE LA COMPRAVENTA Y GARANTÍA }}
-OBJETO DE LA COMPRAVENTA Y GARANTIA: FOLIO REAL: {{inmueble.folioReal}}
-
-{{! 7. Descripción del inmueble (formato específico) }}
-{{#if inmueble.unidad}}UNIDAD: {{inmueble.unidad}}{{#if inmueble.condominio}} CONJ. HABITACIONAL: {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}} CONSTRUIDO EN EL LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}} DE {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
-{{else}}{{#if inmueble.direccion}}{{inmueble.direccion}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
-{{else}}INMUEBLE UBICADO EN {{inmueble.colonia}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
-{{/if}}{{/if}}
-
-{{#if inmueble.municipio}}MUNICIPIO: {{inmueble.municipio}}{{/if}}
-
-{{! 8. Artículo 139 (condicional) }}
-{{#if include_urban_dev_article_139}}
+{{! 6. Artículo 139 (siempre incluido) }}
 Asimismo, en los términos del Artículo 139 de la Ley de Desarrollo Urbano para el Estado, solicitó la certificación de inscripción de existencia o inexistencia de declaratorias de uso o destino, avisos, manifestaciones o reservas del inmueble materia de (los) acto (s) antes referido (s).
-{{/if}}
+
+{{! 7. OBJETO DE LA COMPRAVENTA Y GARANTÍA HIPOTECARIA + descripción (una sola línea = un solo párrafo en Word, como el punto 4) }}
+OBJETO DE LA COMPRAVENTA Y GARANTIA HIPOTECARIA: FOLIO REAL: {{inmueble.folioReal}} {{#if inmueble.unidad}}UNIDAD: {{inmueble.unidad}}{{#if inmueble.condominio}} CONJ. HABITACIONAL: {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}} CONSTRUIDO EN EL LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}} DE {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.{{else}}{{#if inmueble.direccion}}{{inmueble.direccion}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.{{else}}INMUEBLE UBICADO EN {{inmueble.colonia}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.{{/if}}{{/if}}{{#if inmueble.municipio}} MUNICIPIO: {{inmueble.municipio}}{{/if}}
+
 
 {{! 8. Cierre }}
 TIJUANA, B. C. AL MOMENTO DE SU PRESENTACION
-
-
 
 
 {{! 9. Firma del notario }}
