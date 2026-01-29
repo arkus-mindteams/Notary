@@ -12,9 +12,10 @@ interface UploadZoneProps {
   onFilesChange?: (files: File[]) => void
   onProcess?: () => void
   files?: File[] // External files for synchronization
+  disableProcess?: boolean // Disable the process button (e.g., when PDF selector modal is open)
 }
 
-export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: externalFiles }: UploadZoneProps) {
+export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: externalFiles, disableProcess = false }: UploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [thumbnailUrls, setThumbnailUrls] = useState<Map<number, string>>(new Map())
@@ -24,15 +25,15 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
   useEffect(() => {
     if (externalFiles !== undefined) {
       // Only update if files are actually different (compare by name and size)
-      const areEqual = 
+      const areEqual =
         selectedFiles.length === externalFiles.length &&
         selectedFiles.every((file, index) => {
           const externalFile = externalFiles[index]
-          return externalFile && 
-                 file.name === externalFile.name && 
-                 file.size === externalFile.size
+          return externalFile &&
+            file.name === externalFile.name &&
+            file.size === externalFile.size
         })
-      
+
       if (!areEqual) {
         setSelectedFiles(externalFiles)
       }
@@ -77,9 +78,13 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
 
       const files = Array.from(e.dataTransfer.files).filter(isValidFile)
       if (files.length > 0) {
-        setSelectedFiles((prevFiles) => {
-          const existingFiles = prevFiles || []
-          const newFiles = files.filter(
+        // Only add non-PDF files to state immediately
+        // PDFs need to be processed by the parent first
+        const filesToAdd = files.filter(f => !isValidPdf(f))
+
+        if (filesToAdd.length > 0) {
+          const existingFiles = selectedFiles || []
+          const newFiles = filesToAdd.filter(
             (newFile) =>
               !existingFiles.some(
                 (existingFile) =>
@@ -87,24 +92,31 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
               )
           )
           const combinedFiles = [...existingFiles, ...newFiles]
+          setSelectedFiles(combinedFiles)
           onFilesChange?.(combinedFiles)
-          return combinedFiles
-        })
+        }
+
+        // Pass ALL files (including PDFs) to parent for processing
         onFilesSelect(files)
       }
     },
-    [onFilesSelect, onFilesChange],
+    [selectedFiles, onFilesSelect, onFilesChange],
   )
 
   const handleFileInput = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files
       if (files && files.length > 0) {
-        const imageFiles = Array.from(files).filter(isValidFile)
-        if (imageFiles.length > 0) {
-          setSelectedFiles((prevFiles) => {
-            const existingFiles = prevFiles || []
-            const newFiles = imageFiles.filter(
+        const allFiles = Array.from(files).filter(isValidFile)
+
+        if (allFiles.length > 0) {
+          // Only add non-PDF files to state immediately
+          // PDFs need to be processed by the parent first
+          const filesToAdd = allFiles.filter(f => !isValidPdf(f))
+
+          if (filesToAdd.length > 0) {
+            const existingFiles = selectedFiles || []
+            const newFiles = filesToAdd.filter(
               (newFile) =>
                 !existingFiles.some(
                   (existingFile) =>
@@ -112,16 +124,18 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
                 )
             )
             const combinedFiles = [...existingFiles, ...newFiles]
+            setSelectedFiles(combinedFiles)
             onFilesChange?.(combinedFiles)
-            return combinedFiles
-          })
-          onFilesSelect(imageFiles)
+          }
+
+          // Pass ALL files (including PDFs) to parent for processing
+          onFilesSelect(allFiles)
         }
       }
       // Reset input to allow selecting the same file again
       e.target.value = ""
     },
-    [onFilesSelect, onFilesChange],
+    [selectedFiles, onFilesSelect, onFilesChange],
   )
 
   const handlePaste = useCallback(
@@ -151,23 +165,21 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
       }
 
       if (imageFiles.length > 0) {
-        setSelectedFiles((prevFiles) => {
-          const existingFiles = prevFiles || []
-          const newFiles = imageFiles.filter(
-            (newFile) =>
-              !existingFiles.some(
-                (existingFile) =>
-                  existingFile.name === newFile.name && existingFile.size === newFile.size
-              )
-          )
-          const combinedFiles = [...existingFiles, ...newFiles]
-          onFilesChange?.(combinedFiles)
-          return combinedFiles
-        })
+        const existingFiles = selectedFiles || []
+        const newFiles = imageFiles.filter(
+          (newFile) =>
+            !existingFiles.some(
+              (existingFile) =>
+                existingFile.name === newFile.name && existingFile.size === newFile.size
+            )
+        )
+        const combinedFiles = [...existingFiles, ...newFiles]
+        setSelectedFiles(combinedFiles)
+        onFilesChange?.(combinedFiles)
         onFilesSelect(imageFiles)
       }
     },
-    [onFilesSelect, onFilesChange],
+    [selectedFiles, onFilesSelect, onFilesChange],
   )
 
   useEffect(() => {
@@ -188,7 +200,7 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
   useEffect(() => {
     setThumbnailUrls((prev) => {
       const newThumbnailUrls = new Map<number, string>()
-      
+
       selectedFiles.forEach((file, index) => {
         if (prev.has(index)) {
           // Keep existing URL
@@ -199,7 +211,7 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
           newThumbnailUrls.set(index, url)
         }
       })
-      
+
       // Clean up URLs for removed files
       prev.forEach((url, index) => {
         if (!newThumbnailUrls.has(index)) {
@@ -208,7 +220,7 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
           }
         }
       })
-      
+
       return newThumbnailUrls
     })
   }, [selectedFiles])
@@ -228,12 +240,10 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
   }, [])
 
   const handleRemoveFile = (index: number) => {
-    setSelectedFiles((prevFiles) => {
-      const newFiles = prevFiles.filter((_, i) => i !== index)
-      onFilesChange?.(newFiles)
-      return newFiles
-    })
-    
+    const newFiles = selectedFiles.filter((_, i) => i !== index)
+    setSelectedFiles(newFiles)
+    onFilesChange?.(newFiles)
+
     // Clean up thumbnail URL
     setThumbnailUrls((prev) => {
       const url = prev.get(index)
@@ -260,11 +270,10 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
       <Card
         ref={cardRef}
         tabIndex={0}
-        className={`relative border-2 border-dashed transition-all duration-200 bg-background ${
-          isDragging
-            ? "border-primary bg-primary/10 scale-[1.02] shadow-lg"
-            : "border-primary/30 hover:border-primary/50 hover:bg-muted/50"
-        }`}
+        className={`relative border-2 border-dashed transition-all duration-200 bg-background ${isDragging
+          ? "border-primary bg-primary/10 scale-[1.02] shadow-lg"
+          : "border-primary/30 hover:border-primary/50 hover:bg-muted/50"
+          }`}
         onDragEnter={handleDrag}
         onDragLeave={handleDrag}
         onDragOver={handleDrag}
@@ -295,13 +304,17 @@ export function UploadZone({ onFilesSelect, onFilesChange, onProcess, files: ext
               <label htmlFor="file-upload" className="cursor-pointer w-full sm:w-auto">Seleccionar archivos</label>
             </Button>
           </div>
-           {selectedFiles.length > 0 && onProcess && (
-              <Button onClick={onProcess} className="w-full sm:w-auto cursor-pointer h-10 sm:h-12 bg-gray-800 hover:bg-gray-700 text-white font-bold py-2 sm:py-2.5 px-4 sm:px-6 text-sm sm:text-base">
-                <Play className="h-4 w-4 mr-2" />
-                <span className="hidden sm:inline">Procesar imágenes </span>
-                <span>({selectedFiles.length})</span>
-              </Button>
-            )}
+          {selectedFiles.length > 0 && onProcess && (
+            <Button
+              onClick={onProcess}
+              disabled={disableProcess}
+              className="w-full sm:w-auto cursor-pointer h-10 sm:h-12 bg-gray-800 hover:bg-gray-700 text-white font-bold py-2 sm:py-2.5 px-4 sm:px-6 text-sm sm:text-base disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Play className="h-4 w-4 mr-2" />
+              <span className="hidden sm:inline">Procesar imágenes </span>
+              <span>({selectedFiles.length})</span>
+            </Button>
+          )}
 
           {/* Selected Files Section */}
           <div className="w-full overflow-x-auto">

@@ -17,7 +17,7 @@ function hashPayload(s: string): string {
  */
 function normalizeDirectionCode(rawDir: string): "N" | "S" | "E" | "W" | "NE" | "NW" | "SE" | "SW" | "UP" | "DOWN" {
   const upper = rawDir.toUpperCase().trim()
-  
+
   // Mapeo de direcciones a códigos normalizados
   const dirMap: Record<string, "N" | "S" | "E" | "W" | "NE" | "NW" | "SE" | "SW" | "UP" | "DOWN"> = {
     // Cardinales en español
@@ -51,25 +51,25 @@ function normalizeDirectionCode(rawDir: string): "N" | "S" | "E" | "W" | "NE" | 
     "UP": "UP",
     "DOWN": "DOWN",
   }
-  
+
   // Buscar coincidencia exacta
   if (dirMap[upper]) {
     return dirMap[upper]
   }
-  
+
   // Si no hay coincidencia exacta, intentar normalización con variantes comunes
   // Normalizar variantes con dos puntos o espacios
   const normalized = upper.replace(/[:]+$/, "").replace(/\s+/g, "")
-  
+
   if (dirMap[normalized]) {
     return dirMap[normalized]
   }
-  
+
   // Fallback: si es un código ya normalizado (1-2 caracteres), devolverlo
   if (/^[NSEW]|[NS][EW]|UP|DOWN$/.test(upper)) {
     return upper as any
   }
-  
+
   // Si no se puede normalizar, devolver "N" como fallback (aunque esto no debería pasar)
   console.warn(`[normalizeDirectionCode] No se pudo normalizar dirección: "${rawDir}", usando fallback "N"`)
   return "N"
@@ -82,7 +82,7 @@ function normalizeDirectionCode(rawDir: string): "N" | "S" | "E" | "W" | "NE" | 
  */
 function getColindanciasRules(): string {
   // Las reglas de colindancias son solo internas, siempre usar el prompt base
-    return buildDefaultPrompt()
+  return buildDefaultPrompt()
 }
 
 function buildDefaultPrompt(): string {
@@ -905,13 +905,13 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
       // Ensure unit is in new format - preserve directions if present with deep copy
       const normalizedUnit: StructuredUnit = {
         unit_name: u.unit_name || u.unit?.name || "UNIDAD",
-        directions: u.directions && Array.isArray(u.directions) 
+        directions: u.directions && Array.isArray(u.directions)
           ? u.directions.map((dir: any) => ({
-              ...dir,
-              segments: Array.isArray(dir.segments) 
-                ? dir.segments.map((seg: any) => ({ ...seg }))
-                : []
-            }))
+            ...dir,
+            segments: Array.isArray(dir.segments)
+              ? dir.segments.map((seg: any) => ({ ...seg }))
+              : []
+          }))
           : undefined,
         boundaries: u.boundaries || [],
         surfaces: u.surfaces || [],
@@ -928,13 +928,13 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
         const mergedDirections = [
           ...(existing.directions || []).map((dir: any) => ({
             ...dir,
-            segments: Array.isArray(dir.segments) 
+            segments: Array.isArray(dir.segments)
               ? dir.segments.map((seg: any) => ({ ...seg }))
               : []
           })),
           ...(u.directions || []).map((dir: any) => ({
             ...dir,
-            segments: Array.isArray(dir.segments) 
+            segments: Array.isArray(dir.segments)
               ? dir.segments.map((seg: any) => ({ ...seg }))
               : []
           })),
@@ -944,7 +944,7 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
         // Existing unit doesn't have directions, use the new one with deep copy
         existing.directions = u.directions.map((dir: any) => ({
           ...dir,
-          segments: Array.isArray(dir.segments) 
+          segments: Array.isArray(dir.segments)
             ? dir.segments.map((seg: any) => ({ ...seg }))
             : []
         }))
@@ -976,8 +976,8 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
         }
       }
     }
-    ;(existing.surfaces || []).forEach(pushSurface)
-    ;(u.surfaces || []).forEach(pushSurface)
+      ; (existing.surfaces || []).forEach(pushSurface)
+      ; (u.surfaces || []).forEach(pushSurface)
     seen.forEach((v) => mergedSurfaces.push(v))
 
     existing.boundaries = mergedBoundaries
@@ -1116,34 +1116,34 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
     if (!length_m || !abutter) {
       for (let j = i + 1; j < Math.min(i + 8, upper.length); j++) {
         const uj = upper[j]
-      // Formatos válidos:
-      // 1) "EN <n> M" (con o sin punto) opcional "CON ...".
-      // 2) "<n> M" (con o sin punto) opcional "CON ...".
-      // 3) línea posterior que inicie con "CON " o "COLINDA CON ".
-      // 4) "LC=<n> M" o "LC=<n>" (longitud de arco común en planos)
-      const lenEn = uj.match(/\bEN\s+(\d+(?:[.,]\d+)?)\s*M(?:TS|ETROS|\.|\b)/)
-      const lenBare = uj.match(/(?:^|\s)(\d+(?:[.,]\d+)?)\s*M(?:TS|ETROS|\.|\b)/)
-      const lenLc = uj.match(/\bLC\s*=\s*(\d+(?:[.,]\d+)?)/)
-      const lenMatch = lenEn || lenBare || lenLc
-      if (lenMatch) {
-        length_m = parseFloat(lenMatch[1].replace(",", "."))
-        // abutter mismo renglón si viene tras "CON ..."
-        const conSame = uj.match(/\bCON\s+(.+?)\s*$/) || uj.match(/\bCOLINDA CON\s+(.+?)\s*$/)
-        if (conSame && conSame[1]) {
-          abutter = conSame[1].trim()
-        } else if (j + 1 < upper.length) {
-          const next = upper[j + 1]
-          const conNext = next.match(/^\s*(CON|COLINDA CON)\s+(.+?)\s*$/)
-          if (conNext && conNext[2]) abutter = conNext[2].trim()
+        // Formatos válidos:
+        // 1) "EN <n> M" (con o sin punto) opcional "CON ...".
+        // 2) "<n> M" (con o sin punto) opcional "CON ...".
+        // 3) línea posterior que inicie con "CON " o "COLINDA CON ".
+        // 4) "LC=<n> M" o "LC=<n>" (longitud de arco común en planos)
+        const lenEn = uj.match(/\bEN\s+(\d+(?:[.,]\d+)?)\s*M(?:TS|ETROS|\.|\b)/)
+        const lenBare = uj.match(/(?:^|\s)(\d+(?:[.,]\d+)?)\s*M(?:TS|ETROS|\.|\b)/)
+        const lenLc = uj.match(/\bLC\s*=\s*(\d+(?:[.,]\d+)?)/)
+        const lenMatch = lenEn || lenBare || lenLc
+        if (lenMatch) {
+          length_m = parseFloat(lenMatch[1].replace(",", "."))
+          // abutter mismo renglón si viene tras "CON ..."
+          const conSame = uj.match(/\bCON\s+(.+?)\s*$/) || uj.match(/\bCOLINDA CON\s+(.+?)\s*$/)
+          if (conSame && conSame[1]) {
+            abutter = conSame[1].trim()
+          } else if (j + 1 < upper.length) {
+            const next = upper[j + 1]
+            const conNext = next.match(/^\s*(CON|COLINDA CON)\s+(.+?)\s*$/)
+            if (conNext && conNext[2]) abutter = conNext[2].trim()
+          }
+          break
+        } else {
+          // Línea tipo "CON ..." sin longitud aún
+          const onlyCon = uj.match(/^\s*(CON|COLINDA CON)\s+(.+?)\s*$/)
+          if (onlyCon && onlyCon[2] && !abutter) {
+            abutter = onlyCon[2].trim()
+          }
         }
-        break
-      } else {
-        // Línea tipo "CON ..." sin longitud aún
-        const onlyCon = uj.match(/^\s*(CON|COLINDA CON)\s+(.+?)\s*$/)
-        if (onlyCon && onlyCon[2] && !abutter) {
-          abutter = onlyCon[2].trim()
-        }
-      }
       }
     }
     out.push({
@@ -1180,14 +1180,14 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
   // Note: Model names may vary (e.g., gpt-5.1, gpt-5.1-preview, gpt-5.1-2024-12-01)
   // Check OpenAI documentation for the exact model identifier
   const model = process.env.OPENAI_MODEL || "gpt-4o"
-  
+
   // Log the model being used for debugging
   if (process.env.NODE_ENV === "development") {
     console.log(`[OpenAI Vision] Using model: ${model}`)
   }
-  
+
   if (!apiKey) throw new Error("OPENAI_API_KEY missing")
-  
+
   // Convert images to base64
   const imageParts = await Promise.all(
     images.map(async (image) => {
@@ -1231,7 +1231,7 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
       response_format: { type: "json_object" },
       // GPT-5.1 and newer models require max_completion_tokens instead of max_tokens
       // We use max_completion_tokens for newer models (gpt-5.x, o1) and max_tokens for older ones
-      ...(model.includes("gpt-5") || model.includes("o1") 
+      ...(model.includes("gpt-5") || model.includes("o1")
         ? { max_completion_tokens: 4000 }
         : { max_tokens: 4000 }
       ),
@@ -1246,15 +1246,18 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
   const data = await resp.json()
   const text = data?.choices?.[0]?.message?.content
   if (!text) throw new Error("empty_response")
-  
+
   // Try to parse JSON, handle markdown code blocks if present
   let jsonText = text.trim()
   if (jsonText.startsWith("```")) {
     const match = jsonText.match(/```(?:json)?\n([\s\S]*?)\n```/)
     if (match) jsonText = match[1]
   }
-  
-  return JSON.parse(jsonText)
+
+  return {
+    result: JSON.parse(jsonText),
+    usage: data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+  }
 }
 
 // Updated for new format
@@ -1348,7 +1351,7 @@ export async function POST(req: Request) {
     // Accept FormData with images
     const formData = await req.formData()
     const images = formData.getAll("images") as File[]
-    
+
     if (!images || images.length === 0) {
       return NextResponse.json({ error: "bad_request", message: "images required" }, { status: 400 })
     }
@@ -1356,39 +1359,41 @@ export async function POST(req: Request) {
     // Cache is disabled - always process images with AI
     // This ensures fresh results every time, avoiding stale cache issues
     console.log(`[api/ai/structure] Processing ${images.length} image(s) with AI (cache disabled)...`)
-    
+
     let processedUnits: StructuredUnit[] | null = null
     let processedMetadata: { lotLocation?: string; totalLotSurface?: number } | undefined = undefined
-    
+    let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined = undefined
+
     // Always process (cache disabled)
     try {
       const prompt = getColindanciasRules()
-        // Call OpenAI Vision with all images
-        const aiResponse = await callOpenAIVision(prompt, images)
-        
-        // Extract lot-level metadata if present
-        let lotLocation: string | undefined = undefined
-        let totalLotSurface: number | undefined = undefined
-        
-        if (typeof aiResponse.lotLocation === "string" && aiResponse.lotLocation.trim()) {
-          lotLocation = aiResponse.lotLocation.trim()
-        }
-        if (typeof aiResponse.totalLotSurface === "number" && aiResponse.totalLotSurface > 0) {
-          totalLotSurface = aiResponse.totalLotSurface
-        }
-        
-        // OpenAI might return a single unit or multiple units
-        // Handle both cases and normalize to new format
-        let units: StructuredUnit[] = []
-        
-        // Normalize response to new format
-        function normalizeUnit(unitRaw: any): StructuredUnit | null {
-          if (!unitRaw || typeof unitRaw !== "object") return null
-          
-          // Extract unit_name (new format) or unit.name (legacy)
-          const unitName = unitRaw.unit_name || unitRaw.unit?.name || "UNIDAD"
-          if (!unitName) return null
-          
+      // Call OpenAI Vision with all images
+      const { result: aiResponse, usage: aiUsage } = await callOpenAIVision(prompt, images)
+      usage = aiUsage
+
+      // Extract lot-level metadata if present
+      let lotLocation: string | undefined = undefined
+      let totalLotSurface: number | undefined = undefined
+
+      if (typeof aiResponse.lotLocation === "string" && aiResponse.lotLocation.trim()) {
+        lotLocation = aiResponse.lotLocation.trim()
+      }
+      if (typeof aiResponse.totalLotSurface === "number" && aiResponse.totalLotSurface > 0) {
+        totalLotSurface = aiResponse.totalLotSurface
+      }
+
+      // OpenAI might return a single unit or multiple units
+      // Handle both cases and normalize to new format
+      let units: StructuredUnit[] = []
+
+      // Normalize response to new format
+      function normalizeUnit(unitRaw: any): StructuredUnit | null {
+        if (!unitRaw || typeof unitRaw !== "object") return null
+
+        // Extract unit_name (new format) or unit.name (legacy)
+        const unitName = unitRaw.unit_name || unitRaw.unit?.name || "UNIDAD"
+        if (!unitName) return null
+
         // Check if unit has directions array (new format from AI)
         if (Array.isArray(unitRaw.directions) && unitRaw.directions.length > 0) {
           // Preserve new format with directions and segments
@@ -1401,7 +1406,7 @@ export async function POST(req: Request) {
               if (!normalizedDir || !["N", "S", "E", "W", "NE", "NW", "SE", "SW", "UP", "DOWN"].includes(normalizedDir)) {
                 normalizedDir = normalizeDirectionCode(rawDir)
               }
-              
+
               return {
                 raw_direction: rawDir,
                 normalized_direction: normalizedDir as any,
@@ -1424,7 +1429,7 @@ export async function POST(req: Request) {
                         lengthM = isNaN(parsed) ? null : parsed
                       }
                     }
-                    
+
                     return {
                       length_prefix: seg.length_prefix === null || seg.length_prefix === undefined ? null : String(seg.length_prefix).trim(),
                       length_m: lengthM,
@@ -1436,9 +1441,9 @@ export async function POST(req: Request) {
               }
             })
             .filter((dir: any) => dir.segments.length > 0)
-          
+
           if (directions.length === 0) return null
-          
+
           return {
             unit_name: unitName,
             directions,
@@ -1447,41 +1452,41 @@ export async function POST(req: Request) {
             anomalies: Array.isArray(unitRaw.anomalies) ? unitRaw.anomalies : undefined,
           }
         }
-        
+
         // Handle legacy format: flat boundaries array
         if (Array.isArray(unitRaw.boundaries) && unitRaw.boundaries.length > 0) {
           const boundaries = unitRaw.boundaries
             .map((b: any, idx: number) => {
               // Handle new format boundary
-            if (b.raw_direction && b.normalized_direction) {
+              if (b.raw_direction && b.normalized_direction) {
+                return {
+                  raw_direction: b.raw_direction,
+                  normalized_direction: b.normalized_direction as any,
+                  length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
+                  abutter: String(b.abutter || "").trim(),
+                  order_index: typeof b.order_index === "number" ? b.order_index : idx,
+                }
+              }
+
+              // Handle legacy format (convert to new format)
+              const rawDir = String(b.direction || "").trim()
+              const normalizedDir = normalizeDirectionCode(rawDir)
+
               return {
-                raw_direction: b.raw_direction,
-                normalized_direction: b.normalized_direction as any,
+                raw_direction: rawDir,
+                normalized_direction: normalizedDir,
                 length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
                 abutter: String(b.abutter || "").trim(),
                 order_index: typeof b.order_index === "number" ? b.order_index : idx,
               }
-            }
-            
-            // Handle legacy format (convert to new format)
-            const rawDir = String(b.direction || "").trim()
-            const normalizedDir = normalizeDirectionCode(rawDir)
-            
-            return {
-              raw_direction: rawDir,
-              normalized_direction: normalizedDir,
-              length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
-              abutter: String(b.abutter || "").trim(),
-              order_index: typeof b.order_index === "number" ? b.order_index : idx,
-            }
             })
             .filter((b: any) => b.raw_direction && b.normalized_direction)
-          
+
           // Sort by order_index to ensure correct order
           boundaries.sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
-          
+
           if (boundaries.length === 0) return null
-          
+
           return {
             unit_name: unitName,
             boundaries,
@@ -1489,59 +1494,59 @@ export async function POST(req: Request) {
             anomalies: Array.isArray(unitRaw.anomalies) ? unitRaw.anomalies : undefined,
           }
         }
-        
+
         return null
       }
-        
+
       // Handle new format: array of units directly
       if (Array.isArray(aiResponse)) {
         units = aiResponse.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.results)) {
         // Legacy format with results wrapper
-          units = aiResponse.results.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
+        units = aiResponse.results.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.units)) {
         // New format with units wrapper (IA puede devolver { units: [...] })
         units = aiResponse.units.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
-        } else if (aiResponse.result) {
-          const normalized = normalizeUnit(aiResponse.result)
-          if (normalized) units = [normalized]
-        } else if (aiResponse.unit_name || aiResponse.unit) {
-          const normalized = normalizeUnit(aiResponse)
-          if (normalized) units = [normalized]
-        } else {
+      } else if (aiResponse.result) {
+        const normalized = normalizeUnit(aiResponse.result)
+        if (normalized) units = [normalized]
+      } else if (aiResponse.unit_name || aiResponse.unit) {
+        const normalized = normalizeUnit(aiResponse)
+        if (normalized) units = [normalized]
+      } else {
         // Log the actual response for debugging
         console.error("[api/ai/structure] Invalid AI response shape:", JSON.stringify(aiResponse, null, 2))
-          throw new Error("invalid_ai_shape")
-        }
-        
-        if (units.length === 0) {
-          throw new Error("No valid units found in AI response")
-        }
+        throw new Error("invalid_ai_shape")
+      }
 
-        // Merge units with the same name (if needed for legacy compatibility)
-        // For new format, units are already normalized
-        const merged = mergeUnitsByNameNew(units)
-        
-        // Filter out units without boundaries or directions
-        const validUnits = merged.filter((u) => 
-          (u.directions && Array.isArray(u.directions) && u.directions.length > 0) ||
-          (u.boundaries && Array.isArray(u.boundaries) && u.boundaries.length > 0)
-        )
-        
-        // If no valid units, create a fallback
-        if (validUnits.length > 0) {
-          processedUnits = validUnits
-          console.log(`[api/ai/structure] Processed ${validUnits.length} valid units from AI response`)
-        } else {
-          console.warn(`[api/ai/structure] No valid units found in AI response, using fallback`)
-          processedUnits = [simpleFallbackNew(images[0]?.name || "UNIDAD")]
-        }
-        
-        // Store metadata
-        if (lotLocation || totalLotSurface) {
-          processedMetadata = { lotLocation, totalLotSurface }
-          console.log(`[api/ai/structure] Extracted metadata: location=${lotLocation}, surface=${totalLotSurface}`)
-        }
+      if (units.length === 0) {
+        throw new Error("No valid units found in AI response")
+      }
+
+      // Merge units with the same name (if needed for legacy compatibility)
+      // For new format, units are already normalized
+      const merged = mergeUnitsByNameNew(units)
+
+      // Filter out units without boundaries or directions
+      const validUnits = merged.filter((u) =>
+        (u.directions && Array.isArray(u.directions) && u.directions.length > 0) ||
+        (u.boundaries && Array.isArray(u.boundaries) && u.boundaries.length > 0)
+      )
+
+      // If no valid units, create a fallback
+      if (validUnits.length > 0) {
+        processedUnits = validUnits
+        console.log(`[api/ai/structure] Processed ${validUnits.length} valid units from AI response`)
+      } else {
+        console.warn(`[api/ai/structure] No valid units found in AI response, using fallback`)
+        processedUnits = [simpleFallbackNew(images[0]?.name || "UNIDAD")]
+      }
+
+      // Store metadata
+      if (lotLocation || totalLotSurface) {
+        processedMetadata = { lotLocation, totalLotSurface }
+        console.log(`[api/ai/structure] Extracted metadata: location=${lotLocation}, surface=${totalLotSurface}`)
+      }
     } catch (e: any) {
       console.error("[api/ai/structure] OpenAI Vision error:", e)
 
@@ -1562,16 +1567,16 @@ export async function POST(req: Request) {
     if (!processedUnits) {
       processedUnits = [simpleFallbackNew(images[0]?.name || "UNIDAD")]
     }
-    
+
     // Ensure all units are in new format
     const results = processedUnits.map((result) => {
       const unit = JSON.parse(JSON.stringify(result)) as StructuredUnit
-      
+
       // Ensure unit_name exists
       if (!unit.unit_name) {
         unit.unit_name = "UNIDAD"
       }
-      
+
       // Preserve directions if present (new format from AI)
       if (Array.isArray(unit.directions) && unit.directions.length > 0) {
         // Unit already has directions format - preserve it with deep copy
@@ -1580,18 +1585,18 @@ export async function POST(req: Request) {
           raw_direction: dir.raw_direction,
           normalized_direction: dir.normalized_direction,
           direction_order_index: dir.direction_order_index,
-          segments: Array.isArray(dir.segments) 
+          segments: Array.isArray(dir.segments)
             ? dir.segments.map((seg: any) => ({
-                length_prefix: seg.length_prefix,
-                length_m: seg.length_m,
-                abutter: seg.abutter,
-                order_index: seg.order_index,
-              }))
+              length_prefix: seg.length_prefix,
+              length_m: seg.length_m,
+              abutter: seg.abutter,
+              order_index: seg.order_index,
+            }))
             : [],
         })).filter((dir: any) => Array.isArray(dir.segments) && dir.segments.length > 0)
-        
+
         // boundaries removed - frontend will generate from directions when needed
-        
+
         // Debug: Log directions and segments
         console.log(`[api/ai/structure] Unit ${unit.unit_name} has ${unit.directions.length} directions`)
         unit.directions.forEach((dir: any, idx: number) => {
@@ -1599,34 +1604,34 @@ export async function POST(req: Request) {
         })
       } else {
         // Legacy format: ensure boundaries array exists and is valid
-      if (!Array.isArray(unit.boundaries)) {
-        unit.boundaries = []
+        if (!Array.isArray(unit.boundaries)) {
+          unit.boundaries = []
+        }
+
+        // Normalize each boundary to ensure it has required fields
+        unit.boundaries = unit.boundaries.map((b, idx) => {
+          if (!b.raw_direction) {
+            // Legacy format: try to derive from normalized_direction or direction
+            const rawDir = b.direction || b.normalized_direction || ""
+            b.raw_direction = rawDir
+          }
+          if (!b.normalized_direction) {
+            // Derive from raw_direction
+            const normalizedDir = normalizeDirectionCode(b.raw_direction || b.direction || "")
+            b.normalized_direction = normalizedDir
+          }
+          if (b.order_index === undefined || b.order_index === null) {
+            b.order_index = idx
+          }
+          return b
+        }).filter((b) => b.raw_direction && b.normalized_direction)
       }
-      
-      // Normalize each boundary to ensure it has required fields
-      unit.boundaries = unit.boundaries.map((b, idx) => {
-        if (!b.raw_direction) {
-          // Legacy format: try to derive from normalized_direction or direction
-          const rawDir = b.direction || b.normalized_direction || ""
-          b.raw_direction = rawDir
-        }
-        if (!b.normalized_direction) {
-          // Derive from raw_direction
-          const normalizedDir = normalizeDirectionCode(b.raw_direction || b.direction || "")
-          b.normalized_direction = normalizedDir
-        }
-        if (b.order_index === undefined || b.order_index === null) {
-          b.order_index = idx
-        }
-        return b
-      }).filter((b) => b.raw_direction && b.normalized_direction)
-      }
-      
+
       // Ensure surfaces array exists (optional)
       if (!Array.isArray(unit.surfaces)) {
         unit.surfaces = []
       }
-      
+
       return unit
     })
 
@@ -1647,8 +1652,9 @@ export async function POST(req: Request) {
       results,
       ...(processedMetadata?.lotLocation ? { lotLocation: processedMetadata.lotLocation } : {}),
       ...(processedMetadata?.totalLotSurface ? { totalLotSurface: processedMetadata.totalLotSurface } : {}),
+      usage,
     }
-    
+
     console.log(`[api/ai/structure] Returning ${results.length} units (fresh processing, cache disabled)`)
     return NextResponse.json(resp)
   } catch (e: any) {
