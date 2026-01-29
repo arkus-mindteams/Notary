@@ -7,6 +7,7 @@ import { NextResponse } from 'next/server'
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
 import { getPreavisoTransitionRules } from '@/lib/tramites/plugins/preaviso/preaviso-transitions'
 import { PreavisoConversationLogService } from '@/lib/services/preaviso-conversation-log-service'
+import { createServerClient } from '@/lib/supabase'
 
 export async function POST(req: Request) {
   try {
@@ -30,7 +31,7 @@ export async function POST(req: Request) {
 
     // Obtener último mensaje del usuario
     const lastUserMessage = [...messages].reverse().find((m: any) => m.role === 'user')?.content || ''
-    
+
     if (!lastUserMessage) {
       return NextResponse.json(
         { error: 'bad_request', message: 'user message is required' },
@@ -61,7 +62,7 @@ export async function POST(req: Request) {
 
     // Obtener sistema de trámites
     const tramiteSystem = getTramiteSystem()
-    
+
     // Procesar mensaje
     const result = await tramiteSystem.process(
       pluginId,
@@ -70,47 +71,73 @@ export async function POST(req: Request) {
       messages.slice(-10) // Últimos 10 mensajes para contexto
     )
 
-    // Logging (DB): guardar historial para QA/debugging
+    // Logging (DB): guardar historial en modelo normalizado
     try {
+      const supabase = createServerClient()
       const conversationId =
         context?.conversation_id ||
         body?.conversation_id ||
         null
 
-      // Si el frontend no mandó conversation_id, no registrar (evitamos generar IDs en server sin devolverlos aún).
       if (conversationId) {
-        const asUuidOrNull = (v: any): string | null => {
-          if (!v || typeof v !== 'string') return null
-          const s = v.trim()
-          return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : null
-        }
-        const tramiteIdForLog =
-          asUuidOrNull(context?.tramiteId) ||
-          asUuidOrNull(tramiteIdFromBody) ||
-          null
+        // 1. Guardar mensaje del usuario
+        // Nota: en una implementación ideal, el frontend ya habría guardado el mensaje del usuario
+        // mediante el endpoint POST /api/chat/sessions/[id]/messages para optimismo.
+        // Pero por robustez, verificamos o insertamos si no existe, o simplemente asumimos
+        // que este endpoint es el encargado de procesar y persistir todo si se usa como "monolito".
+        // Para simplificar la migración: insertamos ambos aquí.
+
+        // Insertar user message
+        const { error: userMsgError } = await supabase.from('chat_messages').insert({
+          session_id: conversationId,
+          role: 'user',
+          content: lastUserMessage,
+          metadata: {
+            tramite_id: tramiteIdFromBody,
+            plugin_id: pluginId,
+            timestamp: new Date().toISOString()
+          }
+        })
+
+        if (userMsgError) console.error('[preaviso-chat-v2] Error saving user message:', userMsgError)
 
         const lastAssistantMessage = result.message || null
-        const nextMessages = [
-          ...(Array.isArray(messages) ? messages : []),
-          ...(lastAssistantMessage ? [{ role: 'assistant', content: lastAssistantMessage }] : [])
-        ]
-        const meta = {
-          user_agent: req.headers.get('user-agent'),
-          ts: new Date().toISOString(),
-          tramite_id_raw: typeof tramiteIdFromBody === 'string' ? tramiteIdFromBody : null,
-          ...(result.meta || {})
+
+        // Insertar assistant message
+        if (lastAssistantMessage) {
+          const { error: assistantMsgError } = await supabase.from('chat_messages').insert({
+            session_id: conversationId,
+            role: 'assistant',
+            content: lastAssistantMessage,
+            metadata: {
+              processing_time: null, // Podríamos medir esto
+              tokens: result.meta?.usage || null
+            }
+          })
+          if (assistantMsgError) console.error('[preaviso-chat-v2] Error saving assistant message:', assistantMsgError)
         }
-        await PreavisoConversationLogService.upsert({
-          conversationId: String(conversationId),
-          tramiteId: tramiteIdForLog,
-          pluginId,
-          messages: nextMessages as any,
-          lastUserMessage,
-          lastAssistantMessage,
-          context: result.data,
-          state: result.state,
-          meta,
-        })
+
+        // 2. Actualizar sesión (Last Context + Título Dinámico)
+        const updates: any = {
+          last_context: result.data,
+          updated_at: new Date().toISOString()
+        }
+
+        // Título dinámico: Si detectamos Folio Real en el contexto
+        const folioReal = result.data?.inmueble?.folio_real
+        if (folioReal) {
+          // Solo actualizamos si el título no ha sido personalizado (esto es difícil de saber sin flag, 
+          // pero podemos asumir que si empieza con "Chat " es default o si queremos forzarlo)
+          // Estrategia: "Folio Real: <folio>"
+          updates.title = `Folio Real: ${folioReal}`
+        }
+
+        const { error: sessionError } = await supabase
+          .from('chat_sessions')
+          .update(updates)
+          .eq('id', conversationId)
+
+        if (sessionError) console.error('[preaviso-chat-v2] Error updating session:', sessionError)
       }
     } catch (e) {
       console.error('[preaviso-chat-v2] logging error', e)
@@ -151,9 +178,9 @@ export async function POST(req: Request) {
   } catch (error: any) {
     console.error('[preaviso-chat-v2] Error:', error)
     return NextResponse.json(
-      { 
-        error: 'internal_error', 
-        message: error.message || 'Error procesando mensaje' 
+      {
+        error: 'internal_error',
+        message: error.message || 'Error procesando mensaje'
       },
       { status: 500 }
     )

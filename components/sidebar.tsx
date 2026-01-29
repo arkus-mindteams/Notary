@@ -207,6 +207,8 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
           {!isCollapsed && <span className="ml-3 truncate text-sm">Expedientes</span>}
         </Button>
 
+
+
         {/* Separator and Configuración (Hover Menu) - Superadmin Only */}
         {user?.role === 'superadmin' && (
           <>
