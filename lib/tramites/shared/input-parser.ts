@@ -930,6 +930,59 @@ export class InputParser {
       handler: 'EncumbranceHandler'
     })
 
+    // 8.X Gravamen con institución en la misma frase (Proactivo)
+    // Ej: "tiene hipoteca con Banorte", "gravamen a favor de Infonavit"
+    this.rules.push({
+      name: 'gravamen_with_institution',
+      pattern: /\b(?:gravamen|hipoteca|embargo)\b.*(?:\bcon\b|\bfavor\b\s+de)\s+([A-ZÁÉÍÓÚÑ0-9][A-ZÁÉÍÓÚÑ0-9\s.&'-]{2,50})/i,
+      condition: (input, context) => {
+        // Solo si no tenemos ya registrada la institución del primer gravamen
+        const g0 = Array.isArray(context?.gravamenes) ? context.gravamenes[0] : null
+        if (g0?.institucion) return false
+
+        // Si ya sabemos que no hay gravamen, no tiene sentido (salvo rectificación, pero asumiremos consistencia)
+        if (context?.inmueble?.existe_hipoteca === false) return false
+
+        return true
+      },
+      extract: (input) => {
+        // Primero intentar coincidencia exacta con lista de bancos comunes para normalizar
+        const commonMatch = input.match(/\b(infonavit|fovissste|banorte|bbva|santander|hsbc|banamex|scotiabank|banco\s+azteca|banco\s+del\s+bienestar)\b/i)
+        if (commonMatch) {
+          return {
+            __commands: [
+              { type: 'encumbrance', timestamp: new Date(), payload: { exists: true } },
+              { type: 'gravamen_acreedor', timestamp: new Date(), payload: { institucion: this.normalizeInstitution(commonMatch[1]) } }
+            ]
+          }
+        }
+
+        // Si no es común, extraer texto libre después de "con" o "favor de"
+        const m = input.match(/\b(?:gravamen|hipoteca|embargo)\b.*(?:\bcon\b|\bfavor\b\s+de)\s+([A-ZÁÉÍÓÚÑ0-9][A-ZÁÉÍÓÚÑ0-9\s.&'-]{2,50})/i)
+        if (!m) return null
+
+        let inst = m[1].trim()
+        // Limpiarla (quitar puntuación final)
+        inst = inst.replace(/[.,;]+$/, '')
+
+        // Guardrail: si es demasiado largo o parece texto genérico, ignorar
+        if (inst.length > 60 || /\b(el|la|los|las|un|una)\b/.test(inst)) {
+          // Intento de recuperación si es nombre de banco conocido embebido
+          const common = this.extractInstitutionFreeform(inst)
+          if (common) inst = common
+          else return null
+        }
+
+        return {
+          __commands: [
+            { type: 'encumbrance', timestamp: new Date(), payload: { exists: true } },
+            { type: 'gravamen_acreedor', timestamp: new Date(), payload: { institucion: inst } }
+          ]
+        }
+      },
+      handler: 'EncumbranceHandler' // El handler principal procesará ambos o despachará
+    })
+
     // 8A. Acreedor del gravamen/hipoteca (institución a la que se le debe)
     this.rules.push({
       name: 'gravamen_acreedor',

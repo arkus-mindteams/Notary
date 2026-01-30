@@ -325,8 +325,25 @@ REGLAS CRÍTICAS:
 
     // Convertir archivo a base64
     const arrayBuffer = await file.arrayBuffer()
-    const base64 = Buffer.from(arrayBuffer).toString('base64')
     const mimeType = file.type || 'image/jpeg'
+
+    // Validar tipos soportados por OpenAI Vision
+    const supportedImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+
+    if (!supportedImageTypes.includes(mimeType)) {
+      const screenshotTip = 'Recomendación: Abra el archivo, tome una captura de pantalla (screenshot) de la sección relevante y péguela aquí en el chat.'
+
+      if (mimeType.includes('pdf')) {
+        throw new Error(`El procesamiento directo de PDFs no está soportado por esta vía visual. ${screenshotTip}`)
+      }
+      if (mimeType.includes('word') || mimeType.includes('officedocument')) {
+        throw new Error(`Los documentos de Word (.docx) no son soportados. ${screenshotTip}`)
+      }
+      // Intentar enviar como imagen de todas formas si no es documento conocido, pero advertir
+      console.warn('[DocumentProcessor] Tipo MIME no estándar para visión:', mimeType)
+    }
+
+    const base64 = Buffer.from(arrayBuffer).toString('base64')
 
     // Obtener prompt según tipo de documento
     const { systemPrompt, userPrompt } = this.getPromptsForDocumentType(documentType)
@@ -372,7 +389,12 @@ REGLAS CRÍTICAS:
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
-      throw new Error(`OpenAI API error: ${errorData.error?.message || 'Unknown error'}`)
+      // Mejorar mensaje de error de OpenAI
+      const msg = errorData.error?.message || 'Unknown error'
+      if (msg.includes('Invalid MIME type')) {
+        throw new Error(`Formato de archivo no soportado por IA (${mimeType}). Use JPG, PNG o WEBP.`)
+      }
+      throw new Error(`OpenAI API error: ${msg}`)
     }
 
     const data = await response.json()

@@ -2176,6 +2176,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           return 'Timeout procesando el documento. Intenta de nuevo o sube imágenes individuales.'
         }
         if (status >= 500) {
+          // Si el backend envió un mensaje específico (ya parseado en processOne), usarlo
+          if (res.text && res.text.length < 300 && !res.text.includes('Unexpected token') && !res.text.startsWith('{')) {
+            return res.text
+          }
           return 'El backend no pudo procesar el documento. Intenta de nuevo en unos minutos.'
         }
         if (status === 0 || !status) {
@@ -2737,7 +2741,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         if (!processResponse.ok) {
-          return { __error: true, status: processResponse.status, text: await processResponse.text() }
+          let errorMsg = await processResponse.text()
+          try {
+            const errorJson = JSON.parse(errorMsg)
+            if (errorJson.message) errorMsg = errorJson.message
+          } catch { }
+          return { __error: true, status: processResponse.status, text: errorMsg }
         }
         const json = await processResponse.json()
         if (cacheableTypes.has(item.docType) && !json?.__error) {
