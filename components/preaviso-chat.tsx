@@ -34,6 +34,8 @@ import {
 } from 'lucide-react'
 import { PreavisoExportOptions } from './preaviso-export-options'
 import type { LastQuestionIntent } from '@/lib/tramites/base/types'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { useIsTablet } from '@/hooks/use-tablet'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -375,6 +377,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     return cleaned.length > 0 ? cleaned : 'Información registrada.'
   }
   const { user, session } = useAuth()
+  const isMobile = useIsMobile()
+  const isTablet = useIsTablet()
   const supabase = useMemo(() => createBrowserClient(), [])
   const messageIdCounterRef = useRef(0)
   const conversationIdRef = useRef<string | null>(null)
@@ -814,7 +818,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // La limpieza se hace en el botón de eliminar y en onLoad de las imágenes
     }
   }, [pendingFiles])
-  const [showDataPanel, setShowDataPanel] = useState(true)
+  const [showDataPanel, setShowDataPanel] = useState(false)
   const [hidePanelsAfterMessage, setHidePanelsAfterMessage] = useState(false)
   const previousPendingFilesLengthRef = useRef(0)
 
@@ -3559,7 +3563,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       )}
       
       {/* Layout con panel de información - Parte superior */}
-      <div className={`flex-1 flex ${!showDataPanel ? 'flex-col' : ''} gap-4 min-h-0 overflow-hidden`}>  
+      <div className={`flex-1 flex ${
+        !showDataPanel 
+          ? 'flex-col' 
+          : (isMobile || isTablet) 
+            ? 'flex-col' 
+            : ''
+      } gap-4 min-h-0 overflow-hidden`}>  
         {/* Botón para mostrar panel si está oculto */}
         {!showDataPanel && (
           <div className='flex justify-end'>
@@ -3577,8 +3587,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             </Button>
           </div>
         )}
-        {/* Chat principal */}
-        <Card className="flex-1 p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
+        
+        <Card className={`flex-1 p-0 flex flex-col shadow-xl border border-gray-200 overflow-hidden bg-white ${(isMobile || isTablet) ? 'min-h-[550px]' : 'min-h-0'}`}>
         <CardContent className="flex-1 flex flex-col p-0 min-h-0">
           {/* Header moderno */}
           <div className="border-b border-gray-200/80 bg-gradient-to-r from-white via-gray-50/50 to-white backdrop-blur-sm px-6 py-2.5">
@@ -3948,8 +3958,385 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         </CardContent>
       </Card>
 
-      {/* Panel de información extraída */}
-      {showDataPanel  && (
+      {/* Panel de información extraída - Primero en móvil/tablet, después en desktop */}
+      {showDataPanel && (isMobile || isTablet) && (
+        <Card className="w-full p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
+          <CardContent className="flex-1 flex flex-col p-0 min-h-0">
+            {/* Header del panel */}
+            <div className="border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white px-4 py-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-sm text-gray-900">Información Capturada</h3>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 hover:bg-gray-200 hover:text-foreground"
+                  onClick={() => setShowDataPanel(false)}
+                >
+                  <EyeOff className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="mt-2">
+                <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
+                  <span>Progreso</span>
+                  <span>{progress.completed}/{progress.total} pasos</span>
+                </div>
+                <Progress value={progress.percentage} className="h-2" />
+              </div>
+            </div>
+
+            {/* Contenido del panel */}
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <div className="h-full overflow-auto">
+                <div className="p-4 space-y-4">
+                {/* PASO 1 – OPERACIÓN Y FORMA DE PAGO */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {serverState?.state_status?.ESTADO_1 === 'completed' ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <CreditCard className="h-4 w-4" />
+                      <span>PASO 1: Operación y Forma de Pago</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.tipoOperacion ? (
+                      <>
+                        <div><span className="font-medium">Tipo de operación:</span> {data.tipoOperacion}</div>
+                        {serverState?.state_status?.ESTADO_1 === 'completed' ? (
+                          data.creditos !== undefined && data.creditos.length > 0 ? (
+                            <div><span className="font-medium">Forma de pago:</span> Crédito</div>
+                          ) : data.creditos !== undefined && data.creditos.length === 0 ? (
+                            <div><span className="font-medium">Forma de pago:</span> Contado</div>
+                          ) : (
+                            <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
+                          )
+                        ) : (
+                          <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PASO 2 – INMUEBLE Y REGISTRO (CONSOLIDADO) */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {serverState?.state_status?.ESTADO_2 === 'completed' ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <Building2 className="h-4 w-4" />
+                      <span>PASO 2: Inmueble y Registro</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.inmueble?.folio_real && (
+                      <div><span className="font-medium">Folio Real:</span> {data.inmueble.folio_real}</div>
+                    )}
+                    {data.inmueble?.partidas && data.inmueble.partidas.length > 0 && (
+                      <div><span className="font-medium">Partida(s):</span> {
+                        data.inmueble.partidas
+                          .map((p: any) => {
+                            if (typeof p === 'string') return p
+                            if (!p) return null
+                            return p.partida || p.numero || p.folio || p.value || null
+                          })
+                          .filter(Boolean)
+                          .join(', ')
+                      }</div>
+                    )}
+                    {data.inmueble?.direccion?.calle && (
+                      <div><span className="font-medium">Dirección:</span> {
+                        typeof data.inmueble.direccion === 'string' 
+                          ? data.inmueble.direccion 
+                          : (() => {
+                              const unidad = data.inmueble?.datos_catastrales?.unidad
+                              const base = `${data.inmueble.direccion.calle || ''} ${data.inmueble.direccion.numero || ''} ${data.inmueble.direccion.colonia || ''}`.trim()
+                              return unidad ? `Unidad ${unidad}, ${base}` : base
+                            })()
+                      }</div>
+                    )}
+                    {data.inmueble?.superficie && (
+                      <div><span className="font-medium">Superficie:</span> {
+                        typeof data.inmueble.superficie === 'string' 
+                          ? data.inmueble.superficie 
+                          : String(data.inmueble.superficie)
+                      }</div>
+                    )}
+                    {data.inmueble?.valor && (
+                      <div><span className="font-medium">Valor:</span> {
+                        typeof data.inmueble.valor === 'string' 
+                          ? data.inmueble.valor 
+                          : String(data.inmueble.valor)
+                      }</div>
+                    )}
+                    {!data.inmueble?.folio_real && (!data.inmueble?.partidas || data.inmueble.partidas.length === 0) && (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PASO 3 – VENDEDOR(ES) */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {serverState?.state_status?.ESTADO_3 === 'completed' ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <UserCircle className="h-4 w-4" />
+                      <span>PASO 3: Vendedor(es)</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.vendedores && data.vendedores.length > 0 && (
+                      <>
+                        {data.vendedores[0].persona_fisica?.nombre && (
+                          <div><span className="font-medium">Nombre:</span> {data.vendedores[0].persona_fisica.nombre}</div>
+                        )}
+                        {data.vendedores[0].persona_moral?.denominacion_social && (
+                          <div><span className="font-medium">Denominación Social:</span> {data.vendedores[0].persona_moral.denominacion_social}</div>
+                        )}
+                        {(data.vendedores[0].persona_fisica?.rfc || data.vendedores[0].persona_moral?.rfc) && (
+                          <div><span className="font-medium">RFC:</span> {data.vendedores[0].persona_fisica?.rfc || data.vendedores[0].persona_moral?.rfc}</div>
+                        )}
+                        {data.vendedores[0].persona_fisica?.curp && (
+                          <div><span className="font-medium">CURP:</span> {data.vendedores[0].persona_fisica.curp}</div>
+                        )}
+                        {(() => {
+                          const vendedor = data.vendedores[0]
+                          const tieneCredito = vendedor?.tiene_credito
+                          const hasGravamen =
+                            data.inmueble?.existe_hipoteca === true ||
+                            (Array.isArray(data.gravamenes) && data.gravamenes.length > 0)
+
+                          if (tieneCredito === true) {
+                            return <div><span className="font-medium">Crédito pendiente:</span> Sí</div>
+                          }
+                          if (tieneCredito === false && !hasGravamen) {
+                            return <div><span className="font-medium">Crédito pendiente:</span> No</div>
+                          }
+                          if (hasGravamen) {
+                            return <div><span className="font-medium">Crédito pendiente:</span> Sí (por gravamen/hipoteca)</div>
+                          }
+                          return null
+                        })()}
+                      </>
+                    )}
+                    {(!data.vendedores || data.vendedores.length === 0 || (!data.vendedores[0].persona_fisica?.nombre && !data.vendedores[0].persona_moral?.denominacion_social)) && (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PASO 4 – COMPRADOR(ES) (CONSOLIDADO CON EXPEDIENTE) */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {serverState?.state_status?.ESTADO_4 === 'completed' ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <Users className="h-4 w-4" />
+                      <span>PASO 4: Comprador(es)</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-2 text-xs text-gray-600">
+                    {data.compradores && data.compradores.length > 0 ? (
+                      data.compradores.map((comprador, idx) => {
+                        const nombre = comprador.persona_fisica?.nombre || comprador.persona_moral?.denominacion_social || null
+                        const rfc = comprador.persona_fisica?.rfc || comprador.persona_moral?.rfc || null
+                        const curp = comprador.persona_fisica?.curp || null
+                        
+                        // Función auxiliar para normalizar nombres (quitar espacios extra, convertir a minúsculas)
+                        const normalizeName = (str: string | null | undefined): string => {
+                          if (!str) return ''
+                          return str.toLowerCase().trim().replace(/\s+/g, ' ')
+                        }
+                        
+                        // Determinar rol en crédito si hay créditos
+                        // Buscar en TODOS los créditos, no solo el primero
+                        let rolEnCredito: string | null = null
+                        if (data.creditos && data.creditos.length > 0 && nombre) {
+                          // Iterar sobre todos los créditos
+                          for (const credito of data.creditos) {
+                            if (!credito.participantes || !Array.isArray(credito.participantes)) continue
+                            
+                            const participante = credito.participantes.find((p: any) => {
+                              // 1) Si tiene party_id, buscar por party_id (incluye 'comprador_1', 'comprador_2', etc.)
+                              if (p.party_id && comprador.party_id) {
+                                return p.party_id === comprador.party_id
+                              }
+                              
+                              // 2) Si el participante tiene party_id como 'comprador_X' y el comprador tiene el mismo índice
+                              if (p.party_id && typeof p.party_id === 'string' && p.party_id.startsWith('comprador_')) {
+                                const numStr = p.party_id.replace('comprador_', '')
+                                const num = parseInt(numStr, 10)
+                                if (!isNaN(num) && num === idx + 1) {
+                                  return true
+                                }
+                              }
+                              
+                              // 3) Si tiene nombre directo, comparar por nombre normalizado
+                              if (p.nombre && nombre) {
+                                const nombreNormalizado = normalizeName(nombre)
+                                const participanteNombreNormalizado = normalizeName(p.nombre)
+                                if (nombreNormalizado && participanteNombreNormalizado) {
+                                  // Comparación exacta o parcial (por si hay diferencias menores)
+                                  return nombreNormalizado === participanteNombreNormalizado ||
+                                         nombreNormalizado.includes(participanteNombreNormalizado) ||
+                                         participanteNombreNormalizado.includes(nombreNormalizado)
+                                }
+                              }
+                              
+                              return false
+                            })
+                            
+                            if (participante) {
+                              rolEnCredito = participante.rol === 'acreditado' ? 'Acreditado' : 
+                                           participante.rol === 'coacreditado' ? 'Coacreditado' : null
+                              break // Si encontramos el rol, no necesitamos seguir buscando
+                            }
+                          }
+                        }
+                        
+                        if (!nombre) return null
+                        
+                        return (
+                          <div key={idx} className="border-l-2 border-blue-200 pl-2 space-y-1">
+                            <div className="font-semibold text-gray-700">
+                              {data.compradores.length > 1 ? `Comprador ${idx + 1}` : 'Comprador'} 
+                              {rolEnCredito && ` (${rolEnCredito})`}
+                            </div>
+                            {comprador.persona_fisica?.nombre && (
+                              <div><span className="font-medium">Nombre:</span> {comprador.persona_fisica.nombre}</div>
+                            )}
+                            {comprador.persona_moral?.denominacion_social && (
+                              <div><span className="font-medium">Denominación Social:</span> {comprador.persona_moral.denominacion_social}</div>
+                            )}
+                            {rfc && (
+                              <div><span className="font-medium">RFC:</span> {rfc}</div>
+                            )}
+                            {curp && (
+                              <div><span className="font-medium">CURP:</span> {curp}</div>
+                            )}
+                            {comprador.persona_fisica?.estado_civil && (
+                              <div><span className="font-medium">Estado Civil:</span> {comprador.persona_fisica.estado_civil}</div>
+                            )}
+                            {comprador.persona_fisica?.conyuge?.nombre && (
+                              <div className="text-gray-500 italic">
+                                <span className="font-medium">Cónyuge:</span> {comprador.persona_fisica.conyuge.nombre}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })
+                    ) : (
+                      <div className="text-gray-400 italic">Pendiente (requiere identificación oficial)</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PASO 5 – CRÉDITO DEL COMPRADOR (si aplica) */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {serverState?.state_status?.ESTADO_5 === 'completed' || serverState?.state_status?.ESTADO_5 === 'not_applicable' ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : serverState?.state_status?.ESTADO_5 === 'incomplete' ? (
+                      <AlertCircle className="h-4 w-4 text-yellow-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <CreditCard className="h-4 w-4" />
+                      <span>PASO 5: Crédito del Comprador</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.tipoOperacion ? (
+                      // Verificar estado del servidor para determinar si está pendiente
+                      serverState?.state_status?.ESTADO_5 === 'pending' ? (
+                        <div className="text-gray-400 italic">Pendiente: aún no se ha confirmado si será crédito o contado</div>
+                      ) : data.creditos !== undefined && data.creditos.length > 0 ? (
+                        <>
+                          {data.creditos.map((credito, idx) => (
+                            <div key={idx} className="mb-2">
+                              {credito.institucion && (
+                                <div><span className="font-medium">Institución {data.creditos.length > 1 ? `(${idx + 1})` : ''}:</span> {credito.institucion}</div>
+                              )}
+                              {credito.monto && (
+                                <div><span className="font-medium">Monto {data.creditos.length > 1 ? `(${idx + 1})` : ''}:</span> {credito.monto}</div>
+                              )}
+                              {!credito.institucion && (
+                                <div className="text-yellow-600 italic">Información pendiente</div>
+                              )}
+                            </div>
+                          ))}
+                        </>
+                      ) : data.creditos !== undefined && data.creditos.length === 0 ? (
+                        <div className="text-gray-500">No aplica (pago de contado)</div>
+                      ) : (
+                        <div className="text-gray-400 italic">Pendiente: aún no se ha confirmado si será crédito o contado</div>
+                      )
+                    ) : (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PASO 6 – CANCELACIÓN DE HIPOTECA (si existe) */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    {serverState?.state_status?.ESTADO_6 === 'completed' || serverState?.state_status?.ESTADO_6 === 'not_applicable' ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : serverState?.state_status?.ESTADO_6 === 'incomplete' ? (
+                      <AlertCircle className="h-4 w-4 text-yellow-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4 text-gray-400" />
+                    )}
+                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
+                      <FileCheck2 className="h-4 w-4" />
+                      <span>PASO 6: Cancelación de Hipoteca</span>
+                    </h4>
+                  </div>
+                  <div className="ml-6 space-y-1 text-xs text-gray-600">
+                    {data.inmueble?.existe_hipoteca === false ? (
+                      <div className="text-gray-500">Libre de gravamen/hipoteca (confirmado)</div>
+                    ) : Array.isArray(data.gravamenes) && data.gravamenes.length > 0 ? (
+                      (() => {
+                        const g0: any = data.gravamenes[0]
+                        const acreedor = g0?.institucion || g0?.acreedor || g0?.institucion_financiera || null
+                        const numero = g0?.numero || g0?.folio || g0?.numero_hipoteca || null
+                        return (
+                          <>
+                            {acreedor && <div><span className="font-medium">Acreedor:</span> {acreedor}</div>}
+                            {numero && <div><span className="font-medium">Número:</span> {numero}</div>}
+                          </>
+                        )
+                      })()
+                    ) : (
+                      <div className="text-gray-400 italic">Pendiente</div>
+                    )}
+                  </div>
+                </div>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Panel de información extraída - Desktop (lado derecho) */}
+      {showDataPanel && !(isMobile || isTablet) && (
         <Card className="w-80 p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
           <CardContent className="flex-1 flex flex-col p-0 min-h-0">
             {/* Header del panel */}

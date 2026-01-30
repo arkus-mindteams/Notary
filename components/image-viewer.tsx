@@ -199,9 +199,15 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
       : imageSize.height * (zoom / 100)
     
     // Add padding (1rem = 16px on each side = 32px total)
+    // Use max to ensure container is at least 100% but can be larger
+    const widthWithPadding = scaledWidth + 32
+    const heightWithPadding = scaledHeight + 32
+    
     return {
-      width: Math.max(scaledWidth + 32, "100%"),
-      height: Math.max(scaledHeight + 32, "100%"),
+      width: `${widthWithPadding}px`,
+      height: `${heightWithPadding}px`,
+      minWidth: "100%",
+      minHeight: "100%",
     }
   }, [imageSize, zoom, rotation])
 
@@ -356,8 +362,8 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
               justifyContent: "center",
               width: containerDimensions.width,
               height: containerDimensions.height,
-              minHeight: "100%",
-              minWidth: "100%",
+              minWidth: containerDimensions.minWidth,
+              minHeight: containerDimensions.minHeight,
             }}
           >
             <div

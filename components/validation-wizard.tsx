@@ -86,7 +86,7 @@ export function ValidationWizard({
   // Estados para rastrear valores guardados y cambios no guardados
   const [savedColindanciasByUnit, setSavedColindanciasByUnit] = useState<Map<string, string>>(new Map())
   const [savedNotarialTextByUnit, setSavedNotarialTextByUnit] = useState<Map<string, string>>(new Map())
-  const [isViewerCollapsed, setIsViewerCollapsed] = useState(false)
+  const [isViewerCollapsed, setIsViewerCollapsed] = useState(true)
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
   const [manuallyEditedNotarial, setManuallyEditedNotarial] = useState<Set<string>>(new Set())
   const [showUnauthorizeDialog, setShowUnauthorizeDialog] = useState(false)
@@ -555,16 +555,16 @@ export function ValidationWizard({
       )}
 
       {/* Main Content - Split View with Collapsible Viewer */}
-      <div className="flex-1 overflow-hidden">
-        <div className="container mx-auto px-3 sm:px-4 py-2 h-full">
-          <div className={`grid gap-3 h-full transition-all duration-300 ${
+      <div className="flex-1 overflow-hidden min-h-0">
+        <div className="container mx-auto px-3 sm:px-4 py-2 h-full overflow-hidden">
+          <div className={`grid gap-3 h-full overflow-y-auto transition-all duration-300 ${
             isViewerCollapsed 
               ? "grid-cols-1" 
               : "grid-cols-1 lg:grid-cols-[minmax(300px,40%)_minmax(400px,60%)]"
           }`}>
             {/* Document/Image Viewer - Left Side with Toggle */}
             {!isViewerCollapsed && (
-              <div className="h-[300px] sm:h-[400px] lg:h-full overflow-auto relative group">
+              <div className="h-[300px] sm:h-[400px] lg:h-full overflow-auto relative group min-h-0">
                 {images && images.length > 0 ? (
                   <ImageViewer 
                     images={images}
@@ -595,7 +595,7 @@ export function ValidationWizard({
             )}
 
             {/* Text Panel - Right Side / Full width when viewer collapsed */}
-            <div className={`h-[400px] sm:h-[500px] lg:h-full overflow-hidden ${isViewerCollapsed ? "" : ""}`}>
+            <div className={`h-[400px] sm:h-[500px] lg:h-full overflow-y-auto min-h-0 ${isViewerCollapsed ? "" : ""}`}>
               {/* Toggle Button to show viewer when collapsed */}
               {isViewerCollapsed && (
                 <div className="mb-2">
@@ -610,7 +610,7 @@ export function ValidationWizard({
                   </Button>
                 </div>
               )}
-              <Card className="flex flex-col h-full p-0 gap-0">
+              <Card className="flex flex-col h-full p-0 gap-0 min-h-0">
                 <div className="py-2 px-3 border-b bg-muted/30 shrink-0 ">
                   <div className="space-y-1.5">
                     {/* Header con información de la unidad - Compact */}
@@ -626,10 +626,10 @@ export function ValidationWizard({
                   </div>
                 </div>
                 {/* Content area to expand inputs */}
-                <div className="flex-1 px-3 pt-1 pb-2 overflow-y-auto">
-                  <div className="flex flex-col gap-2 h-full overflow-y-auto">
+                <div className="flex-1 px-3 pt-1 pb-2 overflow-y-auto min-h-0">
+                  <div className="flex flex-col gap-2">
                     {/* Colindancias (editable) - Always shown when unit is selected */}
-                    <div className="flex flex-col h-1/2 min-h-[150px]">
+                    <div className="flex flex-col min-h-[200px]">
                       <div className="text-sm font-semibold text-foreground mb-1 flex items-center gap-1">
                         <span>Colindancias</span>
                         {isCurrentUnitAuthorized && (
@@ -639,7 +639,7 @@ export function ValidationWizard({
                         )}
                       </div>
                       <textarea
-                        className={`w-full flex-1 min-h-[120px] resize-none border rounded bg-background p-2 text-sm overflow-auto font-mono ${
+                        className={`w-full min-h-[180px] resize-none border rounded bg-background p-2 text-sm overflow-y-auto font-mono ${
                           isCurrentUnitAuthorized 
                             ? "cursor-not-allowed opacity-75 bg-muted/50" 
                             : ""
@@ -688,7 +688,7 @@ export function ValidationWizard({
                     </div>
                     
                     {/* Redacción notarial - Always shown below colindancias */}
-                    <div className="flex flex-col h-1/2 min-h-[150px]">
+                    <div className="flex flex-col min-h-[200px]">
                       <div className="text-sm font-semibold text-foreground mb-1 flex items-center gap-1">
                         <span>Redacción notarial</span>
                         {isGeneratingNotarial && <span className="text-muted-foreground text-xs font-normal">(Generando...)</span>}
@@ -699,7 +699,7 @@ export function ValidationWizard({
                         )}
                       </div>
                       <textarea
-                        className={`w-full flex-1 min-h-[120px] resize-none border rounded bg-background p-2 text-sm overflow-auto leading-relaxed ${
+                        className={`w-full min-h-[180px] resize-none border rounded bg-background p-2 text-sm overflow-y-auto leading-relaxed ${
                           isCurrentUnitAuthorized 
                             ? "cursor-not-allowed opacity-75 bg-muted/50" 
                             : ""
