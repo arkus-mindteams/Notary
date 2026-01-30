@@ -15,7 +15,7 @@ interface ImageViewerProps {
 
 export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: ImageViewerProps) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex)
-  const [zoom, setZoom] = useState(50)
+  const [zoom, setZoom] = useState(20)
   const [rotation, setRotation] = useState(0)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const imageRef = useRef<HTMLImageElement | null>(null)
@@ -35,7 +35,7 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
 
   // Reset zoom and rotation when changing image
   useEffect(() => {
-    setZoom(50)
+    setZoom(20)
     setRotation(0)
     setImageSize(null) // Reset image size when changing images
   }, [currentIndex])
@@ -49,11 +49,17 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
       const containerWidth = container.clientWidth
       const containerHeight = container.clientHeight
       
-      // Only scroll if image is larger than container
-      if (scaledWidth > containerWidth || scaledHeight > containerHeight) {
-        container.scrollLeft = (scaledWidth - containerWidth) / 2
-        container.scrollTop = (scaledHeight - containerHeight) / 2
-      }
+      // Calculate the center position of the scaled image
+      const scrollX = Math.max(0, (scaledWidth - containerWidth) / 2)
+      const scrollY = Math.max(0, (scaledHeight - containerHeight) / 2)
+      
+      // Use requestAnimationFrame to ensure smooth centering
+      requestAnimationFrame(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollLeft = scrollX
+          scrollRef.current.scrollTop = scrollY
+        }
+      })
     }
   }, [zoom, rotation, imageSize])
 
@@ -242,8 +248,8 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
                 transformOrigin: "center center",
                 transition: "transform 0.2s ease-in-out",
                 display: "block",
-                width: imageSize ? `${imageSize.width}px` : "fit-content",
-                height: imageSize ? `${imageSize.height}px` : "fit-content",
+                width: "100px",
+                height: "100px",
               }}
               className="relative"
             >
@@ -267,19 +273,27 @@ export function ImageViewer({ images, onClose, onHide, initialIndex = 0 }: Image
                   })
                   
                   // Center the image after it loads
-                  if (scrollRef.current) {
-                    const container = scrollRef.current
-                    const scaledWidth = img.naturalWidth * (zoom / 100)
-                    const scaledHeight = img.naturalHeight * (zoom / 100)
-                    const containerWidth = container.clientWidth
-                    const containerHeight = container.clientHeight
-                    
-                    // Only scroll if image is larger than container
-                    if (scaledWidth > containerWidth || scaledHeight > containerHeight) {
-                      container.scrollLeft = (scaledWidth - containerWidth) / 2
-                      container.scrollTop = (scaledHeight - containerHeight) / 2
-                    }
-                  }
+                  // Use double requestAnimationFrame to ensure layout is complete
+                  requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                      if (scrollRef.current) {
+                        const container = scrollRef.current
+                        const scaledWidth = img.naturalWidth * (zoom / 100)
+                        const scaledHeight = img.naturalHeight * (zoom / 100)
+                        const containerWidth = container.clientWidth
+                        const containerHeight = container.clientHeight
+                        
+                        // Calculate scroll position to center the scaled image
+                        // The wrapper (100px) is centered, and image scales from its center
+                        // Scroll to show the center of the scaled image in the center of viewport
+                        const scrollX = Math.max(0, (scaledWidth - containerWidth) / 2)
+                        const scrollY = Math.max(0, (scaledHeight - containerHeight) / 2)
+                        
+                        container.scrollLeft = scrollX
+                        container.scrollTop = scrollY
+                      }
+                    })
+                  })
                 }}
               />
             </div>

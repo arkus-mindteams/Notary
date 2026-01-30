@@ -14,10 +14,10 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
-import { 
-  FileText, 
-  Download, 
-  Edit, 
+import {
+  FileText,
+  Download,
+  Edit,
   CheckCircle2,
   ArrowLeft,
   Save,
@@ -52,12 +52,12 @@ export default function PreavisoPage() {
     try {
       // Asegurar que preavisoData esté establecido antes de cambiar el estado
       setPreavisoData(data)
-      
+
       // Generar documento usando los mismos templates que Word/PDF
       const simplifiedData = PreavisoTemplateRenderer.convertFromPreavisoData(data)
       const text = await PreavisoTemplateRenderer.renderToText(simplifiedData)
       const html = await PreavisoTemplateRenderer.renderToHTML(simplifiedData)
-      
+
       // Crear documento compatible con PreavisoDocument usando el texto generado
       const generatedDoc: PreavisoDocument = {
         title: 'SOLICITUD DE CERTIFICADO CON EFECTO DE PRE-AVISO',
@@ -73,7 +73,7 @@ export default function PreavisoPage() {
         html: html,
         text: text
       }
-      
+
       setDocument(generatedDoc)
       setEditedDocument(text)
       setAppState('document')
@@ -92,7 +92,7 @@ export default function PreavisoPage() {
   }
 
   const savePreavisoToExpedientes = async (
-    data: PreavisoData, 
+    data: PreavisoData,
     doc: PreavisoDocument,
     uploadedDocuments?: any[],
     existingTramiteId?: string | null
@@ -113,7 +113,7 @@ export default function PreavisoPage() {
       const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
       const compradorCurp = primerComprador?.persona_fisica?.curp
       const compradorRfc = primerComprador?.persona_fisica?.rfc || primerComprador?.persona_moral?.rfc
-      
+
       if (!compradorNombre && !compradorCurp) {
         throw new Error('No se puede crear/buscar comprador sin nombre o CURP')
       }
@@ -150,8 +150,8 @@ export default function PreavisoPage() {
           })
         } else if (compradorNombre) {
           searchResponse = await fetch(`/api/expedientes/compradores?nombre=${encodeURIComponent(compradorNombre)}`, {
-          headers: searchHeaders,
-        })
+            headers: searchHeaders,
+          })
         }
 
         if (searchResponse && searchResponse.ok) {
@@ -294,7 +294,7 @@ export default function PreavisoPage() {
 
             if (uploadResponse.ok) {
               const documento = await uploadResponse.json()
-              
+
               // Asociar documento al trámite
               // Obtener token para asociar documento
               const { data: { session: associateSession } } = await supabase.auth.getSession()
@@ -360,7 +360,7 @@ export default function PreavisoPage() {
 
   const handleDownloadWord = async () => {
     if (!preavisoData) return
-    
+
     try {
       const simplifiedData = PreavisoTemplateRenderer.convertFromPreavisoData(preavisoData)
       await PreavisoTemplateRenderer.renderToWordAndDownload(simplifiedData)
@@ -372,7 +372,7 @@ export default function PreavisoPage() {
 
   const handleDownloadPDF = async () => {
     if (!preavisoData) return
-    
+
     try {
       const simplifiedData = PreavisoTemplateRenderer.convertFromPreavisoData(preavisoData)
       await PreavisoTemplateRenderer.renderToPDFAndDownload(simplifiedData)
@@ -398,14 +398,14 @@ export default function PreavisoPage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <div>
-              <h1 className="text-3xl font-bold text-gray-900">Pre-Aviso de Compraventa</h1>
-              <p className="text-gray-600">
-                Sistema interactivo para generar solicitudes de certificado con efecto de pre-aviso
-              </p>
+                  <h1 className="text-3xl font-bold text-gray-900">Pre-Aviso de Compraventa</h1>
+                  <p className="text-gray-600">
+                    Sistema interactivo para generar solicitudes de certificado con efecto de pre-aviso
+                  </p>
                 </div>
                 {showExportButtons && exportData && (
                   <div className="flex gap-2">
-                    <PreavisoExportOptions 
+                    <PreavisoExportOptions
                       data={exportData}
                       onExportComplete={() => {
                         // Opcional: ocultar después de exportar
@@ -474,20 +474,22 @@ export default function PreavisoPage() {
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button>
-                  <Download className="h-4 w-4 mr-2" />
+                      <Download className="h-4 w-4 mr-2" />
                       Descargar
                       <ChevronDown className="h-4 w-4 ml-2" />
-                </Button>
+                    </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem onClick={handleDownloadWord}>
                       <FileTextIcon className="h-4 w-4 mr-2" />
                       Descargar Word (.docx)
                     </DropdownMenuItem>
+                    {/*
                     <DropdownMenuItem onClick={handleDownloadPDF}>
                       <File className="h-4 w-4 mr-2" />
                       Descargar PDF (.pdf)
                     </DropdownMenuItem>
+                    */}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
@@ -503,17 +505,17 @@ export default function PreavisoPage() {
               </CardHeader>
               <CardContent>
                 <div className="flex flex-wrap gap-2">
-                  {preavisoData.actosNotariales.cancelacionCreditoVendedor && (
+                  {preavisoData.actosNotariales?.cancelacionCreditoVendedor && (
                     <Badge variant="secondary" className="text-sm">
                       Cancelación del crédito del vendedor
                     </Badge>
                   )}
-                  {preavisoData.actosNotariales.compraventa && (
+                  {preavisoData.actosNotariales?.compraventa && (
                     <Badge variant="secondary" className="text-sm">
                       Compraventa
                     </Badge>
                   )}
-                  {preavisoData.actosNotariales.aperturaCreditoComprador && (
+                  {preavisoData.actosNotariales?.aperturaCreditoComprador && (
                     <Badge variant="secondary" className="text-sm">
                       Apertura de crédito del comprador
                     </Badge>
