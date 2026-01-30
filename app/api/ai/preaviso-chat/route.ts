@@ -1,6 +1,5 @@
 /**
- * Endpoint alternativo de chat usando Plugin System
- * Activar con feature flag: USE_PLUGIN_SYSTEM=1
+ * Endpoint de chat usando Plugin System
  */
 
 import { NextResponse } from 'next/server'
@@ -99,7 +98,7 @@ export async function POST(req: Request) {
           }
         })
 
-        if (userMsgError) console.error('[preaviso-chat-v2] Error saving user message:', userMsgError)
+        if (userMsgError) console.error('[preaviso-chat] Error saving user message:', userMsgError)
 
         const lastAssistantMessage = result.message || null
 
@@ -114,7 +113,7 @@ export async function POST(req: Request) {
               tokens: result.meta?.usage || null
             }
           })
-          if (assistantMsgError) console.error('[preaviso-chat-v2] Error saving assistant message:', assistantMsgError)
+          if (assistantMsgError) console.error('[preaviso-chat] Error saving assistant message:', assistantMsgError)
         }
 
         // 2. Actualizar sesión (Last Context + Título Dinámico)
@@ -137,10 +136,10 @@ export async function POST(req: Request) {
           .update(updates)
           .eq('id', conversationId)
 
-        if (sessionError) console.error('[preaviso-chat-v2] Error updating session:', sessionError)
+        if (sessionError) console.error('[preaviso-chat] Error updating session:', sessionError)
       }
     } catch (e) {
-      console.error('[preaviso-chat-v2] logging error', e)
+      console.error('[preaviso-chat] logging error', e)
     }
 
     // Retornar respuesta (formato compatible con frontend)
@@ -176,7 +175,7 @@ export async function POST(req: Request) {
     })
 
   } catch (error: any) {
-    console.error('[preaviso-chat-v2] Error:', error)
+    console.error('[preaviso-chat] Error:', error)
     return NextResponse.json(
       {
         error: 'internal_error',

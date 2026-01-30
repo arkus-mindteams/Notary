@@ -1,6 +1,5 @@
 /**
- * Endpoint alternativo de procesamiento de documentos usando Plugin System
- * Activar con feature flag: USE_PLUGIN_SYSTEM=1
+ * Endpoint de procesamiento de documentos usando Plugin System
  */
 
 import { NextResponse } from 'next/server'
@@ -70,7 +69,7 @@ export async function POST(req: Request) {
 
     // DEBUG: Verificar que el backend reciba _document_intent y el comprador/cónyuge en el contexto
     try {
-      console.log('[preaviso-process-document-v2] incoming', {
+      console.log('[preaviso-process-document] incoming', {
         documentType,
         fileName: file?.name || null,
         pluginId,
@@ -79,7 +78,7 @@ export async function POST(req: Request) {
         comprador0EstadoCivil: context?.compradores?.[0]?.persona_fisica?.estado_civil || null,
         conyuge: context?.compradores?.[0]?.persona_fisica?.conyuge?.nombre || null,
       })
-    } catch {}
+    } catch { }
 
     // Obtener sistema de trámites
     const tramiteSystem = getTramiteSystem()
@@ -129,7 +128,7 @@ export async function POST(req: Request) {
         })
       }
     } catch (e) {
-      console.error('[preaviso-process-document-v2] logging error', e)
+      console.error('[preaviso-process-document] logging error', e)
     }
 
     // Guardar OCR en Redis si se requiere (reutilizar lógica existente)
@@ -150,9 +149,9 @@ export async function POST(req: Request) {
         //   pageNumber: 1, // Para documentos multi-página, el frontend maneja cada página
         //   text: ocrText
         // })
-        console.log('[preaviso-process-document-v2] OCR se maneja desde el frontend por página')
+        console.log('[preaviso-process-document] OCR se maneja desde el frontend por página')
       } catch (ocrError) {
-        console.error('[preaviso-process-document-v2] Error guardando OCR:', ocrError)
+        console.error('[preaviso-process-document] Error guardando OCR:', ocrError)
         // No fallar si OCR falla
       }
     }
@@ -165,11 +164,11 @@ export async function POST(req: Request) {
     })
 
   } catch (error: any) {
-    console.error('[preaviso-process-document-v2] Error:', error)
+    console.error('[preaviso-process-document] Error:', error)
     return NextResponse.json(
-      { 
-        error: 'internal_error', 
-        message: error.message || 'Error procesando documento' 
+      {
+        error: 'internal_error',
+        message: error.message || 'Error procesando documento'
       },
       { status: 500 }
     )
