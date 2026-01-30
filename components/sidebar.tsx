@@ -208,7 +208,6 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
         </Button>
 
 
-
         {/* Separator and Configuración (Hover Menu) - Superadmin Only */}
         {user?.role === 'superadmin' && (
           <>
