@@ -21,8 +21,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Checkbox } from "@/components/ui/checkbox"
 import { toast } from "sonner"
 import Link from "next/link"
-import { useIsMobile } from "@/hooks/use-mobile"
-import { useIsTablet } from "@/hooks/use-tablet"
 type AppState = "upload" | "processing" | "validation"
 
 // Helper function to format numbers preserving original decimal places
@@ -304,8 +302,6 @@ function PdfImageCard({
 }
 
 function DeslindePageInner() {
-  const isMobile = useIsMobile()
-  const isTablet = useIsTablet()
   const [appState, setAppState] = useState<AppState>("upload")
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [documentUrl, setDocumentUrl] = useState<string>("")
@@ -1411,22 +1407,6 @@ function DeslindePageInner() {
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
-  }
-
-  // Show mobile/tablet message - must be after all hooks
-  if (isMobile || isTablet) {
-    return (
-      <ProtectedRoute>
-        <DashboardLayout>
-          <div className="min-h-screen flex items-center justify-center p-6">
-            <div className="text-center space-y-4">
-              <h1 className="text-2xl font-bold text-gray-900">Vista disponible para web</h1>
-              <p className="text-gray-600">Por favor, accede desde un dispositivo de escritorio para usar esta funcionalidad.</p>
-            </div>
-          </div>
-        </DashboardLayout>
-      </ProtectedRoute>
-    )
   }
 
   if (appState === "processing") {
