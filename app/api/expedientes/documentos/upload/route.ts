@@ -21,6 +21,7 @@ export async function POST(req: Request) {
     const tipo = formData.get('tipo') as string | null
     const tramiteId = formData.get('tramiteId') as string | null
     const metadataStr = formData.get('metadata') as string | null
+    const ocrText = formData.get('ocrText') as string | null
 
     if (!file) {
       return NextResponse.json(
@@ -88,12 +89,28 @@ export async function POST(req: Request) {
       metadata,
       usuarioId: currentUser.id, // Agregar usuario_id
     }
-    
+
     const documento = await DocumentoService.uploadDocumento(
       uploadRequest,
       tramiteId || undefined,
       tipoTramite
     )
+
+    // Si hay texto OCR (previo o nuevo), procesarlo para RAG
+    if (ocrText && tramiteId) {
+      // Ejecutar en background para no bloquear respuesta
+      (async () => {
+        try {
+          await DocumentoService.processAndSaveText(
+            documento.id,
+            tramiteId,
+            ocrText
+          )
+        } catch (err) {
+          console.error('[upload] Error processing RAG text:', err)
+        }
+      })()
+    }
 
     return NextResponse.json(documento, { status: 201 })
   } catch (error: any) {

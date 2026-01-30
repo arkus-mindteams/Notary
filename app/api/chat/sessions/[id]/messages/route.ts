@@ -2,13 +2,15 @@
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase'
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
     try {
         const supabase = createServerClient()
-        const { data: { session } } = await supabase.auth.getSession()
-        const sessionId = params.id
+        const authHeader = req.headers.get('Authorization')
+        const token = authHeader?.replace('Bearer ', '')
+        const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+        const { id: sessionId } = await params
 
-        if (!session) {
+        if (authError || !user) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
         }
 
@@ -17,7 +19,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             .from('chat_sessions')
             .select('id, last_context')
             .eq('id', sessionId)
-            .eq('user_id', session.user.id)
+            .eq('user_id', user.id)
             .single()
 
         if (sessionError || !chatSession) {
@@ -38,18 +40,20 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
             session: chatSession
         })
     } catch (error: any) {
-        console.error(`[GET /api/chat/sessions/${params.id}/messages] Error:`, error)
+        console.error(`[GET /api/chat/sessions/unknown/messages] Error:`, error)
         return NextResponse.json({ error: error.message }, { status: 500 })
     }
 }
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
     try {
         const supabase = createServerClient()
-        const { data: { session } } = await supabase.auth.getSession()
-        const sessionId = params.id
+        const authHeader = req.headers.get('Authorization')
+        const token = authHeader?.replace('Bearer ', '')
+        const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+        const { id: sessionId } = await params
 
-        if (!session) {
+        if (authError || !user) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
         }
 
@@ -65,7 +69,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
             .from('chat_sessions')
             .select('id')
             .eq('id', sessionId)
-            .eq('user_id', session.user.id)
+            .eq('user_id', user.id)
             .single()
 
         if (sessionError || !chatSession) {
@@ -88,7 +92,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
         return NextResponse.json({ message })
     } catch (error: any) {
-        console.error(`[POST /api/chat/sessions/${params.id}/messages] Error:`, error)
+        console.error(`[POST /api/chat/sessions/unknown/messages] Error:`, error)
         return NextResponse.json({ error: error.message }, { status: 500 })
     }
 }

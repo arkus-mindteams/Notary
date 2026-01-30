@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter, useParams } from 'next/navigation'
+import { createBrowserClient } from '@/lib/supabase'
 import { MessageSquare, Plus, Trash2, Archive, Pin, MoreHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -37,6 +38,7 @@ export function ChatHistory({ isCollapsed, onSelectSession }: ChatHistoryProps) 
     // or we need a way to know the active one.
     // Let's rely on a global store or URL param if implemented.
     const [activeId, setActiveId] = useState<string | null>(null)
+    const supabase = createBrowserClient()
 
     useEffect(() => {
         fetchSessions()
@@ -47,10 +49,21 @@ export function ChatHistory({ isCollapsed, onSelectSession }: ChatHistoryProps) 
 
     const fetchSessions = async () => {
         try {
-            const res = await fetch('/api/chat/sessions')
+            const { data: { session: currentSession } } = await supabase.auth.getSession()
+            const headers: HeadersInit = {}
+            if (currentSession?.access_token) {
+                headers['Authorization'] = `Bearer ${currentSession.access_token}`
+            }
+
+            const res = await fetch('/api/chat/sessions', { headers })
             if (res.ok) {
                 const data = await res.json()
                 setSessions(data.sessions || [])
+            } else if (res.status === 401) {
+                // If 401, maybe refresh the session or redirect?
+                // For now, just clear sessions to indicate auth issue
+                console.warn('Unauthorized fetch on chat sessions')
+                setSessions([])
             }
         } catch (e) {
             console.error('Failed to fetch sessions', e)
@@ -75,8 +88,35 @@ export function ChatHistory({ isCollapsed, onSelectSession }: ChatHistoryProps) 
 
     const handleDelete = async (e: React.MouseEvent, id: string) => {
         e.stopPropagation() // Prevent selection
-        // TODO: Implement delete/archive API
-        console.log('Delete', id)
+
+        if (!confirm('¿Estás seguro de eliminar este chat?')) return
+
+        try {
+            const { data: { session: currentSession } } = await supabase.auth.getSession()
+            const headers: HeadersInit = {}
+            if (currentSession?.access_token) {
+                headers['Authorization'] = `Bearer ${currentSession.access_token}`
+            }
+
+            const res = await fetch(`/api/chat/sessions/${id}`, {
+                method: 'DELETE',
+                headers
+            })
+
+            if (res.ok) {
+                // Remove from local state immediately
+                setSessions(sessions.filter(s => s.id !== id))
+                // If it was the active session, clear it or go to new
+                if (activeId === id) {
+                    setActiveId(null)
+                    router.push('/dashboard/preaviso?new=true')
+                }
+            } else {
+                console.error('Error deleting session')
+            }
+        } catch (error) {
+            console.error('Error deleting session:', error)
+        }
     }
 
     if (loading && !isCollapsed) {
@@ -137,6 +177,15 @@ export function ChatHistory({ isCollapsed, onSelectSession }: ChatHistoryProps) 
                     <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
                         Historial
                     </span>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-5 w-5 text-gray-500 hover:text-white"
+                        onClick={() => fetchSessions()}
+                        title="Actualizar historial"
+                    >
+                        <Archive className="h-3 w-3" /> {/* Using Archive as Refresh/History icon or maybe RotateCw if available, but staying consistent with imports */}
+                    </Button>
                 </div>
             )}
 

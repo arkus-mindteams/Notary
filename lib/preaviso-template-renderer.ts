@@ -158,7 +158,7 @@ export class PreavisoTemplateRenderer {
    * Calcula la numeración de actos jurídicos
    * Resuelve party_id a nombres en participantes de créditos
    */
-  private static prepareTemplateData(data: PreavisoSimplifiedJSON): PreavisoTemplateData & {
+  public static prepareTemplateData(data: PreavisoSimplifiedJSON): PreavisoTemplateData & {
     vendedor: PreavisoSimplifiedJSON['vendedores'][0] | null
     comprador: PreavisoSimplifiedJSON['compradores'][0] | null
     actosNumerados: Array<{

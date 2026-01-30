@@ -1,6 +1,7 @@
 import { createServerClient } from '@/lib/supabase'
 import { S3Service } from './s3-service'
 import { createHash } from 'crypto'
+import { EmbeddingsService } from './embeddings'
 import type { Documento, TipoDocumento, UploadDocumentoRequest } from '@/lib/types/expediente-types'
 
 export class DocumentoService {
@@ -8,10 +9,10 @@ export class DocumentoService {
    * Calcula el hash MD5 de un archivo
    */
   private static async calculateFileHash(file: File | Buffer): Promise<string> {
-    const arrayBuffer = file instanceof File 
-      ? await file.arrayBuffer() 
+    const arrayBuffer = file instanceof File
+      ? await file.arrayBuffer()
       : file
-    const buffer = Buffer.from(arrayBuffer)
+    const buffer = Buffer.from(arrayBuffer as any)
     return createHash('md5').update(buffer).digest('hex')
   }
 
@@ -105,11 +106,11 @@ export class DocumentoService {
     // Verificar si ya existe un documento con el mismo hash
     // Si hay comprador, buscar solo para ese comprador; si no, buscar globalmente
     const existingDocumento = await this.findDocumentoByHash(request.compradorId || null, fileHash)
-    
+
     if (existingDocumento) {
       // Documento duplicado encontrado - reutilizar el existente
       console.log(`[DocumentoService] Documento duplicado detectado, reutilizando: ${existingDocumento.id}`)
-      
+
       // Si hay un trámite, asociar el documento existente al trámite
       if (tramiteId) {
         // Verificar si ya está asociado
@@ -146,7 +147,7 @@ export class DocumentoService {
     // Si no hay comprador, usar tramiteId como identificador temporal
     // Cuando se identifique el comprador, los documentos se asociarán correctamente
     const compradorIdForS3 = request.compradorId || (tramiteId ? `temp-${tramiteId}` : `temp-${Date.now()}`)
-    
+
     const s3Key = tramiteId && tipoTramite
       ? S3Service.generateKey(compradorIdForS3, tramiteId, tipoTramite, request.tipo, request.file.name)
       : S3Service.generateKeyForComprador(compradorIdForS3, request.tipo, request.file.name)
@@ -333,5 +334,119 @@ export class DocumentoService {
     }
 
     return data as Documento
+  }
+
+
+  /**
+   * Procesa y guarda texto extraído de un documento para RAG.
+   * Genera embeddings y guarda chunks.
+   */
+  static async processAndSaveText(
+    documentoId: string,
+    tramiteId: string,
+    text: string,
+    pageNumber: number = 1
+  ): Promise<void> {
+    if (!text || !text.trim()) return
+
+    const supabase = createServerClient()
+
+    // 1. Generar Embedding
+    const embedding = await EmbeddingsService.generateEmbedding(text)
+
+    // 2. Guardar Chunk
+    // Por ahora guardamos todo el texto como un solo chunk por página.
+    // En el futuro podríamos dividir en chunks más pequeños si el texto es muy largo.
+    const { error } = await supabase
+      .from('documento_text_chunks')
+      .upsert({
+        documento_id: documentoId,
+        tramite_id: tramiteId,
+        page_number: pageNumber,
+        chunk_index: 0,
+        text: text,
+        embedding: embedding, // Vector(1536)
+        metadata: { source: 'ocr_upload' }
+      }, {
+        onConflict: 'documento_id,page_number,chunk_index'
+      })
+
+    if (error) {
+      console.error('[DocumentoService] Error saving text chunk:', error)
+      // No lanzamos error para no romper el flujo principal de upload
+    }
+  }
+
+
+  /**
+   * Busca chunks de documentos similares usando Semántica Vectorial (RAG).
+   * Llama a la función RPC match_document_chunks.
+   */
+  static async searchSimilarChunks(
+    queryText: string,
+    tramiteId?: string,
+    threshold: number = 0.5,
+    matchCount: number = 5
+  ): Promise<any[]> {
+    if (!queryText?.trim()) return []
+
+    const embedding = await EmbeddingsService.generateEmbedding(queryText)
+    if (!embedding) return []
+
+    const supabase = createServerClient()
+
+    const { data, error } = await supabase.rpc('match_document_chunks', {
+      query_embedding: embedding,
+      match_threshold: threshold,
+      match_count: matchCount,
+      filter_tramite_id: tramiteId || null
+    })
+
+    if (error) {
+      console.error('[DocumentoService] Search error:', error)
+      return []
+    }
+
+    return data || []
+  }
+
+  /**
+   * Busca datos de extracción previos para un hash de archivo (Intelligent Processing)
+   */
+  static async findExtractionData(fileHash: string): Promise<any | null> {
+    const supabase = createServerClient()
+
+    // Buscar en la tabla dedicada de caché
+    const { data, error } = await supabase
+      .from('document_extractions')
+      .select('data')
+      .eq('file_hash', fileHash)
+      .single()
+
+    if (error || !data) return null
+
+    return data.data
+  }
+
+  /**
+   * Guarda datos de extracción para un hash
+   */
+  static async saveExtractionData(fileHash: string, extractionData: any): Promise<void> {
+    const supabase = createServerClient()
+
+    // Guardar en tabla dedicada (upsert)
+    const { error } = await supabase
+      .from('document_extractions')
+      .upsert({
+        file_hash: fileHash,
+        data: extractionData,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'file_hash'
+      })
+
+    if (error) {
+      console.error('[DocumentoService] Error saving extraction data:', error)
+    }
   }
 }

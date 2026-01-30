@@ -16,9 +16,10 @@ type TransitionInfo = {
 
 const hasInmuebleBasico = (ctx: any): boolean => {
   return !!ctx?.inmueble?.folio_real &&
+    ctx.inmueble.folio_real_confirmed === true &&
     Array.isArray(ctx?.inmueble?.partidas) &&
     ctx.inmueble.partidas.length > 0 &&
-    !!ctx?.inmueble?.direccion?.calle
+    (!!ctx?.inmueble?.direccion?.calle || (!!ctx?.inmueble?.datos_catastrales?.lote && !!ctx?.inmueble?.datos_catastrales?.manzana))
 }
 
 const hasVendedorBasico = (ctx: any): boolean => {

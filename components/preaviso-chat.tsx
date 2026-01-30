@@ -31,8 +31,10 @@ import {
   MessageSquarePlus,
   ArrowUp,
   X,
-  Square
+  Square,
+  Trash2
 } from 'lucide-react'
+import { PreavisoStateSnapshot, computePreavisoState } from '@/lib/preaviso-state'
 import { PreavisoExportOptions } from './preaviso-export-options'
 import type { LastQuestionIntent } from '@/lib/tramites/base/types'
 import {
@@ -391,6 +393,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const initializationRef = useRef(false)
   const lastUserIdRef = useRef<string | null>(null)
   const isManualResetRef = useRef(false)
+  const isSubmittingRef = useRef(false) // Lock para prevenir doble envío
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
   const [expedienteExistente, setExpedienteExistente] = useState<{
     compradorId: string
@@ -466,18 +469,150 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
   // Ref para saber si estanos cargando un chat antiguo para evitar sobrescribir con INITIAL_MESSAGES
   const isLoadingSessionRef = useRef(false)
+  const isCreatingSessionRef = useRef(false)
+
+  const chatId = searchParams.get('chatId')
+  const isNew = searchParams.get('new')
+
+  const createNewSession = async () => {
+    console.log('[PreavisoChat] Creando nueva sesión...')
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      if (currentSession?.access_token) {
+        headers['Authorization'] = `Bearer ${currentSession.access_token}`
+      }
+
+      // Evitar duplicados por Strict Mode
+      if (isCreatingSessionRef.current) return
+      isCreatingSessionRef.current = true
+
+      const res = await fetch('/api/chat/sessions', { method: 'POST', headers })
+      if (res.ok) {
+        const json = await res.json()
+        const newId = json.session.id
+        conversationIdRef.current = newId
+        console.log('[PreavisoChat] Nueva sesión creada:', newId)
+
+        // Resetear estado completo
+        setData({
+          tipoOperacion: 'compraventa',
+          _document_intent: null,
+          _document_people_pending: null,
+          vendedores: [],
+          compradores: [],
+          creditos: undefined,
+          gravamenes: [],
+          inmueble: {
+            folio_real: null,
+            partidas: [],
+            all_registry_pages_confirmed: false,
+            direccion: {
+              calle: null,
+              numero: null,
+              colonia: null,
+              municipio: null,
+              estado: null,
+              codigo_postal: null
+            },
+            superficie: null,
+            valor: null,
+            datos_catastrales: {
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          },
+          control_impresion: {
+            imprimir_conyuges: false,
+            imprimir_coacreditados: false,
+            imprimir_creditos: false
+          },
+          validaciones: {
+            expediente_existente: false,
+            datos_completos: false,
+            bloqueado: true
+          },
+          actosNotariales: {
+            cancelacionCreditoVendedor: false,
+            compraventa: false,
+            aperturaCreditoComprador: false
+          },
+          documentos: []
+        })
+
+        // Inicializar con mensajes de bienvenida
+        const initialMsgs = INITIAL_MESSAGES.map((msg, i) => ({
+          id: `init-${Date.now()}-${i}`,
+          role: 'assistant' as const,
+          content: msg,
+          timestamp: new Date(Date.now() + i * 100)
+        }))
+        setMessages(initialMsgs)
+        setInitialMessagesSent(true)
+        initializationRef.current = true
+        setActiveTramiteId(null)
+        setServerState(null) // FIX: Resetear estado del servidor (pasos completados) al crear nueva sesión
+
+        // FIX: Limpiar documentos cargados y otros estados de UI
+        setUploadedDocuments([])
+        setProcessingProgress(0)
+        setIsProcessingDocument(false)
+
+        // Actualizar URL y navegar (triggers UI refresh for Sidebar)
+        // window.history.replaceState(null, '', `/dashboard/preaviso?chatId=${newId}`)
+        router.push(`/dashboard/preaviso?chatId=${newId}`)
+
+        // FIX: Persistir mensajes iniciales en DB para que no se pierdan al recargar
+        try {
+          // Enviamos cada mensaje inicial al endpoint de persistencia
+          // Nota: Lo hacemos en background (no esperamos a que termine para mostrar UI)
+          (async () => {
+            for (const msg of initialMsgs) {
+              await supabase.from('chat_messages').insert({
+                session_id: newId,
+                role: msg.role,
+                content: msg.content,
+                metadata: {
+                  timestamp: msg.timestamp.toISOString(),
+                  is_initial_message: true
+                }
+              })
+            }
+          })()
+        } catch (err) {
+          console.error('Error persistiendo mensajes iniciales:', err)
+        }
+      }
+    } catch (e) {
+      console.error('Error creating session', e)
+      // conversationIdRef.current = crypto.randomUUID() // Don't generate fake ID, let it fail or retry
+    } finally {
+      isCreatingSessionRef.current = false
+    }
+  }
 
   useEffect(() => {
-    const chatId = searchParams.get('chatId')
-    const isNew = searchParams.get('new')
+    // const chatId and isNew are now available from closure scope
 
     const loadSession = async (id: string) => {
       console.log('[PreavisoChat] Cargando sesión:', id)
       try {
+        if (conversationIdRef.current !== id) {
+          setMessages([]) // Limpiar UI solo si cambiamos de chat
+        }
         isLoadingSessionRef.current = true
-        setMessages([]) // Limpiar UI mientras carga
 
-        const res = await fetch(`/api/chat/sessions/${id}/messages`)
+        const { data: { session: currentSession } } = await supabase.auth.getSession()
+        const headers: HeadersInit = {}
+        if (currentSession?.access_token) {
+          headers['Authorization'] = `Bearer ${currentSession.access_token}`
+        }
+
+        const res = await fetch(`/api/chat/sessions/${id}/messages`, { headers })
         if (!res.ok) throw new Error('Error cargando sesión')
 
         const json = await res.json()
@@ -502,6 +637,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (json.session?.last_context) {
           console.log('[PreavisoChat] Restaurando contexto:', json.session.last_context)
           setData(json.session.last_context)
+
+          // FIX: Recalcular estado del servidor (pasos completados) basado en datos cargados
+          try {
+            const computed = computePreavisoState(json.session.last_context)
+            if (computed && computed.state) {
+              setServerState(computed.state)
+            }
+          } catch (err) {
+            console.error('[PreavisoChat] Error recalculando estado inicial:', err)
+          }
         }
 
         conversationIdRef.current = id
@@ -510,25 +655,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         // Si falla, quizás volver a new?
       } finally {
         isLoadingSessionRef.current = false
-      }
-    }
-
-    const createNewSession = async () => {
-      console.log('[PreavisoChat] Creando nueva sesión...')
-      try {
-        const res = await fetch('/api/chat/sessions', { method: 'POST' })
-        if (res.ok) {
-          const json = await res.json()
-          const newId = json.session.id
-          conversationIdRef.current = newId
-          console.log('[PreavisoChat] Nueva sesión creada:', newId)
-          // Actualizar URL sin recargar (opcional, pero util para refresh)
-          window.history.replaceState(null, '', `/dashboard/preaviso?chatId=${newId}`)
-        }
-      } catch (e) {
-        console.error('Error creating session', e)
-        // Fallback a random ID para no bloquear (aunque fallará el guardado en DB si hay FK)
-        conversationIdRef.current = crypto.randomUUID()
       }
     }
 
@@ -548,15 +674,23 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         createNewSession()
       }
     }
-  }, [searchParams])
+  }, [chatId, isNew]) // Dependencies specific to what we use
 
   // Enviar mensajes iniciales y crear nuevo trámite al iniciar
   useEffect(() => {
     let mounted = true
+    // chatId is now from outer scope
 
     console.log('[PreavisoChat] useEffect ejecutado - user?.id:', user?.id, 'initializationRef.current:', initializationRef.current, 'initialMessagesSent:', initialMessagesSent, 'messages.length:', messages.length)
 
     const initializeChat = async () => {
+      // Si hay un chatId en la URL, asumimos que el primer useEffect se encarga de cargar la sesión.
+      // No debemos inicializar un chat "nuevo" encima.
+      if (chatId) {
+        console.log('[PreavisoChat] ChatId detectado, omitiendo inicialización automática de nuevo chat.')
+        return
+      }
+
       // Si estamos haciendo un reset manual, no interferir
       if (isManualResetRef.current) {
         console.log('[PreavisoChat] Reset manual en progreso, omitiendo inicialización automática')
@@ -609,9 +743,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return
       }
 
-      // Verificar si ya se inicializó para este usuario (solo si NO hubo cambio de usuario y los mensajes no están vacíos)
-      if (!userChanged && !messagesEmpty && initializationRef.current) {
-        console.log('[PreavisoChat] Ya se inicializó para este usuario y hay mensajes, omitiendo...')
+      // Verificar si ya se inicializó para este usuario
+      // FIX: Eliminamos el chequeo de !messagesEmpty que causaba doble ejecución cuando messages estaba vacío
+      if (!userChanged && initializationRef.current) {
+        console.log('[PreavisoChat] Ya se inicializó para este usuario, omitiendo...')
         return
       }
 
@@ -723,6 +858,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
       } catch (error) {
         console.error('Error creando nuevo trámite:', error)
+
         // No bloquear la inicialización del chat si falla la creación del trámite
       }
     }
@@ -989,8 +1125,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           lastModified: Date.now()
         })
 
-        // Procesar como archivo subido
-        await handleFileUpload([file])
+        // Agregar a archivos pendientes en lugar de procesar inmediatamente
+        setPendingFiles(prev => [...prev, file])
         return
       }
     }
@@ -1171,13 +1307,36 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }, 0)
   }
 
+  const handleDeleteSession = async () => {
+    if (!conversationIdRef.current) return
+    if (!confirm('¿Estás seguro de eliminar esta conversación? Se borrarán todos los datos y mensajes.')) return
+
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      const headers: HeadersInit = {}
+      if (currentSession?.access_token) {
+        headers['Authorization'] = `Bearer ${currentSession.access_token}`
+      }
+
+      await fetch(`/api/chat/sessions/${conversationIdRef.current}`, {
+        method: 'DELETE',
+        headers
+      })
+
+      // Iniciar nueva sesión limpia
+      await createNewSession()
+    } catch (e) {
+      console.error('Error deleting session:', e)
+    }
+  }
+
   const handleNewChat = () => {
     setShowNewChatDialog(true)
   }
 
   const handleConfirmNewChat = async () => {
     setShowNewChatDialog(false)
-    await resetChat()
+    await createNewSession()
   }
 
   const cancelMessageRequest = () => {
@@ -1218,314 +1377,374 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
     if (!hasFiles && !hasMessage) return
     if (isProcessing || isProcessingDocument) return
+    if (isSubmittingRef.current === true) return // Prevenir doble submit
 
-    // Si hay archivos pendientes Y mensaje, marcar como procesando desde el inicio
-    // para que se muestre como un solo proceso bloqueado
-    if (hasFiles && hasMessage) {
-      setIsProcessing(true)
-    }
+    // Bloquear inmediatamente
+    isSubmittingRef.current = true
 
-    // Si hay archivos pendientes, procesarlos primero
-    if (hasFiles) {
-      // Crear un FileList simulado para usar con handleFileUpload
-      const dataTransfer = new DataTransfer()
-      pendingFiles.forEach(file => dataTransfer.items.add(file))
-      const fileList = dataTransfer.files
+    try {
 
-      // Guardar archivos antes de limpiar para incluirlos en el mensaje
-      const filesToAttach = [...pendingFiles]
+      // Si hay archivos pendientes Y mensaje, marcar como procesando desde el inicio
+      // para que se muestre como un solo proceso bloqueado
+      if (hasFiles && hasMessage) {
+        setIsProcessing(true)
+      }
 
-      // Limpiar archivos pendientes antes de procesar
-      setPendingFiles([])
+      // Esperar a que la sesión esté lista si es necesario
+      if (!conversationIdRef.current) {
+        console.log('Esperando inicialización de sesión...')
+        // Pequeño retry loop (máx 3 segundos)
+        for (let i = 0; i < 30; i++) {
+          if (conversationIdRef.current) break
+          await new Promise(r => setTimeout(r, 100))
+        }
+        if (!conversationIdRef.current) {
+          console.error('No se pudo establecer sesión de chat')
+          // Permitir continuar (quizás se crea al vuelo en backend?) pero advertir
+        }
+      }
 
-      // Si hay mensaje de texto, crear un solo mensaje multimodal con texto + archivos
-      if (hasMessage) {
+      // Si hay archivos pendientes, procesarlos primero
+      if (hasFiles) {
+        // Crear un FileList simulado para usar con handleFileUpload
+        const dataTransfer = new DataTransfer()
+        pendingFiles.forEach(file => dataTransfer.items.add(file))
+        const fileList = dataTransfer.files
+
+        // Guardar archivos antes de limpiar para incluirlos en el mensaje
+        const filesToAttach = [...pendingFiles]
+
+        // Limpiar archivos pendientes antes de procesar
+        setPendingFiles([])
+
+        // Si hay mensaje de texto, crear un solo mensaje multimodal con texto + archivos
+        if (hasMessage) {
+          const userMessage: ChatMessage = {
+            id: generateMessageId('user'),
+            role: 'user',
+            content: input.trim(),
+            timestamp: new Date(),
+            attachments: filesToAttach
+          }
+          setMessages(prev => [...prev, userMessage])
+        }
+
+        // Procesar archivos (pasar true para no activar isProcessingDocument cuando hay mensaje pendiente,
+        // y true para skipUserMessage cuando hay texto para evitar mensaje duplicado)
+        // Ahora pasamos input.trim() como content del mensaje para que handleFileUpload haga el envío
+        await handleFileUpload(fileList, true, hasMessage, hasMessage ? input.trim() : null)
+
+        // Si no hay texto, solo procesar archivos y salir
+        if (!hasMessage) {
+          // Si estaba marcado como procesando, limpiarlo
+          setIsProcessing(false)
+          return
+        }
+
+        // IMPORTANTE: Si hay archivos, handleFileUpload YA envió el mensaje al backend con el contexto actualizado
+        // y con el texto del usuario. NO debemos continuar aquí porque enviaríamos un segundo request con contexto stale.
+        if (hasFiles) {
+          const currentInput = input.trim()
+          setInput('')
+          // Liberar el lock de submit ya que handleFileUpload terminó (o retornó temprano)
+          isSubmittingRef.current = false
+          // Asegurar que el estado visual de "procesando mensaje" se limpie si no hubo envío real
+          if (!isProcessingDocument) {
+            setIsProcessing(false)
+          }
+          return
+        }
+
+        // Liberamos lock si no entramos al return anterior (aunque en teoría files si entra)
+        // Pero si continuamos aqui, el lock se libera en el finally del bloque principal
+        // NOTA: handleFileUpload es async, si retornanos arriba, el finally NO se ejecuta para este bloque padre si no lo envolvemos todo.
+        // FIX CRITICO: El try/finally debe envolver TODO handleSend.
+
+      } else {
+        // Si solo hay mensaje (sin archivos), marcar como procesando ahora
+        setIsProcessing(true)
+
         const userMessage: ChatMessage = {
           id: generateMessageId('user'),
           role: 'user',
           content: input.trim(),
-          timestamp: new Date(),
-          attachments: filesToAttach
+          timestamp: new Date()
         }
         setMessages(prev => [...prev, userMessage])
       }
 
-      // Procesar archivos (pasar true para no activar isProcessingDocument cuando hay mensaje pendiente,
-      // y true para skipUserMessage cuando hay texto para evitar mensaje duplicado)
-      await handleFileUpload(fileList, true, hasMessage)
+      // Si llegamos aqui y HABIA archivos, ya retornamos arriba. 
+      // Si NO habia archivos (else block), continuamos con el envio normal.
 
-      // Si no hay texto, solo procesar archivos y salir
-      if (!hasMessage) {
-        // Si estaba marcado como procesando, limpiarlo
-        setIsProcessing(false)
-        return
+      const currentInput = input.trim()
+      setInput('')
+
+      // Cancelar cualquier petición anterior
+      if (messageAbortRef.current) {
+        try { messageAbortRef.current.abort() } catch { }
       }
+      const messageAbort = new AbortController()
+      messageAbortRef.current = messageAbort
 
-      // Si había mensaje pero se canceló el procesamiento de documentos, salir
-      if (cancelDocumentBatchRequestedRef.current) {
-        setIsProcessing(false)
-        return
-      }
-    } else {
-      // Si solo hay mensaje (sin archivos), marcar como procesando ahora
-      setIsProcessing(true)
-
-      const userMessage: ChatMessage = {
-        id: generateMessageId('user'),
-        role: 'user',
-        content: input.trim(),
-        timestamp: new Date()
-      }
-      setMessages(prev => [...prev, userMessage])
-    }
-    const currentInput = input.trim()
-    setInput('')
-
-    // Cancelar cualquier petición anterior
-    if (messageAbortRef.current) {
-      try { messageAbortRef.current.abort() } catch { }
-    }
-    const messageAbort = new AbortController()
-    messageAbortRef.current = messageAbort
-
-    try {
-      // Llamar al agente de IA (usando Plugin System V2)
-      const response = await fetch('/api/ai/preaviso-chat-v2', {
-        method: 'POST',
-        headers: {
+      try {
+        // Llamar al agente de IA (usando Plugin System V2)
+        // Asegurarse de tener el token actualizado
+        const { data: { session: currentSession } } = await supabase.auth.getSession()
+        const headers: HeadersInit = {
           'Content-Type': 'application/json',
-        },
-        signal: messageAbort.signal,
-        body: JSON.stringify({
-          messages: [
-            ...messages.map(m => ({ role: m.role, content: m.content })),
-            { role: 'user' as const, content: currentInput }
-          ],
-          context: {
-            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
-            // Esto permite que el backend detecte correctamente qué información ya está capturada
-            conversation_id: conversationIdRef.current,
-            _document_intent: (data as any)._document_intent ?? null,
-            _document_people_pending: (data as any)._document_people_pending ?? null,
-            _last_question_intent: (data as any)._last_question_intent ?? null,
-            tramiteId: activeTramiteId,
-            vendedores: data.vendedores || [],
-            compradores: data.compradores || [],
-            // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
-            creditos: data.creditos,
-            gravamenes: data.gravamenes || [],
-            inmueble: data.inmueble,
-            folios: data.folios,
-            documentos: data.documentos,
-            documentosProcesados: uploadedDocuments
-              .filter(d => d.processed && d.extractedData)
-              .map(d => ({
-                nombre: d.name,
-                tipo: d.documentType || 'desconocido',
-                informacionExtraida: d.extractedData
-              })),
-            expedienteExistente: expedienteExistente || undefined
-          },
-          tramiteId: activeTramiteId
-        })
-      })
-
-      if (!response.ok) {
-        throw new Error(`Error: ${response.status}`)
-      }
-
-      const result = await response.json()
-      const messagesToAdd = result.messages || [result.message]
-      if (result?.state) {
-        setServerState(result.state as ServerStateSnapshot)
-      }
-
-      // Fuente de verdad de datos estructurados: si el backend ya pudo parsear <DATA_UPDATE>,
-      // aplicarlo directo al estado para que el panel "Información Capturada" refleje confirmaciones.
-      const hasServerData = !!result?.data
-      if (hasServerData) {
-        setData(prevData => {
-          const nextData = { ...prevData }
-          const d = result.data
-
-          if (d.tipoOperacion !== undefined) nextData.tipoOperacion = d.tipoOperacion
-          if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (nextData as any)._document_intent = (d as any)._document_intent
-          if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) (nextData as any)._document_people_pending = (d as any)._document_people_pending
-          if (d.vendedores !== undefined) nextData.vendedores = d.vendedores as any
-          if (d.compradores !== undefined) nextData.compradores = d.compradores as any
-          if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
-          if (d.gravamenes !== undefined) nextData.gravamenes = d.gravamenes as any
-          // CRÍTICO: Merge profundo de inmueble (en chat) para no perder datos extraídos del documento
-          // cuando el backend manda un update parcial (ej. solo existe_hipoteca).
-          if (Object.prototype.hasOwnProperty.call(d, 'inmueble')) {
-            const prevI: any = (nextData as any).inmueble || {}
-            const nextI: any = (d as any).inmueble
-            if (nextI && typeof nextI === 'object') {
-              const mergedDireccion =
-                (prevI?.direccion && nextI?.direccion)
-                  ? { ...prevI.direccion, ...nextI.direccion }
-                  : (nextI?.direccion ?? prevI?.direccion)
-                ; (nextData as any).inmueble = {
-                  ...prevI,
-                  ...nextI,
-                  direccion: mergedDireccion,
-                  folio_real: nextI?.folio_real ?? prevI?.folio_real ?? null,
-                  partidas: nextI?.partidas ?? prevI?.partidas ?? [],
-                  superficie: nextI?.superficie ?? prevI?.superficie ?? null,
-                  existe_hipoteca: (nextI?.existe_hipoteca !== undefined ? nextI.existe_hipoteca : prevI?.existe_hipoteca),
-                }
-            } else if (nextI === null) {
-              ; (nextData as any).inmueble = prevI
-            }
-          }
-          // CRÍTICO: Merge estable de `folios` también en chat (handleSend), para no perder selection confirmada
-          if (d.folios !== undefined) {
-            const prevF: any = (nextData as any).folios || { candidates: [], selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false } }
-            const nextF: any = d.folios
-            const map = new Map<string, any>()
-            for (const c of [...(prevF.candidates || []), ...(nextF.candidates || [])]) {
-              const folio = String(c?.folio || '').replace(/\D/g, '')
-              const scope = c?.scope || 'otros'
-              if (!folio) continue
-              const key = `${scope}:${folio}`
-              const prevC = map.get(key) || {}
-              map.set(key, {
-                ...prevC,
-                ...c,
-                folio,
-                scope,
-                attrs: { ...(prevC.attrs || {}), ...(c.attrs || {}) },
-                sources: [...(prevC.sources || []), ...(c.sources || [])],
-              })
-            }
-            const preserveSelection =
-              prevF.selection?.confirmed_by_user === true &&
-              (!nextF.selection?.confirmed_by_user || !nextF.selection?.selected_folio)
-              ; (nextData as any).folios = {
-                candidates: Array.from(map.values()),
-                selection: preserveSelection ? prevF.selection : (nextF.selection || prevF.selection),
-              }
-          }
-          if (d.control_impresion) nextData.control_impresion = d.control_impresion
-          if (d.validaciones) nextData.validaciones = d.validaciones
-
-          nextData.actosNotariales = determineActosNotariales(nextData)
-          return nextData
-        })
-      }
-
-      // Detectar si el mensaje contiene el resumen final
-      const hasSummary = messagesToAdd.some((msg: string) =>
-        msg.includes('RESUMEN DE INFORMACIÓN CAPTURADA') ||
-        msg.includes('=== RESUMEN DE INFORMACIÓN CAPTURADA ===')
-      )
-
-      if (hasSummary && isCompleteByServer) {
-        setShowExportOptions(true)
-      }
-
-      // Agregar mensajes con delay para efecto conversacional
-      for (let i = 0; i < messagesToAdd.length; i++) {
-        await new Promise(resolve => setTimeout(resolve, i * 300)) // 300ms entre mensajes
-        const assistantMessage: ChatMessage = {
-          id: generateMessageId('ai'),
-          role: 'assistant',
-          content: toUserFacingAssistantText(messagesToAdd[i]),
-          timestamp: new Date()
         }
-        setMessages(prev => {
-          // Verificar que no esté duplicado
-          const exists = prev.some(m => m.id === assistantMessage.id ||
-            (m.role === 'assistant' && m.content === assistantMessage.content &&
-              Math.abs(m.timestamp.getTime() - assistantMessage.timestamp.getTime()) < 1000))
-          if (exists) return prev
-          return [...prev, assistantMessage]
+        if (currentSession?.access_token) {
+          headers['Authorization'] = `Bearer ${currentSession.access_token}`
+        }
+
+        const response = await fetch('/api/ai/preaviso-chat', {
+          method: 'POST',
+          headers,
+          signal: messageAbort.signal,
+          body: JSON.stringify({
+            messages: [
+              ...messages.map(m => ({ role: m.role, content: m.content })),
+              { role: 'user' as const, content: currentInput }
+            ],
+            context: {
+              // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
+              // Esto permite que el backend detecte correctamente qué información ya está capturada
+              conversation_id: conversationIdRef.current,
+              _document_intent: (data as any)._document_intent ?? null,
+              _document_people_pending: (data as any)._document_people_pending ?? null,
+              _last_question_intent: (data as any)._last_question_intent ?? null,
+              tramiteId: activeTramiteId,
+              vendedores: data.vendedores || [],
+              compradores: data.compradores || [],
+              // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
+              creditos: data.creditos,
+              gravamenes: data.gravamenes || [],
+              inmueble: data.inmueble,
+              folios: data.folios,
+              documentos: data.documentos,
+              documentosProcesados: uploadedDocuments
+                .filter(d => d.processed && d.extractedData)
+                .map(d => ({
+                  nombre: d.name,
+                  tipo: d.documentType || 'desconocido',
+                  informacionExtraida: d.extractedData
+                })),
+              expedienteExistente: expedienteExistente || undefined
+            },
+            tramiteId: activeTramiteId
+          })
         })
-      }
 
-      // Intentar extraer información estructurada de la respuesta
-      // Incluir mensajes previos de la IA para detectar confirmaciones
-      const previousAIMessages = messages
-        .filter(m => m.role === 'assistant')
-        .slice(-3) // Últimos 3 mensajes de la IA
-        .map(m => m.content)
-        .join('\n\n')
-      // IMPORTANTE: No re-extraer/reescribir datos en frontend si el backend ya entregó `data`.
-      // El extractor local no conserva banderas internas (ej. titular_registral_confirmado) y puede revertir pasos.
-      if (!hasServerData) {
-        const allAIMessages = (previousAIMessages ? previousAIMessages + '\n\n' : '') + messagesToAdd.join('\n\n')
-        const extractedData = extractDataFromMessage(allAIMessages, currentInput, data)
-        if (extractedData) {
+        if (!response.ok) {
+          throw new Error(`Error: ${response.status}`)
+        }
+
+        const result = await response.json()
+        const messagesToAdd = result.messages || [result.message]
+        if (result?.state) {
+          setServerState(result.state as ServerStateSnapshot)
+        }
+
+        // Fuente de verdad de datos estructurados: si el backend ya pudo parsear <DATA_UPDATE>,
+        // aplicarlo directo al estado para que el panel "Información Capturada" refleje confirmaciones.
+        const hasServerData = !!result?.data
+        if (hasServerData) {
           setData(prevData => {
-            const newData = { ...prevData }
+            const nextData = { ...prevData }
+            const d = result.data
 
-            // Actualizar tipoOperacion
-            if (extractedData.tipoOperacion !== undefined) {
-              newData.tipoOperacion = extractedData.tipoOperacion
+            if (d.tipoOperacion !== undefined) nextData.tipoOperacion = d.tipoOperacion
+            if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (nextData as any)._document_intent = (d as any)._document_intent
+            if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) (nextData as any)._document_people_pending = (d as any)._document_people_pending
+            if (d.vendedores !== undefined) nextData.vendedores = d.vendedores as any
+            if (d.compradores !== undefined) nextData.compradores = d.compradores as any
+            if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
+            if (d.gravamenes !== undefined) nextData.gravamenes = d.gravamenes as any
+            // CRÍTICO: Merge profundo de inmueble (en chat) para no perder datos extraídos del documento
+            // cuando el backend manda un update parcial (ej. solo existe_hipoteca).
+            if (Object.prototype.hasOwnProperty.call(d, 'inmueble')) {
+              const prevI: any = (nextData as any).inmueble || {}
+              const nextI: any = (d as any).inmueble
+              if (nextI && typeof nextI === 'object') {
+                const mergedDireccion =
+                  (prevI?.direccion && nextI?.direccion)
+                    ? { ...prevI.direccion, ...nextI.direccion }
+                    : (nextI?.direccion ?? prevI?.direccion)
+                  ; (nextData as any).inmueble = {
+                    ...prevI,
+                    ...nextI,
+                    direccion: mergedDireccion,
+                    folio_real: nextI?.folio_real ?? prevI?.folio_real ?? null,
+                    partidas: nextI?.partidas ?? prevI?.partidas ?? [],
+                    superficie: nextI?.superficie ?? prevI?.superficie ?? null,
+                    existe_hipoteca: (nextI?.existe_hipoteca !== undefined ? nextI.existe_hipoteca : prevI?.existe_hipoteca),
+                  }
+              } else if (nextI === null) {
+                ; (nextData as any).inmueble = prevI
+              }
             }
+            // CRÍTICO: Merge estable de `folios` también en chat (handleSend), para no perder selection confirmada
+            if (d.folios !== undefined) {
+              const prevF: any = (nextData as any).folios || { candidates: [], selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false } }
+              const nextF: any = d.folios
+              const map = new Map<string, any>()
+              for (const c of [...(prevF.candidates || []), ...(nextF.candidates || [])]) {
+                const folio = String(c?.folio || '').replace(/\D/g, '')
+                const scope = c?.scope || 'otros'
+                if (!folio) continue
+                const key = `${scope}:${folio}`
+                const prevC = map.get(key) || {}
+                map.set(key, {
+                  ...prevC,
+                  ...c,
+                  folio,
+                  scope,
+                  attrs: { ...(prevC.attrs || {}), ...(c.attrs || {}) },
+                  sources: [...(prevC.sources || []), ...(c.sources || [])],
+                })
+              }
+              const preserveSelection =
+                prevF.selection?.confirmed_by_user === true &&
+                (!nextF.selection?.confirmed_by_user || !nextF.selection?.selected_folio)
+                ; (nextData as any).folios = {
+                  candidates: Array.from(map.values()),
+                  selection: preserveSelection ? prevF.selection : (nextF.selection || prevF.selection),
+                }
+            }
+            if (d.control_impresion) nextData.control_impresion = d.control_impresion
+            if (d.validaciones) nextData.validaciones = d.validaciones
 
-            // v1.4: arrays y estructura de inmueble
-            if (extractedData.vendedores !== undefined) {
-              newData.vendedores = extractedData.vendedores as any
+            nextData.actosNotariales = {
+              cancelacionCreditoVendedor: determineActosNotariales(nextData).cancelacionCreditoVendedor,
+              compraventa: determineActosNotariales(nextData).compraventa,
+              aperturaCreditoComprador: determineActosNotariales(nextData).aperturaCreditoComprador ?? false
             }
-            if (extractedData.compradores !== undefined) {
-              newData.compradores = extractedData.compradores as any
-            }
-            // creditos puede ser [] (contado) o [..] (crédito) o undefined (no confirmado)
-            if (Object.prototype.hasOwnProperty.call(extractedData, 'creditos')) {
-              newData.creditos = extractedData.creditos as any
-            }
-            if (extractedData.gravamenes !== undefined) {
-              newData.gravamenes = extractedData.gravamenes as any
-            }
-            if (extractedData.inmueble) {
-              newData.inmueble = extractedData.inmueble as any
-            }
-
-            // Determinar actos notariales
-            const actos = determineActosNotariales(newData)
-            newData.actosNotariales = actos
-
-            return newData
+            return nextData
           })
         }
-      }
 
-    } catch (error) {
-      // No mostrar error si fue cancelado por el usuario
-      if ((error as any)?.name === 'AbortError' || messageAbort.signal.aborted) {
-        return
+        // Detectar si el mensaje contiene el resumen final
+        const hasSummary = messagesToAdd.some((msg: string) =>
+          msg.includes('RESUMEN DE INFORMACIÓN CAPTURADA') ||
+          msg.includes('=== RESUMEN DE INFORMACIÓN CAPTURADA ===')
+        )
+
+        if (hasSummary && isCompleteByServer) {
+          setShowExportOptions(true)
+        }
+
+        // Agregar mensajes con delay para efecto conversacional
+        for (let i = 0; i < messagesToAdd.length; i++) {
+          await new Promise(resolve => setTimeout(resolve, i * 300)) // 300ms entre mensajes
+          const assistantMessage: ChatMessage = {
+            id: generateMessageId('ai'),
+            role: 'assistant',
+            content: toUserFacingAssistantText(messagesToAdd[i]),
+            timestamp: new Date()
+          }
+          setMessages(prev => {
+            // Verificar que no esté duplicado
+            const exists = prev.some(m => m.id === assistantMessage.id ||
+              (m.role === 'assistant' && m.content === assistantMessage.content &&
+                Math.abs(m.timestamp.getTime() - assistantMessage.timestamp.getTime()) < 1000))
+            if (exists) return prev
+            return [...prev, assistantMessage]
+          })
+        }
+
+        // Intentar extraer información estructurada de la respuesta
+        // Incluir mensajes previos de la IA para detectar confirmaciones
+        const previousAIMessages = messages
+          .filter(m => m.role === 'assistant')
+          .slice(-3) // Últimos 3 mensajes de la IA
+          .map(m => m.content)
+          .join('\n\n')
+        // IMPORTANTE: No re-extraer/reescribir datos en frontend si el backend ya entregó `data`.
+        // El extractor local no conserva banderas internas (ej. titular_registral_confirmado) y puede revertir pasos.
+        if (!hasServerData) {
+          const allAIMessages = (previousAIMessages ? previousAIMessages + '\n\n' : '') + messagesToAdd.join('\n\n')
+          const extractedData = extractDataFromMessage(allAIMessages, currentInput, data)
+          if (extractedData) {
+            setData(prevData => {
+              const newData = { ...prevData }
+
+              // Actualizar tipoOperacion
+              if (extractedData.tipoOperacion !== undefined) {
+                newData.tipoOperacion = extractedData.tipoOperacion
+              }
+
+              // v1.4: arrays y estructura de inmueble
+              if (extractedData.vendedores !== undefined) {
+                newData.vendedores = extractedData.vendedores as any
+              }
+              if (extractedData.compradores !== undefined) {
+                newData.compradores = extractedData.compradores as any
+              }
+              // creditos puede ser [] (contado) o [..] (crédito) o undefined (no confirmado)
+              if (Object.prototype.hasOwnProperty.call(extractedData, 'creditos')) {
+                newData.creditos = extractedData.creditos as any
+              }
+              if (extractedData.gravamenes !== undefined) {
+                newData.gravamenes = extractedData.gravamenes as any
+              }
+              if (extractedData.inmueble) {
+                newData.inmueble = extractedData.inmueble as any
+              }
+
+              // Determinar actos notariales
+              const actos = determineActosNotariales(newData)
+              newData.actosNotariales = {
+                cancelacionCreditoVendedor: actos.cancelacionCreditoVendedor,
+                compraventa: actos.compraventa,
+                aperturaCreditoComprador: actos.aperturaCreditoComprador ?? false
+              }
+
+              return newData
+            })
+          }
+        }
+
+      } catch (error) {
+        // No mostrar error si fue cancelado por el usuario
+        if ((error as any)?.name === 'AbortError' || messageAbort.signal.aborted) {
+          return
+        }
+        console.error('Error en chat:', error)
+        const errorMessage: ChatMessage = {
+          id: generateMessageId('error'),
+          role: 'assistant',
+          content: 'Disculpe, ha ocurrido un error al procesar su mensaje. Por favor, intente nuevamente o proporcione la información de otra manera.',
+          timestamp: new Date()
+        }
+        setMessages(prev => [...prev, errorMessage])
+      } finally {
+        setIsProcessing(false)
+        isSubmittingRef.current = false // Siempre liberar lock al terminar
+        // Limpiar abort controller si es el actual
+        if (messageAbortRef.current === messageAbort) {
+          messageAbortRef.current = null
+        }
+        // Restaurar foco en el input después de procesar
+        setTimeout(() => {
+          textInputRef.current?.focus()
+        }, 100)
       }
-      console.error('Error en chat:', error)
-      const errorMessage: ChatMessage = {
-        id: generateMessageId('error'),
-        role: 'assistant',
-        content: 'Disculpe, ha ocurrido un error al procesar su mensaje. Por favor, intente nuevamente o proporcione la información de otra manera.',
-        timestamp: new Date()
-      }
-      setMessages(prev => [...prev, errorMessage])
     } finally {
-      setIsProcessing(false)
-      // Limpiar abort controller si es el actual
-      if (messageAbortRef.current === messageAbort) {
-        messageAbortRef.current = null
-      }
-      // Restaurar foco en el input después de procesar
-      setTimeout(() => {
-        textInputRef.current?.focus()
-      }, 100)
+      // FIX CRÍTICO: Asegurar que siempre se libere el lock, incluso si hay retornos tempranos
+      isSubmittingRef.current = false
     }
   }
 
-  const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false, skipUserMessage = false) => {
+  const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false, skipUserMessage = false, userText: string | null = null) => {
     if (!files || files.length === 0) return
 
     // Convertir FileList a array si es necesario
     const filesArray = Array.isArray(files) ? files : Array.from(files)
 
+    // ... (keep existing logic for creating initial trámite if needed) ...
     // Verificar que activeTramiteId esté establecido antes de procesar
-    // Si no está, intentar crearlo o esperar un momento
     if (!activeTramiteId && user?.id) {
+      // ... (omitted for brevity, keep existing code until line 1771) ...
       try {
         const { data: { session: currentSession } } = await supabase.auth.getSession()
         const headers: HeadersInit = { 'Content-Type': 'application/json' }
@@ -1619,25 +1838,82 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
 
     // Siempre establecer isProcessingDocument para mostrar la barra de progreso
-    // incluso si hay un mensaje pendiente
     setIsProcessingDocument(true)
     setProcessingProgress(0)
     cancelDocumentBatchRequestedRef.current = false
-    // Cancelar cualquier batch anterior colgado
     if (documentBatchAbortRef.current) {
       try { documentBatchAbortRef.current.abort() } catch { }
     }
     const batchAbort = new AbortController()
     documentBatchAbortRef.current = batchAbort
 
-    // Separar PDFs e imágenes
-    const pdfFiles = filesArray.filter(
+    // Filter out duplicates (already uploaded files)
+    // Filter out duplicates (already uploaded files)
+    const newFiles: File[] = []
+
+    for (const file of filesArray) {
+      const existingDoc = uploadedDocuments.find(doc =>
+        doc.name === file.name && doc.size === file.size && doc.processed
+      )
+
+      if (existingDoc && existingDoc.extractedData) {
+        console.log(`[PreavisoChat] Reusing data for duplicate file: ${file.name}`)
+
+        // Simular procesamiento exitoso con datos existentes
+        const simulatedCommand: Command = {
+          type: 'document_processed',
+          timestamp: new Date(),
+          payload: {
+            documentType: existingDoc.documentType || 'unknown',
+            extractedData: existingDoc.extractedData,
+            fileName: existingDoc.name
+          },
+          source: 'document'
+        }
+
+        // Procesar el comando directamente
+        await processCommand(simulatedCommand)
+
+        // Avisar al usuario
+        setMessages(prev => [...prev, {
+          id: generateMessageId('duplicate_reuse'),
+          role: 'assistant',
+          content: `El documento "${file.name}" ya había sido procesado. He recuperado la información existente.`,
+          timestamp: new Date()
+        }])
+
+        // Limpiar estado de loading por si era el único archivo
+        if (filesArray.length === 1) {
+          setIsProcessingDocument(false)
+          setProcessingProgress(0)
+          if (skipUserMessage === false && userText) {
+            // Si había texto de usuario pendiente, debemos limpiar el estado de "procesando mensaje"
+            // Similar al bloque de error original, pero aquí es éxito simulado.
+            // En realidad, si es éxito, tal vez queramos dejar que userText se envíe?
+            // El flujo normal (non-duplicate) hace el upload, luego processCommand, luego...
+            // Si hay userText, handleSend lo mandó.
+          }
+        }
+      } else {
+        newFiles.push(file)
+      }
+    }
+
+    if (newFiles.length === 0) {
+      // Si todos eran duplicados (y ya los procesamos arriba), terminamos.
+      setIsProcessingDocument(false)
+      setProcessingProgress(0)
+      return
+    }
+
+
+
+    const pdfFiles = newFiles.filter(
       file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
     )
-    const imageFiles = filesArray.filter(file => !pdfFiles.includes(file))
+    const imageFiles = newFiles.filter(file => !pdfFiles.includes(file))
 
-    // Agregar documentos originales a la lista (sin mostrar imágenes convertidas)
-    const originalDocs: UploadedDocument[] = filesArray.map(file => ({
+    const originalDocs: UploadedDocument[] = newFiles.map(file => ({
       id: generateMessageId('doc'),
       file,
       name: file.name,
@@ -1647,22 +1923,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }))
     setUploadedDocuments(prev => [...prev, ...originalDocs])
 
-    // Obtener nombres de archivos para uso en toda la función
-    const fileNames = filesArray.map(f => f.name)
+    const fileNames = newFiles.map(f => f.name)
 
-    // Mensaje de usuario solo si no se debe omitir (cuando hay texto pendiente, el mensaje se crea en handleSend)
     if (!skipUserMessage) {
       const fileMessage: ChatMessage = {
         id: generateMessageId('file'),
         role: 'user',
-        content: `He subido el siguiente documento: ${fileNames.join(', ')}`,
+        content: userText || `He subido el siguiente documento: ${fileNames.join(', ')}`,
         timestamp: new Date(),
         attachments: filesArray
       }
       setMessages(prev => [...prev, fileMessage])
     }
 
-    // Mensaje de procesamiento
     const processingMessage: ChatMessage = {
       id: generateMessageId('processing'),
       role: 'assistant',
@@ -1670,6 +1943,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       timestamp: new Date()
     }
     setMessages(prev => [...prev, processingMessage])
+
+    // ... (rest of processing logic stays same until chat API call) ...
+    // Note: I will need to replace the chat API call part specifically, but since I can't target detached blocks easily in a huge function without context, 
+    // I will use replace_file_content on the function signature and the specific API block separately or use multi_replace if appropriate.
+    // Actually, `replace_file_content` supports specifying StartLine/EndLine.
+    // But `handleFileUpload` is immense. I should try to target the signature and the API call separately.
+    // Wait, the tool description says "Use this tool ONLY when you are making a SINGLE CONTIGUOUS block of edits".
+    // I must use multi_replace.
+
 
     // Asegurar sesión válida antes de procesar (evita quedarse en 50% si la sesión expiró)
     const ensureSession = async () => {
@@ -1747,7 +2029,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
 
     setProcessingProgress(50) // 50% después de conversión
-    const newDocuments = [...data.documentos, ...fileNames]
+    const newDocuments = [...(data.documentos || []), ...fileNames]
     setData(prev => ({ ...prev, documentos: newDocuments }))
 
     // Procesar cada documento con IA
@@ -2109,7 +2391,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 selection: nextF.selection || prevF.selection,
               }
             }
-            updated.actosNotariales = determineActosNotariales(updated)
+            const actos = determineActosNotariales(updated)
+            updated.actosNotariales = {
+              cancelacionCreditoVendedor: actos.cancelacionCreditoVendedor,
+              compraventa: actos.compraventa,
+              aperturaCreditoComprador: actos.aperturaCreditoComprador ?? false
+            }
             // CRÍTICO: Actualizar workingData con la versión actualizada ANTES de continuar
             workingData = updated
             return updated
@@ -2436,7 +2723,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
         let processResponse: Response
         try {
-          processResponse = await fetchWithTimeout('/api/ai/preaviso-process-document-v2', {
+          processResponse = await fetchWithTimeout('/api/ai/preaviso-process-document', {
             method: 'POST',
             headers,
             body: formData
@@ -2512,14 +2799,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           content: 'Tu sesión expiró mientras se procesaba el documento. Por favor actualiza la página e inicia sesión de nuevo.',
           timestamp: new Date()
         }]))
+        // FIX: Liberar locks explícitamente en error
         setIsProcessingDocument(false)
         setProcessingProgress(0)
         setProcessingFileName(null)
         setIsProcessing(false)
+        isSubmittingRef.current = false
         return
       }
 
       if (errorCount > 0) {
+        // ... (lines 2709-2720)
         const uniqueErrors = Array.from(new Set(errorMessages))
         const fallback = 'Error procesando el documento. Por favor, intenta nuevamente.'
         const message =
@@ -2532,10 +2822,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           content: message,
           timestamp: new Date()
         }]))
+        // FIX: Liberar locks explícitamente en error
         setIsProcessingDocument(false)
         setProcessingProgress(0)
         setProcessingFileName(null)
         setIsProcessing(false)
+        isSubmittingRef.current = false
         return
       }
 
@@ -2551,7 +2843,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       workingDocs = uploadedDocumentsRef.current
 
       // DEBUG: verificar que el chat reciba el contexto actualizado (incluye _document_intent y cónyuge si ya fue capturado)
-      console.log('[PreavisoChat] before /preaviso-chat-v2 -> context snapshot', {
+      console.log('[PreavisoChat] before /preaviso-chat -> context snapshot', {
         _document_intent: (workingData as any)?._document_intent ?? null,
         _document_people_pending: (workingData as any)?._document_people_pending ?? null,
         comprador0: workingData?.compradores?.[0]?.persona_fisica?.nombre || workingData?.compradores?.[0]?.persona_moral?.denominacion_social || null,
@@ -2579,7 +2871,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         })
         .join('\n\n')
 
-      const chatResponse = await fetch('/api/ai/preaviso-chat-v2', {
+      const chatResponse = await fetch('/api/ai/preaviso-chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2590,7 +2882,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             ...messages.filter(m => m.id !== processingMessage.id).map(m => ({ role: m.role, content: m.content })),
             {
               role: 'user' as const,
-              content: `He subido el siguiente documento: ${fileNames.join(', ')}`
+              content: userText || `He subido el siguiente documento: ${fileNames.join(', ')}`
             }
           ],
           context: {
@@ -2644,7 +2936,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             if (d.folios !== undefined) nextData.folios = d.folios as any
             if (d.control_impresion) nextData.control_impresion = d.control_impresion
             if (d.validaciones) nextData.validaciones = d.validaciones
-            nextData.actosNotariales = determineActosNotariales(nextData)
+            const actos = determineActosNotariales(nextData)
+            nextData.actosNotariales = {
+              cancelacionCreditoVendedor: actos.cancelacionCreditoVendedor,
+              compraventa: actos.compraventa,
+              aperturaCreditoComprador: actos.aperturaCreditoComprador ?? false
+            }
 
             // CRÍTICO: dataRef.current se actualiza automáticamente en el useEffect cuando data cambia
             // Pero necesitamos actualizar workingData inmediatamente para que esté disponible en este batch
@@ -2704,6 +3001,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     } finally {
       setIsProcessing(false)
       setIsProcessingDocument(false)
+      isSubmittingRef.current = false // Liberar lock tambien aqui por si acaso
+      setProcessingProgress(0)
       setProcessingProgress(0)
       setProcessingFileName(null)
       // Limpiar abort controller del batch actual
@@ -3699,6 +3998,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                         <MessageSquarePlus className="mr-2 h-4 w-4" />
                         Nuevo chat
                       </DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleDeleteSession} className="cursor-pointer text-red-600 hover:!bg-gray-100 focus:!bg-gray-100 focus:!text-red-700">
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Eliminar conversación
+                      </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
@@ -4418,7 +4721,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           <DialogHeader>
             <DialogTitle>¿Iniciar un nuevo chat?</DialogTitle>
             <DialogDescription>
-              Se perderá todo el progreso actual del chat. Esta acción no se puede deshacer.
+              Se guardará la conversación actual en el historial y comenzarás un trámite nuevo desde cero.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

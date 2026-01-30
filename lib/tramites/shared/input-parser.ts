@@ -136,19 +136,28 @@ export class InputParser {
       handler: 'TipoPersonaHandler'
     })
 
+
+
+
+
     // 2B. Nombre del vendedor (texto libre) cuando falta en el contexto
     // Ej: "INMOBILIARIA Y FRACCIONADORA CADENA, S.A. PROMOTORA DE INVERSION DE C.V"
     this.rules.push({
       name: 'seller_name_freeform',
-      pattern: /^[A-ZÁÉÍÓÚÑ0-9][A-Za-zÁÉÍÓÚÑáéíóúñ0-9\s\.\,&'\-()]{5,}$/,
+      // Relaxed pattern: Allow any text 5+ chars if context matches.
+      pattern: /^[A-ZÁÉÍÓÚÑ0-9].{4,}$/,
       condition: (input, context, lastAssistantMessage?: string) => {
         const seller0Name =
           context?.vendedores?.[0]?.persona_fisica?.nombre ||
           context?.vendedores?.[0]?.persona_moral?.denominacion_social
-        if (seller0Name) return false
-        if (!ValidationService.isValidName(input)) return false
 
-        if (context?._last_question_intent === 'seller_name') return true
+        // Fix: Permitir actualizar si el nombre es placeholder o está marcado como desconocido
+        if (seller0Name && seller0Name !== 'DESCONOCIDO' && !seller0Name.includes('PENDIENTE')) return false
+
+        // Skip if input is clearly a command or small talk (yes/no) unless it's a very short name which is unlikely
+        if (/^(si|no|ok|gracias|cancelar)$/i.test(input.trim())) return false
+
+        if (context?._last_question_intent === 'seller_name' || context?._last_question_intent === 'seller_type') return true
         const msg = String(lastAssistantMessage || '').toLowerCase()
         const asksSeller =
           msg.includes('vendedor') ||
@@ -159,6 +168,7 @@ export class InputParser {
           msg.includes('nombre completo del vendedor')
         return asksSeller
       },
+
       extract: (input) => ({
         name: input.trim(),
         inferredTipoPersona: ValidationService.inferTipoPersona(input) || 'persona_moral',
@@ -194,7 +204,7 @@ export class InputParser {
           return false
         }
 
-        const mentionsPayment = 
+        const mentionsPayment =
           inputLower.includes('pago') ||
           inputLower.includes('forma') ||
           inputLower.includes('será') ||
@@ -219,51 +229,73 @@ export class InputParser {
     })
 
     // 4. Folio real (número)
+    // 4. Folio Interaction: Unifies Selection, Focus (Questions), and Confirmation
+    // Handles: "1782484", "Folio 1782484", "Confirmar el 1782484", "Cual es la dirección del 1782484?"
     this.rules.push({
-      name: 'folio_selection',
-      pattern: /^\d{6,8}$/,
+      name: 'folio_interaction',
+      pattern: /(?:\b(\d{6,8})\b|si|sí|correcto|confirmo|confirmado|usar este)/i,
       condition: (input, context) => {
-        // Permitir selección desde candidatos (cuando hay hoja de inscripción)
-        // y también captura manual (cuando no hay candidatos aún).
+        // Solo activo si hay candidatos o si ya hay un folio provisional
         const folios = context.folios?.candidates || []
-        const alreadyHasFolio = !!context?.inmueble?.folio_real
-        return !alreadyHasFolio || folios.length > 0
+        const hasCandidates = folios.length > 0
+        const hasSelection = !!context.folios?.selection?.selected_folio
+
+        // Si no hay nada con qué interactuar, esta regla no aplica
+        if (!hasCandidates && !hasSelection) return false
+
+        // Debe contener un número de folio válido O ser una confirmación explícita
+        const hasNumber = /\b(\d{6,8})\b/.test(input)
+        const isConfirmation = /^(si|sí|correcto|confirmo|confirmado|usar este|ese|ese mero)$/i.test(input.trim())
+
+        return hasNumber || (isConfirmation && (hasSelection || folios.length === 1))
       },
-      extract: (input, context) => {
+      extract: (input, context, lastAssistantMessage) => {
         const folios = context.folios?.candidates || []
-        const selectedFolio = input.trim()
-        
-        // Si hay candidatos, exigir que exista en candidatos (para evitar capturas accidentales).
+
+        // 1. Detectar Intención General
+        const isQuestion = input.includes('?') ||
+          /^(qu[eé]|cual|c[oó]mo|d[oó]nde|cu[aá]nto|dime|muestrame|ver|checar)/i.test(input)
+
+        const isExplicitSelection = /(usar|elegir|seleccionar|el|este)\s+(\d+|folio|es)/i.test(input) ||
+          /^(si|sí|correcto|confirmo|confirmado)$/i.test(input.trim())
+
+        // 2. Extraer Número de Folio
+        const numberMatch = input.match(/\b(\d{6,8})\b/)
+        let folio = numberMatch ? numberMatch[1] : null
+
+        // Si no hay número explícito, intentar inferir contexto (confirmación de "ese")
+        if (!folio) {
+          // Si hay un solo candidato, asumimos ese
+          if (folios.length === 1) folio = typeof folios[0] === 'string' ? folios[0] : folios[0].folio
+          // Si ya hay uno seleccionado (pero no confirmado), asumimos ese
+          else if (context.folios?.selection?.selected_folio) folio = context.folios.selection.selected_folio
+        }
+
+        if (!folio) return null // No pudimos resolver el folio target
+
+        // 3. Determinar INTENT final
+        let intent: 'SELECT' | 'FOCUS' | 'CONFIRM' = 'SELECT' // Default
+
+        if (isQuestion) {
+          intent = 'FOCUS'
+        } else if (isExplicitSelection) {
+          intent = 'CONFIRM' // Confirmación fuerte
+        } else {
+          // Si solo es el número ("1782484"), es SELECT (intención de elegir)
+          // Si hay ambigüedad, preferimos SELECT sobre FOCUS para avanzar rápido
+          intent = 'SELECT'
+        }
+
+        // 4. Validar existencia en candidatos (si aplica)
         if (folios.length > 0) {
-          const folioExists = folios.some((f: any) => {
-            const folioValue = typeof f === 'string' ? f : f.folio
-            return String(folioValue).replace(/\D/g, '') === selectedFolio.replace(/\D/g, '')
-          })
-          if (!folioExists) return null
+          // Permisivos: Si es una pregunta (FOCUS), permitimos aunque no esté en lista
+          // Pero le pasamos el intent al handler
         }
 
         return {
-          selectedFolio,
-          confirmedByUser: true
-        }
-      },
-      handler: 'FolioSelectionHandler'
-    })
-
-    // 4B. Folio real mencionado en frase (captura manual)
-    this.rules.push({
-      name: 'folio_selection_phrase',
-      pattern: /folio\s+real\s*[:#]?\s*(\d{6,8})/i,
-      condition: (input, context) => {
-        // Solo si no hay folio ya capturado de forma efectiva
-        return !context?.inmueble?.folio_real
-      },
-      extract: (input) => {
-        const m = input.match(/folio\s+real\s*[:#]?\s*(\d{6,8})/i)
-        if (!m) return null
-        return {
-          selectedFolio: m[1],
-          confirmedByUser: true
+          selectedFolio: folio,
+          intent: intent,
+          confirmedByUser: (intent === 'SELECT' || intent === 'CONFIRM')
         }
       },
       handler: 'FolioSelectionHandler'
@@ -295,17 +327,22 @@ export class InputParser {
         const unidadMatch = text.match(/unidad\s*[:#]?\s*([A-Z0-9\-]+)/i)
         const condominioMatch = text.match(/condominio\s*[:#]?\s*([A-Z0-9\-]+)/i)
         const fraccMatch = text.match(/fraccionamiento\s*[:#]?\s*([A-ZÁÉÍÓÚÑ\s]+)/i) ||
-                           text.match(/desarrollo\s+habitacional\s*[:#]?\s*([A-ZÁÉÍÓÚÑ\s]+)/i) ||
-                           text.match(/conj\.?\s*habitacional\s*[:#]?\s*([A-ZÁÉÍÓÚÑ0-9\s\-]+)/i)
+          text.match(/desarrollo\s+habitacional\s*[:#]?\s*([A-ZÁÉÍÓÚÑ\s]+)/i) ||
+          text.match(/conj\.?\s*habitacional\s*[:#]?\s*([A-ZÁÉÍÓÚÑ0-9\s\-]+)/i)
         const loteMatch = text.match(/lote\s*[:#]?\s*(\d+)/i)
         const manzanaMatch = text.match(/manzana\s*[:#]?\s*(\d+)/i)
 
         const partidas = partidaMatch
           ? partidaMatch[1]
-              .split(',')
-              .map(p => p.trim())
-              .filter(Boolean)
+            .split(',')
+            .map(p => p.trim())
+            .filter(Boolean)
           : []
+
+        // FIX: Extract partida from standalone number if 'partidas' list is empty but 'partidaMatch' failed
+        // This is safe because handler checks context.
+        // Wait, InmuebleManualHandler expects parsed object. 
+        // We handle standalone numbers in a separate rule 'partida_number_standalone' below.
 
         // Dirección libre: quitar folio/partida/municipio para quedarnos con la descripción principal
         let direccionRaw = text
@@ -343,6 +380,24 @@ export class InputParser {
       handler: 'InmuebleManualHandler'
     })
 
+    // 4D. Partida (standalone number)
+    this.rules.push({
+      name: 'partida_number_standalone',
+      pattern: /^[\d\s,-]+$/,
+      condition: (input, context, lastAssistantMessage?: string) => {
+        // Must be asking for partida/registration data
+        if (context?._last_question_intent === 'partidas') return true
+        const msg = String(lastAssistantMessage || '').toLowerCase()
+        return msg.includes('partida') && !msg.includes('folio') // Avoid confusion if asking for folio
+      },
+      extract: (input) => {
+        return {
+          partidas: input.split(/[\s,]+/).filter(x => x.trim().length > 0)
+        }
+      },
+      handler: 'InmuebleManualHandler'
+    })
+
     // 6. Institución de crédito (nombres comunes)
     // IMPORTANTE: Esta regla solo se activa si isCreditInstitutionContext() retorna true
     // Esto asegura que solo capturamos instituciones cuando realmente estamos en contexto de crédito
@@ -357,13 +412,13 @@ export class InputParser {
         if (creditos.length === 0) {
           return false // No hay créditos confirmados
         }
-        
+
         // Verificar que el primer crédito no tiene institución
         const credito0 = creditos[0]
         if (credito0?.institucion) {
           return false // Ya tiene institución
         }
-        
+
         return true // Falta institución y hay créditos confirmados
       },
       extract: (input) => {
@@ -752,7 +807,7 @@ export class InputParser {
 
         const token = String(match[1] || '').toLowerCase()
         const role = token.includes('coacreditad') ? 'coacreditado' : 'acreditado'
-        
+
         // Intentar extraer nombre
         const nameMatch = input.match(/^([^,]+?)(?:\s+como|\s+es|\s+ser[aá])/i)
         let name = nameMatch ? nameMatch[1].trim() : null
@@ -824,7 +879,9 @@ export class InputParser {
       // - "sin hipoteca"
       // - "no tiene"
       // - "tiene gravamen/hipoteca"
-      pattern: /^(?:\s*(?:es|esta|está)\s+)?(?:sí|si|no|confirmo|confirmado|correcto|libre(?:\s+de\s+(?:gravamen(?:es)?|hipoteca))?|sin\s+(?:gravamen(?:es)?|hipoteca)|no\s+(?:tiene|hay)(?:\s+(?:gravamen(?:es)?|hipoteca))?|(?:tiene|hay|existe)\s+(?:un\s+)?(?:gravamen(?:es)?|hipoteca|embargo))\s*$/i,
+      // name: 'encumbrance',
+      // confiando en el 'condition' y 'extract' para filtrar falsos positivos.
+      pattern: /\b(sí|si|no|confirmo|confirmado|correcto|libre|sin|tiene|hay|existe|gravamen|hipoteca|embargo)\b/i,
       condition: (input, context, lastAssistantMessage?: string) => {
         // Solo si aún no está contestado en el contexto
         const unanswered = context.inmueble?.existe_hipoteca === null || context.inmueble?.existe_hipoteca === undefined
@@ -911,19 +968,18 @@ export class InputParser {
       extract: (input) => {
         const t = String(input || '').trim().toLowerCase()
         const yes = t === 'si' || t === 'sí' || t === 'confirmo' || t === 'confirmado' || t === 'correcto'
-        // Semántica actual del renderer:
+        // Semántica original:
         // - cancelacion_confirmada === false => cancelación PENDIENTE => IMPRIMIR acto de cancelación
-        // - cancelacion_confirmada === true => NO imprimir acto de cancelación
-        // Opción A:
-        // - Si el usuario dice "sí se cancelará" => pendiente (false)
-        // - Si dice "no se cancelará" => no aplica (true)
+        // - cancelacion_confirmada === true => NO imprimir acto de cancelación (ya está limpio)
+        // Por tanto:
+        // - Si dice "sí se cancelará con la operación" => false (Pendiente)
+        // - Si dice "no, ya está limpio" => true (No aplica)
         return { exists: true, cancellationConfirmed: yes ? false : true }
       },
       handler: 'EncumbranceHandler'
     })
 
-    // 8C. Cancelación de hipoteca/gravamen (frase) — evita ambigüedad cuando el usuario responde con contexto
-    // Ej: "el gravamen se cancelará con el crédito", "se va a cancelar al firmar", "no se cancelará".
+    // 8C. Cancelación de hipoteca/gravamen (frase)
     this.rules.push({
       name: 'encumbrance_cancellation_phrase',
       pattern: /\bcancel(ar|ará|ara|acion|ación|ará)\b/i,
@@ -938,8 +994,14 @@ export class InputParser {
       extract: (input) => {
         const t = String(input || '').toLowerCase()
         const saysNoCancel = /\b(no)\b.*\bcancel/i.test(t) || /\bno\s+se\s+cancel/i.test(t)
-        // Si dice que sí se cancelará => cancelación PENDIENTE (false)
-        // Si dice que no se cancelará => no imprimir acto (true)
+        // Si dice "no se cancelará" (no confirmed cancellation?) -> PENDIENTE?
+        // Wait, logic:
+        // "Se cancela con esta operación" -> false (Pending Act).
+        // "No se cancela" -> implication? Usually means it stays.
+        // If it stays, we assume "No Act Needed" (true)? Or "Pending" (false)?
+        // If it stays, we probably can't proceed or need bank letter.
+        // For simplicity: "Se cancela" -> false.
+        // "No se cancela" -> true (No cancellation act).
         return { exists: true, cancellationConfirmed: saysNoCancel ? true : false }
       },
       handler: 'EncumbranceHandler'
@@ -1109,23 +1171,23 @@ export class InputParser {
         const buyer = context.compradores?.[0]
         const buyerNombre = buyer?.persona_fisica?.nombre
         const conyugeNombre = buyer?.persona_fisica?.conyuge?.nombre
-        
+
         // Verificar que:
         // 1. Hay comprador
         // 2. El comprador está casado o se está preguntando por el cónyuge
         // 3. El nombre no es del comprador
         // 4. No hay cónyuge ya capturado
         if (!buyerNombre || conyugeNombre) return false
-        
+
         // Verificar que el nombre no es del comprador
         const inputNormalized = ConyugeService.normalizeName(input)
         const buyerNormalized = ConyugeService.normalizeName(buyerNombre)
-        
+
         if (inputNormalized === buyerNormalized) return false
-        
+
         // Verificar que es un nombre válido
         if (!ValidationService.isValidName(input)) return false
-        
+
         // Si el sistema marcó explícitamente que está pidiendo cónyuge, aceptar.
         if (context?._last_question_intent === 'conyuge_name') return true
         // Por defecto, permitir siempre si es un nombre válido y no es del comprador
@@ -1136,10 +1198,10 @@ export class InputParser {
         const buyerNombre = buyer?.persona_fisica?.nombre
         const inputNormalized = ConyugeService.normalizeName(input)
         const buyerNormalized = ConyugeService.normalizeName(buyerNombre || '')
-        
+
         // Si el nombre es del comprador, no es cónyuge
         if (inputNormalized === buyerNormalized) return null
-        
+
         return {
           buyerIndex: 0,
           name: input.trim(),
@@ -1263,7 +1325,14 @@ export class InputParser {
       if (/\b(no|sin|libre)\b/.test(normalizedForFallback)) {
         addFallbackCommand('encumbrance', { exists: false })
       } else if (/\b(tiene|hay|existe)\b/.test(normalizedForFallback) && /\b(gravamen|hipoteca|embargo)\b/.test(normalizedForFallback)) {
+        // Intentar extraer institución si se menciona
+        const matchInst = normalizedInput.match(/\b(infonavit|fovissste|banorte|bbva|santander|hsbc|banamex|scotiabank|banco\s+azteca)\b/i)
+        const institution = matchInst ? this.normalizeInstitution(matchInst[1]) : undefined
+
         addFallbackCommand('encumbrance', { exists: true })
+        if (institution) {
+          addFallbackCommand('gravamen_acreedor', { institucion: institution })
+        }
       }
     }
 
@@ -1344,7 +1413,7 @@ export class InputParser {
         msg.includes('que banco') ||
         msg.includes('qué institución') ||
         msg.includes('que institucion')
-      
+
       if (!isAskingForInstitution) {
         // El asistente no está preguntando por institución, no capturar
         return false
@@ -1455,7 +1524,7 @@ export class InputParser {
    */
   private normalizeInstitution(input: string): string {
     const normalized = input.toLowerCase().trim()
-    
+
     const mapping: Record<string, string> = {
       'bbva': 'BBVA',
       'santander': 'Santander',

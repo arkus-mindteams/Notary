@@ -7,6 +7,9 @@ import { Command } from '../../base/types'
 import { ValidationService } from '../../shared/services/validation-service'
 import { ConyugeService } from '../../shared/services/conyuge-service'
 
+import { createHash } from 'crypto'
+import { DocumentoService } from '../../../services/documento-service'
+
 export class PreavisoDocumentProcessor {
   /**
    * Procesa documento y genera comandos
@@ -16,37 +19,86 @@ export class PreavisoDocumentProcessor {
     documentType: string,
     context: any
   ): Promise<{ commands: Command[]; extractedData: any }> {
+    // 0. Intelligent Processing: Check if we already extracted this file globally
+    let fileHash = ''
+    try {
+      const buffer = Buffer.from(await file.arrayBuffer())
+      fileHash = createHash('md5').update(buffer).digest('hex')
+
+      const cachedExtraction = await DocumentoService.findExtractionData(fileHash)
+      if (cachedExtraction) {
+        console.log(`[PreavisoDocumentProcessor] Intelligent Processing: Reusing global extraction for hash ${fileHash}`)
+        // Reuse cached data
+        let extracted = cachedExtraction
+
+        // Simular flujo de procesamiento con datos cacheados
+        let commands: Command[] = []
+        switch (documentType) {
+          case 'inscripcion':
+            commands = this.processInscripcion(extracted, context)
+            break
+          case 'identificacion':
+            commands = this.processIdentificacion(extracted, context)
+            break
+          case 'acta_matrimonio':
+            commands = this.processActaMatrimonio(extracted, context)
+            break
+          case 'escritura':
+            commands = this.processEscritura(extracted, context)
+            break
+          default:
+            commands = []
+        }
+
+        return {
+          commands,
+          extractedData: extracted
+        }
+      }
+    } catch (e) {
+      console.error('[PreavisoDocumentProcessor] Error checking cache:', e)
+      // Continue normal flow if cache check fails
+    }
+
     // 1. Llamar a OpenAI Vision API (reutilizar lógica existente)
     let extracted = await this.extractWithOpenAI(file, documentType)
-    
+
     // 2. Segundo pase para folios (solo inscripción) - detecta TODOS los folios
     if (documentType === 'inscripcion') {
       extracted = await this.ensureAllFoliosOnPage(file, extracted)
     }
-    
+
+    // 2.5. Cache the result for future global reuse
+    if (fileHash && extracted && Object.keys(extracted).length > 0) {
+      // Save asynchronously/background
+      DocumentoService.saveExtractionData(fileHash, extracted).catch((err: any) => {
+        console.error('[PreavisoDocumentProcessor] Error saving cache:', err)
+      })
+    }
+
     // 3. Procesar según tipo y generar comandos
     let commands: Command[] = []
     switch (documentType) {
       case 'inscripcion':
         commands = this.processInscripcion(extracted, context)
         break
-      
+
       case 'identificacion':
         commands = this.processIdentificacion(extracted, context)
         break
-      
+
       case 'acta_matrimonio':
         commands = this.processActaMatrimonio(extracted, context)
         break
-      
+
       case 'escritura':
         commands = this.processEscritura(extracted, context)
         break
-      
+
       default:
         commands = []
     }
-    
+
     return {
       commands,
       extractedData: extracted // Retornar datos extraídos originales
@@ -62,10 +114,10 @@ export class PreavisoDocumentProcessor {
     const foliosConInfo = Array.isArray(current?.foliosConInfo) ? current.foliosConInfo : []
     const foliosConInfoFolios = foliosConInfo.map((f: any) => f?.folio).filter(Boolean)
     const totalKnown = new Set([...folios, ...foliosConInfoFolios].map((x: any) => String(x)))
-    
+
     // Verificar si hay folios de "inmuebles afectados" detectados
-    const hasInmueblesAfectados = Array.isArray(current?.foliosRealesInmueblesAfectados) && 
-                                   current.foliosRealesInmueblesAfectados.length > 0
+    const hasInmueblesAfectados = Array.isArray(current?.foliosRealesInmueblesAfectados) &&
+      current.foliosRealesInmueblesAfectados.length > 0
 
     // SIEMPRE ejecutar segundo pase para inscripciones para asegurar que capturamos TODOS los folios
     // El LLM a veces omite folios que están en diferentes secciones de la misma página
@@ -75,7 +127,7 @@ export class PreavisoDocumentProcessor {
     try {
       const apiKey = process.env.OPENAI_API_KEY
       const model = process.env.OPENAI_MODEL || 'gpt-4o'
-      
+
       if (!apiKey) return current
 
       // Convertir archivo a base64
@@ -109,6 +161,7 @@ REGLAS CRÍTICAS:
 - Incluye TODOS los folios, incluso si aparecen en distintas secciones:
   * Secciones de UNIDADES (DEPARTAMENTO, LOCAL, ESTACIONAMIENTO, etc.)
   * Sección "INMUEBLE(S) AFECTADO(S)" o "INMUEBLES AFECTADOS"
+  * Sección "ANTECEDENTES" o "ANTECEDENTES REGISTRALES"
   * Cualquier otra sección donde aparezca "FOLIO REAL:"
 - Si hay varios folios (incluso si son consecutivos como 1782480, 1782481, 1782482, 1782483, 1782484, 1782485, 1782486), deben ir TODOS en el array.
 - NO omitas ningún folio, incluso si son números consecutivos.
@@ -137,8 +190,8 @@ REGLAS CRÍTICAS:
           temperature: 0,
           response_format: { type: 'json_object' },
           ...(model.includes("gpt-5") || model.includes("o1")
-            ? { max_completion_tokens: 400 }
-            : { max_tokens: 400 })
+            ? { max_completion_tokens: 2000 }
+            : { max_tokens: 2000 })
         })
       })
 
@@ -149,7 +202,7 @@ REGLAS CRÍTICAS:
 
       const data = await response.json()
       const content = data.choices[0]?.message?.content || '{}'
-      
+
       let parsed: any = null
       try {
         let jt = String(content || '').trim()
@@ -195,7 +248,7 @@ REGLAS CRÍTICAS:
         foliosMergeados: mergedFolios,
         totalDetectados: mergedFolios.length
       })
-      
+
       const next = { ...(current || {}) }
       next.foliosReales = mergedFolios
       // Si hay múltiples, folioReal debe ser null (evita autoselección)
@@ -215,6 +268,7 @@ REGLAS CRÍTICAS:
         unidad: f?.unidad || null,
         condominio: f?.condominio || null,
         ubicacion: f?.ubicacion || null,
+        direccion: f?.direccion || null,
         superficie: f?.superficie || null
       })).filter((f: any) => f.folio)
 
@@ -238,6 +292,7 @@ REGLAS CRÍTICAS:
           unidad: f?.unidad ?? prev?.unidad ?? null,
           condominio: f?.condominio ?? prev?.condominio ?? null,
           ubicacion: f?.ubicacion ?? prev?.ubicacion ?? null,
+          direccion: f?.direccion ?? prev?.direccion ?? null,
           superficie: f?.superficie ?? prev?.superficie ?? null,
         })
       }
@@ -263,7 +318,7 @@ REGLAS CRÍTICAS:
   private async extractWithOpenAI(file: File, documentType: string): Promise<any> {
     const apiKey = process.env.OPENAI_API_KEY
     const model = process.env.OPENAI_MODEL || 'gpt-4o'
-    
+
     if (!apiKey) {
       throw new Error('OPENAI_API_KEY no configurada')
     }
@@ -308,7 +363,7 @@ REGLAS CRÍTICAS:
         ],
         temperature: 0.1,
         response_format: { type: 'json_object' },
-        ...(model.includes("gpt-5") || model.includes("o1") 
+        ...(model.includes("gpt-5") || model.includes("o1")
           ? { max_completion_tokens: 2000 }
           : { max_tokens: 2000 }
         )
@@ -322,7 +377,7 @@ REGLAS CRÍTICAS:
 
     const data = await response.json()
     const content = data.choices[0]?.message?.content || '{}'
-    
+
     try {
       return JSON.parse(content)
     } catch (error) {
@@ -337,7 +392,7 @@ REGLAS CRÍTICAS:
   private getPromptsForDocumentType(documentType: string): { systemPrompt: string; userPrompt: string } {
     // Por ahora, usar prompts simplificados
     // En producción, usar los prompts completos de preaviso-process-document
-    
+
     switch (documentType) {
       case 'inscripcion':
         return {
@@ -354,7 +409,14 @@ REGLAS CRÍTICAS:
       "unidad": "número o identificador de unidad/condominio asociado a este folio si está visible",
       "condominio": "nombre del condominio asociado a este folio si está visible",
       "partida": "partida registral asociada a este folio si está visible",
-      "ubicacion": "dirección completa del inmueble asociado a este folio si está visible",
+      "ubicacion": "dirección completa del inmueble asociado a este folio (string simple para fallback)",
+      "direccion": {
+        "calle": "nombre de la calle",
+        "numero": "número exterior",
+        "colonia": "colonia",
+        "municipio": "municipio",
+        "codigo_postal": "CP"
+      },
       "superficie": "superficie del inmueble asociado a este folio si está disponible (con unidad: m², m2, metros, etc.)",
       "lote": "número de lote asociado a este folio si está visible",
       "manzana": "número de manzana asociado a este folio si está visible",
@@ -392,7 +454,7 @@ REGLAS CRÍTICAS:
   "propietario_contexto": "de dónde se extrajo el nombre del propietario. Valores: \"PROPIETARIO(S)\", \"TITULAR REGISTRAL\", \"DESCONOCIDO\"",
   "superficie": "superficie del inmueble si está disponible (para folio único, con unidad: m², m2, metros, etc.)",
   "valor": "valor del inmueble si está disponible",
-  "gravamenes": "información sobre gravámenes o hipotecas si está visible, o null si no hay",
+  "gravamenes": "Array de objetos con detalles de gravámenes si existen, EJEMPLO: [{ acreedor: 'BANCO...', monto: '...', moneda: 'MXN' }]. Si el documento dice explícitamente 'LIBRE DE GRAVAMEN', 'SIN GRAVAMEN' o 'NO SE REPORTAN GRAVÁMENES', retorna el string exacto 'LIBRE'. Si no hay información, retornar null",
   "numeroExpediente": "número de expediente registral si está visible"
 }
 
@@ -423,7 +485,7 @@ INSTRUCCIONES CRÍTICAS:
 7. Si algún campo no está disponible o no es legible, usa null (no inventes valores).`,
           userPrompt: 'Analiza este documento de inscripción registral METICULOSAMENTE. Extrae TODA la información que puedas leer claramente. IMPORTANTE: Busca TODOS los folios reales en TODAS las secciones del documento (UNIDADES, INMUEBLE(S) AFECTADO(S), y cualquier otra). NO omitas ningún folio, incluso si son números consecutivos. Incluye también: partidas registrales (todas si hay múltiples), sección, dirección completa del inmueble, datos catastrales (lote, manzana, fraccionamiento, condominio, unidad), superficie, propietario/titular registral, y cualquier gravamen o hipoteca visible. Si hay múltiples folios, intenta asociar la información del inmueble a cada folio según cómo aparezca en el documento.'
         }
-      
+
       case 'identificacion':
         return {
           systemPrompt: `Eres un experto en análisis de documentos de identificación (INE, pasaporte, licencia, etc.). Extrae información en formato JSON:
@@ -440,7 +502,7 @@ IMPORTANTE:
 - Si no puedes leer el nombre claramente, usa null`,
           userPrompt: 'Analiza este documento de identificación METICULOSAMENTE y extrae el nombre completo exactamente como aparece en el documento.'
         }
-      
+
       case 'acta_matrimonio':
         return {
           systemPrompt: `Eres un experto en análisis de actas de matrimonio. Extrae información en formato JSON:
@@ -455,7 +517,7 @@ REGLAS:
 - Si el documento usa etiquetas como "CONTRAYENTE", "CÓNYUGE", "ESPOSO/ESPOSA", extrae ambos.`,
           userPrompt: 'Analiza esta acta de matrimonio y extrae los nombres completos de AMBOS cónyuges exactamente como aparecen.'
         }
-      
+
       default:
         return {
           systemPrompt: 'Extrae información relevante del documento en formato JSON.',
@@ -471,19 +533,19 @@ REGLAS:
     const commands: Command[] = []
 
     // Folios: usar foliosReales del extracted (que ya incluye el merge del segundo pase)
-    const folios = Array.isArray(extracted.foliosReales) 
+    const folios = Array.isArray(extracted.foliosReales)
       ? extracted.foliosReales.filter(Boolean).map((f: any) => String(f))
       : []
-    
+
     // Asegurar que todos los folios de foliosConInfo también estén en la lista
     const foliosFromInfo = Array.isArray(extracted.foliosConInfo)
       ? extracted.foliosConInfo.map((f: any) => String(f?.folio || '')).filter(Boolean)
       : []
-    
+
     // Mergear ambas listas (dedupe)
     const allFolios = new Set([...folios, ...foliosFromInfo])
     const mergedFolios = Array.from(allFolios).filter(Boolean)
-    
+
     console.log('[DocumentProcessor] Folios detectados:', {
       foliosReales: folios,
       foliosFromInfo,
@@ -491,16 +553,16 @@ REGLAS:
       foliosConInfo: extracted.foliosConInfo,
       contextFolioSelection: context.folios?.selection
     })
-    
+
     // CRÍTICO: Siempre preguntar al usuario cuál folio usar, incluso si solo hay uno detectado
     // Solo auto-seleccionar si el contexto ya tiene ese mismo folio confirmado por el usuario EN ESTA SESIÓN
     const existingSelection = context.folios?.selection
-    const existingFolioConfirmed = existingSelection?.confirmed_by_user === true && 
-                                   existingSelection?.selected_folio
-    
+    const existingFolioConfirmed = existingSelection?.confirmed_by_user === true &&
+      existingSelection?.selected_folio
+
     // Verificar si el contexto tiene candidatos previos (indica que ya se procesó un documento en esta sesión)
     const hasPreviousCandidates = Array.isArray(context.folios?.candidates) && context.folios.candidates.length > 0
-    
+
     if (mergedFolios.length > 1) {
       // Múltiples folios: siempre preguntar
       console.log('[DocumentProcessor] Múltiples folios detectados, preguntando al usuario')
@@ -521,17 +583,17 @@ REGLAS:
       const normalizeFolio = (f: any) => String(f || '').replace(/\D/g, '')
       const normalizedDetected = normalizeFolio(detectedFolio)
       const normalizedExisting = existingFolioConfirmed ? normalizeFolio(existingFolioConfirmed) : null
-      
+
       // Solo auto-seleccionar si:
       // 1. El folio detectado coincide con el ya confirmado por el usuario EN ESTA SESIÓN
       // 2. Y hay candidatos previos (indica que ya se procesó un documento en esta sesión)
       // Si no hay candidatos previos, es una nueva sesión y siempre debemos preguntar
       if (hasPreviousCandidates && normalizedExisting && normalizedDetected === normalizedExisting) {
         console.log('[DocumentProcessor] Folio detectado coincide con el ya confirmado en esta sesión, usando ese')
-        const folioInfo = extracted.foliosConInfo?.find((f: any) => 
+        const folioInfo = extracted.foliosConInfo?.find((f: any) =>
           normalizeFolio(f?.folio) === normalizedDetected
         ) || extracted.foliosConInfo?.[0]
-        
+
         commands.push({
           type: 'folio_selection',
           timestamp: new Date(),
@@ -572,7 +634,7 @@ REGLAS:
     // Propietario/Titular registral
     if (extracted.propietario?.nombre) {
       const tipoPersona = ValidationService.inferTipoPersona(extracted.propietario.nombre) || 'persona_fisica'
-      
+
       // Si viene del documento de inscripción, se considera confirmado automáticamente
       // (el documento es fuente de verdad)
       commands.push({
@@ -587,6 +649,42 @@ REGLAS:
           source: 'documento_inscripcion'
         }
       })
+    }
+
+    // 3. Gravámenes (Fix: procesar explícitamente)
+    if (extracted.gravamenes) {
+      if (extracted.gravamenes === 'LIBRE' || extracted.gravamenes === 'SIN GRAVAMEN') {
+        console.log('[DocumentProcessor] Inmueble LIBRE de gravamen detectado')
+        commands.push({
+          type: 'encumbrance',
+          timestamp: new Date(),
+          payload: { exists: false, source: 'documento_inscripcion' }
+        })
+      } else if (Array.isArray(extracted.gravamenes) && extracted.gravamenes.length > 0) {
+        console.log('[DocumentProcessor] Gravámenes detectados:', extracted.gravamenes.length)
+        commands.push({
+          type: 'encumbrance',
+          timestamp: new Date(),
+          payload: { exists: true, source: 'documento_inscripcion' }
+        })
+
+        // Agregar cada gravamen detectado
+        extracted.gravamenes.forEach((g: any, idx: number) => {
+          if (g && (g.acreedor || g.monto)) {
+            commands.push({
+              type: 'gravamen_acreedor',
+              timestamp: new Date(),
+              payload: {
+                gravamenIndex: idx,
+                institution: g.acreedor || 'ACREEDOR DESCONOCIDO',
+                monto: g.monto || null,
+                moneda: g.moneda || 'MXN',
+                source: 'documento_inscripcion'
+              }
+            })
+          }
+        })
+      }
     }
 
     // Información del inmueble (partidas, sección, dirección, etc.)
@@ -804,11 +902,11 @@ REGLAS:
   private determineDocumentIntent(nombre: string, context: any): 'buyer' | 'conyuge' | 'seller' | 'unknown' {
     const compradorNombre = context.compradores?.[0]?.persona_fisica?.nombre
     const vendedorNombre = context.vendedores?.[0]?.persona_fisica?.nombre ||
-                          context.vendedores?.[0]?.persona_moral?.denominacion_social
+      context.vendedores?.[0]?.persona_moral?.denominacion_social
     const conyugeNombre = ConyugeService.getConyugeNombre(context)
     const compradorCasado = context.compradores?.[0]?.persona_fisica?.estado_civil === 'casado'
     const nombreNoEsComprador = compradorNombre && !ConyugeService.namesMatch(nombre, compradorNombre)
-    
+
     // PRIORIDAD 0: Si el contexto indica explícitamente que se espera un documento del cónyuge
     // (esto se establece cuando el asistente pregunta por el cónyuge)
     const documentIntent = (context as any)?._document_intent

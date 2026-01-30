@@ -68,7 +68,7 @@ export class TramiteSystem {
     let updatedContext = { ...context }
     // Preaviso: la operación es fija (compraventa). Mantenerla en el contexto para evitar preguntas inútiles.
     if (tramiteId === 'preaviso' && (updatedContext as any)?.tipoOperacion === undefined) {
-      ;(updatedContext as any).tipoOperacion = 'compraventa'
+      ; (updatedContext as any).tipoOperacion = 'compraventa'
     }
     let commands: Command[] = []
 
@@ -97,12 +97,12 @@ export class TramiteSystem {
         conversationHistory,
         { allowedToolIds, toolContext }
       )
-      
+
       if (llmResult.commands && llmResult.commands.length > 0) {
         const filtered = this.filterCommandsByAllowedTools(llmResult.commands, allowedToolIds)
         commands.push(...filtered)
       }
-      
+
       // Actualizar contexto con lo que LLM extrajo
       if (llmResult.updatedContext) {
         // CRÍTICO: tratar updatedContext del LLM como "delta" y evitar que vacíe arrays por accidente.
@@ -113,7 +113,7 @@ export class TramiteSystem {
             const v = (delta as any)[key]
             if (Array.isArray(v) && v.length === 0) {
               // Preservar el valor previo si existía (evitar wipes)
-              ;(delta as any)[key] = (updatedContext as any)[key]
+              ; (delta as any)[key] = (updatedContext as any)[key]
             }
           }
         }
@@ -139,10 +139,10 @@ export class TramiteSystem {
               tipo_credito: (nextC[0]?.tipo_credito ?? prevC[0]?.tipo_credito ?? null),
               monto: (nextC[0]?.monto ?? prevC[0]?.monto ?? null),
             }
-            ;(delta as any).creditos = [merged0, ...nextC.slice(1)]
+              ; (delta as any).creditos = [merged0, ...nextC.slice(1)]
           } else if (Array.isArray(prevC) && Array.isArray(nextC) && prevC.length > 0 && nextC.length === 0) {
             // Si el LLM intenta vaciar creditos, preservar (forma de pago ya confirmada)
-            ;(delta as any).creditos = prevC
+            ; (delta as any).creditos = prevC
           }
         }
 
@@ -153,28 +153,28 @@ export class TramiteSystem {
           const nextInmueble = (delta as any)?.inmueble
           if (nextInmueble === null) {
             // No permitir null si ya tenemos inmueble
-            ;(delta as any).inmueble = prevInmueble
+            ; (delta as any).inmueble = prevInmueble
           } else if (typeof nextInmueble === 'object' && nextInmueble) {
             const mergedDireccion =
               (prevInmueble?.direccion && nextInmueble?.direccion)
                 ? { ...prevInmueble.direccion, ...nextInmueble.direccion }
                 : (nextInmueble?.direccion ?? prevInmueble?.direccion)
-            ;(delta as any).inmueble = {
-              ...(prevInmueble || {}),
-              ...(nextInmueble || {}),
-              direccion: mergedDireccion,
-              // Preservar campos clave si el update los omite o los pone falsy por accidente
-              folio_real: nextInmueble?.folio_real ?? prevInmueble?.folio_real ?? null,
-              partidas: nextInmueble?.partidas ?? prevInmueble?.partidas ?? [],
-              superficie: nextInmueble?.superficie ?? prevInmueble?.superficie ?? null,
-              existe_hipoteca: (nextInmueble?.existe_hipoteca !== undefined ? nextInmueble.existe_hipoteca : prevInmueble?.existe_hipoteca),
-            }
+              ; (delta as any).inmueble = {
+                ...(prevInmueble || {}),
+                ...(nextInmueble || {}),
+                direccion: mergedDireccion,
+                // Preservar campos clave si el update los omite o los pone falsy por accidente
+                folio_real: nextInmueble?.folio_real ?? prevInmueble?.folio_real ?? null,
+                partidas: nextInmueble?.partidas ?? prevInmueble?.partidas ?? [],
+                superficie: nextInmueble?.superficie ?? prevInmueble?.superficie ?? null,
+                existe_hipoteca: (nextInmueble?.existe_hipoteca !== undefined ? nextInmueble.existe_hipoteca : prevInmueble?.existe_hipoteca),
+              }
           } else if (nextInmueble === undefined) {
             // no-op
           } else {
             // Si viene como string/otro tipo raro, no reemplazar si ya hay objeto
             if (prevInmueble && typeof prevInmueble === 'object') {
-              ;(delta as any).inmueble = prevInmueble
+              ; (delta as any).inmueble = prevInmueble
             }
           }
         }
@@ -397,7 +397,7 @@ export class TramiteSystem {
         .filter((c) => !filteredCommands.includes(c))
         .map((c) => c.type)
       const extractedData = result.extractedData
-      
+
       // Ejecutar comandos
       let updatedContext = { ...context }
       const commandErrors: any[] = []
@@ -412,7 +412,7 @@ export class TramiteSystem {
             // Merge inteligente de compradores para preservar cónyuge
             const prevCompradores = updatedContext.compradores || []
             const nextCompradores = handlerResult.updatedContext.compradores || []
-            
+
             if (prevCompradores.length > 0 && nextCompradores.length > 0) {
               // Merge: preservar cónyuge y otros datos importantes
               const merged: any[] = []
@@ -421,7 +421,7 @@ export class TramiteSystem {
                 const key = c?.party_id || `comprador_${idx}`
                 prevMap.set(key, c)
               })
-              
+
               // Agregar/actualizar con los nuevos
               nextCompradores.forEach((c: any, idx: number) => {
                 const key = c?.party_id || `comprador_${idx}`
@@ -444,7 +444,7 @@ export class TramiteSystem {
                   merged.push(c)
                 }
               })
-              
+
               // Agregar compradores previos que no fueron actualizados
               prevMap.forEach((c) => merged.push(c))
               updatedContext.compradores = merged
@@ -456,14 +456,14 @@ export class TramiteSystem {
             // Si el handler no actualiza compradores, preservar los existentes
             updatedContext.compradores = updatedContext.compradores
           }
-          
-          updatedContext = { 
-            ...updatedContext, 
+
+          updatedContext = {
+            ...updatedContext,
             ...handlerResult.updatedContext,
             // Asegurar que arrays se actualicen correctamente
             // Si el handler actualiza vendedores, usar esa versión; si no, preservar la existente
-            vendedores: handlerResult.updatedContext.vendedores !== undefined 
-              ? handlerResult.updatedContext.vendedores 
+            vendedores: handlerResult.updatedContext.vendedores !== undefined
+              ? handlerResult.updatedContext.vendedores
               : updatedContext.vendedores,
             compradores: updatedContext.compradores, // Ya se hizo merge arriba
             creditos: handlerResult.updatedContext.creditos !== undefined
@@ -677,8 +677,9 @@ export class TramiteSystem {
       1. Si el usuario proporciona información fuera de orden, acéptala y captúrala
       2. Si el usuario proporciona información de múltiples campos, captura todo
       3. Si el usuario corrige información previa, actualízala
-      4. Si el usuario proporciona información implícita, infiérela (pero sé conservador)
-      5. No intentes capturar datos fuera de las tools permitidas listadas arriba
+      6. Si el usuario confirma un dato inferido o propuesto por el asistente, emítelo como confirmado
+      7. Si el contexto tiene "folios.candidates" con un solo folio y el usuario dice "sí", "correcto", "confirmo", etc., emite:
+         "confirmacion_folio_unico": true
       
       Emite <DATA_UPDATE> con la información extraída en formato JSON v1.4.
       
@@ -705,7 +706,7 @@ export class TramiteSystem {
    */
   private extractDataFromLLMResponse(message: string): any | null {
     const dataUpdateMatch = message.match(/<DATA_UPDATE>([\s\S]*?)<\/DATA_UPDATE>/)
-    
+
     if (!dataUpdateMatch) {
       return null
     }
@@ -742,7 +743,7 @@ export class TramiteSystem {
             }
           })
         }
-        
+
         if (comprador.persona_fisica?.estado_civil) {
           commands.push({
             type: 'estado_civil',
@@ -793,6 +794,37 @@ export class TramiteSystem {
 
     // ... más conversiones
 
+
+    // Detectar selección de folio
+    if (data.folio_selection) {
+      commands.push({
+        type: 'folio_selection',
+        timestamp: new Date(),
+        source: 'llm',
+        payload: {
+          selectedFolio: data.folio_selection.selected_folio,
+          confirmedByUser: true
+        }
+      })
+    }
+
+    // Detectar selección de folio implícita (si el usuario dice "sí" a una pregunta de confirmación)
+    if (data.confirmacion_folio_unico === true && context?.folios?.candidates?.length === 1) {
+      const candidate = context.folios.candidates[0]
+      const folio = typeof candidate === 'string' ? candidate : candidate.folio
+      if (folio) {
+        commands.push({
+          type: 'folio_selection',
+          timestamp: new Date(),
+          source: 'llm',
+          payload: {
+            selectedFolio: folio,
+            confirmedByUser: true
+          }
+        })
+      }
+    }
+
     return commands
   }
 
@@ -802,24 +834,24 @@ export class TramiteSystem {
   private mergeInmuebleData(context: any, extracted: any): any {
     const updatedContext = { ...context }
     const inmueble = updatedContext.inmueble || {}
-    
+
     // Partidas: priorizar partidasTitulo sobre partidas generales
     const partidasTitulo = Array.isArray(extracted.partidasTitulo) ? extracted.partidasTitulo.filter(Boolean) : []
-    const partidas = partidasTitulo.length > 0 
-      ? partidasTitulo 
+    const partidas = partidasTitulo.length > 0
+      ? partidasTitulo
       : (Array.isArray(extracted.partidas) ? extracted.partidas.filter(Boolean) : [])
-    
+
     if (partidas.length > 0) {
       const existingPartidas = Array.isArray(inmueble.partidas) ? inmueble.partidas : []
       const mergedPartidas = [...new Set([...existingPartidas, ...partidas.map(String)])]
       inmueble.partidas = mergedPartidas
     }
-    
+
     // Sección
     if (extracted.seccion) {
       inmueble.seccion = extracted.seccion
     }
-    
+
     // Dirección
     if (extracted.direccion) {
       inmueble.direccion = {
@@ -838,17 +870,17 @@ export class TramiteSystem {
         calle: extracted.ubicacion
       }
     }
-    
+
     // Superficie
     if (extracted.superficie) {
       inmueble.superficie = String(extracted.superficie)
     }
-    
+
     // Valor
     if (extracted.valor) {
       inmueble.valor = String(extracted.valor)
     }
-    
+
     // Datos catastrales
     if (extracted.datosCatastrales) {
       inmueble.datos_catastrales = {
@@ -861,9 +893,9 @@ export class TramiteSystem {
         modulo: extracted.datosCatastrales.modulo || inmueble.datos_catastrales?.modulo || null
       }
     }
-    
+
     updatedContext.inmueble = inmueble
-    
+
     return updatedContext
   }
 }

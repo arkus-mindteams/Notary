@@ -235,8 +235,8 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     selected_folio: selectionRaw?.selected_folio ? String(selectionRaw.selected_folio) : null,
     selected_scope:
       selectionRaw?.selected_scope === 'unidades' ||
-      selectionRaw?.selected_scope === 'inmuebles_afectados' ||
-      selectionRaw?.selected_scope === 'otros'
+        selectionRaw?.selected_scope === 'inmuebles_afectados' ||
+        selectionRaw?.selected_scope === 'otros'
         ? selectionRaw.selected_scope
         : null,
     confirmed_by_user: selectionRaw?.confirmed_by_user === true,
@@ -326,9 +326,10 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   // La "sección" puede venir del documento, pero NO bloquea
   const seccion = inmueble?.seccion || infoInscripcion.seccion
   const direccionCompleta = inmueble?.direccion
+  const hasLoteManzana = !!inmueble?.datos_catastrales?.lote && !!inmueble?.datos_catastrales?.manzana
   const direccion = direccionCompleta?.calle
     ? `${direccionCompleta.calle} ${direccionCompleta.numero || ''} ${direccionCompleta.colonia || ''}`.trim()
-    : inmueble?.direccion?.calle || infoInscripcion.ubicacion || infoInscripcion.direccion
+    : inmueble?.direccion?.calle || (hasLoteManzana ? `Lote ${inmueble.datos_catastrales.lote} Mza ${inmueble.datos_catastrales.manzana} ${inmueble.datos_catastrales.fraccionamiento || ''}`.trim() : null) || infoInscripcion.ubicacion || infoInscripcion.direccion
   const superficie = inmueble?.superficie || infoInscripcion.superficie
   const valor = inmueble?.valor || infoInscripcion.valor
 
@@ -357,11 +358,11 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   // - Si el vendedor tiene nombre y tipo_persona Y hay propietario en el documento, considerar completo
   //   (el documento es fuente de verdad, no necesita confirmación explícita)
   // - En caso contrario, requerir match normalizado entre vendedorNombre y titularRegistral.
-  
+
   // Verificar si el vendedor viene del documento de inscripción
   const vendedorVieneDelDocumento = primerVendedor?.persona_fisica?.nombre && infoInscripcion.propietario?.nombre ||
-                                     primerVendedor?.persona_moral?.denominacion_social && infoInscripcion.propietario?.nombre
-  
+    primerVendedor?.persona_moral?.denominacion_social && infoInscripcion.propietario?.nombre
+
   if (vendedorConfirmadoComoTitular && vendedorNombre && vendedorTipoPersona) {
     // Confirmado explícitamente por el usuario
     stateStatus.ESTADO_3 = 'completed'
@@ -375,6 +376,10 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   } else if (vendedorNombre && vendedorTipoPersona && vendedorVieneDelDocumento) {
     // Si el vendedor viene del documento y tiene nombre + tipo_persona, considerar completo
     // (el documento es fuente de verdad)
+    stateStatus.ESTADO_3 = 'completed'
+  } else if (vendedorNombre && vendedorTipoPersona) {
+    // Si tenemos nombre y tipo de persona capturados, considerar completo para efectos de UI
+    // aunque no tengamos match estricto con titular registral.
     stateStatus.ESTADO_3 = 'completed'
   } else if (vendedorNombre || titularRegistral) {
     stateStatus.ESTADO_3 = 'incomplete'
@@ -564,19 +569,19 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     // En ese caso solo falta confirmar el tipo_persona y capturarlo en estructura v1.4 vía <DATA_UPDATE>.
     if (vendedores.length === 0 && !titularRegistral) requiredMissing.push('vendedores[]')
     if (!vendedorTipoPersona) requiredMissing.push('vendedores[].tipo_persona')
-    
+
     // Si el vendedor viene del documento de inscripción y tiene nombre + tipo_persona, no bloquear
     // (el documento es fuente de verdad)
     const vendedorVieneDelDocumento = primerVendedor && (
       infoInscripcion.propietario?.nombre ||
       primerVendedor.titular_registral_confirmado === true
     )
-    
+
     // Solo bloquear por titular_registral si NO viene del documento
     if (!titularRegistral && !vendedorConfirmadoComoTitular && !vendedorVieneDelDocumento) {
       blockingReasons.push('titular_registral_missing')
     }
-    
+
     // Solo bloquear por mismatch si NO viene del documento y NO está confirmado
     if (vendedorNombre && titularRegistral && normalizeForMatch(vendedorNombre) !== normalizeForMatch(titularRegistral) && !vendedorConfirmadoComoTitular && !vendedorVieneDelDocumento) {
       blockingReasons.push('vendedor_titular_mismatch')
@@ -589,7 +594,7 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     if (compradorTipoPersona === 'persona_fisica' && !compradorEstadoCivil) {
       requiredMissing.push('compradores[0].persona_fisica.estado_civil')
     }
-    
+
     // Verificar compradores adicionales (cónyuges) - NO requerir tipo_persona si es cónyuge
     // Los cónyuges siempre son persona_fisica y se asignan automáticamente
     const comprador0 = compradores[0]
@@ -598,9 +603,9 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
       for (let i = 1; i < compradores.length; i++) {
         const c = compradores[i]
         const nombreComprador = c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social || null
-        const esConyuge = nombreComprador && conyugeNombre && 
+        const esConyuge = nombreComprador && conyugeNombre &&
           normalizeForMatch(nombreComprador) === normalizeForMatch(conyugeNombre)
-        
+
         // Si es cónyuge y no tiene tipo_persona, asignarlo automáticamente (pero esto se hace en el código, no aquí)
         // Solo verificar que no se requiera tipo_persona para cónyuges
         if (esConyuge && !c.tipo_persona) {
