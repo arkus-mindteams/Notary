@@ -9,13 +9,7 @@ import { FlexibleStateMachine } from './flexible-state-machine'
 import { CommandRouter } from './command-router'
 import { LLMService } from '../shared/services/llm-service'
 import { diffContext } from '../shared/context-diff'
-import { getPreavisoTransitionInfo } from '../plugins/preaviso/preaviso-transitions'
 import { ToolContext } from './tools'
-import {
-  getPreavisoAllowedToolIdsForState,
-  getPreavisoToolByCommandType,
-  getPreavisoToolRegistry
-} from '../plugins/preaviso/preaviso-tools'
 
 export class TramiteSystem {
   private plugins: Map<string, TramitePlugin> = new Map()
@@ -89,7 +83,7 @@ export class TramiteSystem {
     // 4. Si no hay captura determinista, usar LLM para interpretar (FLEXIBLE)
     if (!interpretation.captured || interpretation.needsLLM) {
       const toolState = this.stateMachine.determineCurrentState(plugin, updatedContext)
-      const allowedToolIds = tramiteId === 'preaviso' ? getPreavisoAllowedToolIdsForState(toolState.id) : []
+      const allowedToolIds = plugin.allowedToolsForState(toolState.id)
       const toolContext = this.buildToolContext(context)
 
       // Calcular faltantes para guiar la interpretación
@@ -109,7 +103,7 @@ export class TramiteSystem {
       )
 
       if (llmResult.commands && llmResult.commands.length > 0) {
-        const filtered = this.filterCommandsByAllowedTools(llmResult.commands, allowedToolIds)
+        const filtered = this.filterCommandsByAllowedTools(llmResult.commands, allowedToolIds, plugin)
         commands.push(...filtered)
       }
 
@@ -200,10 +194,7 @@ export class TramiteSystem {
     // 6. Recalcular estado (FLEXIBLE - puede saltar estados)
     const newState = this.stateMachine.determineCurrentState(plugin, updatedContext)
     const prevStateId = context?._state_meta?.current_state || null
-    const transitionInfo =
-      tramiteId === 'preaviso'
-        ? getPreavisoTransitionInfo(prevStateId, newState.id, updatedContext)
-        : { from: prevStateId, to: newState.id, allowed: true, reason: 'default' }
+    const transitionInfo = plugin.getTransitionInfo(prevStateId, newState.id, updatedContext)
 
     // 7. Validar
     const validation = plugin.validate(updatedContext)
@@ -212,21 +203,7 @@ export class TramiteSystem {
     let response = await plugin.generateQuestion(newState, updatedContext, conversationHistory)
 
     // 8.1. Inferir intención de documento del mensaje del asistente
-    // Si el asistente pregunta por el cónyuge, establecer _document_intent para guiar el procesamiento de documentos
-    const inferDocumentIntentFromAssistant = (assistantText: string): any | null => {
-      const t = String(assistantText || '').toLowerCase()
-      const mentionsConyuge = /\bc[oó]nyuge\b/.test(t)
-      if (!mentionsConyuge) return null
-      const asksName = /(nombre\s+completo|ind[ií]came\s+por\s+favor|para\s+poder\s+captur(ar|arlo)|para\s+continuar\s+necesito|me\s+indicas)/i.test(assistantText)
-      const mentionsId = /\b(identificaci[oó]n|credencial|pasaporte|ine|ife|licencia|curp)\b/i.test(assistantText)
-      const mentionsActa = /\b(acta\s+de\s+matrimonio|matrimonio)\b/i.test(assistantText)
-      if (asksName || mentionsId || mentionsActa) {
-        return { _document_intent: 'conyuge' }
-      }
-      return null
-    }
-
-    const documentIntentUpdate = inferDocumentIntentFromAssistant(response)
+    const documentIntentUpdate = plugin.inferDocumentIntent(response)
     if (documentIntentUpdate) {
       console.log('[TramiteSystem] _document_intent inferred from assistant message', {
         inferred: documentIntentUpdate,
@@ -236,82 +213,7 @@ export class TramiteSystem {
     }
 
     // 8.2. Inferir la intención de la última pregunta (para respuestas cortas y context-aware parsing)
-    const inferLastQuestionIntent = (): LastQuestionIntent | null => {
-      if (tramiteId !== 'preaviso') return null
-
-      const pendingPeople = updatedContext?._document_people_pending
-      if (
-        pendingPeople?.status === 'pending' &&
-        Array.isArray(pendingPeople?.persons) &&
-        pendingPeople.persons.length >= 1
-      ) {
-        return 'document_people_select_buyer'
-      }
-
-      // Si ya está todo completo, no hay intención pendiente
-      const missingNow = this.stateMachine.getMissingStates(plugin, updatedContext)
-      if (missingNow.length === 0) return null
-
-      // Heurísticas por estado y campos faltantes
-      const stateId = newState.id
-      const buyer0 = updatedContext?.compradores?.[0]
-
-      if (stateId === 'ESTADO_1') {
-        if (updatedContext?.creditos === undefined) return 'payment_method'
-        if (Array.isArray(updatedContext?.creditos) && updatedContext.creditos.length > 0) {
-          const inst = updatedContext.creditos[0]?.institucion
-          if (!inst) return 'credit_institution'
-        }
-      }
-      if (stateId === 'ESTADO_4') {
-        const buyerName = buyer0?.persona_fisica?.nombre || buyer0?.persona_moral?.denominacion_social
-        if (!buyerName) return 'buyer_name'
-        if (!buyer0?.tipo_persona) return 'buyer_tipo_persona'
-        if (buyer0?.tipo_persona === 'persona_fisica' && !buyer0?.persona_fisica?.estado_civil) return 'estado_civil'
-      }
-      if (stateId === 'ESTADO_4B') {
-        if (buyer0?.persona_fisica?.estado_civil === 'casado' && !buyer0?.persona_fisica?.conyuge?.nombre) {
-          return 'conyuge_name'
-        }
-      }
-      if (stateId === 'ESTADO_5') {
-        const inst = updatedContext?.creditos?.[0]?.institucion
-        if (!inst) return 'credit_institution'
-        const parts = updatedContext?.creditos?.[0]?.participantes
-        if (!parts || parts.length === 0) return 'credit_participants'
-      }
-      if (stateId === 'ESTADO_2') {
-        if (!updatedContext?.inmueble?.folio_real) return 'folio_real'
-        const partidas = updatedContext?.inmueble?.partidas || []
-        if (!Array.isArray(partidas) || partidas.length === 0) return 'partidas'
-        const direccion = updatedContext?.inmueble?.direccion?.calle
-        if (!direccion) return 'inmueble_direccion'
-      }
-      if (stateId === 'ESTADO_3') {
-        const vendedor0 = updatedContext?.vendedores?.[0]
-        const vendedorNombre =
-          vendedor0?.persona_fisica?.nombre ||
-          vendedor0?.persona_moral?.denominacion_social
-        if (!vendedorNombre) return 'seller_name'
-        if (!vendedor0?.tipo_persona) return 'seller_tipo_persona'
-      }
-      if (stateId === 'ESTADO_6') {
-        if (updatedContext?.inmueble?.existe_hipoteca === null || updatedContext?.inmueble?.existe_hipoteca === undefined) {
-          return 'encumbrance'
-        }
-        const g0 = Array.isArray(updatedContext?.gravamenes) ? updatedContext.gravamenes[0] : null
-        if (updatedContext?.inmueble?.existe_hipoteca === true && !g0?.institucion) {
-          return 'gravamen_acreedor'
-        }
-      }
-      if (stateId === 'ESTADO_6B') {
-        return 'encumbrance_cancellation'
-      }
-
-      return null
-    }
-
-    const lastIntent = inferLastQuestionIntent()
+    const lastIntent = plugin.inferLastQuestionIntent(updatedContext, newState.id)
 
     // 8.3. Guardrail anti-loop: si el usuario repite sin avanzar, forzar mensaje guiado
     const prevCounts = (context?._state_meta?.reask_counts || {}) as Record<string, number>
@@ -324,7 +226,10 @@ export class TramiteSystem {
     const loopLimit = 3
     const loopGuardTriggered = reaskCounts[newState.id] >= loopLimit
     if (loopGuardTriggered) {
-      response = this.buildLoopGuardMessage(newState.id, updatedContext) || response
+      const loopMsg = plugin.getLoopGuardMessage(newState.id, updatedContext)
+      if (loopMsg) {
+        response = loopMsg
+      }
     }
 
     updatedContext = {
@@ -345,10 +250,7 @@ export class TramiteSystem {
     const missing = this.stateMachine.getMissingStates(plugin, updatedContext)
 
     const contextDelta = diffContext(context || {}, updatedContext || {})
-    const allowedToolsForState =
-      tramiteId === 'preaviso'
-        ? getPreavisoAllowedToolIdsForState(newState.id)
-        : []
+    const allowedToolsForState = plugin.allowedToolsForState(newState.id)
 
     return {
       message: response,
@@ -395,14 +297,17 @@ export class TramiteSystem {
       const toolMode =
         (context?._state_meta?.document_tool_mode as 'strict' | 'flexible' | undefined) ||
         'flexible'
-      const toolRegistry = tramiteId === 'preaviso' ? getPreavisoToolRegistry() : []
-      const allToolIds = toolRegistry.map((t) => t.id)
+
+      const toolRegistry = plugin.getToolRegistry()
+      const allToolIds = toolRegistry.map((t: any) => t.id)
       const toolState = this.stateMachine.determineCurrentState(plugin, context || {})
+
       const allowedToolIds =
         toolMode === 'strict'
-          ? (tramiteId === 'preaviso' ? getPreavisoAllowedToolIdsForState(toolState.id) : [])
+          ? plugin.allowedToolsForState(toolState.id)
           : allToolIds
-      const filteredCommands = this.filterCommandsByAllowedTools(commands, allowedToolIds)
+
+      const filteredCommands = this.filterCommandsByAllowedTools(commands, allowedToolIds, plugin) // Fixed arg count
       const droppedCommands = commands
         .filter((c) => !filteredCommands.includes(c))
         .map((c) => c.type)
@@ -496,9 +401,9 @@ export class TramiteSystem {
         }
       }
 
-      // Si hay extractedData de un documento de inscripción, actualizar información del inmueble
-      if (extractedData && (documentType === 'inscripcion' || documentType === 'escritura')) {
-        updatedContext = this.mergeInmuebleData(updatedContext, extractedData)
+      // Si hay extractedData, usar plugin para mergear
+      if (extractedData && plugin.mergeDocumentData) {
+        updatedContext = plugin.mergeDocumentData(updatedContext, extractedData, documentType)
       }
 
       return {
@@ -605,13 +510,19 @@ export class TramiteSystem {
     }
   }
 
-  private filterCommandsByAllowedTools(commands: Command[], allowedToolIds: string[]): Command[] {
+  private filterCommandsByAllowedTools(commands: Command[], allowedToolIds: string[], plugin: TramitePlugin): Command[] {
     if (!allowedToolIds || allowedToolIds.length === 0) return commands
-    return commands.filter((command) => {
-      const tool = getPreavisoToolByCommandType(command.type)
-      if (!tool) return false
-      return allowedToolIds.includes(tool.id)
-    })
+
+    // Si el plugin implementa getToolByCommandType, usarlo para filtrar
+    if (plugin.getToolByCommandType) {
+      return commands.filter((command) => {
+        const tool = plugin.getToolByCommandType!(command.type)
+        if (!tool) return false // Strict: si no hay tool definido para el comando, no se permite
+        return allowedToolIds.includes(tool.id)
+      })
+    }
+
+    return commands
   }
 
   private buildToolContext(context: any): ToolContext {
@@ -620,34 +531,6 @@ export class TramiteSystem {
       transition_info: context?._state_meta?.last_transition || null,
       context_diff: null
     }
-  }
-
-  private buildLoopGuardMessage(stateId: string, context: any): string | null {
-    if (stateId === 'ESTADO_2') {
-      return 'Para avanzar necesito datos del inmueble: folio real, partida(s) y dirección (calle y municipio). Ejemplo: “Folio 1234567, Partida 7654321, Calle X 123, Municipio Monterrey”.'
-    }
-    if (stateId === 'ESTADO_3') {
-      return 'Para avanzar necesito el/los vendedor(es) con nombre completo y tipo de persona (física o moral). Ejemplo: “Vendedor: Juan Pérez, persona física”.'
-    }
-    if (stateId === 'ESTADO_1') {
-      return 'Para avanzar necesito confirmar la forma de pago: ¿contado o crédito? Ejemplo: “Será crédito”.'
-    }
-    if (stateId === 'ESTADO_4') {
-      return 'Para avanzar necesito el nombre del comprador, tipo de persona y su estado civil. Ejemplo: “Comprador: Ana López, persona física, casada”.'
-    }
-    if (stateId === 'ESTADO_4B') {
-      return 'Para avanzar necesito el nombre completo del cónyuge. Ejemplo: “Cónyuge: María García”.'
-    }
-    if (stateId === 'ESTADO_5') {
-      return 'Para avanzar necesito la institución del crédito y los participantes (acreditado/coacreditado). Ejemplo: “Crédito BBVA; acreditado el comprador y coacreditada su cónyuge”.'
-    }
-    if (stateId === 'ESTADO_6') {
-      return 'Para avanzar necesito confirmar si el inmueble tiene gravamen/hipoteca. Ejemplo: “Sí, tiene hipoteca”.'
-    }
-    if (stateId === 'ESTADO_6B') {
-      return 'Para avanzar necesito confirmar si la hipoteca/gravamen se cancelará. Ejemplo: “Sí, se cancelará con la compraventa”.'
-    }
-    return null
   }
 
   /**
@@ -660,9 +543,9 @@ export class TramiteSystem {
     history: any[],
     opts: { allowedToolIds: string[]; toolContext: ToolContext; missingRequirements?: string[] }
   ): Promise<{ commands?: Command[]; updatedContext?: any }> {
-    const toolRegistry = plugin.id === 'preaviso' ? getPreavisoToolRegistry() : []
-    const allowedTools = toolRegistry.filter((t) => opts.allowedToolIds.includes(t.id))
-    const allowedToolsText = allowedTools.map((t) => `- ${t.id}: ${t.description}`).join('\n') || '- (ninguna)'
+    const toolRegistry = plugin.getToolRegistry()
+    const allowedTools = toolRegistry.filter((t: any) => opts.allowedToolIds.includes(t.id))
+    const allowedToolsText = allowedTools.map((t: any) => `- ${t.id}: ${t.description}`).join('\n') || '- (ninguna)'
 
     const missingInfo = opts.missingRequirements && opts.missingRequirements.length > 0
       ? `
@@ -715,8 +598,8 @@ export class TramiteSystem {
     const extracted = this.extractDataFromLLMResponse(response)
 
     if (extracted) {
-      // Convertir datos extraídos a comandos
-      const commands = this.convertDataToCommands(extracted, context)
+      // Convertir datos extraídos a comandos (USANDO PLUGIN)
+      const commands = plugin.convertDataToCommands(extracted, context)
       return {
         commands,
         updatedContext: extracted
@@ -743,184 +626,5 @@ export class TramiteSystem {
       console.error('[TramiteSystem] Error parsing LLM response:', error)
       return null
     }
-  }
-
-  /**
-   * Convierte datos extraídos a comandos
-   */
-  private convertDataToCommands(data: any, context: any): Command[] {
-    const commands: Command[] = []
-
-    // Detectar tipo de datos y crear comandos apropiados
-    if (data.compradores && Array.isArray(data.compradores)) {
-      for (const comprador of data.compradores) {
-        if (comprador.persona_fisica?.nombre) {
-          commands.push({
-            type: 'buyer_name',
-            timestamp: new Date(),
-            source: 'llm',
-            payload: {
-              buyerIndex: 0,
-              name: comprador.persona_fisica.nombre,
-              rfc: comprador.persona_fisica.rfc,
-              curp: comprador.persona_fisica.curp,
-              inferredTipoPersona: comprador.tipo_persona || 'persona_fisica'
-            }
-          })
-        }
-
-        if (comprador.persona_fisica?.estado_civil) {
-          commands.push({
-            type: 'estado_civil',
-            timestamp: new Date(),
-            source: 'llm',
-            payload: {
-              buyerIndex: 0,
-              estadoCivil: comprador.persona_fisica.estado_civil
-            }
-          })
-        }
-      }
-    }
-
-    if (data.vendedores && Array.isArray(data.vendedores)) {
-      for (const vendedor of data.vendedores) {
-        const nombre = vendedor.persona_fisica?.nombre || vendedor.persona_moral?.denominacion_social
-        if (nombre) {
-          commands.push({
-            type: 'titular_registral',
-            timestamp: new Date(),
-            source: 'llm',
-            payload: {
-              name: nombre,
-              inferredTipoPersona: vendedor.tipo_persona,
-              confirmed: vendedor.titular_registral_confirmado || false
-            }
-          })
-        }
-      }
-    }
-
-    if (data.creditos && Array.isArray(data.creditos)) {
-      for (const credito of data.creditos) {
-        if (credito.institucion) {
-          commands.push({
-            type: 'credit_institution',
-            timestamp: new Date(),
-            source: 'llm',
-            payload: {
-              creditIndex: 0,
-              institution: credito.institucion
-            }
-          })
-        }
-      }
-    }
-
-    // ... más conversiones
-
-
-    // Detectar selección de folio
-    if (data.folio_selection) {
-      commands.push({
-        type: 'folio_selection',
-        timestamp: new Date(),
-        source: 'llm',
-        payload: {
-          selectedFolio: data.folio_selection.selected_folio,
-          confirmedByUser: true
-        }
-      })
-    }
-
-    // Detectar selección de folio implícita (si el usuario dice "sí" a una pregunta de confirmación)
-    if (data.confirmacion_folio_unico === true && context?.folios?.candidates?.length === 1) {
-      const candidate = context.folios.candidates[0]
-      const folio = typeof candidate === 'string' ? candidate : candidate.folio
-      if (folio) {
-        commands.push({
-          type: 'folio_selection',
-          timestamp: new Date(),
-          source: 'llm',
-          payload: {
-            selectedFolio: folio,
-            confirmedByUser: true
-          }
-        })
-      }
-    }
-
-    return commands
-  }
-
-  /**
-   * Mergea información del inmueble desde extractedData al contexto
-   */
-  private mergeInmuebleData(context: any, extracted: any): any {
-    const updatedContext = { ...context }
-    const inmueble = updatedContext.inmueble || {}
-
-    // Partidas: priorizar partidasTitulo sobre partidas generales
-    const partidasTitulo = Array.isArray(extracted.partidasTitulo) ? extracted.partidasTitulo.filter(Boolean) : []
-    const partidas = partidasTitulo.length > 0
-      ? partidasTitulo
-      : (Array.isArray(extracted.partidas) ? extracted.partidas.filter(Boolean) : [])
-
-    if (partidas.length > 0) {
-      const existingPartidas = Array.isArray(inmueble.partidas) ? inmueble.partidas : []
-      const mergedPartidas = [...new Set([...existingPartidas, ...partidas.map(String)])]
-      inmueble.partidas = mergedPartidas
-    }
-
-    // Sección
-    if (extracted.seccion) {
-      inmueble.seccion = extracted.seccion
-    }
-
-    // Dirección
-    if (extracted.direccion) {
-      inmueble.direccion = {
-        ...(inmueble.direccion || {}),
-        calle: extracted.direccion.calle || inmueble.direccion?.calle || null,
-        numero: extracted.direccion.numero || inmueble.direccion?.numero || null,
-        colonia: extracted.direccion.colonia || inmueble.direccion?.colonia || null,
-        municipio: extracted.direccion.municipio || inmueble.direccion?.municipio || null,
-        estado: extracted.direccion.estado || inmueble.direccion?.estado || null,
-        codigo_postal: extracted.direccion.codigo_postal || inmueble.direccion?.codigo_postal || null
-      }
-    } else if (extracted.ubicacion && typeof extracted.ubicacion === 'string') {
-      // Si viene como string, intentar parsear
-      inmueble.direccion = {
-        ...(inmueble.direccion || {}),
-        calle: extracted.ubicacion
-      }
-    }
-
-    // Superficie
-    if (extracted.superficie) {
-      inmueble.superficie = String(extracted.superficie)
-    }
-
-    // Valor
-    if (extracted.valor) {
-      inmueble.valor = String(extracted.valor)
-    }
-
-    // Datos catastrales
-    if (extracted.datosCatastrales) {
-      inmueble.datos_catastrales = {
-        ...(inmueble.datos_catastrales || {}),
-        lote: extracted.datosCatastrales.lote ? String(extracted.datosCatastrales.lote) : inmueble.datos_catastrales?.lote || null,
-        manzana: extracted.datosCatastrales.manzana ? String(extracted.datosCatastrales.manzana) : inmueble.datos_catastrales?.manzana || null,
-        fraccionamiento: extracted.datosCatastrales.fraccionamiento || inmueble.datos_catastrales?.fraccionamiento || null,
-        condominio: extracted.datosCatastrales.condominio || inmueble.datos_catastrales?.condominio || null,
-        unidad: extracted.datosCatastrales.unidad ? String(extracted.datosCatastrales.unidad) : inmueble.datos_catastrales?.unidad || null,
-        modulo: extracted.datosCatastrales.modulo || inmueble.datos_catastrales?.modulo || null
-      }
-    }
-
-    updatedContext.inmueble = inmueble
-
-    return updatedContext
   }
 }
