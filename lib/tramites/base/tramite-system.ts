@@ -594,7 +594,13 @@ export class TramiteSystem {
       Si no hay información nueva para capturar, NO emitas <DATA_UPDATE>.
     `
 
-    const response = await this.llmService.call(prompt)
+    const response = await this.llmService.call(
+      prompt,
+      undefined,
+      context?._userId,
+      'interpret_intent',
+      plugin.id // category
+    )
     const extracted = this.extractDataFromLLMResponse(response)
 
     if (extracted) {

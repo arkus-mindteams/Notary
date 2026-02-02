@@ -278,7 +278,13 @@ export class PreavisoPlugin implements TramitePlugin {
     )
 
     try {
-      const response = await this.llmService.call(prompt, systemPrompts)
+      const response = await this.llmService.call(
+        prompt,
+        systemPrompts,
+        context?._userId,
+        'generate_question',
+        'preaviso' // category
+      )
       return response.trim()
     } catch (error: any) {
       console.error('[PreavisoPlugin] Error generando pregunta:', error)

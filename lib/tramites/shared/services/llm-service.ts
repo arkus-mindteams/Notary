@@ -2,20 +2,31 @@
  * Servicio LLM compartido
  * Maneja todas las llamadas a OpenAI
  */
+import { AgentUsageService } from '@/lib/services/agent-usage-service'
+
 
 export class LLMService {
   private apiKey: string
   private model: string
+  private usageService: AgentUsageService
 
   constructor() {
     this.apiKey = process.env.OPENAI_API_KEY || ''
     this.model = process.env.OPENAI_MODEL || 'gpt-4o'
+    this.usageService = new AgentUsageService()
   }
 
   /**
+  /**
    * Llama a OpenAI API
    */
-  async call(prompt: string, systemPrompts?: string[]): Promise<string> {
+  async call(
+    prompt: string,
+    systemPrompts?: string[],
+    userId?: string,
+    actionType: string = 'general_chat',
+    category: string = 'general'
+  ): Promise<string> {
     if (!this.apiKey) {
       throw new Error('OPENAI_API_KEY no configurada')
     }
@@ -57,6 +68,20 @@ export class LLMService {
     }
 
     const data = await response.json()
-    return data.choices[0]?.message?.content || ''
+    const content = data.choices[0]?.message?.content || ''
+
+    // Log usage asynchronously (don't block response)
+    if (data.usage) {
+      this.usageService.logUsage({
+        userId,
+        model: this.model,
+        tokensInput: data.usage.prompt_tokens,
+        tokensOutput: data.usage.completion_tokens,
+        actionType: actionType as any,
+        category
+      }).catch(err => console.error('Failed to log usage:', err))
+    }
+
+    return content
   }
 }

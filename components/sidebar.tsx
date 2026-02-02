@@ -33,6 +33,7 @@ import {
   FileCode,
   HomeIcon,
   Menu,
+  Activity,
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -78,7 +79,7 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
   }
 
   return (
-    <Card className={`${isMobile ? (isCollapsed ? 'h-16' : 'h-screen') : 'h-full'} flex ${isMobile && isCollapsed ? 'pt-0' : 'pt-2'} bg-gray-800 border-none ${isMobile ? 'rounded-none' : 'rounded-l-none rounded-b-none'} flex-col transition-all duration-300 w-full ${isMobile && !isCollapsed ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+    <div className={`${isMobile ? (isCollapsed ? 'h-16' : 'h-screen') : 'h-full'} flex ${isMobile && isCollapsed ? 'pt-0' : 'pt-2'} bg-gray-800 border-none ${isMobile ? 'rounded-none' : 'rounded-l-none rounded-b-none'} flex-col transition-all duration-300 w-full ${isMobile && !isCollapsed ? 'overflow-y-auto' : 'overflow-hidden'}`}>
       {/* Header con Usuario y Notaría */}
       <div className={`bg-gray-800 ${isMobile && isCollapsed ? 'border-b-0' : 'border-b border-b-gray-700'}`}>
         {/* Sección Notaría */}
@@ -299,6 +300,18 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
                     <FileCode className="h-4 w-4 mr-2" />
                     Config. Preaviso
                   </Button>
+
+                  <Button
+                    variant="ghost"
+                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/admin/usage'
+                      ? 'bg-gray-700 text-gray-200'
+                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                      }`}
+                    onClick={() => handleNavigation('/dashboard/admin/usage')}
+                  >
+                    <Activity className="h-4 w-4 mr-2" />
+                    Consumo AI
+                  </Button>
                 </div>
               </HoverCardContent>
             </HoverCard>
@@ -351,6 +364,6 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </div>
   )
 }

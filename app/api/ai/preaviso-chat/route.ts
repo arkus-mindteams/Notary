@@ -62,11 +62,22 @@ export async function POST(req: Request) {
     // Obtener sistema de trámites
     const tramiteSystem = getTramiteSystem()
 
+    // Obtener usuario autenticado para logging de usage
+    const supabase = createServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    const userId = user?.id
+
+    // Inyectar userId en el contexto
+    const processingContext = {
+      ...(context || {}),
+      _userId: userId // System-reserved field for user tracking
+    }
+
     // Procesar mensaje
     const result = await tramiteSystem.process(
       pluginId,
       lastUserMessage,
-      context || {},
+      processingContext,
       messages.slice(-10) // Últimos 10 mensajes para contexto
     )
 
