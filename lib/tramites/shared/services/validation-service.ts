@@ -17,12 +17,16 @@ export class ValidationService {
       'comprador', 'compradora', 'vendedor', 'vendedora',
       'casado', 'casada', 'soltero', 'soltera', 'divorciado', 'divorciada', 'viudo', 'viuda',
       'moral', 'fisica', 'física', 'persona',
-      'como', 'es', 'será', 'sí', 'no', 'si'
+      'como', 'es', 'será', 'sí', 'no', 'si',
+      // Address keywords (guardrails against misinterpretation)
+      'calle', 'avenida', 'boulevard', 'blvd', 'colonia', 'fraccionamiento',
+      'lote', 'manzana', 'municipio', 'estado', 'cp', 'c.p.', 'postal',
+      'interior', 'exterior', 'numero', 'número'
     ]
 
     const nameLower = name.toLowerCase().trim()
     if (invalidWords.includes(nameLower)) return false
-    
+
     // Evitar frases que contengan palabras inválidas (si el nombre es corto)
     if (nameLower.length < 20) {
       if (invalidWords.some(word => nameLower.includes(word))) {
@@ -38,7 +42,7 @@ export class ValidationService {
    */
   static isValidInstitution(institution: string): boolean {
     if (!institution || typeof institution !== 'string') return false
-    
+
     const invalidValues = [
       'credito', 'crédito', 'el credito', 'el crédito',
       'hipoteca', 'banco', 'institucion', 'institución',
@@ -85,12 +89,12 @@ export class ValidationService {
    */
   static normalizeEstadoCivil(input: string): 'soltero' | 'casado' | 'divorciado' | 'viudo' {
     const normalized = input.toLowerCase().trim()
-    
+
     if (normalized.startsWith('solter')) return 'soltero'
     if (normalized.startsWith('casad')) return 'casado'
     if (normalized.startsWith('divorc')) return 'divorciado'
     if (normalized.startsWith('viud')) return 'viudo'
-    
+
     return 'soltero' // Default
   }
 }

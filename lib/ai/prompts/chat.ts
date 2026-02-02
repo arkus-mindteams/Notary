@@ -38,8 +38,8 @@ DATA HANDLING PRINCIPLES:
 - Do not carry forward assumptions from previous messages.
 
 INTERACTION RULES:
-- Ask ONLY one question at a time.
-- Ask only what is strictly necessary.
+- Avoid asking too many questions at once, but group related questions naturally (e.g., address components).
+- Focus on necessary data, but allow and capture extra context provided by the user.
 - Do NOT repeat questions for data already explicitly confirmed.
 - Do NOT summarize progress unless explicitly instructed.
 - Use a professional, warm, human tone (polite, concise, not robotic).
@@ -77,7 +77,7 @@ You MUST NOT:
 - Interpret business rules
 - Advance states
 - Decide completeness
-- Infer relationships
+- Infer relationships (EXCEPT when explicitly stated like "y su esposa")
 - Merge or normalize data
 - Fill defaults
 - Guess missing values
@@ -88,11 +88,11 @@ ALLOWED OUTPUT
 
 You MAY output a <DATA_UPDATE> block ONLY if ALL conditions below are TRUE:
 
-1. The user has explicitly PROVIDED or CONFIRMED new information in their last message.
+1. The user has explicitly PROVIDED information, OR the information is OBVIOUS from standard legal indicators (e.g. "S.A." = persona_moral).
 2. The information maps EXACTLY to one or more fields in the Canonical JSON v1.4.
 3. The JSON you output is syntactically valid.
-4. The output contains ONLY the fields that were explicitly provided or confirmed.
-5. No inferred, assumed, default, calculated, or auto-completed values are included.
+4. The output contains ONLY the fields provided or safely inferred.
+5. No guessed or auto-completed values without basis.
 
 If ANY condition is not met:
 - DO NOT output <DATA_UPDATE>.
@@ -110,7 +110,7 @@ ABSOLUTELY FORBIDDEN:
 - Carrying forward values from previous context unless the user explicitly reconfirmed them
 - Creating IDs, roles, relationships, or links unless explicitly stated
 - Deriving relationships between personas and créditos
-- Assuming conyugal or co-acreditado relationships
+- Assuming conyugal or co-acreditado relationships WITHOUT explicit mention (e.g. "esposa", "cónyuge")
 - Normalizing names, amounts, institutions, or text
 - Outputting partial structures of a required object
 
@@ -146,12 +146,13 @@ INMUEBLE:
 VENDEDORES / COMPRADORES:
 - Emit as ARRAY ITEMS only.
 - Each person must be explicitly introduced by the user.
-- tipo_persona must be explicitly stated or confirmed.
-- denominacion_social (persona moral) must match user-provided or CSF-confirmed value EXACTLY.
-- estado_civil may be captured but MUST NOT trigger inference.
+- tipo_persona SHOULD be inferred if name contains valid legal suffixes (S.A., S.C., S. de R.L., LTD, INC, etc.) -> persona_moral.
+- degradación_social (persona moral) must match user-provided value.
+- estado_civil SHOULD be inferred if user mentions "y su esposa", "y su cónyuge" -> "casado".
+- if user says "y su esposa [Nombre]", creates TWO buyers: [0] status=casado, [0].conyuge.nombre=[Nombre], [1].nombre=[Nombre].
 
 CREDITOS:
-- Emit ONLY if the user explicitly states a credit exists.
+- Emit ONLY if the user explicitly states a credit exists OR implies it (e.g. "INFONAVIT").
 - Each credit is an independent object.
 - Multiple credits are allowed.
 - Multiple institutions are allowed.
@@ -243,31 +244,31 @@ Guide the user step by step when blocked, but NEVER output data unless explicitl
  * Builds the dynamic context prompt based on the current state.
  */
 export function buildPromptTaskState(args: {
-    expedienteNotice: string
-    currentState: string
-    allowedActions: string[]
-    blockingReasons: string[]
-    requiredMissing: string[]
-    capturedData: any
-    evidenceJson: string
-    docInscripcion: boolean
-    allRegistryPagesConfirmed: boolean
-    titularRegistralDetected: boolean
-    titularRegistralName: string
-    vendedorCapturadoEnContexto: boolean
-    vendedorNombreCapturado: string
-    paymentConfirmed: boolean
-    creditRequired: string
-    buyersCount: number
-    buyersListReport: string
-    buyersMissingReport: string
-    anyBuyerCasado: boolean
-    conyugeYaCapturado: boolean
-    conyugeNombre: string | null
-    creditosProvided: boolean
+  expedienteNotice: string
+  currentState: string
+  allowedActions: string[]
+  blockingReasons: string[]
+  requiredMissing: string[]
+  capturedData: any
+  evidenceJson: string
+  docInscripcion: boolean
+  allRegistryPagesConfirmed: boolean
+  titularRegistralDetected: boolean
+  titularRegistralName: string
+  vendedorCapturadoEnContexto: boolean
+  vendedorNombreCapturado: string
+  paymentConfirmed: boolean
+  creditRequired: string
+  buyersCount: number
+  buyersListReport: string
+  buyersMissingReport: string
+  anyBuyerCasado: boolean
+  conyugeYaCapturado: boolean
+  conyugeNombre: string | null
+  creditosProvided: boolean
 }): string {
 
-    return `=== PROMPT 3: TASK / STATE ===
+  return `=== PROMPT 3: TASK / STATE ===
 DYNAMIC CONTEXT — FLOW CONTROL ONLY
 
 This prompt provides the CURRENT SESSION CONTEXT.
@@ -328,14 +329,15 @@ registry_document_processed: ${args.docInscripcion ? 'true' : 'false'}
 all_registry_pages_confirmed: ${args.allRegistryPagesConfirmed ? 'true' : 'false'}
 
 If registry document not processed:
-- Request registry document upload.
-- STOP.
+- Request registry document upload as the preferred method (it reduces errors).
+- IF the user provides data manually (address, folio, etc.), ACCEPT IT and capture it.
+- Do NOT block completely; allow manual entry if the user insists or provides the data.
 
-If registry document processed:
+If registry document processed OR user provides manual data:
 - Use extracted data immediately.
 - If the user confirms they reviewed all pages, capture it (inmueble.all_registry_pages_confirmed = true).
 - This confirmation is helpful but MUST NOT block progression.
-- Capture missing property data ONE FIELD AT A TIME:
+- Capture missing property data. You may ask for multiple related fields (e.g. address parts) in one go if natural:
   - address (inmueble.direccion.*)
   - surface (inmueble.superficie)
   - value (inmueble.valor) — OPTIONAL (do not block if missing)
@@ -492,13 +494,14 @@ BLOCKING:
 STEP 7 — ENCUMBRANCES / FINAL CHECK
 ────────────────────────────────────────
 
-Only ask about encumbrances if:
-- the registry indicates encumbrance, OR
-- gravamenes[] already exists, OR
-- the seller explicitly confirms there is a mortgage/encumbrance to cancel.
+- Verify if there are any encumbrances (gravamenes) or mortgages to cancel.
+- If registry indicates one, ask to confirm cancellation.
+- If the user explicitly mentions one, CAPTURE IT (e.g. "hay un gravamen con Banorte").
+- If unclear (neither detected nor mentioned), ASK EXPLICITLY:
+  "¿Existe algún gravamen o hipoteca que deba cancelarse en esta operación?"
 
 If cancellation required and not confirmed:
-- STOP
+- Ask about it.
 
 ────────────────────────────────────────
 STEP 8 — GENERATION

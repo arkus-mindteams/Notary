@@ -3,7 +3,8 @@
  * No conoce detalles de trámites específicos, solo coordina plugins
  */
 
-import { TramitePlugin, Command, TramiteResponse, HandlerResult, LastQuestionIntent } from './types'
+import { Command, TramiteResponse, HandlerResult, LastQuestionIntent } from './types'
+import { TramitePlugin } from './tramite-plugin'
 import { FlexibleStateMachine } from './flexible-state-machine'
 import { CommandRouter } from './command-router'
 import { LLMService } from '../shared/services/llm-service'
@@ -90,12 +91,21 @@ export class TramiteSystem {
       const toolState = this.stateMachine.determineCurrentState(plugin, updatedContext)
       const allowedToolIds = tramiteId === 'preaviso' ? getPreavisoAllowedToolIdsForState(toolState.id) : []
       const toolContext = this.buildToolContext(context)
+
+      // Calcular faltantes para guiar la interpretación
+      let missingRequirements: string[] = []
+      try {
+        missingRequirements = this.stateMachine.getMissingStates(plugin, updatedContext)
+      } catch (e) {
+        console.warn('Error calculando missing states para interpretWithLLM:', e)
+      }
+
       const llmResult = await this.interpretWithLLM(
         userInput,
         updatedContext,
         plugin,
         conversationHistory,
-        { allowedToolIds, toolContext }
+        { allowedToolIds, toolContext, missingRequirements }
       )
 
       if (llmResult.commands && llmResult.commands.length > 0) {
@@ -648,11 +658,22 @@ export class TramiteSystem {
     context: any,
     plugin: TramitePlugin,
     history: any[],
-    opts: { allowedToolIds: string[]; toolContext: ToolContext }
+    opts: { allowedToolIds: string[]; toolContext: ToolContext; missingRequirements?: string[] }
   ): Promise<{ commands?: Command[]; updatedContext?: any }> {
     const toolRegistry = plugin.id === 'preaviso' ? getPreavisoToolRegistry() : []
     const allowedTools = toolRegistry.filter((t) => opts.allowedToolIds.includes(t.id))
     const allowedToolsText = allowedTools.map((t) => `- ${t.id}: ${t.description}`).join('\n') || '- (ninguna)'
+
+    const missingInfo = opts.missingRequirements && opts.missingRequirements.length > 0
+      ? `
+      FALTANTES CRÍTICOS (SISTEMA):
+      El sistema requiere obligatoriamente estos datos para avanzar:
+      ${JSON.stringify(opts.missingRequirements)}
+      
+      PRIORIDAD: Si el input del usuario contiene alguno de estos datos, EXTRÁELO Y EMITE <DATA_UPDATE>.
+      `
+      : ''
+
     // LLM interpreta input incluso si está fuera de orden
     const prompt = `
       Eres un asistente notarial ayudando con un ${plugin.name}.
@@ -662,6 +683,8 @@ export class TramiteSystem {
 
       Tool Context (puerto único):
       ${JSON.stringify(opts.toolContext, null, 2)}
+      
+      ${missingInfo}
 
       Tools permitidas en este estado:
       ${allowedToolsText}
@@ -680,6 +703,8 @@ export class TramiteSystem {
       6. Si el usuario confirma un dato inferido o propuesto por el asistente, emítelo como confirmado
       7. Si el contexto tiene "folios.candidates" con un solo folio y el usuario dice "sí", "correcto", "confirmo", etc., emite:
          "confirmacion_folio_unico": true
+      8. Si el usuario SELECCIONA o CONFIRMA un folio específico (especialmente si hay candidatos):
+         - Emite "folio_selection": { "selected_folio": "NUMERO", "intent": "CONFIRM" }
       
       Emite <DATA_UPDATE> con la información extraída en formato JSON v1.4.
       

@@ -96,7 +96,8 @@ export class InputParser {
       condition: (input, context, lastAssistantMessage?: string) => {
         const buyer0Name = context?.compradores?.[0]?.persona_fisica?.nombre || context?.compradores?.[0]?.persona_moral?.denominacion_social
         if (buyer0Name) return false
-        if (!ValidationService.isValidName(input)) return false
+        if (!ValidationService.isValidName(input.trim())) return false
+        if (/^(si|no|ok|gracias|cancelar)$/i.test(input.trim())) return false
         // Solo capturar si el asistente estaba pidiendo comprador (para no confundir con vendedor/cónyuge).
         if (context?._last_question_intent === 'buyer_name') return true
         const msg = String(lastAssistantMessage || '').toLowerCase()
@@ -166,6 +167,10 @@ export class InputParser {
           msg.includes('quién es el vendedor') ||
           msg.includes('quien es el vendedor') ||
           msg.includes('nombre completo del vendedor')
+        msg.includes('nombre completo del vendedor')
+
+        if (!ValidationService.isValidName(input.trim())) return false
+
         return asksSeller
       },
 
@@ -245,6 +250,11 @@ export class InputParser {
 
         // Debe contener un número de folio válido O ser una confirmación explícita
         const hasNumber = /\b(\d{6,8})\b/.test(input)
+
+        // Guardrail: Evitar confundir con precios ($1,234,567) o teléfonos (10 dígitos)
+        // Si tiene formato de moneda explícito o contexto de precio/valor, ignorar
+        if (input.includes('$') || /precio|valor|costo/i.test(input)) return false
+
         const isConfirmation = /^(si|sí|correcto|confirmo|confirmado|usar este|ese|ese mero)$/i.test(input.trim())
 
         return hasNumber || (isConfirmation && (hasSelection || folios.length === 1))
@@ -1411,11 +1421,17 @@ export class InputParser {
     }
 
     if (commands.length > 0) {
+      // Si el input es largo (> 80 caracteres), es probable que contenga múltiples datos
+      // o contexto complejo que las reglas regex no capturan completamente.
+      // En ese caso, permitimos que el LLM también procese (needsLLM: true).
+      // TramiteSystem fusionará los comandos.
+      const isComplexInput = normalizedInput.length > 80
+
       return {
         captured: true,
         captureRule: null,
         data: { __commands: commands },
-        needsLLM: false
+        needsLLM: isComplexInput
       }
     }
 

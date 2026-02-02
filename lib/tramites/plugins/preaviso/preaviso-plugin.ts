@@ -180,9 +180,52 @@ export class PreavisoPlugin implements TramitePlugin {
     }
 
     // Validar vendedores
+    if (context.vendedores) {
+      for (const vendedor of context.vendedores) {
+        if (!vendedor.tipo_persona) {
+          // Intentar inferir automáticamente
+          const nombre = vendedor.persona_fisica?.nombre || vendedor.persona_moral?.denominacion_social
+          if (nombre) {
+            const inferred = ValidationService.inferTipoPersona(nombre)
+            if (inferred) {
+              vendedor.tipo_persona = inferred
+              // Ajustar estructura si infirió moral pero estaba en fisica (o viceversa) si fuera necesario
+              // Por ahora confiamos en que si está en persona_fisica es fisica, pero completamos el tipo
+            }
+          }
+        }
+      }
+    }
+
+    // Re-validar compradores para inferencia automática
+    if (context.compradores) {
+      for (const comprador of context.compradores) {
+        if (!comprador.tipo_persona) {
+          const nombre = comprador.persona_fisica?.nombre || comprador.persona_moral?.denominacion_social
+          if (nombre) {
+            const inferred = ValidationService.inferTipoPersona(nombre)
+            if (inferred) {
+              comprador.tipo_persona = inferred
+            }
+          }
+        }
+      }
+    }
+
     const vendedores = context.vendedores || []
     if (vendedores.length === 0) {
       missing.push('vendedores[]')
+    } else {
+      // Validar que los vendedores existentes tengan datos mínimos
+      for (const vendedor of vendedores) {
+        if (!vendedor.persona_fisica?.nombre && !vendedor.persona_moral?.denominacion_social) {
+          errors.push('Vendedor sin nombre')
+        }
+        // Si aun despues de inferencia falta el tipo, entonces sí es missing
+        if (!vendedor.tipo_persona) {
+          missing.push('vendedores[].tipo_persona')
+        }
+      }
     }
 
     // Validar inmueble
@@ -275,20 +318,16 @@ export class PreavisoPlugin implements TramitePlugin {
     }
 
     // Guardrail determinista: si hay múltiples folios detectados y no hay selección,
-    // siempre listar opciones (no depender del LLM).
+    // inyectar la lista en el prompt para que el LLM pregunte naturalmente.
     const folioCandidates = Array.isArray(context?.folios?.candidates)
       ? context.folios.candidates
       : []
     const selectedFolio = context?.folios?.selection?.selected_folio
-    if (folioCandidates.length > 1 && !selectedFolio && !isQuestion && !isGreeting) {
-      const folioList = folioCandidates
-        .map((f: any) => {
-          const folio = typeof f === 'string' ? f : f.folio
-          return `- Folio ${folio}`
-        })
-        .join('\n')
-      return `En la hoja de inscripción detecté más de un folio real. Por favor, indícame exactamente cuál es el folio real que vamos a utilizar para este trámite:\n\n${folioList}\n\n(responde con el número del folio exactamente)`
-    }
+    const hasMultipleFolios = folioCandidates.length > 1 && !selectedFolio && !isQuestion && !isGreeting
+
+    // NOTA: Ya no retornamos aquí el string hardcodeado. 
+    // Dejamos que el flujo caiga hacia el LLM, y le pasamos 'hasMultipleFolios' y la lista en el prompt.
+    // (Ver abajo en la construcción del prompt)
 
     // Si hay un solo candidato sin confirmación explícita, pedir confirmación.
     // Si hay un solo candidato sin confirmación explícita, pedir confirmación.
@@ -299,11 +338,11 @@ export class PreavisoPlugin implements TramitePlugin {
       }
     }
 
-    const missingNow = this.getMissingFields(state, context)
-    const validationNow = this.validate(context)
-    const g0 = Array.isArray(context?.gravamenes) ? context.gravamenes[0] : null
-    const missingAcreedor = context?.inmueble?.existe_hipoteca === true && !g0?.institucion
-    const isComplete = (state.id === 'ESTADO_8' || (missingNow.length === 0 && validationNow.valid)) && !missingAcreedor
+    // CALCULAR ESTADO REAL (FUENTE DE VERDAD)
+    const computed = computePreavisoState(context)
+    const systemState = computed.state
+    const missingNow = systemState.required_missing
+    const isComplete = systemState.current_state === 'ESTADO_8'
 
     if (isComplete) {
       // Si el usuario pregunta algo (detectado por ?) o pide cambios, permitir respuesta OPEN
@@ -340,50 +379,12 @@ export class PreavisoPlugin implements TramitePlugin {
       return 'Claro, quedo en espera del documento. Avísame si necesitas ayuda para subirlo.'
     }
 
-    // Guardrail global: si faltan datos mínimos del inmueble, pedirlos ANTES de avanzar a otras secciones.
-    // Esto evita que salte a vendedores cuando aún falta dirección/partida/folio.
-    const inmueble = context?.inmueble
-    const folio = inmueble?.folio_real
-    const partidas = inmueble?.partidas || []
-    const direccionCalle = inmueble?.direccion?.calle
-    if (!folio && !isGreeting) {
-      // Si hay candidatos detectados (hoja de inscripción), pedir selección explícita.
-      const candidates = Array.isArray(context?.folios?.candidates) ? context.folios.candidates : []
-      const selection = context?.folios?.selection
-      const confirmed = selection?.confirmed_by_user === true && selection?.selected_folio
-      if (!confirmed && candidates.length > 0) {
-        const items = candidates
-          .map((c: any) => {
-            const folio = String(c?.folio || '').trim()
-            if (!folio) return null
-            const attrs = c?.attrs || {}
-            const unidad = attrs?.unidad ? `Unidad: ${attrs.unidad}` : null
-            const condominio = attrs?.condominio ? `Condominio: ${attrs.condominio}` : null
-            const parts = [unidad, condominio].filter(Boolean)
-            return parts.length > 0 ? `${folio} (${parts.join(' • ')})` : folio
-          })
-          .filter(Boolean) as string[]
-        if (items.length > 0 && !isQuestion) {
-          return `Detecté los siguientes folios reales:\n- ${items.join('\n- ')}\n¿Cuál debemos usar? Responde con el número del folio.`
-        }
-      }
-      // Solo devolver pregunta hardcodeada si NO es saludo ni pregunta
-      if (!isGreeting && !isQuestion) return '¿Cuál es el folio real del inmueble?'
-    }
-    if ((!Array.isArray(partidas) || partidas.length === 0) && !isGreeting && folio) {
-      return '¿Cuál es el número de partida registral del inmueble?'
-    }
-    if (!direccionCalle && !isGreeting && folio && partidas.length > 0) {
-      // Solo preguntar si ya tenemos folio y partida, y no es saludo
-      return '¿Cuál es la dirección del inmueble (calle y municipio)?'
-    }
-
     // RAG: Buscar contexto relevante si hay campos faltantes
     let ragContext = ''
     try {
       if (state.id !== 'ESTADO_8') {
         let query = ''
-        const missing = this.getMissingFields(state, context)
+        const missing = missingNow
 
         if (missing.some(f => f.includes('folio_real') || f.includes('partidas') || f.includes('direccion'))) {
           query = 'antecedentes propiedad folio real partidas dirección ubicación inmueble'
@@ -415,12 +416,33 @@ export class PreavisoPlugin implements TramitePlugin {
       // Continue without RAG
     }
 
+    // Preparar diagnóstico del sistema para el LLM
+    const allStates = this.getStates(context)
+    const systemDiagnostic = Object.entries(systemState.state_status)
+      .map(([k, v]) => {
+        const stateName = allStates.find(s => s.id === k)?.name || k
+        return `- ${stateName} (${k}): ${v}`
+      })
+      .join('\n')
+
     // Usar LLM para generar pregunta natural y flexible
     const systemPrompts = [
       `Eres un ABOGADO NOTARIAL DE CONFIANZA, cálido, profesional y humano, ayudando con un ${this.name}.
        TU MISIÓN: Guiar al cliente en el proceso, capturar la información necesaria y ASESORARLO si tiene dudas.
 
       ${ragContext}
+      
+      DIAGNÓSTICO DEL SISTEMA (FUENTE DE VERDAD):
+      El sistema ha evaluado el expediente y determina lo siguiente:
+      ${systemDiagnostic}
+      
+      FALTANTES CRÍTICOS (LO QUE DEBES PEDIR):
+      ${JSON.stringify(missingNow)}
+      
+      INSTRUCCIÓN CRÍTICA DE SINCRONIZACIÓN:
+      - Si el sistema dice que falta algo en 'FALTANTES CRÍTICOS', DEBES pedirlo, aunque creas que el usuario ya lo dijo.
+      - Si el sistema marca un paso como 'incomplete', confía en el sistema.
+      - Tu objetivo principal es resolver los 'FALTANTES CRÍTICOS'.
 
       INSTRUCCIONES DE PERSONALIDAD:
       - Actúa como un abogado notarial experto: usa lenguaje profesional pero accesible y empático.
@@ -440,19 +462,23 @@ export class PreavisoPlugin implements TramitePlugin {
 
         IMPORTANTE:
       - Sé natural y conversacional
-      - Haz UNA pregunta a la vez
+      - Evita hacer demasiadas preguntas a la vez, pero agrupa preguntas relacionadas (ej: calle y número).
       - Si el usuario SALUDA (hola, buenos días, etc.), responde el saludo CALIDAMENTE antes de pasar al tema.
       - Si el usuario pregunta "en qué nos quedamos", RESUME brevemente lo que ya tenemos y lo que falta.
       - SUGIERE SUBIR DOCUMENTOS: "Si tienes la [nombre del documento, ej: escritura, identificación] donde aparece este dato, puedes subirlo y yo lo leo por ti."
-      - No menciones estados, pasos, o lógica interna
-      - Si el usuario ya proporcionó información, no la pidas de nuevo
-      - Sé flexible: acepta información fuera de orden
+      - Si el usuario PREFIERE DICTAR LOS DATOS (folio, dirección, etc.) manualmente en lugar de subir documento, ACÉPTALO y captura la información. NO lo fuerces a subir el documento.
+      - No menciones estados, pasos, o lógica interna.
+      - Si el usuario ya proporcionó información, no la pidas de nuevo.
+      - Sé flexible: acepta información fuera de orden.
       - NO uses negritas (**).
       
       Estado actual: ${state.name}
       Información faltante: ${JSON.stringify(missingNow)}
       
       IMPORTANTE:
+      - Inmueble y Registro: Pide el Folio Real preferentemente mediante la hoja de inscripción, pero SI EL USUARIO LO DICTA, ACÉPTALO.
+         - Puedes pedir folio, partida y sección en grupo si es natural.
+         - Puedes pedir dirección (calle, municipio) junto.
       - Si el vendedor ya fue detectado del documento(context.vendedores[0] tiene nombre), NO preguntes por el vendedor.
       - Si el comprador ya fue detectado del documento(context.compradores[0] tiene nombre), NO preguntes por el comprador.
       - Si el cónyuge ya fue detectado del documento(context.compradores[0].persona_fisica.conyuge.nombre existe), NO preguntes por el cónyuge.
@@ -470,9 +496,10 @@ export class PreavisoPlugin implements TramitePlugin {
       - PROHIBIDO preguntar si hay otros inmuebles adicionales en la operación(NO es parte de este flujo).
       - PROHIBIDO preguntar por complementos en efectivo / "parte en contado" / "una parte en efectivo" si ya se confirmó que será únicamente con crédito.
       - PROHIBIDO preguntar por tipo de crédito(p.ej. "hipotecario tradicional", "crédito vivienda", etc.).NO es dato requerido; con saber que es crédito y la institución es suficiente.
-      - Si ya se capturó gravamen / hipoteca(context.inmueble.existe_hipoteca es true / false), NO vuelvas a preguntar por gravamen / hipoteca.
+      - Gravámenes: Si no está claro si hay gravamen, pregunta explícitamente "¿Existe algún gravamen o hipoteca que deba cancelarse?".
       - Si existe hipoteca / gravamen(existe_hipoteca = true) y falta definir cancelación, pregunta SOLO UNA VEZ: si se cancelará antes o con motivo de la operación.No repitas.
       - Si ya están completos compradores / vendedor / crédito / gravamen, NO preguntes por "otro comprador", "condiciones especiales" o "¿procedemos?".
+      - Si ya existe al menos un Vendedor registrado, ASUME QUE ES EL ÚNICO. PROHIBIDO preguntar "¿hay algún otro vendedor?" o "¿son todos?". Solo agrega más si el usuario lo pide explícitamente.
       
       REGLA CRÍTICA: DESPUÉS DE PROCESAR UN DOCUMENTO:
     - Si el usuario subió un documento y se procesó, ASUME que la información extraída es correcta.
@@ -496,8 +523,9 @@ export class PreavisoPlugin implements TramitePlugin {
     ]
 
     // Verificar si hay múltiples folios detectados que requieren selección
-    const folios = context.folios?.candidates || []
-    const hasMultipleFolios = folios.length > 1 && !context.folios?.selection?.selected_folio
+    // (hasMultipleFolios ya fue calculado arriba)
+    // const results = context.folios?.candidates || []
+    // const hasMultipleFolios = ...
 
     // Si es saludo, forzar al LLM a que solo salude y pregunte lo siguiente amablemente
     const userInstruction = isGreeting ?
@@ -518,7 +546,7 @@ export class PreavisoPlugin implements TramitePlugin {
       
       ${hasMultipleFolios ? `
       IMPORTANTE: Se detectaron múltiples folios reales en el documento. Debes preguntar al usuario cuál folio va a utilizar.
-      Folios detectados: ${folios.map((f: any) => typeof f === 'string' ? f : f.folio).join(', ')}
+      Folios detectados: ${folioCandidates.map((f: any) => typeof f === 'string' ? f : f.folio).join(', ')}
       ` : ''
       }
       
@@ -612,16 +640,21 @@ export class PreavisoPlugin implements TramitePlugin {
       return response.trim()
     } catch (error: any) {
       console.error('[PreavisoPlugin] Error generando pregunta:', error)
-      // Fallback a pregunta determinista
-      return this.generateDeterministicQuestion(state, context)
+      // Fallback a pregunta determinista, pasando los faltantes que ya calculamos
+      return this.generateDeterministicQuestion(state, context, missingNow)
     }
   }
 
   /**
    * Genera pregunta determinista (fallback)
    */
-  private generateDeterministicQuestion(state: StateDefinition, context: any): string {
-    const missing = this.getMissingFields(state, context)
+  private generateDeterministicQuestion(state: StateDefinition, context: any, preComputedMissing?: string[]): string {
+    // Si ya vienen calculados (desde generateQuestion), usarlos. Si no, calcularlos.
+    let missing: string[] = preComputedMissing || []
+    if (!preComputedMissing) {
+      const computed = computePreavisoState(context)
+      missing = computed.state.required_missing
+    }
 
     if (missing.length === 0) {
       return 'Listo: con la información capturada ya puedes generar el Preaviso. Puedes ver el documento en los botones de arriba del chat.'
@@ -629,178 +662,86 @@ export class PreavisoPlugin implements TramitePlugin {
 
     const firstMissing = missing[0]
 
-    if (firstMissing.includes('folio_real')) {
+    if (firstMissing.includes('folio_real') || firstMissing.includes('multiple_folio_real_detected')) {
       // Verificar si hay múltiples folios candidatos
       const folios = context.folios?.candidates || []
-      if (folios.length > 1) {
+      // O si el blocking reason es explícito
+      const computed = computePreavisoState(context)
+      const hasMultiple = computed.derived.hasMultipleFolios || folios.length > 1
+
+      if (hasMultiple) {
         const folioList = folios.map((f: any) => {
           const folio = typeof f === 'string' ? f : f.folio
           return `- Folio ${folio} `
         }).join('\n')
-        return `En la hoja de inscripción detecté más de un folio real.Por favor, indícame exactamente cuál es el folio real que vamos a utilizar para este trámite: \n\n${folioList} \n\n(responde con el número del folio exactamente)`
+        return `En la hoja de inscripción detecté más de un folio real. Por favor, indícame exactamente cuál es el folio real que vamos a utilizar para este trámite: \n\n${folioList} \n\n(responde con el número del folio exactamente)`
       }
-      return 'Por favor, indícame el folio real del inmueble.'
+      return 'Por favor, indícame el folio real del inmueble y la sección.'
     }
 
     if (firstMissing.includes('compradores')) {
-      return 'Por favor, indícame el nombre completo del comprador y si es persona física o persona moral.'
+      return 'Por favor, indícame el nombre completo del comprador.'
+    }
+
+    if (firstMissing.includes('tipo_persona')) {
+      return 'Por favor, confirma si es persona física o moral.'
+    }
+
+    if (firstMissing.includes('estado_civil')) {
+      return '¿Cuál es el estado civil del comprador?'
     }
 
     if (firstMissing.includes('vendedores')) {
-      // Verificar si ya tenemos el nombre pero falta tipo_persona o confirmación
-      const vendedor = context.vendedores?.[0]
-      const nombre = vendedor?.persona_fisica?.nombre || vendedor?.persona_moral?.denominacion_social
-      const isConfirmed = vendedor?.titular_registral_confirmado === true
-
-      // Si ya está confirmado y tiene nombre y tipo_persona, no debería estar aquí
-      // Pero por si acaso, verificar
-      if (nombre && vendedor?.tipo_persona && isConfirmed) {
-        // Ya está completo, no debería preguntar - esto no debería pasar
-        console.warn('[PreavisoPlugin] Vendedor completo pero aparece en missing:', { nombre, tipo_persona: vendedor.tipo_persona, isConfirmed })
-        return '¿Hay algo más que necesites agregar o modificar?'
-      }
-
-      if (nombre && !vendedor?.tipo_persona) {
-        return `Tengo capturado como posible vendedor: ${nombre}. ¿Confirmas que es el titular registral y me indicas si es persona física o persona moral ? `
-      }
-
-      if (nombre && vendedor?.tipo_persona && !isConfirmed) {
-        return `Tengo capturado como posible vendedor: ${nombre} (${vendedor.tipo_persona === 'persona_fisica' ? 'persona física' : 'persona moral'}). ¿Confirmas que es el titular registral ? `
-      }
-
-      return 'Por favor, confirma el nombre del titular registral (vendedor) y si es persona física o persona moral.'
+      return 'Por favor, confirma el nombre del titular registral (vendedor).'
     }
 
-    if (firstMissing.includes('tipo_pago')) {
-      // Verificar si ya está confirmado
-      if (context.creditos !== undefined) {
-        // Ya está confirmado, no debería estar aquí
-        return '¿Hay algo más que necesites agregar o modificar?'
+    // Fallback general para vendedores si falta algo específico
+    if (firstMissing.includes('titular_registral_missing') || firstMissing.includes('vendedor_titular_mismatch')) {
+      const vendedor = context.vendedores?.[0]
+      const nombre = vendedor?.persona_fisica?.nombre || vendedor?.persona_moral?.denominacion_social
+      if (nombre) {
+        return `Tengo capturado como posible vendedor: ${nombre}. ¿Confirmas que es el titular registral?`
       }
+      return 'Por favor, confirma el nombre del titular registral (vendedor).'
+    }
+
+    if (firstMissing.includes('tipoOperacion') || firstMissing.includes('existencia_credito')) {
       return '¿La compraventa será de contado o con crédito?'
     }
 
     if (firstMissing.includes('creditos')) {
-      // Verificar si ya hay institución
+      // Verificar si ya hay institución, si falta, pedirla
       const creditos = context.creditos || []
       const credito0 = creditos[0]
-      if (credito0?.institucion) {
-        // Ya tiene institución, preguntar por participantes
+      if (credito0 && !credito0.institucion) {
+        return 'Por favor, indícame la institución de crédito.'
+      }
+      if (credito0?.institucion && (!credito0.participantes || credito0.participantes.length === 0)) {
         return 'Por favor, indícame quiénes participarán en el crédito (acreditado/coacreditado).'
       }
-      return 'Por favor, indícame la institución de crédito (banco, INFONAVIT, FOVISSSTE, etc.).'
+      // Genérico
+      return 'Por favor, indícame los detalles del crédito (institución).'
     }
 
-    if (firstMissing.includes('existe_hipoteca')) {
+    if (firstMissing.includes('existe_hipoteca') || firstMissing.includes('gravamenes')) {
+      if (firstMissing.includes('cancelacion_confirmada')) {
+        return '¿La hipoteca / gravamen se cancelará antes o con motivo de la operación? (responde sí / no)'
+      }
       return '¿Hay algún gravamen o hipoteca vigente o pendiente por cancelar?'
     }
 
-    // Cancelación de gravamen/hipoteca (opción A): si existe, preguntar una sola vez si se cancelará
-    if (firstMissing.includes('cancelacion_confirmada')) {
-      const folio = context?.inmueble?.folio_real || context?.folios?.selection?.selected_folio || null
-      const folioTxt = folio ? ` (folio real ${folio})` : ''
-      return `Como el inmueble${folioTxt} tiene hipoteca / gravamen, ¿esa hipoteca / gravamen se cancelará antes o con motivo de la operación ? (responde sí / no)`
+    if (firstMissing.includes('direccion')) {
+      return 'Por favor, proporciona la dirección del inmueble (Calle, Número, Colonia, Municipio).'
     }
 
-    return 'Por favor, proporciona la información faltante.'
+    if (firstMissing.includes('partidas')) {
+      return 'No detecté partidas en la captura. Por favor confirma la partida.'
+    }
+
+    return `Por favor, proporciona la información faltante: ${firstMissing.replace(/_/g, ' ')}.`
   }
 
-  /**
-   * Obtiene campos faltantes de un estado
-   */
-  private getMissingFields(state: StateDefinition, context: any): string[] {
-    const missing: string[] = []
 
-    for (const field of state.fields) {
-      if (!this.hasField(context, field)) {
-        missing.push(field)
-      }
-    }
-
-    // Verificar campos especiales que pueden estar en múltiples lugares
-    // Si falta persona_fisica.nombre pero existe persona_moral.denominacion_social (o viceversa), no es faltante
-    const vendedorFields = missing.filter(f => f.includes('vendedores'))
-    const compradorFields = missing.filter(f => f.includes('compradores'))
-
-    // Para vendedores: si tiene nombre en persona_fisica O persona_moral, y tiene tipo_persona, está completo
-    if (vendedorFields.some(f => f.includes('persona_fisica.nombre') || f.includes('persona_moral.denominacion_social'))) {
-      const vendedor = context.vendedores?.[0]
-      const hasNombre = vendedor?.persona_fisica?.nombre || vendedor?.persona_moral?.denominacion_social
-      const hasTipoPersona = vendedor?.tipo_persona
-      const isConfirmed = vendedor?.titular_registral_confirmado === true
-
-      // Si tiene nombre, tipo_persona y está confirmado, está completo
-      // Si viene del documento (tiene persona_moral o persona_fisica con nombre), también está completo
-      if (hasNombre && hasTipoPersona) {
-        // Si está confirmado O viene del documento (tiene estructura completa), está completo
-        if (isConfirmed || (vendedor?.persona_moral?.denominacion_social || vendedor?.persona_fisica?.nombre)) {
-          // Remover TODOS los campos de vendedor de missing si ya está completo
-          const toRemove = vendedorFields.filter(f =>
-            f.includes('nombre') ||
-            f.includes('denominacion_social') ||
-            f.includes('tipo_persona') ||
-            f.includes('titular_registral_confirmado')
-          )
-          toRemove.forEach(f => {
-            const idx = missing.indexOf(f)
-            if (idx >= 0) missing.splice(idx, 1)
-          })
-        }
-      }
-    }
-
-    // Similar para compradores
-    if (compradorFields.some(f => f.includes('persona_fisica.nombre'))) {
-      const comprador = context.compradores?.[0]
-      const hasNombre = comprador?.persona_fisica?.nombre || comprador?.persona_moral?.denominacion_social
-      const hasTipoPersona = comprador?.tipo_persona
-      if (hasNombre && hasTipoPersona) {
-        const toRemove = compradorFields.filter(f => f.includes('nombre') || f.includes('denominacion_social'))
-        toRemove.forEach(f => {
-          const idx = missing.indexOf(f)
-          if (idx >= 0) missing.splice(idx, 1)
-        })
-      }
-    }
-
-    return missing
-  }
-
-  /**
-   * Verifica si un campo existe
-   */
-  private hasField(context: any, fieldPath: string): boolean {
-    const parts = fieldPath.split('.')
-    let current = context
-
-    for (const part of parts) {
-      if (part.includes('[]')) {
-        const arrayName = part.replace('[]', '')
-        if (!Array.isArray(current[arrayName]) || current[arrayName].length === 0) {
-          return false
-        }
-        current = current[arrayName][0]
-      } else {
-        // Si estamos buscando "nombre" o "denominacion_social" en vendedores/compradores,
-        // verificar en persona_fisica O persona_moral
-        if ((part === 'nombre' || part === 'denominacion_social') &&
-          (current.persona_fisica || current.persona_moral)) {
-          const nombre = current.persona_fisica?.nombre || current.persona_moral?.denominacion_social
-          if (nombre && nombre.trim().length > 0) {
-            return true
-          }
-          return false
-        }
-
-        if (current[part] === undefined || current[part] === null) {
-          return false
-        }
-        current = current[part]
-      }
-    }
-
-    return true
-  }
 
   /**
    * Interpreta input del usuario (FLEXIBLE)

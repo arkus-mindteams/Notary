@@ -27,32 +27,46 @@ export class PreavisoDocumentProcessor {
 
       const cachedExtraction = await DocumentoService.findExtractionData(fileHash)
       if (cachedExtraction) {
-        console.log(`[PreavisoDocumentProcessor] Intelligent Processing: Reusing global extraction for hash ${fileHash}`)
-        // Reuse cached data
-        let extracted = cachedExtraction
-
-        // Simular flujo de procesamiento con datos cacheados
-        let commands: Command[] = []
-        switch (documentType) {
-          case 'inscripcion':
-            commands = this.processInscripcion(extracted, context)
-            break
-          case 'identificacion':
-            commands = this.processIdentificacion(extracted, context)
-            break
-          case 'acta_matrimonio':
-            commands = this.processActaMatrimonio(extracted, context)
-            break
-          case 'escritura':
-            commands = this.processEscritura(extracted, context)
-            break
-          default:
-            commands = []
+        // Validación de versión de caché para inscripciones
+        // Si es inscripción, requerimos que tenga la marca de "segundo pase" (_v=2)
+        // Esto corrige el problema donde extracciones antiguas o incompletas (ej. solo 2 folios)
+        // bloquean la detección correcta (ej. 8 folios).
+        let isValidCache = true
+        if (documentType === 'inscripcion') {
+          if ((cachedExtraction._v || 0) < 2) {
+            console.log(`[PreavisoDocumentProcessor] Cache hit but OUTDATED version (${cachedExtraction._v || 0}) for inscripcion. Forcing re-process.`)
+            isValidCache = false
+          }
         }
 
-        return {
-          commands,
-          extractedData: extracted
+        if (isValidCache) {
+          console.log(`[PreavisoDocumentProcessor] Intelligent Processing: Reusing global extraction for hash ${fileHash}`)
+          // Reuse cached data
+          let extracted = cachedExtraction
+
+          // Simular flujo de procesamiento con datos cacheados
+          let commands: Command[] = []
+          switch (documentType) {
+            case 'inscripcion':
+              commands = this.processInscripcion(extracted, context)
+              break
+            case 'identificacion':
+              commands = this.processIdentificacion(extracted, context)
+              break
+            case 'acta_matrimonio':
+              commands = this.processActaMatrimonio(extracted, context)
+              break
+            case 'escritura':
+              commands = this.processEscritura(extracted, context)
+              break
+            default:
+              commands = []
+          }
+
+          return {
+            commands,
+            extractedData: extracted
+          }
         }
       }
     } catch (e) {
@@ -64,12 +78,27 @@ export class PreavisoDocumentProcessor {
     let extracted = await this.extractWithOpenAI(file, documentType)
 
     // 2. Segundo pase para folios (solo inscripción) - detecta TODOS los folios
+    let secondPassSuccess = false
     if (documentType === 'inscripcion') {
-      extracted = await this.ensureAllFoliosOnPage(file, extracted)
+      const { result, success } = await this.ensureAllFoliosOnPage(file, extracted)
+      extracted = result
+      if (success) {
+        // Solo marcar versión 2 si el segundo pase se ejecutó CORRECTAMENTE (sin errores)
+        extracted._v = 2
+        secondPassSuccess = true
+      } else {
+        console.warn('[PreavisoDocumentProcessor] Second pass failed. NOT marking as v2 to allow retry.')
+      }
+    } else {
+      // Para otros documentos, asumimos que v1 es suficiente o no aplica v2
+      extracted._v = 2
+      secondPassSuccess = true
     }
 
     // 2.5. Cache the result for future global reuse
-    if (fileHash && extracted && Object.keys(extracted).length > 0) {
+    // Solo cachear si tenemos un resultado "completo" (v2) o si no es inscripción (v1 ok)
+    // Esto evita cachear resultados parciales cuando falla el segundo pase
+    if (fileHash && extracted && Object.keys(extracted).length > 0 && secondPassSuccess) {
       // Save asynchronously/background
       DocumentoService.saveExtractionData(fileHash, extracted).catch((err: any) => {
         console.error('[PreavisoDocumentProcessor] Error saving cache:', err)
@@ -109,7 +138,7 @@ export class PreavisoDocumentProcessor {
    * Segundo pase dedicado para detectar TODOS los folios
    * El LLM a veces solo detecta el primer folio, este pase asegura que se detecten todos
    */
-  private async ensureAllFoliosOnPage(file: File, current: any): Promise<any> {
+  private async ensureAllFoliosOnPage(file: File, current: any): Promise<{ result: any; success: boolean }> {
     const folios = Array.isArray(current?.foliosReales) ? current.foliosReales.filter(Boolean) : []
     const foliosConInfo = Array.isArray(current?.foliosConInfo) ? current.foliosConInfo : []
     const foliosConInfoFolios = foliosConInfo.map((f: any) => f?.folio).filter(Boolean)
@@ -128,7 +157,7 @@ export class PreavisoDocumentProcessor {
       const apiKey = process.env.OPENAI_API_KEY
       const model = process.env.OPENAI_MODEL || 'gpt-4o'
 
-      if (!apiKey) return current
+      if (!apiKey) return { result: current, success: false }
 
       // Convertir archivo a base64
       const arrayBuffer = await file.arrayBuffer()
@@ -197,7 +226,7 @@ REGLAS CRÍTICAS:
 
       if (!response.ok) {
         // Si hay error, no bloquear el flujo principal
-        return current
+        return { result: current, success: false }
       }
 
       const data = await response.json()
@@ -215,18 +244,18 @@ REGLAS CRÍTICAS:
         parsed = null
       }
 
-      if (!parsed) return current
+      if (!parsed) return { result: current, success: false }
 
       const scanned = Array.isArray(parsed?.foliosReales) ? parsed.foliosReales.filter(Boolean).map((x: any) => String(x)) : []
       const scannedFolios = Array.isArray(parsed?.folios) ? parsed.folios : []
-      if (scanned.length === 0 && scannedFolios.length === 0) return current
+      if (scanned.length === 0 && scannedFolios.length === 0) return { result: current, success: true } // Success but no new info is technically a success
 
       const scannedFromObjects = scannedFolios
         .map((f: any) => f?.folio)
         .filter(Boolean)
         .map((x: any) => String(x))
       const scannedAll = [...scanned, ...scannedFromObjects]
-      if (scannedAll.length === 0) return current
+      if (scannedAll.length === 0) return { result: current, success: true }
 
       // Merge (dedupe por dígitos)
       const norm = (v: any) => {
@@ -304,10 +333,10 @@ REGLAS CRÍTICAS:
       }
       next.foliosConInfo = Array.from(infoMap.values())
 
-      return next
+      return { result: next, success: true }
     } catch (error) {
       console.error('[DocumentProcessor] Error en segundo pase de folios:', error)
-      return current
+      return { result: current, success: false }
     }
   }
 
@@ -555,9 +584,14 @@ REGLAS:
     const commands: Command[] = []
 
     // Folios: usar foliosReales del extracted (que ya incluye el merge del segundo pase)
-    const folios = Array.isArray(extracted.foliosReales)
-      ? extracted.foliosReales.filter(Boolean).map((f: any) => String(f))
-      : []
+    // ROBUSTEZ: Asegurar que incluimos folios de todas las sub-listas detectadas
+    // A veces el LLM llena 'foliosRealesUnidades' pero olvida ponerlos en 'foliosReales'
+    const mainList = Array.isArray(extracted.foliosReales) ? extracted.foliosReales : []
+    const unidadesList = Array.isArray(extracted.foliosRealesUnidades) ? extracted.foliosRealesUnidades : []
+    const afectadosList = Array.isArray(extracted.foliosRealesInmueblesAfectados) ? extracted.foliosRealesInmueblesAfectados : []
+
+    const combined = new Set([...mainList, ...unidadesList, ...afectadosList])
+    const folios = Array.from(combined).filter(Boolean).map((f: any) => String(f))
 
     // Asegurar que todos los folios de foliosConInfo también estén en la lista
     const foliosFromInfo = Array.isArray(extracted.foliosConInfo)
@@ -568,12 +602,12 @@ REGLAS:
     const allFolios = new Set([...folios, ...foliosFromInfo])
     const mergedFolios = Array.from(allFolios).filter(Boolean)
 
-    console.log('[DocumentProcessor] Folios detectados:', {
-      foliosReales: folios,
-      foliosFromInfo,
+    console.log('[DocumentProcessor] Folios detectados (Merged):', {
+      mainList,
+      unidadesList,
+      afectadosList,
       mergedFolios,
-      foliosConInfo: extracted.foliosConInfo,
-      contextFolioSelection: context.folios?.selection
+      total: mergedFolios.length
     })
 
     // CRÍTICO: Siempre preguntar al usuario cuál folio usar, incluso si solo hay uno detectado
