@@ -94,6 +94,33 @@ export class BuyerNameHandler {
 
     updatedContext.compradores = compradores
 
+    // 5. Resolver detección de personas pendiente
+    // Si el usuario proporciona un nombre válido manualmente, resolvemos el estado pendiente
+    // independientemente de si coincide o no con la lista detectada. Priorizamos el input del usuario.
+    if (updatedContext._document_people_pending?.status === 'pending') {
+      const persons = Array.isArray(updatedContext._document_people_pending.persons) 
+        ? updatedContext._document_people_pending.persons 
+        : []
+      
+      // Intentar buscar coincidencia solo para logging o metadatos
+      const matchedPerson = persons.find((p: any) => 
+        ConyugeService.namesMatch(p.name, command.payload.name) || 
+        (p.name && command.payload.name && p.name.includes(command.payload.name)) ||
+        (p.name && command.payload.name && command.payload.name.includes(p.name))
+      )
+      
+      if (matchedPerson) {
+        console.log(`[BuyerNameHandler] Resolviendo personas pendientes por coincidencia con "${command.payload.name}"`)
+      } else {
+        console.log(`[BuyerNameHandler] Resolviendo personas pendientes con nombre manual "${command.payload.name}" (sin coincidencia directa en docs)`)
+      }
+
+      updatedContext._document_people_pending = {
+        ...updatedContext._document_people_pending,
+        status: 'resolved'
+      }
+    }
+
     return { 
       updatedContext, 
       events: ['BuyerNameUpdated'] 

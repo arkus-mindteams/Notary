@@ -450,9 +450,12 @@ export class PreavisoPlugin implements TramitePlugin {
       - NO uses negritas (**).
       
       Estado actual: ${state.name}
-      Información faltante: ${JSON.stringify(missingNow)}
+      Información faltante DETECTADA POR EL SISTEMA: ${JSON.stringify(missingNow)}
       
       IMPORTANTE:
+      - Si "Información faltante" NO está vacío, SIGNIFICA QUE EL TRÁMITE NO ESTÁ COMPLETO.
+      - EN ESE CASO, DEBES PREGUNTAR POR LOS DATOS FALTANTES.
+      - PROHIBIDO decir "ya hemos completado la información" o "podemos proceder" si hay información faltante en la lista.
       - Si el vendedor ya fue detectado del documento(context.vendedores[0] tiene nombre), NO preguntes por el vendedor.
       - Si el comprador ya fue detectado del documento(context.compradores[0] tiene nombre), NO preguntes por el comprador.
       - Si el cónyuge ya fue detectado del documento(context.compradores[0].persona_fisica.conyuge.nombre existe), NO preguntes por el cónyuge.

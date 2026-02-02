@@ -178,6 +178,49 @@ export class InputParser {
       handler: 'TitularRegistralHandler'
     })
 
+    // 2C. Método de pago - Respuesta Booleana (Si/No) al "¿Es Crédito?"
+    // Resuelve casos donde el usuario solo dice "Si" o "No" ante preguntas de crédito/contado.
+    this.rules.push({
+      name: 'payment_method_boolean',
+      // Strict regex for simple yes/no answers
+      pattern: /^(si|sí|no|nop|nel|simon)[.,]?$/i,
+      condition: (input, context, lastAssistantMessage) => {
+        // Solo si no está definido el crédito
+        if (context.creditos !== undefined) return false 
+        
+        const msg = String(lastAssistantMessage || '').toLowerCase()
+        const isPaymentIntent = context?._last_question_intent === 'payment_method'
+        const isAskingCredit = msg.includes('crédito') || msg.includes('credito')
+        const isAskingCash = msg.includes('contado')
+        
+        // Debe ser una pregunta sobre el pago
+        return isPaymentIntent || (msg.includes('?') && (isAskingCredit || isAskingCash))
+      },
+      extract: (input, context, lastAssistantMessage) => {
+        const msg = String(lastAssistantMessage || '').toLowerCase()
+        const ans = input.trim().toLowerCase().replace(/[.,]/g, '')
+        const isYes = ans === 'si' || ans === 'sí' || ans === 'simon'
+        
+        // Prioridad: Pregunta sobre crédito (ej: "¿Se realizará mediante crédito?")
+        if (msg.includes('credito') || msg.includes('crédito') || msg.includes('hipotecario')) {
+            // A: "Si" -> Credit
+            // A: "No" -> Contado
+            return { method: isYes ? 'credito' : 'contado' }
+        }
+        
+        // Alternativa: Pregunta sobre contado (ej: "¿Es de contado?")
+        if (msg.includes('contado')) {
+             // A: "Si" -> Contado
+             // A: "No" -> Credit
+             return { method: isYes ? 'contado' : 'credito' }
+        }
+        
+        // Default: Ante duda, si preguntaron método de pago y responde Si, solemos preguntar "¿Es crédito?" primero en el flujo.
+        return { method: isYes ? 'credito' : 'contado' }
+      },
+      handler: 'PaymentMethodHandler'
+    })
+
     // 3. Método de pago
     // IMPORTANTE: En v1.4, la forma de pago se determina por creditos:
     // - creditos === undefined → no confirmado
@@ -244,7 +287,9 @@ export class InputParser {
         if (!hasCandidates && !hasSelection) return false
 
         // Debe contener un número de folio válido O ser una confirmación explícita
-        const hasNumber = /\b(\d{6,8})\b/.test(input)
+        // UPDATE v1.5: Permitir folios de 1 a 8 dígitos (ej. "1", "123").
+        // Antes era {6,8} lo que bloqueaba folios antiguos o cortos (como 67778).
+        const hasNumber = /\b(\d{1,8})\b/.test(input)
         const isConfirmation = /^(si|sí|correcto|confirmo|confirmado|usar este|ese|ese mero)$/i.test(input.trim())
 
         return hasNumber || (isConfirmation && (hasSelection || folios.length === 1))
@@ -260,7 +305,8 @@ export class InputParser {
           /^(si|sí|correcto|confirmo|confirmado)$/i.test(input.trim())
 
         // 2. Extraer Número de Folio
-        const numberMatch = input.match(/\b(\d{6,8})\b/)
+        // UPDATE v1.5: Permitir 1-8 dígitos
+        const numberMatch = input.match(/\b(\d{1,8})\b/)
         let folio = numberMatch ? numberMatch[1] : null
 
         // Si no hay número explícito, intentar inferir contexto (confirmación de "ese")
@@ -654,6 +700,42 @@ export class InputParser {
         }
 
         return { __commands: cmds }
+      },
+      handler: 'CreditParticipantHandler'
+    })
+
+    // UPDATE V1.6: Captura inteligente cuando el usuario responde solo con un NOMBRE
+    // al preguntársele por los participantes del crédito.
+    // Ej: Asistente: "¿Quiénes participan en el crédito?" -> Usuario: "Juan Perez"
+    // Acción: Asumir que "Juan Perez" es el Acreditado Principal.
+    this.rules.push({
+      name: 'credit_participant_name_direct',
+      pattern: /^[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]+){1,6}$/,
+      condition: (input, context, lastAssistantMsg) => {
+        // Solo aplica si tengo un crédito activo
+        if (!Array.isArray(context?.creditos) || context.creditos.length === 0) return false
+        
+        // Y el asistente preguntó explícitamente por participantes
+        const msg = String(lastAssistantMsg || '').toLowerCase()
+        const isAskingParticipants = 
+          msg.includes('participantes') || 
+          msg.includes('acreditado') || 
+          msg.includes('quién firma') ||
+          msg.includes('quienes van a firmar') ||
+          msg.includes('quiénes serán')
+          
+        return isAskingParticipants
+      },
+      extract: (input, context) => {
+         // Si el usuario da un nombre directo respondiendo a "¿Quién participa?",
+         // asumimos que es el Acreditado Principal.
+         return {
+            creditIndex: 0,
+            participant: {
+              name: input.trim(),
+              role: 'acreditado'
+            }
+         }
       },
       handler: 'CreditParticipantHandler'
     })

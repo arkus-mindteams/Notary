@@ -36,7 +36,7 @@ import {
 } from 'lucide-react'
 import { PreavisoStateSnapshot, computePreavisoState } from '@/lib/preaviso-state'
 import { PreavisoExportOptions } from './preaviso-export-options'
-import type { LastQuestionIntent } from '@/lib/tramites/base/types'
+import type { LastQuestionIntent, Command } from '@/lib/tramites/base/types'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1859,20 +1859,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       if (existingDoc && existingDoc.extractedData) {
         console.log(`[PreavisoChat] Reusing data for duplicate file: ${file.name}`)
 
-        // Simular procesamiento exitoso con datos existentes
-        const simulatedCommand: Command = {
-          type: 'document_processed',
-          timestamp: new Date(),
-          payload: {
-            documentType: existingDoc.documentType || 'unknown',
-            extractedData: existingDoc.extractedData,
-            fileName: existingDoc.name
-          },
-          source: 'document'
-        }
-
-        // Procesar el comando directamente
-        await processCommand(simulatedCommand)
+        // El documento ya existe, no es necesario procesarlo de nuevo.
+        // La lógica posterior (si newFiles.length === 0) se encargará de notificar al backend
+        // usando la información ya existente en uploadedDocuments/context.
 
         // Avisar al usuario
         setMessages(prev => [...prev, {
@@ -1900,9 +1889,78 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
 
     if (newFiles.length === 0) {
-      // Si todos eran duplicados (y ya los procesamos arriba), terminamos.
+      // Si todos eran duplicados (y ya los procesamos arriba),
+      // forzamos una llamada al chat para obtener la siguiente pregunta.
       setIsProcessingDocument(false)
       setProcessingProgress(0)
+
+      // Recuperar documentos que acabamos de "re-procesar"
+      const processedDuplicates = filesArray.filter(f => !newFiles.includes(f))
+      const processedNames = processedDuplicates.map(f => f.name)
+
+      // Construir mensaje del usuario si existe
+      if (!skipUserMessage) {
+         setMessages(prev => [...prev, {
+            id: generateMessageId('file-dup'),
+            role: 'user',
+            content: userText || `He subido el documento: ${processedNames.join(', ')}`,
+            timestamp: new Date(),
+            attachments: filesArray
+         }])
+      }
+
+      // Llamar al backend de chat IMPORTANTE para avanzar el flujo
+      try {
+        const workingData = dataRef.current // Usar current state (que processCommand debió actualizar)
+        const workingDocs = uploadedDocumentsRef.current
+        
+        const chatRes = await fetch('/api/ai/preaviso-chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                messages: [
+                    ...messages.map(m => ({ role: m.role, content: m.content })),
+                    {
+                      role: 'user',
+                      content: userText || `He subido nuevamente: ${processedNames.join(', ')}`
+                    }
+                ],
+                context: {
+                    ...workingData,
+                    tramiteId: activeTramiteId,
+                    documentosProcesados: workingDocs
+                        .filter(d => d.processed && d.extractedData)
+                        .map(d => ({
+                          nombre: d.name,
+                          tipo: d.documentType || 'desconocido',
+                          informacionExtraida: d.extractedData
+                        }))
+                },
+                tramiteId: activeTramiteId
+            })
+        })
+
+        if (chatRes.ok) {
+            const result = await chatRes.json()
+            if (result.message) {
+                 setMessages(prev => [...prev, {
+                    id: generateMessageId('ai-response-dup'),
+                    role: 'assistant',
+                    content: toUserFacingAssistantText(result.message),
+                    timestamp: new Date()
+                 }])
+            }
+             // Aplicar actualizaciones de estado si el backend las envió
+            if (result.data) {
+                 // Simplificación: confiamos en que processCommand ya hizo el trabajo pesado,
+                 // pero si el chat devuelve data limpia, la aplicamos.
+                if (result.data.tipoOperacion) setData(prev => ({ ...prev, tipoOperacion: result.data.tipoOperacion }))
+            }
+        }
+      } catch (e) {
+          console.error('[PreavisoChat] Error getting duplicate response', e)
+      }
+
       return
     }
 

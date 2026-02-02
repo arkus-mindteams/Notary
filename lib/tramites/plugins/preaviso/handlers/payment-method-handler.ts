@@ -19,6 +19,8 @@ export class PaymentMethodHandler {
     if (command.payload.method === 'contado') {
       // Contado: creditos = []
       updatedContext.creditos = []
+      // Mark as explicitly confirmed to prevent auto-defaults from overwriting or silent assumptions
+      updatedContext._creditos_confirmed = true
     } else if (command.payload.method === 'credito') {
       // Crédito: crear placeholder si no existe
       if (!updatedContext.creditos || updatedContext.creditos.length === 0) {
@@ -30,6 +32,7 @@ export class PaymentMethodHandler {
           tipo_credito: null
         }]
       }
+      updatedContext._creditos_confirmed = true
       // Si ya existe, mantenerlo (no sobrescribir)
     }
 

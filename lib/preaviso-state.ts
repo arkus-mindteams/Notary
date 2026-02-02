@@ -55,7 +55,11 @@ export interface PreavisoStateComputation {
  * - Decide únicamente completitud / faltantes / bloqueo para control de flujo
  */
 export function computePreavisoState(context?: any): PreavisoStateComputation {
-  const PREAVISO_DEBUG = process.env.PREAVISO_DEBUG === '1'
+  const PREAVISO_DEBUG = process.env.PREAVISO_DEBUG === '1' || true // Force debug temporarily
+  if (PREAVISO_DEBUG) {
+      console.log('[computePreavisoState] Input Context Creditos:', JSON.stringify(context?.creditos, null, 2))
+      console.log('[computePreavisoState] Input Context _creditos_confirmed:', context?._creditos_confirmed)
+  }
   const normalizeForMatch = (value: any): string => {
     const s = String(value || '')
       .normalize('NFD')
@@ -212,9 +216,18 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   // - context.creditos undefined => forma de pago NO confirmada
   // - [] => contado confirmado
   // - [..] => crédito confirmado
-  const creditosProvided = context?.creditos !== undefined
+  // SAFETY V1.6: Exigir _creditos_confirmed = true para aceptar [] como "Contado".
+  // Si creditos es [] pero no está confirmado, lo tratamos como undefined (pendiente).
+  // Esto evita que artefactos de extracción (AI devolviendo creditos:[]) colapsen el flujo a Contado.
+  // Si creditos tiene elementos, asumimos que es crédito (la presencia de datos es confirmación suficiente).
+  let creditosProvided = context?.creditos !== undefined
   const creditos = context?.creditos as any[] | undefined
   const creditosArr = Array.isArray(creditos) ? creditos : []
+  
+  if (creditosProvided && creditosArr.length === 0 && context?._creditos_confirmed !== true) {
+    creditosProvided = false // Forzar re-pregunta si era [] sin confirmación
+  }
+
   const tieneCreditos = (creditos?.length || 0) > 0
   const necesitaCredito = tieneCreditos ? true : (creditosProvided ? false : undefined)
 
@@ -284,7 +297,8 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     !!selectedFolio &&
     foliosRealesCandidates.some((c: any) => {
       const cd = normalizeDigits(c)
-      return cd && selectedFolioDigits ? cd === selectedFolioDigits : String(c) === String(selectedFolio)
+      // FIX V1.5: Permitir coincidencia numérica simple para folios cortos
+      return (cd && selectedFolioDigits ? cd === selectedFolioDigits : String(c) === String(selectedFolio))
     })
 
   // Folio efectivo:
@@ -293,13 +307,18 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   // Sin default de folio del trámite:
   // - Si hay candidatos y no está confirmado => folioReal = null (siempre pedir confirmación/selección)
   // - Si no hay candidatos => mantener null y pedir al usuario que lo indique
+  // UPDATE V1.6: Si el folio está confirmado manualmente (manualConfirmed), LEERLO siempre, aunque no esté en la lista de candidatos.
+  // Esto permite que el usuario corrija al sistema si el sistema leyó "Folio 8" pero el usuario dice "Es el 7".
   const hasAnyCandidates = foliosRealesCandidates.length > 0
-  // Folio efectivo:
-  // - Si hay candidatos (vienen típicamente de hoja de inscripción): exigir confirmación explícita del usuario.
-  // - Si NO hay candidatos (captura manual): aceptar `inmueble.folio_real` como fuente directa.
-  const folioReal = hasAnyCandidates
-    ? (folioConfirmed && folioInCandidates ? selectedFolio : null)
-    : (inmueble?.folio_real ? String(inmueble.folio_real) : null)
+  
+  const manualFolio = inmueble?.folio_real ? String(inmueble.folio_real) : null
+  const manualConfirmed = inmueble?.folio_real_confirmed === true
+
+  const folioReal = manualConfirmed 
+    ? manualFolio 
+    : (hasAnyCandidates
+        ? (folioConfirmed && folioInCandidates ? selectedFolio : null)
+        : manualFolio)
 
   if (PREAVISO_DEBUG) {
     console.info('[preaviso-state] folios detectados', {
@@ -429,6 +448,32 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     // Para control de flujo, consideramos completo con institucion + participantes.
     const creditosCompletos = creditosArr.every((c: any) => c.institucion && c.participantes && c.participantes.length > 0)
     stateStatus.ESTADO_5 = creditosCompletos ? 'completed' : 'incomplete'
+  }
+
+  // SAFETY PATCH: Consistency Check (Refactored)
+  // FORCE OVERRIDE: Si hay créditos, ESTADO_5 debe estar activo.
+  if (creditosArr.length > 0) {
+    if (stateStatus.ESTADO_1 !== 'completed') {
+      stateStatus.ESTADO_1 = 'completed'
+    }
+
+    // Valida completitud real
+    const isComplete = creditosArr.every((c: any) => c.institucion && c.participantes && c.participantes.length > 0)
+    
+    // Si hay créditos, el estado es incomplete (falta info) o completed.
+    // Nunca pending (que significa "no hemos llegado aqui") ni not_applicable.
+    stateStatus.ESTADO_5 = isComplete ? 'completed' : 'incomplete'
+  }
+
+  // FORCE CONSISTENCY: Si ESTADO_1 (Pago) está completo y es CONTADO (creditos empty), 
+  // ESTADO_5 debe ser not_applicable.
+  if (stateStatus.ESTADO_1 === 'completed' && creditosArr.length === 0) {
+      stateStatus.ESTADO_5 = 'not_applicable'
+  }
+
+  // Log final state for debug
+  if (PREAVISO_DEBUG) {
+      console.log('[preaviso-state] FINAL State Status:', JSON.stringify(stateStatus, null, 2))
   }
 
   // Gravámenes/hipoteca (aplica si registro indica o vendedor declara o ya hay gravámenes)

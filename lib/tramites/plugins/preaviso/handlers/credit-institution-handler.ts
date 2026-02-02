@@ -35,6 +35,8 @@ export class CreditInstitutionHandler {
     }
 
     updatedContext.creditos = creditos
+    // Confirmar explícitamente que hay créditos, para que el estado no piense que está pendiente
+    updatedContext._creditos_confirmed = true
 
     return { 
       updatedContext, 
