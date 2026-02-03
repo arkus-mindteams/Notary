@@ -58,7 +58,9 @@ export class LLMService {
       body: JSON.stringify({
         model: this.model,
         messages,
-        temperature: 0.3
+        ...((this.model.startsWith('o1') || this.model.startsWith('o3') || this.model.includes('gpt-5'))
+          ? {}
+          : { temperature: 0.3 })
       })
     })
 
