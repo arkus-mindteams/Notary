@@ -143,9 +143,13 @@ export async function POST(req: Request) {
                 content: prompt,
               },
             ],
-            temperature: 0.1, // Baja temperatura para más consistencia en conversión de números
-            max_completion_tokens: model.includes("gpt-5") || model.includes("o1") ? 2000 : undefined,
-            max_tokens: model.includes("gpt-5") || model.includes("o1") ? undefined : 2000,
+            // Temperature is often restricted in reasoning models (o1, o3)
+            ...(!model.includes("o1") && !model.includes("o3") ? { temperature: 0.1 } : {}),
+            // GPT-5.x, o1, and o3 models require max_completion_tokens instead of max_tokens
+            ...(model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
+              ? { max_completion_tokens: 2000 }
+              : { max_tokens: 2000 }
+            ),
           }),
         })
 

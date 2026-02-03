@@ -87,3 +87,5 @@ jspm_packages/
 # Agent internals
 .gemini/
 .agent/
+.antigravity
+

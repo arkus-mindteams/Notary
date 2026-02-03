@@ -3,6 +3,8 @@ import type { StructuringRequest, StructuringResponse, StructuredUnit } from "@/
 import { StatsService } from "@/lib/stats-service"
 import { createServerClient } from "@/lib/supabase"
 import { AgentUsageService } from "@/lib/services/agent-usage-service"
+import { createServerClient as createSSRClient } from "@supabase/ssr"
+import { cookies } from "next/headers"
 
 const cache = new Map<string, StructuredUnit[]>()
 const metadataCache = new Map<string, { lotLocation?: string; totalLotSurface?: number }>()
@@ -1184,7 +1186,14 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
   // For GPT-5.1, set OPENAI_MODEL=gpt-5.1
   // Note: Model names may vary (e.g., gpt-5.1, gpt-5.1-preview, gpt-5.1-2024-12-01)
   // Check OpenAI documentation for the exact model identifier
-  const model = process.env.OPENAI_MODEL || "gpt-4o"
+  let model = process.env.OPENAI_MODEL || "gpt-4o"
+
+  // Fallback for models specifically known NOT to support vision (image_url)
+  // "o1" and "o3" series typically do not support vision in their initial/mini versions
+  if (model.includes("o1") || model.includes("o3")) {
+    console.log(`[OpenAI Vision] Model '${model}' does not support vision key. Falling back to 'gpt-4o'.`)
+    model = "gpt-4o"
+  }
 
   // Log the model being used for debugging
   if (process.env.NODE_ENV === "development") {
@@ -1232,11 +1241,11 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
           ],
         },
       ],
-      temperature: 0.1,
+      // Temperature is often restricted in reasoning models (o1, o3)
+      ...(!model.includes("o1") && !model.includes("o3") ? { temperature: 0.1 } : {}),
       response_format: { type: "json_object" },
-      // GPT-5.1 and newer models require max_completion_tokens instead of max_tokens
-      // We use max_completion_tokens for newer models (gpt-5.x, o1) and max_tokens for older ones
-      ...(model.includes("gpt-5") || model.includes("o1")
+      // GPT-5.x, o1, and o3 models require max_completion_tokens instead of max_tokens
+      ...(model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
         ? { max_completion_tokens: 4000 }
         : { max_tokens: 4000 }
       ),
@@ -1579,7 +1588,7 @@ export async function POST(req: Request) {
 
       // Ensure unit_name exists
       if (!unit.unit_name) {
-        unit.unit_name = "UNIDAD"
+        unit.unit_name = (unit as any).unit?.name || "UNIDAD"
       }
 
       // Preserve directions if present (new format from AI)
@@ -1653,11 +1662,140 @@ export async function POST(req: Request) {
       }
     })
 
+    // Log usage stats (Server-Side)
+    const debugLogs: string[] = []
+    const logDebug = (msg: string) => {
+      console.log(msg)
+      debugLogs.push(msg)
+    }
+    const logError = (msg: string, err?: any) => {
+      console.error(msg, err)
+      debugLogs.push(`ERROR: ${msg} ${err ? JSON.stringify(err) : ''}`)
+    }
+
+    try {
+      // 1. Get User via Standard SSR Client (cookies)
+      // We need this because the Admin client (lib/supabase) uses Service Role and doesn't know the session
+      const cookieStore = await cookies()
+      const supabaseSSR = createSSRClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+          cookies: {
+            getAll() { return cookieStore.getAll() },
+            setAll(cookiesToSet) {
+              // route handlers are read-only for auth usually, but we just need to read
+              try {
+                cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options))
+              } catch (e) { /* ignore in route handler */ }
+            },
+          },
+        }
+      )
+      logDebug("[api/ai/structure] Starting hybrid auth check...")
+      let { data: { user }, error: authError } = await supabaseSSR.auth.getUser()
+
+      // Fallback: Check Authorization header if cookie auth failed
+      if (!user) {
+        logDebug("[api/ai/structure] Cookie auth failed/missing. Checking Authorization header...")
+        const { headers } = await import("next/headers")
+        const headerStore = await headers()
+        const authHeader = headerStore.get("authorization")
+
+        if (authHeader) {
+          const token = authHeader.replace("Bearer ", "")
+          const { data: { user: headerUser }, error: headerError } = await supabaseSSR.auth.getUser(token)
+          if (headerUser) {
+            user = headerUser
+            authError = null
+            logDebug("[api/ai/structure] User identified via Authorization header")
+          } else {
+            logError("[api/ai/structure] Auth Header verification failed:", headerError)
+          }
+        }
+      }
+
+      // 2. Write Stats via Admin Client (Service Role)
+      const supabaseAdmin = createServerClient()
+
+      if (authError) {
+        logError("[api/ai/structure] Auth Error (getUser):", authError)
+      }
+
+      if (user) {
+        logDebug(`[api/ai/structure] User identified: ${user.id}`)
+
+        // Resolve public.usuarios ID (required for foreign key in usage_stats)
+        const { data: userProfile, error: profileError } = await supabaseAdmin
+          .from('usuarios')
+          .select('id')
+          .eq('auth_user_id', user.id)
+          .single()
+
+        if (profileError) {
+          logError(`[api/ai/structure] Profile lookup failed for auth_id ${user.id}:`, profileError)
+        }
+
+        if (userProfile?.id && usage) {
+          logDebug(`[api/ai/structure] Profile found: ${userProfile.id}. Attempting insert...`)
+
+          const estimatedCost = (
+            (usage.prompt_tokens / 1_000_000) * 2.50 +
+            (usage.completion_tokens / 1_000_000) * 10.00
+          )
+
+          const { error: insertError } = await supabaseAdmin.from('usage_stats').insert({
+            user_id: userProfile.id,
+            event_type: 'architectural_plan_processed',
+            metadata: {
+              meta_request: {
+                images_count: images.length,
+                has_location: !!(processedMetadata?.lotLocation),
+                has_surface: !!(processedMetadata?.totalLotSurface),
+                authorized_units_count: results.length
+              },
+              costs_summary: {
+                units_cost_usd: 0, // No authorized units yet
+                units_tokens_total: 0,
+                initial_analysis_cost_usd: estimatedCost,
+                initial_tokens_total: usage.total_tokens
+              },
+              quality_metrics: {
+                // Initial analysis has no quality comparisons yet
+              },
+              tokens_input: usage.prompt_tokens,
+              tokens_output: usage.completion_tokens,
+              total_tokens: usage.total_tokens,
+              model: process.env.OPENAI_MODEL || "gpt-4o",
+              estimated_cost: estimatedCost,
+              units_found: results.length,
+              status: 'in_progress'
+            }
+          })
+
+          if (insertError) {
+            console.error("[api/ai/structure] INSERT FAILED:", insertError)
+          } else {
+            console.log(`[api/ai/structure] Stats SUCCESSFULLY logged for user ${userProfile.id}`)
+          }
+        } else {
+          console.warn("[api/ai/structure] Log skipped: Missing profile or usage data", { hasProfile: !!userProfile, hasUsage: !!usage })
+        }
+      } else {
+        console.warn("[api/ai/structure] No user session found via cookies.")
+      }
+    } catch (logErr) {
+      console.error("[api/ai/structure] CRITICAL ERROR logging stats:", logErr)
+      // Non-blocking error
+    }
+
     const resp: StructuringResponse = {
       results,
       ...(processedMetadata?.lotLocation ? { lotLocation: processedMetadata.lotLocation } : {}),
       ...(processedMetadata?.totalLotSurface ? { totalLotSurface: processedMetadata.totalLotSurface } : {}),
       usage,
+      // @ts-ignore - temporary debug field
+      _debug_logs: debugLogs
     }
 
     // Log Usage Async
