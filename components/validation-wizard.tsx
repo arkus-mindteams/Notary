@@ -107,7 +107,7 @@ export function ValidationWizard({
   // Estados para rastrear valores guardados y cambios no guardados
   const [savedColindanciasByUnit, setSavedColindanciasByUnit] = useState<Map<string, string>>(new Map())
   const [savedNotarialTextByUnit, setSavedNotarialTextByUnit] = useState<Map<string, string>>(new Map())
-  const [isViewerCollapsed, setIsViewerCollapsed] = useState(true)
+  const [isViewerCollapsed, setIsViewerCollapsed] = useState(false)
   const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set())
   const [manuallyEditedNotarial, setManuallyEditedNotarial] = useState<Set<string>>(new Set())
   const [showUnauthorizeDialog, setShowUnauthorizeDialog] = useState(false)
@@ -608,11 +608,10 @@ export function ValidationWizard({
       {/* Main Content - Split View with Collapsible Viewer */}
       <div className="flex-1 overflow-hidden min-h-0">
         <div className="container mx-auto px-3 sm:px-4 py-2 h-full overflow-hidden">
-          <div className={`grid gap-3 h-full overflow-y-auto transition-all duration-300 ${
-            isViewerCollapsed 
-              ? "grid-cols-1" 
+          <div className={`grid gap-3 h-full overflow-y-auto transition-all duration-300 ${isViewerCollapsed
+              ? "grid-cols-1"
               : "grid-cols-1 lg:grid-cols-[minmax(300px,40%)_minmax(400px,60%)]"
-          }`}>
+            }`}>
             {/* Document/Image Viewer - Left Side with Toggle */}
             {!isViewerCollapsed && (
               <div className="h-[300px] sm:h-[400px] lg:h-full overflow-auto relative group min-h-0">
@@ -690,11 +689,10 @@ export function ValidationWizard({
                         )}
                       </div>
                       <textarea
-                        className={`w-full min-h-[180px] resize-none border rounded bg-background p-2 text-sm overflow-y-auto font-mono ${
-                          isCurrentUnitAuthorized 
-                            ? "cursor-not-allowed opacity-75 bg-muted/50" 
+                        className={`w-full min-h-[180px] resize-none border rounded bg-background p-2 text-sm overflow-y-auto font-mono ${isCurrentUnitAuthorized
+                            ? "cursor-not-allowed opacity-75 bg-muted/50"
                             : ""
-                        }`}
+                          }`}
                         value={currentAiText}
                         placeholder={isCurrentUnitAuthorized ? "Unidad autorizada - Desautoriza para editar" : "Ingresa o edita las colindancias..."}
                         readOnly={isCurrentUnitAuthorized}
@@ -750,11 +748,10 @@ export function ValidationWizard({
                         )}
                       </div>
                       <textarea
-                        className={`w-full min-h-[180px] resize-none border rounded bg-background p-2 text-sm overflow-y-auto leading-relaxed ${
-                          isCurrentUnitAuthorized 
-                            ? "cursor-not-allowed opacity-75 bg-muted/50" 
+                        className={`w-full min-h-[180px] resize-none border rounded bg-background p-2 text-sm overflow-y-auto leading-relaxed ${isCurrentUnitAuthorized
+                            ? "cursor-not-allowed opacity-75 bg-muted/50"
                             : ""
-                        }`}
+                          }`}
                         value={currentNotarialText}
                         placeholder={
                           isCurrentUnitAuthorized
