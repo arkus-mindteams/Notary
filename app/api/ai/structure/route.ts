@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
 import type { StructuringRequest, StructuringResponse, StructuredUnit } from "@/lib/ai-structuring-types"
 import { StatsService } from "@/lib/stats-service"
+import { createServerClient } from "@/lib/supabase"
+import { AgentUsageService } from "@/lib/services/agent-usage-service"
 
 const cache = new Map<string, StructuredUnit[]>()
 const metadataCache = new Map<string, { lotLocation?: string; totalLotSurface?: number }>()
@@ -895,7 +897,7 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
   const byName = new Map<string, StructuredUnit>()
 
   for (const u of units) {
-    const rawName = u.unit_name || u.unit?.name || ""
+    const rawName = u.unit_name || (u as any).unit?.name || ""
     const norm = normalizeUnitName(rawName)
     if (!norm || isHeadingLikeName(rawName)) {
       continue
@@ -905,7 +907,7 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
     if (!existing) {
       // Ensure unit is in new format - preserve directions if present with deep copy
       const normalizedUnit: StructuredUnit = {
-        unit_name: u.unit_name || u.unit?.name || "UNIDAD",
+        unit_name: u.unit_name || (u as any).unit?.name || "UNIDAD",
         directions: u.directions && Array.isArray(u.directions)
           ? u.directions.map((dir: any) => ({
             ...dir,
@@ -1045,7 +1047,8 @@ function heuristicBoundaries(ocrText: string): StructuredUnit["boundaries"] {
       if (colIdx >= 0) abutter = l.slice(colIdx + 13).replace(/\s+/g, " ").trim()
     }
     out.push({
-      direction: dir,
+      raw_direction: dir,
+      normalized_direction: normalizeDirectionCode(dir),
       length_m: isNaN(length_m) ? 0 : length_m,
       abutter,
       order_index: order++,
@@ -1148,7 +1151,8 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
       }
     }
     out.push({
-      direction,
+      raw_direction: direction || "NORTE",
+      normalized_direction: normalizeDirectionCode(direction || "NORTE"),
       length_m: isFinite(length_m) ? length_m : 0,
       abutter,
       order_index: order++,
@@ -1255,7 +1259,10 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
     if (match) jsonText = match[1]
   }
 
-  return JSON.parse(jsonText)
+  return {
+    result: JSON.parse(jsonText),
+    usage: data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+  }
 }
 
 // Updated for new format
@@ -1354,18 +1361,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "bad_request", message: "images required" }, { status: 400 })
     }
 
-    // Increment counter for provisional stats
+    // Increment counter for provisional stats (Legacy)
     const totalProcessed = StatsService.incrementPlantasProcesadas()
-    console.log(`[api/ai/structure] Processing ${images.length} image(s) with AI. Total architectural plans processed: ${totalProcessed}`)
+    console.log(`[api/ai/structure] Processing ${images.length} image(s). Total plans: ${totalProcessed}`)
 
     let processedUnits: StructuredUnit[] | null = null
     let processedMetadata: { lotLocation?: string; totalLotSurface?: number } | undefined = undefined
+    let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined = undefined
 
     // Always process (cache disabled)
     try {
       const prompt = getColindanciasRules()
       // Call OpenAI Vision with all images
-      const aiResponse = await callOpenAIVision(prompt, images)
+      const { result: aiResponse, usage: aiUsage } = await callOpenAIVision(prompt, images)
+      usage = aiUsage
 
       // Extract lot-level metadata if present
       let lotLocation: string | undefined = undefined
@@ -1479,7 +1488,7 @@ export async function POST(req: Request) {
             .filter((b: any) => b.raw_direction && b.normalized_direction)
 
           // Sort by order_index to ensure correct order
-          boundaries.sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+          boundaries.sort((a: any, b: any) => (a.order_index ?? 0) - (b.order_index ?? 0))
 
           if (boundaries.length === 0) return null
 
@@ -1496,13 +1505,13 @@ export async function POST(req: Request) {
 
       // Handle new format: array of units directly
       if (Array.isArray(aiResponse)) {
-        units = aiResponse.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
+        units = aiResponse.map((u: any) => normalizeUnit(u)).filter((u: any): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.results)) {
         // Legacy format with results wrapper
-        units = aiResponse.results.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
+        units = aiResponse.results.map((u: any) => normalizeUnit(u)).filter((u: any): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.units)) {
         // New format with units wrapper (IA puede devolver { units: [...] })
-        units = aiResponse.units.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
+        units = aiResponse.units.map((u: any) => normalizeUnit(u)).filter((u: any): u is StructuredUnit => u !== null)
       } else if (aiResponse.result) {
         const normalized = normalizeUnit(aiResponse.result)
         if (normalized) units = [normalized]
@@ -1608,12 +1617,12 @@ export async function POST(req: Request) {
         unit.boundaries = unit.boundaries.map((b, idx) => {
           if (!b.raw_direction) {
             // Legacy format: try to derive from normalized_direction or direction
-            const rawDir = b.direction || b.normalized_direction || ""
+            const rawDir = b.raw_direction || (b as any).direction || b.normalized_direction || ""
             b.raw_direction = rawDir
           }
           if (!b.normalized_direction) {
             // Derive from raw_direction
-            const normalizedDir = normalizeDirectionCode(b.raw_direction || b.direction || "")
+            const normalizedDir = normalizeDirectionCode(b.raw_direction || (b as any).direction || "")
             b.normalized_direction = normalizedDir
           }
           if (b.order_index === undefined || b.order_index === null) {
@@ -1648,8 +1657,32 @@ export async function POST(req: Request) {
       results,
       ...(processedMetadata?.lotLocation ? { lotLocation: processedMetadata.lotLocation } : {}),
       ...(processedMetadata?.totalLotSurface ? { totalLotSurface: processedMetadata.totalLotSurface } : {}),
+      usage,
     }
 
+    // Log Usage Async
+    try {
+      const supabase = createServerClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      const usageService = new AgentUsageService()
+
+      if (usage) {
+        usageService.logUsage({
+          userId: user?.id,
+          model: "gpt-4o", // O el modelo que use callOpenAIVision, idealmente dinámico
+          tokensInput: usage.prompt_tokens,
+          tokensOutput: usage.completion_tokens,
+          actionType: 'extract_data',
+          category: 'deslinde',
+          metadata: {
+            endpoint: 'ai/structure',
+            units_found: results.length
+          }
+        }).catch(console.error)
+      }
+    } catch (logErr) {
+      console.error("[api/ai/structure] Error logging usage:", logErr)
+    }
     console.log(`[api/ai/structure] Returning ${results.length} units (fresh processing, cache disabled)`)
     return NextResponse.json(resp)
   } catch (e: any) {

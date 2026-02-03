@@ -13,6 +13,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card"
 import Image from 'next/image'
 import {
   FileText,
@@ -28,6 +33,7 @@ import {
   FileCode,
   HomeIcon,
   Menu,
+  Activity,
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -73,7 +79,7 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
   }
 
   return (
-    <Card className={`${isMobile ? (isCollapsed ? 'h-16' : 'h-screen') : 'h-full'} flex ${isMobile && isCollapsed ? 'pt-0' : 'pt-2'} bg-gray-800 border-none ${isMobile ? 'rounded-none' : 'rounded-l-none rounded-b-none'} flex-col transition-all duration-300 w-full ${isMobile && !isCollapsed ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+    <div className={`${isMobile ? (isCollapsed ? 'h-16' : 'h-screen') : 'h-full'} flex ${isMobile && isCollapsed ? 'pt-0' : 'pt-2'} bg-gray-800 border-none ${isMobile ? 'rounded-none' : 'rounded-l-none rounded-b-none'} flex-col transition-all duration-300 w-full ${isMobile && !isCollapsed ? 'overflow-y-auto' : 'overflow-hidden'}`}>
       {/* Header con Usuario y Notaría */}
       <div className={`bg-gray-800 ${isMobile && isCollapsed ? 'border-b-0' : 'border-b border-b-gray-700'}`}>
         {/* Sección Notaría */}
@@ -165,13 +171,11 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
       <div className={`${isMobile ? '' : 'flex-1'} ${isMobile && isCollapsed ? 'hidden' : 'p-4 space-y-2'}`}>
         <Button
           variant="ghost"
-          className={`w-full justify-start overflow-hidden ${
-            isCollapsed ? 'px-2' : 'px-3'
-          } ${
-            pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde'
+          className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
+            } ${pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde'
               ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
               : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-          }`}
+            }`}
           onClick={() => handleNavigation('/dashboard/deslinde?reset=1')}
         >
           <FileText className="h-4 w-4 flex-shrink-0" />
@@ -180,13 +184,11 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
 
         <Button
           variant="ghost"
-          className={`w-full justify-start overflow-hidden ${
-            isCollapsed ? 'px-2' : 'px-3'
-          } ${
-            pathname === '/dashboard/preaviso'
+          className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
+            } ${pathname === '/dashboard/preaviso'
               ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
               : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-          }`}
+            }`}
           onClick={() => handleNavigation('/dashboard/preaviso')}
         >
           <MessageSquare className="h-4 w-4 flex-shrink-0" />
@@ -195,58 +197,125 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
 
         <Button
           variant="ghost"
-          className={`w-full justify-start overflow-hidden ${
-            isCollapsed ? 'px-2' : 'px-3'
-          } ${
-            pathname === '/dashboard/expedientes'
+          className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
+            } ${pathname === '/dashboard/expedientes'
               ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
               : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-          }`}
+            }`}
           onClick={() => handleNavigation('/dashboard/expedientes')}
         >
           <FolderOpen className="h-4 w-4 flex-shrink-0" />
           {!isCollapsed && <span className="ml-3 truncate text-sm">Expedientes</span>}
         </Button>
 
-        {/* Sección Administración (solo para superadmin) */}
+
+        {/* Separator and Configuración (Hover Menu) - Superadmin Only */}
         {user?.role === 'superadmin' && (
-          <div className='border-t pt-2 mt-4 border-t-gray-700 space-y-2'>
-            <div className={`px-4 py-2 ${isCollapsed ? 'px-2' : ''}`}>
-              {!isCollapsed && (
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                  Administración
-                </p>
-              )}
-            </div>
-            <Button
-              variant="ghost"
-              className={`w-full justify-start overflow-hidden ${
-                isCollapsed ? 'px-2' : 'px-3'
-              } ${
-                pathname === '/dashboard/admin/usuarios'
-                  ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-              }`}
-              onClick={() => handleNavigation('/dashboard/admin/usuarios')}
-            >
-              <Users className="h-4 w-4 flex-shrink-0" />
-              {!isCollapsed && <span className="ml-3 truncate text-sm">Usuarios</span>}
-            </Button>
-            <Button
-              variant="ghost"
-              className={`w-full justify-start overflow-hidden ${
-                isCollapsed ? 'px-2' : 'px-3'
-              } ${
-                pathname === '/dashboard/admin/preaviso-config'
-                  ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-              }`}
-              onClick={() => handleNavigation('/dashboard/admin/preaviso-config')}
-            >
-              <FileCode className="h-4 w-4 flex-shrink-0" />
-              {!isCollapsed && <span className="ml-3 truncate text-sm">Config. Preaviso</span>}
-            </Button>
-          </div>
+          <>
+            <div className="my-2 border-t border-gray-700 mx-4" />
+            <HoverCard openDelay={0} closeDelay={200}>
+              <HoverCardTrigger asChild>
+                <div className="w-full">
+                  <Button
+                    variant="ghost"
+                    className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
+                      } ${pathname.startsWith('/dashboard/settings') || pathname.startsWith('/dashboard/admin')
+                        ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+                        : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                      }`}
+                    onClick={() => handleNavigation('/dashboard/settings')}
+                  >
+                    <Settings className="h-4 w-4 flex-shrink-0" />
+                    {!isCollapsed && (
+                      <div className="flex flex-1 items-center justify-between ml-3">
+                        <span className="truncate text-sm">Configuración</span>
+                        <ChevronRight className="h-3 w-3 opacity-50" />
+                      </div>
+                    )}
+                  </Button>
+                </div>
+              </HoverCardTrigger>
+              <HoverCardContent side="right" align="start" className="w-56 bg-gray-800 border-gray-700 p-2 shadow-xl z-50">
+                <div className="space-y-1">
+                  {/* Header */}
+                  <div className="px-2 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    Opciones
+                  </div>
+
+                  {/* General Settings */}
+                  <Button
+                    variant="ghost"
+                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/settings' && !window.location.search.includes('tab=stats')
+                      ? 'bg-gray-700 text-gray-200'
+                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                      }`}
+                    onClick={() => handleNavigation('/dashboard/settings')}
+                  >
+                    <div className="flex items-center">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2"></span>
+                      Reglas de Texto Notarial
+                    </div>
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/settings/stats'
+                      ? 'bg-gray-700 text-gray-200'
+                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                      }`}
+                    onClick={() => handleNavigation('/dashboard/settings/stats')}
+                  >
+                    <div className="flex items-center">
+                      <span className="w-1.5 h-1.5 rounded-full bg-purple-500 mr-2"></span>
+                      Estadísticas de uso
+                    </div>
+                  </Button>
+
+                  <div className="my-1 border-t border-gray-700" />
+
+                  <div className="px-2 py-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                    Administración
+                  </div>
+
+                  <Button
+                    variant="ghost"
+                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/admin/usuarios'
+                      ? 'bg-gray-700 text-gray-200'
+                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                      }`}
+                    onClick={() => handleNavigation('/dashboard/admin/usuarios')}
+                  >
+                    <Users className="h-4 w-4 mr-2" />
+                    Usuarios
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/admin/preaviso-config'
+                      ? 'bg-gray-700 text-gray-200'
+                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                      }`}
+                    onClick={() => handleNavigation('/dashboard/admin/preaviso-config')}
+                  >
+                    <FileCode className="h-4 w-4 mr-2" />
+                    Config. Preaviso
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/admin/usage'
+                      ? 'bg-gray-700 text-gray-200'
+                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                      }`}
+                    onClick={() => handleNavigation('/dashboard/admin/usage')}
+                  >
+                    <Activity className="h-4 w-4 mr-2" />
+                    Consumo AI
+                  </Button>
+                </div>
+              </HoverCardContent>
+            </HoverCard>
+          </>
         )}
       </div>
 
@@ -254,9 +323,8 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
       <div className={`${isMobile && isCollapsed ? 'hidden' : 'p-4'} border-t border-t-gray-700`}>
         <Button
           variant="ghost"
-          className={`w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-700/30 ${
-            isCollapsed ? 'px-2' : 'px-3'
-          }`}
+          className={`w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-700/30 ${isCollapsed ? 'px-2' : 'px-3'
+            }`}
           onClick={handleLogoutClick}
           disabled={isLoggingOut}
         >
@@ -296,6 +364,6 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </div>
   )
 }

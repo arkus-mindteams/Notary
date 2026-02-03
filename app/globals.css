@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@source "../app";
+@source "../components";
+@source "../lib";
 @import "tw-animate-css";
 
 /* Enhanced toast styles */

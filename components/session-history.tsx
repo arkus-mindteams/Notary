@@ -7,14 +7,14 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { 
-  FileText, 
-  Search, 
-  Filter, 
-  Calendar, 
-  User, 
-  Download, 
-  Trash2, 
+import {
+  FileText,
+  Search,
+  Filter,
+  Calendar,
+  User,
+  Download,
+  Trash2,
   Eye,
   Clock,
   CheckCircle2,
@@ -30,8 +30,8 @@ interface SessionHistoryProps {
   className?: string
 }
 
-export function SessionHistory({ 
-  onSelectSession, 
+export function SessionHistory({
+  onSelectSession,
   onDeleteSession,
   className = ""
 }: SessionHistoryProps) {
@@ -55,10 +55,41 @@ export function SessionHistory({
     filterSessions()
   }, [sessions, searchQuery, typeFilter, statusFilter])
 
-  const loadSessions = () => {
-    const allSessions = SessionManager.getAllSessions()
-    setSessions(allSessions)
-    setStats(SessionManager.getSessionStats())
+  const loadSessions = async () => {
+    try {
+      const response = await fetch('/api/chat/sessions')
+      if (response.ok) {
+        const json = await response.json()
+        const apiSessions = json.sessions.map((s: any) => ({
+          id: s.id,
+          title: s.title,
+          status: 'draft', // Default status as API might not return it yet
+          type: 'preaviso', // Default type
+          createdAt: new Date(s.created_at),
+          updatedAt: new Date(s.updated_at),
+          metadata: {
+            notaria: 'Notaría 3', // Placeholder
+            folio: s.title.includes('Folio') ? s.title.split('Folio')[1] : 'S/N',
+            confidence: 1.0
+          },
+          files: [] // Placeholder
+        }))
+        setSessions(apiSessions)
+
+        // Calculate simple stats
+        setStats({
+          total: apiSessions.length,
+          byType: { preaviso: apiSessions.length },
+          byStatus: { draft: apiSessions.length },
+          recent: apiSessions.filter((s: any) => {
+            const diff = new Date().getTime() - s.updatedAt.getTime()
+            return diff < 7 * 24 * 60 * 60 * 1000 // 7 days
+          }).length
+        })
+      }
+    } catch (error) {
+      console.error('Error loading sessions:', error)
+    }
   }
 
   const filterSessions = () => {
@@ -141,11 +172,19 @@ export function SessionHistory({
     })
   }
 
-  const handleDeleteSession = (sessionId: string) => {
+  const handleDeleteSession = async (sessionId: string) => {
     if (window.confirm('¿Estás seguro de que quieres eliminar esta sesión?')) {
-      SessionManager.deleteSession(sessionId)
-      loadSessions()
-      onDeleteSession?.(sessionId)
+      try {
+        const response = await fetch(`/api/chat/sessions/${sessionId}`, {
+          method: 'DELETE'
+        })
+        if (response.ok) {
+          loadSessions()
+          onDeleteSession?.(sessionId)
+        }
+      } catch (error) {
+        console.error('Error deleting session:', error)
+      }
     }
   }
 
@@ -197,7 +236,7 @@ export function SessionHistory({
                 className="pl-10"
               />
             </div>
-            
+
             <Select value={typeFilter} onValueChange={setTypeFilter}>
               <SelectTrigger>
                 <SelectValue placeholder="Tipo de documento" />
@@ -272,7 +311,7 @@ export function SessionHistory({
                           <span className="ml-1 capitalize">{session.status}</span>
                         </Badge>
                       </div>
-                      
+
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-gray-600 mb-3">
                         <div>
                           <span className="font-medium">Notaría:</span> {session.metadata.notaria}

@@ -28,6 +28,7 @@ export interface FolioSelectionCommand extends Command {
     selectedFolio: string
     scope?: 'unidades' | 'inmuebles_afectados' | 'otros'
     confirmedByUser: boolean
+    intent?: 'SELECT' | 'FOCUS' | 'CONFIRM'
     folioInfo?: any
   }
 }
