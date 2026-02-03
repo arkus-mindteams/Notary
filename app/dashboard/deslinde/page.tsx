@@ -11,7 +11,7 @@ import { DocumentViewer } from "@/components/document-viewer"
 import { simulateOCR, type PropertyUnit } from "@/lib/ocr-simulator"
 import type { StructuredUnit, StructuringResponse } from "@/lib/ai-structuring-types"
 import { createStructuredSegments, type TransformedSegment } from "@/lib/text-transformer"
-import { StatsService, STATS_EVENTS } from "@/lib/services/stats-service"
+import { StatsService } from "@/lib/services/stats-service"
 import { calculateSimilarity } from "@/lib/utils/text-metrics"
 import { useAuth } from "@/lib/auth-context"
 import { FileText, Scale, Shield, ArrowLeft, X, ImageIcon, Play, Check, CheckSquare, RotateCw, RotateCcw, Crop, ZoomIn, ZoomOut, Maximize2, Move } from "lucide-react"
@@ -322,38 +322,24 @@ function DeslindePageInner() {
   const [imageCrops, setImageCrops] = useState<Map<number, { x: number; y: number; width: number; height: number }>>(new Map())
   const [showCropDialog, setShowCropDialog] = useState(false)
   const [currentCropIndex, setCurrentCropIndex] = useState<number | null>(null)
-  const { user } = useAuth()
+  const { user, session } = useAuth()
 
-  // Logging refs & state
-  const [processingLogId, setProcessingLogId] = useState<string | null>(null)
-  const processingLogIdRef = useRef<string | null>(null)
-  const latestTextRef = useRef<string>("")
-  const isLogFinalizedRef = useRef(false)
-  const unitsLogRef = useRef<Map<string, any>>(new Map())
+  // Logging refs & state - REMOVED (Stats now handled server-side)
+  /* const [processingLogId, setProcessingLogId] = useState<string | null>(null)
+  const processingLogIdRef = useRef<string | null>(null) 
+  const unitsLogRef = useRef<Map<string, any>>(new Map()) */
 
-  // Sync latest text to ref for unmount cleanup
-  useEffect(() => {
-    const text = Array.from(unitSegments.values())
-      .flatMap((segments) => segments.map((seg) => seg.notarialText))
-      .join("\n\n")
-    if (text) latestTextRef.current = text
-  }, [unitSegments])
+  // Sync latest text to ref - REMOVED
+  /* useEffect(() => {
+    // legacy logic removed
+  }, [unitSegments]) */
 
-  // Handle unmount / navigation away logic
-  useEffect(() => {
+  // Handle unmount / navigation away logic - REMOVED (Stats now handled server-side)
+  /* useEffect(() => {
     return () => {
-      // If we have an active log and it wasn't finalized (exported)
-      if (processingLogIdRef.current && !isLogFinalizedRef.current) {
-        const finalText = latestTextRef.current
-        // Auto-save the session as abandoned/viewed
-        StatsService.updateEvent(processingLogIdRef.current, {
-          final_text: finalText,
-          status: 'abandoned_or_viewed',
-          completion_method: 'navigation_away'
-        })
-      }
+       // logic removed
     }
-  }, [])
+  }, []) */
 
 
   const searchParams = useSearchParams()
@@ -679,11 +665,17 @@ function DeslindePageInner() {
           console.warn("[deslinde] Skipping invalid image file:", image)
         }
       })
-      // Optionally force refresh to bypass cache (useful for debugging)
+      // force hash refresh
       // formData.append("forceRefresh", "true")
+
+      const headers: HeadersInit = {}
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
 
       const resp = await fetch("/api/ai/structure", {
         method: "POST",
+        headers,
         body: formData,
       })
       if (!resp.ok) {
@@ -1152,37 +1144,14 @@ function DeslindePageInner() {
         .flatMap((segments) => segments.map((seg) => seg.notarialText))
         .join("\n\n")
       setInitialAiText(initialText)
-      latestTextRef.current = initialText // Initialize ref
+      setInitialAiText(initialText)
+      // latestTextRef.current = initialText // REMOVED
 
       // Create initial log record
-      if (user?.id) {
-        StatsService.logEvent(user.id, STATS_EVENTS.ARCHITECTURAL_PLAN_PROCESSED, {
-          // NESTED STRUCTURE (Clean JSON from start)
-          meta_request: {
-            images_count: imageFilesCount,
-            has_location: !!data.lotLocation,
-            has_surface: !!data.totalLotSurface,
-            authorized_units_count: 0 // Initial
-          },
-          costs_summary: {
-            units_cost_usd: 0, // No authorized units yet
-            units_tokens_total: 0,
-            initial_analysis_cost_usd: usageCost, // Track initial cost separately or sum it
-            initial_tokens_total: data.usage?.total_tokens || 0
-          },
-          quality_metrics: {
-            // Will be populated later
-          },
-          // REMOVED: ai_draft_text (User requested removal)
-          status: 'in_progress'
-        }).then(id => {
-          if (id) {
-            setProcessingLogId(id)
-            processingLogIdRef.current = id
-            isLogFinalizedRef.current = false
-          }
-        })
-      }
+      // Create initial log record - REMOVED (Stats now handled server-side)
+      /* if (user?.id) {
+         // StatsService.logEvent removed
+      } */
     } catch (e) {
       console.error("[deslinde] Error processing with AI:", e)
 
@@ -1284,98 +1253,16 @@ function DeslindePageInner() {
 
   // Handle unit authorization logging
   const handleUnitAuthorized = async (unitId: string, data: { final_text: string, original_text: string, usage?: any }) => {
-    if (!processingLogId) return
-
-    // Calculate basic metrics from the original (AI) text vs final (authorized) text
-    const metricsResult = calculateSimilarity(data.original_text, data.final_text || "")
-    const cost = data.usage ? StatsService.calculateEstimatedCost(data.usage) : 0
-
-    // 1. Log detailed row to child table (Normalization)
-    await StatsService.logUnitProcessing(processingLogId, {
-      unit_id: unitId,
-      original_text: data.original_text,
-      final_text: data.final_text,
-      similarity_score: metricsResult.similarity,
-      cost_usd: cost,
-      usage: data.usage,
-      metrics: {
-        edit_distance: metricsResult.distance,
-        chars_added: metricsResult.charsAdded,
-        chars_removed: metricsResult.charsRemoved
-      }
-    })
-
-    // 2. Keep minimal stats in memory for global aggregation (no heavy text)
-    unitsLogRef.current.set(unitId, {
-      unit_id: unitId,
-      // original_text: REMOVED
-      // final_text: REMOVED
-      similarity_score: metricsResult.similarity,
-      edit_distance: metricsResult.distance,
-      chars_added: metricsResult.charsAdded,
-      chars_removed: metricsResult.charsRemoved,
-      usage: data.usage,
-      cost_usd: cost,
-      authorized_at: new Date().toISOString()
-    })
-
-    // REMOVED: StatsService.updateEvent for units_detailed (Optimization)
-
-    // [NEW] Check if ALL units are authorized
-    if (unitsLogRef.current.size === units.length) {
-      // Calculate global metrics
-      const notarialText = Array.from(unitSegments.values())
-        .flatMap((segments) => segments.map((seg) => seg.notarialText))
-        .join("\n\n")
-
-      const metrics = initialAiText
-        ? calculateSimilarity(initialAiText, notarialText)
-        : { similarity: 1, distance: 0, charsAdded: 0, charsRemoved: 0 }
-
-      // Aggregate global costs from units
-      const unitsStats = Array.from(unitsLogRef.current.values())
-      const unitsTotalCost = unitsStats.reduce((acc, u) => acc + (u.cost_usd || 0), 0)
-      const unitsTotalTokens = unitsStats.reduce((acc, u) => acc + (u.usage?.total_tokens || 0), 0)
-
-      StatsService.updateEvent(processingLogId, {
-        status: 'completed',
-        completion_method: 'all_units_authorized',
-
-        meta_request: {
-          images_count: selectedFiles.length,
-          has_location: !!lotLocation,
-          has_surface: !!totalLotSurface,
-          authorized_units_count: unitsStats.length
-        },
-        costs_summary: {
-          units_cost_usd: unitsTotalCost,
-          units_tokens_total: unitsTotalTokens
-        },
-        quality_metrics: {
-          global_similarity: metrics.similarity,
-          global_edit_distance: metrics.distance,
-          chars_added: metrics.charsAdded,
-          chars_removed: metrics.charsRemoved
-        }
-      })
-      isLogFinalizedRef.current = true
-    }
+    // Client-side logging removed to prevent RLS/FK errors.
+    // Logging is now handled server-side in the API route.
   }
 
   const handleBack = () => {
     // Explicitly handle "Abandon" logic since component doesn't unmount
-    if (processingLogId && !isLogFinalizedRef.current) {
-      const finalText = Array.from(unitSegments.values())
-        .flatMap((segments) => segments.map((seg) => seg.notarialText))
-        .join("\n\n")
-
-      StatsService.updateEvent(processingLogId, {
-        final_text: finalText,
-        status: 'abandoned_or_viewed',
-        completion_method: 'navigation_back_button'
-      })
-      isLogFinalizedRef.current = true
-    }
+    // Explicitly handle "Abandon" logic - REMOVED (Server-side logging)
+    /* if (processingLogId && !isLogFinalizedRef.current) {
+        // logic removed
+    } */
 
     setAppState("upload")
     setSelectedFiles([])
@@ -1391,12 +1278,10 @@ function DeslindePageInner() {
 
     // Explicitly finalize the log - OPTIONAL safety check or metadata update if needed
     // But primary completion is now triggered by authorization
-    if (processingLogId && !isLogFinalizedRef.current) {
-      // We leave this as a fallback if they export before authorizing everything (unlikely if UI prevents it)
-      StatsService.updateEvent(processingLogId, {
-        completion_method: 'export_fallback'
-      })
-    }
+    // Explicitly finalize the log - REMOVED (Server-side logging)
+    /* if (processingLogId && !isLogFinalizedRef.current) {
+       // logic removed
+    } */
 
     const blob = new Blob([notarialText], { type: "text/plain" })
     const url = URL.createObjectURL(blob)
