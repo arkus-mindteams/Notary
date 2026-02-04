@@ -1384,9 +1384,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "bad_request", message: "images required" }, { status: 400 })
     }
 
-    // Increment counter for provisional stats
-    const totalProcessed = StatsService.incrementPlantasProcesadas()
-    console.log(`[api/ai/structure] Processing ${images.length} image(s) with AI. Total architectural plans processed: ${totalProcessed}`)
 
     // Cache is disabled - always process images with AI
     // This ensures fresh results every time, avoiding stale cache issues
@@ -1535,10 +1532,10 @@ export async function POST(req: Request) {
         units = aiResponse.map((u: any) => normalizeUnit(u)).filter((u: any): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.results)) {
         // Legacy format with results wrapper
-        units = aiResponse.results.map((u: any) => normalizeUnit(u)).filter((u: any): u is StructuredUnit => u !== null)
+        units = aiResponse.results.map(normalizeUnit).filter((u: any): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.units)) {
         // New format with units wrapper (IA puede devolver { units: [...] })
-        units = aiResponse.units.map((u: any) => normalizeUnit(u)).filter((u: any): u is StructuredUnit => u !== null)
+        units = aiResponse.units.map(normalizeUnit).filter((u: any): u is StructuredUnit => u !== null)
       } else if (aiResponse.result) {
         const normalized = normalizeUnit(aiResponse.result)
         if (normalized) units = [normalized]
