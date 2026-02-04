@@ -908,11 +908,7 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
     if (!existing) {
       // Ensure unit is in new format - preserve directions if present with deep copy
       const normalizedUnit: StructuredUnit = {
-<<<<<<< HEAD
-        unit_name: u.unit_name || u.unit?.name || "UNIDAD",
-=======
         unit_name: u.unit_name || (u as any).unit?.name || "UNIDAD",
->>>>>>> Release2.1.0
         directions: u.directions && Array.isArray(u.directions)
           ? u.directions.map((dir: any) => ({
             ...dir,
@@ -1189,9 +1185,6 @@ async function callOpenAIVision(prompt: string, images: File[], isRetry: boolean
   // For GPT-5.1, set OPENAI_MODEL=gpt-5.1
   // Note: Model names may vary (e.g., gpt-5.1, gpt-5.1-preview, gpt-5.1-2024-12-01)
   // Check OpenAI documentation for the exact model identifier
-<<<<<<< HEAD
-  const model = process.env.OPENAI_MODEL || "gpt-4o"
-=======
   let model = process.env.OPENAI_MODEL || "gpt-4o"
 
   // If this is a retry (fallback), force usage of a known vision-capable model
@@ -1199,7 +1192,6 @@ async function callOpenAIVision(prompt: string, images: File[], isRetry: boolean
     console.log("[OpenAI Vision] Retrying with fallback model: gpt-4o")
     model = "gpt-4o"
   }
->>>>>>> Release2.1.0
 
   // Log the model being used for debugging
   if (process.env.NODE_ENV === "development") {
@@ -1250,14 +1242,8 @@ async function callOpenAIVision(prompt: string, images: File[], isRetry: boolean
       // Temperature is often restricted in reasoning models (o1, o3)
       ...(!model.includes("o1") && !model.includes("o3") ? { temperature: 0.1 } : {}),
       response_format: { type: "json_object" },
-<<<<<<< HEAD
-      // GPT-5.1 and newer models require max_completion_tokens instead of max_tokens
-      // We use max_completion_tokens for newer models (gpt-5.x, o1) and max_tokens for older ones
-      ...(model.includes("gpt-5") || model.includes("o1")
-=======
       // GPT-5.x, o1, and o3 models require max_completion_tokens instead of max_tokens
       ...(model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
->>>>>>> Release2.1.0
         ? { max_completion_tokens: 4000 }
         : { max_tokens: 4000 }
       ),
@@ -1295,14 +1281,10 @@ async function callOpenAIVision(prompt: string, images: File[], isRetry: boolean
     if (match) jsonText = match[1]
   }
 
-<<<<<<< HEAD
-  return JSON.parse(jsonText)
-=======
   return {
     result: JSON.parse(jsonText),
     usage: data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
   }
->>>>>>> Release2.1.0
 }
 
 // Updated for new format
@@ -1401,14 +1383,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "bad_request", message: "images required" }, { status: 400 })
     }
 
-<<<<<<< HEAD
-    // Increment counter for provisional stats
-    const totalProcessed = StatsService.incrementPlantasProcesadas()
-    console.log(`[api/ai/structure] Processing ${images.length} image(s) with AI. Total architectural plans processed: ${totalProcessed}`)
-
-    let processedUnits: StructuredUnit[] | null = null
-    let processedMetadata: { lotLocation?: string; totalLotSurface?: number } | undefined = undefined
-=======
     // Cache is disabled - always process images with AI
     // This ensures fresh results every time, avoiding stale cache issues
     console.log(`[api/ai/structure] Processing ${images.length} image(s) with AI (cache disabled)...`)
@@ -1416,18 +1390,13 @@ export async function POST(req: Request) {
     let processedUnits: StructuredUnit[] | null = null
     let processedMetadata: { lotLocation?: string; totalLotSurface?: number } | undefined = undefined
     let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined = undefined
->>>>>>> Release2.1.0
 
     // Always process (cache disabled)
     try {
       const prompt = getColindanciasRules()
       // Call OpenAI Vision with all images
-<<<<<<< HEAD
-      const aiResponse = await callOpenAIVision(prompt, images)
-=======
       const { result: aiResponse, usage: aiUsage } = await callOpenAIVision(prompt, images)
       usage = aiUsage
->>>>>>> Release2.1.0
 
       // Extract lot-level metadata if present
       let lotLocation: string | undefined = undefined
@@ -1541,11 +1510,7 @@ export async function POST(req: Request) {
             .filter((b: any) => b.raw_direction && b.normalized_direction)
 
           // Sort by order_index to ensure correct order
-<<<<<<< HEAD
-          boundaries.sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
-=======
           boundaries.sort((a: any, b: any) => (a.order_index ?? 0) - (b.order_index ?? 0))
->>>>>>> Release2.1.0
 
           if (boundaries.length === 0) return null
 
@@ -1565,17 +1530,10 @@ export async function POST(req: Request) {
         units = aiResponse.map(normalizeUnit).filter((u: any): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.results)) {
         // Legacy format with results wrapper
-<<<<<<< HEAD
-        units = aiResponse.results.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
-      } else if (Array.isArray(aiResponse.units)) {
-        // New format with units wrapper (IA puede devolver { units: [...] })
-        units = aiResponse.units.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
-=======
         units = aiResponse.results.map(normalizeUnit).filter((u: any): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.units)) {
         // New format with units wrapper (IA puede devolver { units: [...] })
         units = aiResponse.units.map(normalizeUnit).filter((u: any): u is StructuredUnit => u !== null)
->>>>>>> Release2.1.0
       } else if (aiResponse.result) {
         const normalized = normalizeUnit(aiResponse.result)
         if (normalized) units = [normalized]
@@ -1681,20 +1639,12 @@ export async function POST(req: Request) {
         unit.boundaries = unit.boundaries.map((b, idx) => {
           if (!b.raw_direction) {
             // Legacy format: try to derive from normalized_direction or direction
-<<<<<<< HEAD
-            const rawDir = b.direction || b.normalized_direction || ""
-=======
             const rawDir = b.raw_direction || (b as any).direction || b.normalized_direction || ""
->>>>>>> Release2.1.0
             b.raw_direction = rawDir
           }
           if (!b.normalized_direction) {
             // Derive from raw_direction
-<<<<<<< HEAD
-            const normalizedDir = normalizeDirectionCode(b.raw_direction || b.direction || "")
-=======
             const normalizedDir = normalizeDirectionCode(b.raw_direction || (b as any).direction || "")
->>>>>>> Release2.1.0
             b.normalized_direction = normalizedDir
           }
           if (b.order_index === undefined || b.order_index === null) {
