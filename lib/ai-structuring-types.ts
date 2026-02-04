@@ -134,5 +134,13 @@ export type StructuringResponse = {
    * Ejemplo: 145.600
    */
   totalLotSurface?: number
+  /**
+   * Token usage stats from AI provider
+   */
+  usage?: {
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+  }
 }
 

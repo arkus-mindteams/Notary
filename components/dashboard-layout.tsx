@@ -1,17 +1,28 @@
 "use client"
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Sidebar } from './sidebar'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { useIsTablet } from '@/hooks/use-tablet'
 
 interface DashboardLayoutProps {
   children: React.ReactNode
 }
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
+  const isMobile = useIsMobile()
+  const isTablet = useIsTablet()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarCollapsed, setMobileSidebarCollapsed] = useState(true)
-  const isMobile = useIsMobile()
+  const hasInitialized = useRef(false)
+
+  // Inicializar sidebar cerrado en mobile y tablet (solo una vez al montar)
+  useEffect(() => {
+    if (!hasInitialized.current && (isMobile || isTablet)) {
+      setSidebarCollapsed(true)
+      hasInitialized.current = true
+    }
+  }, [isMobile, isTablet])
 
   const toggleSidebar = () => {
     setSidebarCollapsed(!sidebarCollapsed)

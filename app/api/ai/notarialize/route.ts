@@ -116,13 +116,13 @@ export async function POST(req: Request) {
       try {
         const apiKey = process.env.OPENAI_API_KEY
         const model = process.env.OPENAI_MODEL || "gpt-4o"
-        
+
         if (!apiKey) {
           throw new Error("OPENAI_API_KEY missing")
         }
 
         const prompt = buildNotarialPrompt(colindanciasText, unitName)
-        
+
         // Call OpenAI API
         const url = `https://api.openai.com/v1/chat/completions`
         const resp = await fetch(url, {
@@ -143,9 +143,13 @@ export async function POST(req: Request) {
                 content: prompt,
               },
             ],
-            temperature: 0.1, // Baja temperatura para más consistencia en conversión de números
-            max_completion_tokens: model.includes("gpt-5") || model.includes("o1") ? 2000 : undefined,
-            max_tokens: model.includes("gpt-5") || model.includes("o1") ? undefined : 2000,
+            // Temperature is often restricted in reasoning models (o1, o3)
+            ...(!model.includes("o1") && !model.includes("o3") ? { temperature: 0.1 } : {}),
+            // GPT-5.x, o1, and o3 models require max_completion_tokens instead of max_tokens
+            ...(model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
+              ? { max_completion_tokens: 2000 }
+              : { max_tokens: 2000 }
+            ),
           }),
         })
 
@@ -169,6 +173,11 @@ export async function POST(req: Request) {
         }
 
         result = notarialText
+        // Return result and usage
+        return NextResponse.json({
+          notarialText: result,
+          usage: data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+        })
       } catch (aiError: any) {
         console.warn("[notarialize] AI error, falling back to deterministic formatter:", aiError.message)
         // Fallback to deterministic formatter
@@ -179,7 +188,7 @@ export async function POST(req: Request) {
       result = notarialize(colindanciasText, unitName)
     }
 
-    return NextResponse.json({ notarialText: result })
+    return NextResponse.json({ notarialText: result }) // Fallback return for non-AI or error cases
   } catch (err: any) {
     console.error("[notarialize] error:", err)
     return NextResponse.json(

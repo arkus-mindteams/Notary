@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server"
 import type { StructuringRequest, StructuringResponse, StructuredUnit } from "@/lib/ai-structuring-types"
 import { StatsService } from "@/lib/stats-service"
+import { createServerClient } from "@/lib/supabase"
+import { createServerClient as createSSRClient } from "@supabase/ssr"
+import { cookies } from "next/headers"
 
 const cache = new Map<string, StructuredUnit[]>()
 const metadataCache = new Map<string, { lotLocation?: string; totalLotSurface?: number }>()
@@ -895,7 +898,7 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
   const byName = new Map<string, StructuredUnit>()
 
   for (const u of units) {
-    const rawName = u.unit_name || u.unit?.name || ""
+    const rawName = u.unit_name || (u as any).unit?.name || ""
     const norm = normalizeUnitName(rawName)
     if (!norm || isHeadingLikeName(rawName)) {
       continue
@@ -905,7 +908,11 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
     if (!existing) {
       // Ensure unit is in new format - preserve directions if present with deep copy
       const normalizedUnit: StructuredUnit = {
+<<<<<<< HEAD
         unit_name: u.unit_name || u.unit?.name || "UNIDAD",
+=======
+        unit_name: u.unit_name || (u as any).unit?.name || "UNIDAD",
+>>>>>>> Release2.1.0
         directions: u.directions && Array.isArray(u.directions)
           ? u.directions.map((dir: any) => ({
             ...dir,
@@ -1045,7 +1052,8 @@ function heuristicBoundaries(ocrText: string): StructuredUnit["boundaries"] {
       if (colIdx >= 0) abutter = l.slice(colIdx + 13).replace(/\s+/g, " ").trim()
     }
     out.push({
-      direction: dir,
+      raw_direction: dir,
+      normalized_direction: normalizeDirectionCode(dir),
       length_m: isNaN(length_m) ? 0 : length_m,
       abutter,
       order_index: order++,
@@ -1148,7 +1156,8 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
       }
     }
     out.push({
-      direction,
+      raw_direction: direction,
+      normalized_direction: normalizeDirectionCode(direction),
       length_m: isFinite(length_m) ? length_m : 0,
       abutter,
       order_index: order++,
@@ -1174,13 +1183,23 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
  * @param images Array of image files to analyze
  * @returns Parsed JSON response
  */
-async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
+async function callOpenAIVision(prompt: string, images: File[], isRetry: boolean = false): Promise<any> {
   const apiKey = process.env.OPENAI_API_KEY
   // Default to gpt-4o, but can be overridden with OPENAI_MODEL env var
   // For GPT-5.1, set OPENAI_MODEL=gpt-5.1
   // Note: Model names may vary (e.g., gpt-5.1, gpt-5.1-preview, gpt-5.1-2024-12-01)
   // Check OpenAI documentation for the exact model identifier
+<<<<<<< HEAD
   const model = process.env.OPENAI_MODEL || "gpt-4o"
+=======
+  let model = process.env.OPENAI_MODEL || "gpt-4o"
+
+  // If this is a retry (fallback), force usage of a known vision-capable model
+  if (isRetry) {
+    console.log("[OpenAI Vision] Retrying with fallback model: gpt-4o")
+    model = "gpt-4o"
+  }
+>>>>>>> Release2.1.0
 
   // Log the model being used for debugging
   if (process.env.NODE_ENV === "development") {
@@ -1228,11 +1247,17 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
           ],
         },
       ],
-      temperature: 0.1,
+      // Temperature is often restricted in reasoning models (o1, o3)
+      ...(!model.includes("o1") && !model.includes("o3") ? { temperature: 0.1 } : {}),
       response_format: { type: "json_object" },
+<<<<<<< HEAD
       // GPT-5.1 and newer models require max_completion_tokens instead of max_tokens
       // We use max_completion_tokens for newer models (gpt-5.x, o1) and max_tokens for older ones
       ...(model.includes("gpt-5") || model.includes("o1")
+=======
+      // GPT-5.x, o1, and o3 models require max_completion_tokens instead of max_tokens
+      ...(model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
+>>>>>>> Release2.1.0
         ? { max_completion_tokens: 4000 }
         : { max_tokens: 4000 }
       ),
@@ -1241,6 +1266,21 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
 
   if (!resp.ok) {
     const errorText = await resp.text()
+
+    // Check for specific 400 errors related to model incompatibility or vision support
+    if (resp.status === 400 && !isRetry) {
+      if (
+        errorText.includes("image_url") ||
+        errorText.includes("content type") ||
+        errorText.includes("not support") ||
+        errorText.includes("unsupported_value")
+      ) {
+        console.warn(`[OpenAI Vision] Model '${model}' failed with vision error: ${errorText}`)
+        console.log(`[OpenAI Vision] Attempting automatic fallback to gpt-4o...`)
+        return callOpenAIVision(prompt, images, true)
+      }
+    }
+
     throw new Error(`OpenAI API error: ${resp.status} - ${errorText}`)
   }
 
@@ -1255,7 +1295,14 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
     if (match) jsonText = match[1]
   }
 
+<<<<<<< HEAD
   return JSON.parse(jsonText)
+=======
+  return {
+    result: JSON.parse(jsonText),
+    usage: data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+  }
+>>>>>>> Release2.1.0
 }
 
 // Updated for new format
@@ -1354,18 +1401,33 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "bad_request", message: "images required" }, { status: 400 })
     }
 
+<<<<<<< HEAD
     // Increment counter for provisional stats
     const totalProcessed = StatsService.incrementPlantasProcesadas()
     console.log(`[api/ai/structure] Processing ${images.length} image(s) with AI. Total architectural plans processed: ${totalProcessed}`)
 
     let processedUnits: StructuredUnit[] | null = null
     let processedMetadata: { lotLocation?: string; totalLotSurface?: number } | undefined = undefined
+=======
+    // Cache is disabled - always process images with AI
+    // This ensures fresh results every time, avoiding stale cache issues
+    console.log(`[api/ai/structure] Processing ${images.length} image(s) with AI (cache disabled)...`)
+
+    let processedUnits: StructuredUnit[] | null = null
+    let processedMetadata: { lotLocation?: string; totalLotSurface?: number } | undefined = undefined
+    let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined = undefined
+>>>>>>> Release2.1.0
 
     // Always process (cache disabled)
     try {
       const prompt = getColindanciasRules()
       // Call OpenAI Vision with all images
+<<<<<<< HEAD
       const aiResponse = await callOpenAIVision(prompt, images)
+=======
+      const { result: aiResponse, usage: aiUsage } = await callOpenAIVision(prompt, images)
+      usage = aiUsage
+>>>>>>> Release2.1.0
 
       // Extract lot-level metadata if present
       let lotLocation: string | undefined = undefined
@@ -1479,7 +1541,11 @@ export async function POST(req: Request) {
             .filter((b: any) => b.raw_direction && b.normalized_direction)
 
           // Sort by order_index to ensure correct order
+<<<<<<< HEAD
           boundaries.sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+=======
+          boundaries.sort((a: any, b: any) => (a.order_index ?? 0) - (b.order_index ?? 0))
+>>>>>>> Release2.1.0
 
           if (boundaries.length === 0) return null
 
@@ -1496,13 +1562,20 @@ export async function POST(req: Request) {
 
       // Handle new format: array of units directly
       if (Array.isArray(aiResponse)) {
-        units = aiResponse.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
+        units = aiResponse.map(normalizeUnit).filter((u: any): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.results)) {
         // Legacy format with results wrapper
+<<<<<<< HEAD
         units = aiResponse.results.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.units)) {
         // New format with units wrapper (IA puede devolver { units: [...] })
         units = aiResponse.units.map(normalizeUnit).filter((u): u is StructuredUnit => u !== null)
+=======
+        units = aiResponse.results.map(normalizeUnit).filter((u: any): u is StructuredUnit => u !== null)
+      } else if (Array.isArray(aiResponse.units)) {
+        // New format with units wrapper (IA puede devolver { units: [...] })
+        units = aiResponse.units.map(normalizeUnit).filter((u: any): u is StructuredUnit => u !== null)
+>>>>>>> Release2.1.0
       } else if (aiResponse.result) {
         const normalized = normalizeUnit(aiResponse.result)
         if (normalized) units = [normalized]
@@ -1570,7 +1643,7 @@ export async function POST(req: Request) {
 
       // Ensure unit_name exists
       if (!unit.unit_name) {
-        unit.unit_name = "UNIDAD"
+        unit.unit_name = (unit as any).unit?.name || "UNIDAD"
       }
 
       // Preserve directions if present (new format from AI)
@@ -1608,12 +1681,20 @@ export async function POST(req: Request) {
         unit.boundaries = unit.boundaries.map((b, idx) => {
           if (!b.raw_direction) {
             // Legacy format: try to derive from normalized_direction or direction
+<<<<<<< HEAD
             const rawDir = b.direction || b.normalized_direction || ""
+=======
+            const rawDir = b.raw_direction || (b as any).direction || b.normalized_direction || ""
+>>>>>>> Release2.1.0
             b.raw_direction = rawDir
           }
           if (!b.normalized_direction) {
             // Derive from raw_direction
+<<<<<<< HEAD
             const normalizedDir = normalizeDirectionCode(b.raw_direction || b.direction || "")
+=======
+            const normalizedDir = normalizeDirectionCode(b.raw_direction || (b as any).direction || "")
+>>>>>>> Release2.1.0
             b.normalized_direction = normalizedDir
           }
           if (b.order_index === undefined || b.order_index === null) {
@@ -1644,10 +1725,140 @@ export async function POST(req: Request) {
       }
     })
 
+    // Log usage stats (Server-Side)
+    const debugLogs: string[] = []
+    const logDebug = (msg: string) => {
+      console.log(msg)
+      debugLogs.push(msg)
+    }
+    const logError = (msg: string, err?: any) => {
+      console.error(msg, err)
+      debugLogs.push(`ERROR: ${msg} ${err ? JSON.stringify(err) : ''}`)
+    }
+
+    try {
+      // 1. Get User via Standard SSR Client (cookies)
+      // We need this because the Admin client (lib/supabase) uses Service Role and doesn't know the session
+      const cookieStore = await cookies()
+      const supabaseSSR = createSSRClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+          cookies: {
+            getAll() { return cookieStore.getAll() },
+            setAll(cookiesToSet) {
+              // route handlers are read-only for auth usually, but we just need to read
+              try {
+                cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options))
+              } catch (e) { /* ignore in route handler */ }
+            },
+          },
+        }
+      )
+      logDebug("[api/ai/structure] Starting hybrid auth check...")
+      let { data: { user }, error: authError } = await supabaseSSR.auth.getUser()
+
+      // Fallback: Check Authorization header if cookie auth failed
+      if (!user) {
+        logDebug("[api/ai/structure] Cookie auth failed/missing. Checking Authorization header...")
+        const { headers } = await import("next/headers")
+        const headerStore = await headers()
+        const authHeader = headerStore.get("authorization")
+
+        if (authHeader) {
+          const token = authHeader.replace("Bearer ", "")
+          const { data: { user: headerUser }, error: headerError } = await supabaseSSR.auth.getUser(token)
+          if (headerUser) {
+            user = headerUser
+            authError = null
+            logDebug("[api/ai/structure] User identified via Authorization header")
+          } else {
+            logError("[api/ai/structure] Auth Header verification failed:", headerError)
+          }
+        }
+      }
+
+      // 2. Write Stats via Admin Client (Service Role)
+      const supabaseAdmin = createServerClient()
+
+      if (authError) {
+        logError("[api/ai/structure] Auth Error (getUser):", authError)
+      }
+
+      if (user) {
+        logDebug(`[api/ai/structure] User identified: ${user.id}`)
+
+        // Resolve public.usuarios ID (required for foreign key in usage_stats)
+        const { data: userProfile, error: profileError } = await supabaseAdmin
+          .from('usuarios')
+          .select('id')
+          .eq('auth_user_id', user.id)
+          .single()
+
+        if (profileError) {
+          logError(`[api/ai/structure] Profile lookup failed for auth_id ${user.id}:`, profileError)
+        }
+
+        if (userProfile?.id && usage) {
+          logDebug(`[api/ai/structure] Profile found: ${userProfile.id}. Attempting insert...`)
+
+          const estimatedCost = (
+            (usage.prompt_tokens / 1_000_000) * 2.50 +
+            (usage.completion_tokens / 1_000_000) * 10.00
+          )
+
+          const { error: insertError } = await supabaseAdmin.from('usage_stats').insert({
+            user_id: userProfile.id,
+            event_type: 'architectural_plan_processed',
+            metadata: {
+              meta_request: {
+                images_count: images.length,
+                has_location: !!(processedMetadata?.lotLocation),
+                has_surface: !!(processedMetadata?.totalLotSurface),
+                authorized_units_count: results.length
+              },
+              costs_summary: {
+                units_cost_usd: 0, // No authorized units yet
+                units_tokens_total: 0,
+                initial_analysis_cost_usd: estimatedCost,
+                initial_tokens_total: usage.total_tokens
+              },
+              quality_metrics: {
+                // Initial analysis has no quality comparisons yet
+              },
+              tokens_input: usage.prompt_tokens,
+              tokens_output: usage.completion_tokens,
+              total_tokens: usage.total_tokens,
+              model: process.env.OPENAI_MODEL || "gpt-4o",
+              estimated_cost: estimatedCost,
+              units_found: results.length,
+              status: 'in_progress'
+            }
+          })
+
+          if (insertError) {
+            console.error("[api/ai/structure] INSERT FAILED:", insertError)
+          } else {
+            console.log(`[api/ai/structure] Stats SUCCESSFULLY logged for user ${userProfile.id}`)
+          }
+        } else {
+          console.warn("[api/ai/structure] Log skipped: Missing profile or usage data", { hasProfile: !!userProfile, hasUsage: !!usage })
+        }
+      } else {
+        console.warn("[api/ai/structure] No user session found via cookies.")
+      }
+    } catch (logErr) {
+      console.error("[api/ai/structure] CRITICAL ERROR logging stats:", logErr)
+      // Non-blocking error
+    }
+
     const resp: StructuringResponse = {
       results,
       ...(processedMetadata?.lotLocation ? { lotLocation: processedMetadata.lotLocation } : {}),
       ...(processedMetadata?.totalLotSurface ? { totalLotSurface: processedMetadata.totalLotSurface } : {}),
+      usage,
+      // @ts-ignore - temporary debug field
+      _debug_logs: debugLogs
     }
 
     console.log(`[api/ai/structure] Returning ${results.length} units (fresh processing, cache disabled)`)

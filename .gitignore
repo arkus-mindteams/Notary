@@ -33,6 +33,7 @@ next-env.d.ts
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 
@@ -82,3 +83,7 @@ jspm_packages/
 
 # TernJS port file
 .tern-port
+
+# Agent Artifacts
+.gemini
+.antigravity
