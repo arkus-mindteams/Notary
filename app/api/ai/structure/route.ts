@@ -1180,7 +1180,7 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
  * @param images Array of image files to analyze
  * @returns Parsed JSON response
  */
-async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
+async function callOpenAIVision(prompt: string, images: File[], isRetry: boolean = false): Promise<any> {
   const apiKey = process.env.OPENAI_API_KEY
   // Default to gpt-4o, but can be overridden with OPENAI_MODEL env var
   // For GPT-5.1, set OPENAI_MODEL=gpt-5.1
@@ -1188,10 +1188,9 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
   // Check OpenAI documentation for the exact model identifier
   let model = process.env.OPENAI_MODEL || "gpt-4o"
 
-  // Fallback for models specifically known NOT to support vision (image_url)
-  // "o1" and "o3" series typically do not support vision in their initial/mini versions
-  if (model.includes("o1") || model.includes("o3")) {
-    console.log(`[OpenAI Vision] Model '${model}' does not support vision key. Falling back to 'gpt-4o'.`)
+  // If this is a retry (fallback), force usage of a known vision-capable model
+  if (isRetry) {
+    console.log("[OpenAI Vision] Retrying with fallback model: gpt-4o")
     model = "gpt-4o"
   }
 
@@ -1254,6 +1253,21 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
 
   if (!resp.ok) {
     const errorText = await resp.text()
+
+    // Check for specific 400 errors related to model incompatibility or vision support
+    if (resp.status === 400 && !isRetry) {
+      if (
+        errorText.includes("image_url") ||
+        errorText.includes("content type") ||
+        errorText.includes("not support") ||
+        errorText.includes("unsupported_value")
+      ) {
+        console.warn(`[OpenAI Vision] Model '${model}' failed with vision error: ${errorText}`)
+        console.log(`[OpenAI Vision] Attempting automatic fallback to gpt-4o...`)
+        return callOpenAIVision(prompt, images, true)
+      }
+    }
+
     throw new Error(`OpenAI API error: ${resp.status} - ${errorText}`)
   }
 
@@ -1370,9 +1384,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "bad_request", message: "images required" }, { status: 400 })
     }
 
-    // Increment counter for provisional stats (Legacy)
+    // Increment counter for provisional stats
     const totalProcessed = StatsService.incrementPlantasProcesadas()
-    console.log(`[api/ai/structure] Processing ${images.length} image(s). Total plans: ${totalProcessed}`)
+    console.log(`[api/ai/structure] Processing ${images.length} image(s) with AI. Total architectural plans processed: ${totalProcessed}`)
+
+    // Cache is disabled - always process images with AI
+    // This ensures fresh results every time, avoiding stale cache issues
+    console.log(`[api/ai/structure] (Cache disabled)`)
 
     let processedUnits: StructuredUnit[] | null = null
     let processedMetadata: { lotLocation?: string; totalLotSurface?: number } | undefined = undefined
