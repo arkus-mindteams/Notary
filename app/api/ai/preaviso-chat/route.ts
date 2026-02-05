@@ -63,8 +63,10 @@ export async function POST(req: Request) {
     const tramiteSystem = getTramiteSystem()
 
     // Obtener usuario autenticado para logging de usage
+    const authHeader = req.headers.get('authorization')
+    const token = authHeader?.replace('Bearer ', '')
     const supabase = createServerClient()
-    const { data: { user } } = await supabase.auth.getUser()
+    const { data: { user } } = token ? await supabase.auth.getUser(token) : { data: { user: null } }
     const userId = user?.id
 
     // Inyectar userId en el contexto

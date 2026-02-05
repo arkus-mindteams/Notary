@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useMemo } from 'react'
 import Image from 'next/image'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -9,11 +10,11 @@ import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { useAuth } from '@/lib/auth-context'
 import { createBrowserClient } from '@/lib/supabase'
-import { 
-  Send, 
-  Bot, 
-  User, 
-  FileText, 
+import {
+  Send,
+  Bot,
+  User,
+  FileText,
   CheckCircle2,
   AlertCircle,
   Loader2,
@@ -30,12 +31,12 @@ import {
   MessageSquarePlus,
   ArrowUp,
   X,
-  Square
+  Square,
+  Trash2
 } from 'lucide-react'
+import { PreavisoStateSnapshot, computePreavisoState } from '@/lib/preaviso-state'
 import { PreavisoExportOptions } from './preaviso-export-options'
-import type { LastQuestionIntent } from '@/lib/tramites/base/types'
-import { useIsMobile } from '@/hooks/use-mobile'
-import { useIsTablet } from '@/hooks/use-tablet'
+import type { Command, LastQuestionIntent } from '@/lib/tramites/base/types'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -51,221 +52,31 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 
-export interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: Date
-  attachments?: File[]
-}
+import {
+  ChatMessage,
+  PersonaFisica,
+  PersonaMoral,
+  CompradorElement,
+  VendedorElement,
+  ParticipanteCredito,
+  CreditoElement,
+  GravamenElement,
+  DireccionInmueble,
+  DatosCatastrales,
+  InmuebleV14,
+  PreavisoData,
+  ServerStateSnapshot,
+  UploadedDocument
+} from '@/lib/tramites/shared/types/preaviso-types'
 
-// Interfaces alineadas con Canonical JSON v1.4
-export interface PersonaFisica {
-  nombre: string | null
-  rfc: string | null
-  curp: string | null
-  estado_civil: string | null
-  conyuge?: {
-    nombre: string | null
-    participa: boolean
-  }
-}
-
-export interface PersonaMoral {
-  denominacion_social: string | null
-  rfc: string | null
-  csf_provided: boolean
-  csf_reference: string | null
-  name_confirmed_exact: boolean
-}
-
-export interface CompradorElement {
-  party_id: string | null
-  tipo_persona: 'persona_fisica' | 'persona_moral' | null
-  persona_fisica?: PersonaFisica
-  persona_moral?: PersonaMoral
-}
-
-export interface VendedorElement {
-  party_id: string | null
-  tipo_persona: 'persona_fisica' | 'persona_moral' | null
-  persona_fisica?: PersonaFisica
-  persona_moral?: PersonaMoral
-  tiene_credito: boolean | null
-  credito_vendedor?: {
-    institucion: string | null
-    numero_credito: string | null
-  }
-}
-
-export interface ParticipanteCredito {
-  party_id: string | null
-  rol: 'acreditado' | 'coacreditado' | null
-  // Opcional: se usa para impresión cuando no hay party_id resoluble (ej. cónyuge/coacreditado capturado por texto)
-  nombre?: string | null
-}
-
-export interface CreditoElement {
-  credito_id: string | null
-  institucion: string | null
-  monto: string | null
-  participantes: ParticipanteCredito[]
-  tipo_credito: string | null
-}
-
-export interface GravamenElement {
-  gravamen_id: string | null
-  tipo: string | null
-  institucion: string | null
-  numero_credito: string | null
-  cancelacion_confirmada: boolean
-}
-
-export interface DireccionInmueble {
-  calle: string | null
-  numero: string | null
-  colonia: string | null
-  municipio: string | null
-  estado: string | null
-  codigo_postal: string | null
-}
-
-export interface DatosCatastrales {
-  lote: string | null
-  manzana: string | null
-  fraccionamiento: string | null
-  condominio: string | null
-  unidad: string | null
-  modulo: string | null
-}
-
-export interface InmuebleV14 {
-  folio_real: string | null
-  partidas: string[]
-  // Flag interno: solo true cuando el usuario eligió explícitamente el folio
-  folio_real_confirmed?: boolean
-  seccion?: string | null
-  numero_expediente?: string | null
-  all_registry_pages_confirmed: boolean
-  direccion: DireccionInmueble
-  superficie: string | null
-  valor: string | null
-  datos_catastrales: DatosCatastrales
-}
-
-export interface PreavisoData {
-  // Meta (opcional, se puede agregar después)
-  tipoOperacion: 'compraventa' | null
-  // Runtime (solo control de flujo; no forma parte del documento final)
-  _document_intent?: 'conyuge' | null
-  _last_question_intent?: LastQuestionIntent | null
-  _document_people_pending?: {
-    status: 'pending' | 'resolved'
-    source?: 'identificacion' | 'acta_matrimonio' | 'documento'
-    persons: Array<{
-      name: string
-      rfc?: string | null
-      curp?: string | null
-      source?: string | null
-    }>
-    other_person?: { name: string; relation?: string | null } | null
-    other_relationship?: string | null
-  } | null
-  
-  // Arrays según v1.4
-  vendedores: VendedorElement[]
-  compradores: CompradorElement[]
-  // creditos:
-  // - undefined => forma de pago DESCONOCIDA (aún no confirmada por el usuario)
-  // - []        => CONTADO confirmado
-  // - [..]      => CRÉDITO(s) (deben estar completos)
-  creditos?: CreditoElement[]
-  gravamenes: GravamenElement[]
-  
-  // Inmueble según v1.4
-  inmueble: InmuebleV14
-  
-  // Control de impresión
-  control_impresion?: {
-    imprimir_conyuges: boolean
-    imprimir_coacreditados: boolean
-    imprimir_creditos: boolean
-  }
-  
-  // Validaciones
-  validaciones?: {
-    expediente_existente: boolean
-    datos_completos: boolean
-    bloqueado: boolean
-  }
-  
-  // Actos notariales (mantener por compatibilidad con generador)
-  actosNotariales?: {
-    cancelacionCreditoVendedor: boolean
-    compraventa: boolean
-    aperturaCreditoComprador: boolean
-  }
-
-  // Documentos procesados (para acumulación determinista entre páginas)
-  documentosProcesados?: Array<{
-    nombre: string
-    tipo: string
-    informacionExtraida: any
-  }>
-
-  // Folios (modelo canónico para detección + selección sin defaults)
-  folios?: {
-    candidates: Array<{
-      folio: string
-      scope: 'unidades' | 'inmuebles_afectados' | 'otros'
-      attrs?: {
-        unidad?: string | null
-        condominio?: string | null
-        lote?: string | null
-        manzana?: string | null
-        fraccionamiento?: string | null
-        colonia?: string | null
-        superficie?: string | null
-        ubicacion?: string | null
-        partida?: string | null
-      }
-      sources?: Array<{
-        docName?: string
-        docType?: string
-      }>
-    }>
-    selection: {
-      selected_folio: string | null
-      selected_scope: 'unidades' | 'inmuebles_afectados' | 'otros' | null
-      confirmed_by_user: boolean
-    }
-  }
-  
-  // Documentos (mantener por compatibilidad)
-  documentos: string[]
-}
-
-// Estado "fuente de verdad" calculado por el backend
-export interface ServerStateSnapshot {
-  current_state: string | null
-  state_status: Record<string, string>
-  required_missing: string[]
-  blocking_reasons: string[]
-  allowed_actions: string[]
-}
-
-interface UploadedDocument {
-  id: string
-  file: File
-  name: string
-  type: string
-  size: number
-  processed: boolean
-  cancelled?: boolean // Indica si el procesamiento fue cancelado
-  extractedData?: any
-  error?: string
-  documentType?: string // Tipo detectado: 'escritura', 'plano', 'identificacion', etc.
-}
+import {
+  stripDataUpdateBlocksForDisplay,
+  toUserFacingAssistantText,
+  determineActosNotariales,
+  inferMarriageStatus
+} from '@/lib/tramites/shared/utils/preaviso-data-utils'
+import { ChatMessageItem } from './preaviso/chat-message-item'
+import { DocumentSidebar } from './preaviso/document-sidebar'
 
 interface PreavisoChatProps {
   onDataComplete: (data: PreavisoData) => void
@@ -279,7 +90,7 @@ const INITIAL_MESSAGES = [
 ]
 
 // Componente para mostrar miniatura de imagen
-function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasError = false, isCancelled = false }: { 
+function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasError = false, isCancelled = false }: {
   file: File
   isProcessing?: boolean
   isProcessed?: boolean
@@ -288,18 +99,18 @@ function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasEr
 }) {
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
-  
+
   useEffect(() => {
     const url = URL.createObjectURL(file)
     setFileUrl(url)
-    
+
     return () => {
       URL.revokeObjectURL(url)
     }
   }, [file])
-  
+
   if (!fileUrl) return null
-  
+
   return (
     <>
       <div className="relative group">
@@ -333,7 +144,7 @@ function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasEr
           {file.name}
         </div>
       </div>
-      
+
       {/* Dialog para mostrar imagen en tamaño completo */}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="max-w-[95vw] max-h-[95vh] p-0 bg-transparent border-none">
@@ -363,27 +174,12 @@ function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasEr
 }
 
 export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady }: PreavisoChatProps) {
-  const stripDataUpdateBlocksForDisplay = (text: string): string => {
-    if (!text) return ''
-    // Ocultar SIEMPRE el bloque técnico del usuario final
-    const cleaned = text.replace(/<DATA_UPDATE>[\s\S]*?<\/DATA_UPDATE>/g, '').trim()
-    return cleaned
-  }
-
-  const toUserFacingAssistantText = (raw: string): string => {
-    const cleaned = stripDataUpdateBlocksForDisplay(raw)
-    // Si el modelo solo mandó <DATA_UPDATE>, no mostramos el bloque técnico.
-    // Mostramos una confirmación neutra y corta para no “desaparecer” el mensaje.
-    return cleaned.length > 0 ? cleaned : 'Información registrada.'
-  }
   const { user, session } = useAuth()
-  const isMobile = useIsMobile()
-  const isTablet = useIsTablet()
   const supabase = useMemo(() => createBrowserClient(), [])
   const messageIdCounterRef = useRef(0)
   const conversationIdRef = useRef<string | null>(null)
   const documentProcessCacheRef = useRef<Map<string, any>>(new Map())
-  
+
   // Función helper para generar IDs únicos para mensajes
   const generateMessageId = (prefix: string = 'msg'): string => {
     messageIdCounterRef.current++
@@ -394,6 +190,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const initializationRef = useRef(false)
   const lastUserIdRef = useRef<string | null>(null)
   const isManualResetRef = useRef(false)
+  const isSubmittingRef = useRef(false) // Lock para prevenir doble envío
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
   const [expedienteExistente, setExpedienteExistente] = useState<{
     compradorId: string
@@ -461,40 +258,256 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const [serverState, setServerState] = useState<ServerStateSnapshot | null>(null)
 
   // conversation_id estable (logging/QA): persiste en sessionStorage para sobrevivir refresh.
-  useEffect(() => {
+  // Manejo de Sesiones (Chat History)
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  //const chatIdParam = searchParams.get('chatId') // Esto causa re-renders, mejor usar window o ref si no queremos re-inicializar todo
+  // Pero necesitamos re-inicializar si cambia el chat.
+
+  // Ref para saber si estanos cargando un chat antiguo para evitar sobrescribir con INITIAL_MESSAGES
+  const isLoadingSessionRef = useRef(false)
+  const isCreatingSessionRef = useRef(false)
+
+  const chatId = searchParams.get('chatId')
+  const isNew = searchParams.get('new')
+
+  const createNewSession = async () => {
+    console.log('[PreavisoChat] Creando nueva sesión...')
     try {
-      const KEY = 'preaviso_conversation_id'
-      const existing = sessionStorage.getItem(KEY)
-      if (existing) {
-        conversationIdRef.current = existing
-        return
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      if (currentSession?.access_token) {
+        headers['Authorization'] = `Bearer ${currentSession.access_token}`
       }
-      const id =
-        (globalThis.crypto && 'randomUUID' in globalThis.crypto)
-          ? (globalThis.crypto as any).randomUUID()
-          : `${Date.now()}-${Math.random().toString(16).slice(2)}`
-      sessionStorage.setItem(KEY, id)
-      conversationIdRef.current = id
-    } catch {
-      if (!conversationIdRef.current) {
-        conversationIdRef.current = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+
+      // Evitar duplicados por Strict Mode
+      if (isCreatingSessionRef.current) return
+      isCreatingSessionRef.current = true
+
+      const res = await fetch('/api/chat/sessions', { method: 'POST', headers })
+      if (res.ok) {
+        const json = await res.json()
+        const newId = json.session.id
+        conversationIdRef.current = newId
+        console.log('[PreavisoChat] Nueva sesión creada:', newId)
+
+        // Resetear estado completo
+        setData({
+          tipoOperacion: 'compraventa',
+          _document_intent: null,
+          _document_people_pending: null,
+          vendedores: [],
+          compradores: [],
+          creditos: undefined,
+          gravamenes: [],
+          inmueble: {
+            folio_real: null,
+            partidas: [],
+            all_registry_pages_confirmed: false,
+            direccion: {
+              calle: null,
+              numero: null,
+              colonia: null,
+              municipio: null,
+              estado: null,
+              codigo_postal: null
+            },
+            superficie: null,
+            valor: null,
+            datos_catastrales: {
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          },
+          control_impresion: {
+            imprimir_conyuges: false,
+            imprimir_coacreditados: false,
+            imprimir_creditos: false
+          },
+          validaciones: {
+            expediente_existente: false,
+            datos_completos: false,
+            bloqueado: true
+          },
+          actosNotariales: {
+            cancelacionCreditoVendedor: false,
+            compraventa: false,
+            aperturaCreditoComprador: false
+          },
+          documentos: []
+        })
+
+        const initialMsgs = INITIAL_MESSAGES.map((msg, i) => ({
+          id: `init-${Date.now()}-${i}`,
+          role: 'assistant' as const,
+          content: msg,
+          timestamp: new Date(Date.now() + i * 100)
+        }))
+        setMessages(initialMsgs)
+
+        // Persistir saludos iniciales en la DB para que no desaparezcan al refrescar
+        try {
+          const { data: { session: freshSession } } = await supabase.auth.getSession()
+          const headers: HeadersInit = { 'Content-Type': 'application/json' }
+          if (freshSession?.access_token) {
+            headers['Authorization'] = `Bearer ${freshSession.access_token}`
+          }
+
+          for (const msg of initialMsgs) {
+            await fetch(`/api/chat/sessions/${newId}/messages`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                role: msg.role,
+                content: msg.content,
+                metadata: { is_initial_msg: true }
+              })
+            })
+          }
+        } catch (err) {
+          console.error('[PreavisoChat] Error persistiendo saludos iniciales:', err)
+        }
+
+        setInitialMessagesSent(true)
+        initializationRef.current = true
+        setActiveTramiteId(null)
+        setServerState(null)
+
+        setUploadedDocuments([])
+        setProcessingProgress(0)
+        setIsProcessingDocument(false)
+
+        router.push(`/dashboard/preaviso?chatId=${newId}`)
+      }
+    } catch (e) {
+      console.error('Error creating session', e)
+    } finally {
+      isCreatingSessionRef.current = false
+    }
+  }
+
+  useEffect(() => {
+    // const chatId and isNew are now available from closure scope
+
+    const loadSession = async (id: string) => {
+      console.log('[PreavisoChat] Cargando sesión:', id)
+      try {
+        if (conversationIdRef.current !== id) {
+          setMessages([]) // Limpiar UI solo si cambiamos de chat
+        }
+        isLoadingSessionRef.current = true
+
+        const { data: { session: currentSession } } = await supabase.auth.getSession()
+        const headers: HeadersInit = {}
+        if (currentSession?.access_token) {
+          headers['Authorization'] = `Bearer ${currentSession.access_token}`
+        }
+
+        const res = await fetch(`/api/chat/sessions/${id}/messages`, { headers })
+        if (!res.ok) throw new Error('Error cargando sesión')
+
+        const json = await res.json()
+
+        // Restaurar mensajes
+        if (json.messages && Array.isArray(json.messages)) {
+          // Mapear de DB structure a Frontend structure
+          // Mapear de DB structure a Frontend structure
+          const mapped = json.messages.map((m: any) => {
+            let metadata: any = {}
+            try {
+              metadata = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : (m.metadata || {})
+            } catch { }
+
+            const msgAttachments = (metadata.attachments || []).map((att: any) => {
+              // Reconstruct mock File object for display
+              const f = new File([], att.name, { type: att.type || 'application/pdf' })
+              // @ts-ignore
+              f.originalSize = att.size
+              return f
+            })
+
+            return {
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              timestamp: new Date(m.created_at),
+              attachments: msgAttachments
+            }
+          })
+          setMessages(mapped)
+          // Marcar como enviados para que no se re-envien los iniciales
+          setInitialMessagesSent(true)
+          initializationRef.current = true
+        }
+
+        // Restaurar contexto (data)
+        if (json.session?.last_context) {
+          console.log('[PreavisoChat] Restaurando contexto:', json.session.last_context)
+          setData(json.session.last_context)
+
+          // FIX: Recalcular estado del servidor (pasos completados) basado en datos cargados
+          try {
+            const computed = computePreavisoState(json.session.last_context)
+            if (computed && computed.state) {
+              setServerState(computed.state)
+            }
+          } catch (err) {
+            console.error('[PreavisoChat] Error recalculando estado inicial:', err)
+          }
+        }
+
+        conversationIdRef.current = id
+      } catch (e) {
+        console.error(e)
+        // Si falla, quizás volver a new?
+      } finally {
+        isLoadingSessionRef.current = false
       }
     }
-  }, [])
+
+    if (chatId) {
+      // Cargar existente
+      if (conversationIdRef.current !== chatId) {
+        loadSession(chatId)
+      }
+    } else {
+      // Nueva sesión (si no tenemos una ya en memoria o si es explícito new)
+      if (!conversationIdRef.current || isNew) {
+        // Resetear estado visual
+        setMessages([])
+        setInitialMessagesSent(false)
+        initializationRef.current = false
+        // Crear sesión en backend
+        createNewSession()
+      }
+    }
+  }, [chatId, isNew]) // Dependencies specific to what we use
 
   // Enviar mensajes iniciales y crear nuevo trámite al iniciar
   useEffect(() => {
     let mounted = true
+    // chatId is now from outer scope
 
     console.log('[PreavisoChat] useEffect ejecutado - user?.id:', user?.id, 'initializationRef.current:', initializationRef.current, 'initialMessagesSent:', initialMessagesSent, 'messages.length:', messages.length)
 
     const initializeChat = async () => {
+      // Si hay un chatId en la URL, asumimos que el primer useEffect se encarga de cargar la sesión.
+      // No debemos inicializar un chat "nuevo" encima.
+      if (chatId) {
+        console.log('[PreavisoChat] ChatId detectado, omitiendo inicialización automática de nuevo chat.')
+        return
+      }
+
       // Si estamos haciendo un reset manual, no interferir
       if (isManualResetRef.current) {
         console.log('[PreavisoChat] Reset manual en progreso, omitiendo inicialización automática')
         return
       }
-      
+
       if (!session?.access_token) {
         return
       }
@@ -522,7 +535,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Verificar si los mensajes están vacíos - si están vacíos, necesitamos inicializar
       // independientemente del estado de initializationRef (puede ser un remount)
       const messagesEmpty = messages.length === 0
-      
+
       if (messagesEmpty) {
         console.log('[PreavisoChat] Mensajes vacíos, reseteando flags y procediendo con inicialización')
         initializationRef.current = false
@@ -530,10 +543,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
 
       // Verificar si los mensajes iniciales ya están presentes
-      const hasInitialMessages = messages.length > 0 && messages.some(m => 
+      const hasInitialMessages = messages.length > 0 && messages.some(m =>
         INITIAL_MESSAGES.some(initialMsg => m.content === initialMsg && m.role === 'assistant')
       )
-      
+
       if (hasInitialMessages) {
         console.log('[PreavisoChat] Mensajes iniciales ya presentes en el estado, marcando como enviados')
         setInitialMessagesSent(true)
@@ -541,9 +554,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return
       }
 
-      // Verificar si ya se inicializó para este usuario (solo si NO hubo cambio de usuario y los mensajes no están vacíos)
-      if (!userChanged && !messagesEmpty && initializationRef.current) {
-        console.log('[PreavisoChat] Ya se inicializó para este usuario y hay mensajes, omitiendo...')
+      // Verificar si ya se inicializó para este usuario
+      // FIX: Eliminamos el chequeo de !messagesEmpty que causaba doble ejecución cuando messages estaba vacío
+      if (!userChanged && initializationRef.current) {
+        console.log('[PreavisoChat] Ya se inicializó para este usuario, omitiendo...')
         return
       }
 
@@ -557,11 +571,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         console.log('[PreavisoChat] Enviando mensajes iniciales...')
         for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
           if (!mounted) break
-          
+
           await new Promise(resolve => setTimeout(resolve, i * 400))
-          
+
           if (!mounted) break
-          
+
           const initialMessageId = generateMessageId('initial')
           setMessages(prev => {
             const exists = prev.some(m => m.content === INITIAL_MESSAGES[i] && m.role === 'assistant')
@@ -655,6 +669,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
       } catch (error) {
         console.error('Error creando nuevo trámite:', error)
+
         // No bloquear la inicialización del chat si falla la creación del trámite
       }
     }
@@ -679,8 +694,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     cancelDocumentBatchRequestedRef.current = true
     try {
       documentBatchAbortRef.current?.abort()
-    } catch {}
-    
+    } catch { }
+
     // Eliminar mensaje de procesamiento (buscar por contenido o por ID que empiece con 'processing')
     setMessages(prev => {
       const filtered = prev.filter(m => {
@@ -694,9 +709,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
         return true
       })
-      
+
       // Agregar mensaje de cancelación solo si no existe ya
-      const hasCancelMessage = filtered.some(m => 
+      const hasCancelMessage = filtered.some(m =>
         m.content.includes('cancelado') || m.content.includes('Cancelado')
       )
       if (!hasCancelMessage) {
@@ -710,31 +725,31 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
       return filtered
     })
-    
+
     // Marcar documentos no procesados como cancelados para quitar el círculo de procesamiento
-    setUploadedDocuments(prev => 
-      prev.map(doc => 
+    setUploadedDocuments(prev =>
+      prev.map(doc =>
         !doc.processed ? { ...doc, processed: true, cancelled: true } : doc
       )
     )
-    
+
     // Limpiar estado completamente
     setProcessingFileName(null)
     setProcessingProgress(0)
     setIsProcessingDocument(false)
     setIsProcessing(false)
-    
+
     // Si había un mensaje pendiente, cancelarlo también
     try {
       messageAbortRef.current?.abort()
       messageAbortRef.current = null
-    } catch {}
+    } catch { }
   }
 
   // Abort global para cancelar un batch completo de carga/procesamiento
   const documentBatchAbortRef = useRef<AbortController | null>(null)
   const cancelDocumentBatchRequestedRef = useRef(false)
-  
+
   // Abort controller para cancelar peticiones de mensajes de chat
   const messageAbortRef = useRef<AbortController | null>(null)
 
@@ -751,7 +766,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
       const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
       const direccion = data.inmueble?.direccion?.calle || (data.inmueble?.direccion as any)
-      
+
       if (!session?.access_token || (!vendedorNombre && !direccion && !compradorNombre)) {
         return
       }
@@ -810,7 +825,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     uploadedDocumentsRef.current = uploadedDocuments
   }, [uploadedDocuments])
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
-  
+
   // Limpiar URLs de objetos cuando los archivos pendientes cambien
   useEffect(() => {
     return () => {
@@ -818,7 +833,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // La limpieza se hace en el botón de eliminar y en onLoad de las imágenes
     }
   }, [pendingFiles])
-  const [showDataPanel, setShowDataPanel] = useState(false)
+  const [showDataPanel, setShowDataPanel] = useState(true)
   const [hidePanelsAfterMessage, setHidePanelsAfterMessage] = useState(false)
   const previousPendingFilesLengthRef = useRef(0)
 
@@ -907,11 +922,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Buscar imagen en el portapapeles
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
-      
+
       // Verificar si es una imagen
       if (item.type.indexOf('image') !== -1) {
         e.preventDefault() // Prevenir que se pegue como texto
-        
+
         const blob = item.getAsFile()
         if (!blob) continue
 
@@ -921,8 +936,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           lastModified: Date.now()
         })
 
-        // Procesar como archivo subido
-        await handleFileUpload([file])
+        // Agregar a archivos pendientes en lugar de procesar inmediatamente
+        setPendingFiles(prev => [...prev, file])
         return
       }
     }
@@ -931,24 +946,24 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const resetChat = async () => {
     // Marcar que estamos haciendo un reset manual
     isManualResetRef.current = true
-    
+
     // Limpiar todos los mensajes
     setMessages([])
-    
+
     // Resetear flags de inicialización
     initializationRef.current = false
     setInitialMessagesSent(false)
     messageIdCounterRef.current = 0
     documentProcessCacheRef.current.clear()
-    
+
     // Limpiar archivos pendientes
     setPendingFiles([])
-    
+
     // Resetear estado de procesamiento
     setIsProcessingDocument(false)
     setProcessingProgress(0)
     setProcessingFileName(null)
-    
+
     // Resetear datos del preaviso a estado inicial
     const initialData: PreavisoData = {
       tipoOperacion: 'compraventa',
@@ -998,26 +1013,26 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       documentos: []
     }
     setData(initialData)
-    
+
     // Limpiar documentos subidos
     setUploadedDocuments([])
     uploadedDocumentsRef.current = []
-    
+
     // Resetear estado del servidor
     setServerState(null)
-    
+
     // Resetear expediente existente
     setExpedienteExistente(null)
-    
+
     // Resetear input
     setInput('')
-    
+
     // Restablecer visibilidad de paneles
     setHidePanelsAfterMessage(false)
-    
+
     // Obtener el userId correcto
     const effectiveUserId = user?.id ?? session?.user?.id
-    
+
     // Crear nuevo trámite
     if (effectiveUserId) {
       try {
@@ -1057,7 +1072,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         console.error('Error creando nuevo trámite:', error)
       }
     }
-    
+
     // Enviar mensajes iniciales directamente
     // Enviar el primer mensaje inmediatamente, luego los demás con delay
     const sendInitialMessages = async () => {
@@ -1073,7 +1088,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           timestamp: new Date()
         }]
       })
-      
+
       // Enviar los demás mensajes con delay
       for (let i = 1; i < INITIAL_MESSAGES.length; i++) {
         await new Promise(resolve => setTimeout(resolve, 400))
@@ -1095,12 +1110,35 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Marcar que el reset manual terminó
       isManualResetRef.current = false
     }
-    
+
     // Usar setTimeout con 0ms para asegurar que React haya procesado el setMessages([])
     // y luego enviar los mensajes en el siguiente tick del event loop
     setTimeout(() => {
       sendInitialMessages()
     }, 0)
+  }
+
+  const handleDeleteSession = async () => {
+    if (!conversationIdRef.current) return
+    if (!confirm('¿Estás seguro de eliminar esta conversación? Se borrarán todos los datos y mensajes.')) return
+
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      const headers: HeadersInit = {}
+      if (currentSession?.access_token) {
+        headers['Authorization'] = `Bearer ${currentSession.access_token}`
+      }
+
+      await fetch(`/api/chat/sessions/${conversationIdRef.current}`, {
+        method: 'DELETE',
+        headers
+      })
+
+      // Iniciar nueva sesión limpia
+      await createNewSession()
+    } catch (e) {
+      console.error('Error deleting session:', e)
+    }
   }
 
   const handleNewChat = () => {
@@ -1109,7 +1147,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
   const handleConfirmNewChat = async () => {
     setShowNewChatDialog(false)
-    await resetChat()
+    await createNewSession()
   }
 
   const cancelMessageRequest = () => {
@@ -1121,7 +1159,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       if (isProcessing) {
         try {
           messageAbortRef.current?.abort()
-        } catch {}
+        } catch { }
         setIsProcessing(false)
       }
       return
@@ -1130,7 +1168,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     if (!isProcessing) return
     try {
       messageAbortRef.current?.abort()
-    } catch {}
+    } catch { }
     setIsProcessing(false)
     const cancelMessage: ChatMessage = {
       id: generateMessageId('cancel'),
@@ -1144,320 +1182,439 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const handleSend = async () => {
     // Ocultar paneles inmediatamente cuando se envía un mensaje
     setHidePanelsAfterMessage(true)
-    
+
     const hasFiles = pendingFiles.length > 0
     const hasMessage = input.trim().length > 0
-    
+
     if (!hasFiles && !hasMessage) return
     if (isProcessing || isProcessingDocument) return
+    if (isSubmittingRef.current === true) return // Prevenir doble submit
 
-    // Si hay archivos pendientes Y mensaje, marcar como procesando desde el inicio
-    // para que se muestre como un solo proceso bloqueado
-    if (hasFiles && hasMessage) {
-      setIsProcessing(true)
-    }
-    
-    // Si hay archivos pendientes, procesarlos primero
-    if (hasFiles) {
-      // Crear un FileList simulado para usar con handleFileUpload
-      const dataTransfer = new DataTransfer()
-      pendingFiles.forEach(file => dataTransfer.items.add(file))
-      const fileList = dataTransfer.files
-      
-      // Guardar archivos antes de limpiar para incluirlos en el mensaje
-      const filesToAttach = [...pendingFiles]
-      
-      // Limpiar archivos pendientes antes de procesar
-      setPendingFiles([])
-      
-      // Si hay mensaje de texto, crear un solo mensaje multimodal con texto + archivos
-      if (hasMessage) {
+    // Bloquear inmediatamente
+    isSubmittingRef.current = true
+
+    try {
+
+      // Si hay archivos pendientes Y mensaje, marcar como procesando desde el inicio
+      // para que se muestre como un solo proceso bloqueado
+      if (hasFiles && hasMessage) {
+        setIsProcessing(true)
+      }
+
+      // Esperar a que la sesión esté lista si es necesario
+      if (!conversationIdRef.current) {
+        console.log('Esperando inicialización de sesión...')
+        // Pequeño retry loop (máx 3 segundos)
+        for (let i = 0; i < 30; i++) {
+          if (conversationIdRef.current) break
+          await new Promise(r => setTimeout(r, 100))
+        }
+        if (!conversationIdRef.current) {
+          console.error('No se pudo establecer sesión de chat')
+          // Permitir continuar (quizás se crea al vuelo en backend?) pero advertir
+        }
+      }
+
+      // Si hay archivos pendientes, procesarlos primero
+      // Definimos variables para los datos frescos (si hubo upload) o actuales
+      let freshData = data
+      let freshDocs = uploadedDocuments
+
+      if (hasFiles) {
+        // Crear un FileList simulado para usar con handleFileUpload
+        const dataTransfer = new DataTransfer()
+        pendingFiles.forEach(file => dataTransfer.items.add(file))
+        const fileList = dataTransfer.files
+
+        // Guardar archivos antes de limpiar para incluirlos en el mensaje
+        const filesToAttach = [...pendingFiles]
+
+        // Limpiar archivos pendientes antes de procesar
+        setPendingFiles([])
+
+        // Si hay mensaje de texto, crear un solo mensaje multimodal con texto + archivos
+        if (hasMessage) {
+          const userMessage: ChatMessage = {
+            id: generateMessageId('user'),
+            role: 'user',
+            content: input.trim(),
+            timestamp: new Date(),
+            attachments: filesToAttach
+          }
+          setMessages(prev => [...prev, userMessage])
+
+          // Persistir mensaje del usuario (texto) si acompaña a un archivo
+          if (conversationIdRef.current) {
+            try {
+              const { data: { session: currentSession } } = await supabase.auth.getSession()
+              const headers: HeadersInit = { 'Content-Type': 'application/json' }
+              if (currentSession?.access_token) {
+                headers['Authorization'] = `Bearer ${currentSession.access_token}`
+              }
+              fetch(`/api/chat/sessions/${conversationIdRef.current}/messages`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  role: 'user',
+                  content: input.trim(),
+                  tramite_id: activeTramiteId,
+                  metadata: {
+                    attachments: filesToAttach.map(f => ({
+                      name: f.name,
+                      size: f.size,
+                      type: f.type
+                    }))
+                  }
+                })
+              }).catch(e => console.error('Error persisting user text message with file:', e))
+            } catch (e) {
+              console.error('Error persisting user text message with file:', e)
+            }
+          }
+        }
+
+        // Procesar archivos (pasar true para no activar isProcessingDocument cuando hay mensaje pendiente,
+        // y true para skipUserMessage cuando hay texto para evitar mensaje duplicado)
+        // Recibir el estado actualizado para usarlo en el envío
+        const uploadResult = await handleFileUpload(fileList, true, hasMessage, hasMessage ? input.trim() : null)
+
+        // Si handleFileUpload retornó datos frescos, usarlos. Si no, usar los actuales state.
+        freshData = uploadResult?.updatedData || data
+        freshDocs = uploadResult?.updatedDocs || uploadedDocuments
+
+        // Si no hay texto, solo procesar archivos y salir
+        if (!hasMessage) {
+          // Si estaba marcado como procesando, limpiarlo
+          setIsProcessing(false)
+          return
+        }
+
+        // IMPORTANTE: Si hay archivos, handleFileUpload YA envió el mensaje al backend con el contexto actualizado
+        // y con el texto del usuario. NO debemos continuar aquí porque enviaríamos un segundo request con contexto stale.
+        if (hasFiles) {
+          const currentInput = input.trim()
+          setInput('')
+          // Liberar el lock de submit ya que handleFileUpload terminó (o retornó temprano)
+          isSubmittingRef.current = false
+          // Asegurar que el estado visual de "procesando mensaje" se limpie si no hubo envío real
+          if (!isProcessingDocument) {
+            setIsProcessing(false)
+          }
+          return
+        }
+
+        // Liberamos lock si no entramos al return anterior (aunque en teoría files si entra)
+        // Pero si continuamos aqui, el lock se libera en el finally del bloque principal
+        // NOTA: handleFileUpload es async, si retornanos arriba, el finally NO se ejecuta para este bloque padre si no lo envolvemos todo.
+        // FIX CRITICO: El try/finally debe envolver TODO handleSend.
+
+      } else {
+        // Si solo hay mensaje (sin archivos), marcar como procesando ahora
+        setIsProcessing(true)
+
         const userMessage: ChatMessage = {
           id: generateMessageId('user'),
           role: 'user',
           content: input.trim(),
-          timestamp: new Date(),
-          attachments: filesToAttach
+          timestamp: new Date()
         }
         setMessages(prev => [...prev, userMessage])
       }
-      
-      // Procesar archivos (pasar true para no activar isProcessingDocument cuando hay mensaje pendiente,
-      // y true para skipUserMessage cuando hay texto para evitar mensaje duplicado)
-      await handleFileUpload(fileList, true, hasMessage)
-      
-      // Si no hay texto, solo procesar archivos y salir
-      if (!hasMessage) {
-        // Si estaba marcado como procesando, limpiarlo
-        setIsProcessing(false)
-        return
-      }
-      
-      // Si había mensaje pero se canceló el procesamiento de documentos, salir
-      if (cancelDocumentBatchRequestedRef.current) {
-        setIsProcessing(false)
-        return
-      }
-    } else {
-      // Si solo hay mensaje (sin archivos), marcar como procesando ahora
-      setIsProcessing(true)
-      
-      const userMessage: ChatMessage = {
-        id: generateMessageId('user'),
-        role: 'user',
-        content: input.trim(),
-        timestamp: new Date()
-      }
-      setMessages(prev => [...prev, userMessage])
-    }
-    const currentInput = input.trim()
-    setInput('')
 
-    // Cancelar cualquier petición anterior
-    if (messageAbortRef.current) {
-      try { messageAbortRef.current.abort() } catch {}
-    }
-    const messageAbort = new AbortController()
-    messageAbortRef.current = messageAbort
+      // Si llegamos aqui y HABIA archivos, ya retornamos arriba. 
+      // Si NO habia archivos (else block), continuamos con el envio normal.
 
-    try {
-      // Llamar al agente de IA (usando Plugin System V2)
-      const response = await fetch('/api/ai/preaviso-chat-v2', {
-        method: 'POST',
-        headers: {
+      const currentInput = input.trim()
+      setInput('')
+
+      // Cancelar cualquier petición anterior
+      if (messageAbortRef.current) {
+        try { messageAbortRef.current.abort() } catch { }
+      }
+      const messageAbort = new AbortController()
+      messageAbortRef.current = messageAbort
+
+      try {
+        // Llamar al agente de IA (usando Plugin System V2)
+        // Asegurarse de tener el token actualizado
+        const { data: { session: currentSession } } = await supabase.auth.getSession()
+        const headers: HeadersInit = {
           'Content-Type': 'application/json',
-        },
-        signal: messageAbort.signal,
-          body: JSON.stringify({
-          messages: [
-            ...messages.map(m => ({ role: m.role, content: m.content })),
-            { role: 'user' as const, content: currentInput }
-          ],
-          context: {
-            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
-            // Esto permite que el backend detecte correctamente qué información ya está capturada
-            conversation_id: conversationIdRef.current,
-            _document_intent: (data as any)._document_intent ?? null,
-            _document_people_pending: (data as any)._document_people_pending ?? null,
-            _last_question_intent: (data as any)._last_question_intent ?? null,
-            tramiteId: activeTramiteId,
-            vendedores: data.vendedores || [],
-            compradores: data.compradores || [],
-            // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
-            creditos: data.creditos,
-            gravamenes: data.gravamenes || [],
-            inmueble: data.inmueble,
-            folios: data.folios,
-            documentos: data.documentos,
-            documentosProcesados: uploadedDocuments
-              .filter(d => d.processed && d.extractedData)
-              .map(d => ({
-                nombre: d.name,
-                tipo: d.documentType || 'desconocido',
-                informacionExtraida: d.extractedData
-              })),
-            expedienteExistente: expedienteExistente || undefined
-          },
-          tramiteId: activeTramiteId
-        })
-      })
-
-      if (!response.ok) {
-        throw new Error(`Error: ${response.status}`)
-      }
-
-      const result = await response.json()
-      const messagesToAdd = result.messages || [result.message]
-      if (result?.state) {
-        setServerState(result.state as ServerStateSnapshot)
-      }
-
-      // Fuente de verdad de datos estructurados: si el backend ya pudo parsear <DATA_UPDATE>,
-      // aplicarlo directo al estado para que el panel "Información Capturada" refleje confirmaciones.
-      const hasServerData = !!result?.data
-      if (hasServerData) {
-        setData(prevData => {
-          const nextData = { ...prevData }
-          const d = result.data
-
-          if (d.tipoOperacion !== undefined) nextData.tipoOperacion = d.tipoOperacion
-          if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (nextData as any)._document_intent = (d as any)._document_intent
-          if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) (nextData as any)._document_people_pending = (d as any)._document_people_pending
-          if (d.vendedores !== undefined) nextData.vendedores = d.vendedores as any
-          if (d.compradores !== undefined) nextData.compradores = d.compradores as any
-          if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
-          if (d.gravamenes !== undefined) nextData.gravamenes = d.gravamenes as any
-          // CRÍTICO: Merge profundo de inmueble (en chat) para no perder datos extraídos del documento
-          // cuando el backend manda un update parcial (ej. solo existe_hipoteca).
-          if (Object.prototype.hasOwnProperty.call(d, 'inmueble')) {
-            const prevI: any = (nextData as any).inmueble || {}
-            const nextI: any = (d as any).inmueble
-            if (nextI && typeof nextI === 'object') {
-              const mergedDireccion =
-                (prevI?.direccion && nextI?.direccion)
-                  ? { ...prevI.direccion, ...nextI.direccion }
-                  : (nextI?.direccion ?? prevI?.direccion)
-              ;(nextData as any).inmueble = {
-                ...prevI,
-                ...nextI,
-                direccion: mergedDireccion,
-                folio_real: nextI?.folio_real ?? prevI?.folio_real ?? null,
-                partidas: nextI?.partidas ?? prevI?.partidas ?? [],
-                superficie: nextI?.superficie ?? prevI?.superficie ?? null,
-                existe_hipoteca: (nextI?.existe_hipoteca !== undefined ? nextI.existe_hipoteca : prevI?.existe_hipoteca),
-              }
-            } else if (nextI === null) {
-              ;(nextData as any).inmueble = prevI
-            }
-          }
-          // CRÍTICO: Merge estable de `folios` también en chat (handleSend), para no perder selection confirmada
-          if (d.folios !== undefined) {
-            const prevF: any = (nextData as any).folios || { candidates: [], selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false } }
-            const nextF: any = d.folios
-            const map = new Map<string, any>()
-            for (const c of [...(prevF.candidates || []), ...(nextF.candidates || [])]) {
-              const folio = String(c?.folio || '').replace(/\D/g, '')
-              const scope = c?.scope || 'otros'
-              if (!folio) continue
-              const key = `${scope}:${folio}`
-              const prevC = map.get(key) || {}
-              map.set(key, {
-                ...prevC,
-                ...c,
-                folio,
-                scope,
-                attrs: { ...(prevC.attrs || {}), ...(c.attrs || {}) },
-                sources: [...(prevC.sources || []), ...(c.sources || [])],
-              })
-            }
-            const preserveSelection =
-              prevF.selection?.confirmed_by_user === true &&
-              (!nextF.selection?.confirmed_by_user || !nextF.selection?.selected_folio)
-            ;(nextData as any).folios = {
-              candidates: Array.from(map.values()),
-              selection: preserveSelection ? prevF.selection : (nextF.selection || prevF.selection),
-            }
-          }
-          if (d.control_impresion) nextData.control_impresion = d.control_impresion
-          if (d.validaciones) nextData.validaciones = d.validaciones
-
-          nextData.actosNotariales = determineActosNotariales(nextData)
-          return nextData
-        })
-      }
-      
-      // Detectar si el mensaje contiene el resumen final
-      const hasSummary = messagesToAdd.some((msg: string) => 
-        msg.includes('RESUMEN DE INFORMACIÓN CAPTURADA') || 
-        msg.includes('=== RESUMEN DE INFORMACIÓN CAPTURADA ===')
-      )
-      
-      if (hasSummary && isCompleteByServer) {
-        setShowExportOptions(true)
-      }
-      
-      // Agregar mensajes con delay para efecto conversacional
-      for (let i = 0; i < messagesToAdd.length; i++) {
-        await new Promise(resolve => setTimeout(resolve, i * 300)) // 300ms entre mensajes
-        const assistantMessage: ChatMessage = {
-          id: generateMessageId('ai'),
-          role: 'assistant',
-          content: toUserFacingAssistantText(messagesToAdd[i]),
-          timestamp: new Date()
         }
-        setMessages(prev => {
-          // Verificar que no esté duplicado
-          const exists = prev.some(m => m.id === assistantMessage.id || 
-            (m.role === 'assistant' && m.content === assistantMessage.content && 
-             Math.abs(m.timestamp.getTime() - assistantMessage.timestamp.getTime()) < 1000))
-          if (exists) return prev
-          return [...prev, assistantMessage]
+        if (currentSession?.access_token) {
+          headers['Authorization'] = `Bearer ${currentSession.access_token}`
+        }
+
+        const response = await fetch('/api/ai/preaviso-chat', {
+          method: 'POST',
+          headers,
+          signal: messageAbort.signal,
+          body: JSON.stringify({
+            messages: [
+              ...messages.map(m => ({ role: m.role, content: m.content })),
+              { role: 'user' as const, content: currentInput }
+            ],
+            context: {
+              // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
+              // Esto permite que el backend detecte correctamente qué información ya está capturada
+              conversation_id: conversationIdRef.current,
+              _document_intent: (data as any)._document_intent ?? null,
+              _document_people_pending: (data as any)._document_people_pending ?? null,
+              _last_question_intent: (freshData as any)._last_question_intent ?? null,
+              tramiteId: activeTramiteId,
+              vendedores: freshData.vendedores || [],
+              compradores: freshData.compradores || [],
+              // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
+              creditos: freshData.creditos,
+              gravamenes: freshData.gravamenes || [],
+              inmueble: freshData.inmueble,
+              folios: freshData.folios,
+              documentos: freshData.documentos,
+              documentosProcesados: freshDocs
+                .filter(d => d.processed && d.extractedData)
+                .map(d => ({
+                  nombre: d.name,
+                  tipo: d.documentType || 'desconocido',
+                  informacionExtraida: d.extractedData
+                })),
+              expedienteExistente: expedienteExistente || undefined
+            },
+            tramiteId: activeTramiteId
+          })
         })
-      }
 
-      // Intentar extraer información estructurada de la respuesta
-      // Incluir mensajes previos de la IA para detectar confirmaciones
-      const previousAIMessages = messages
-        .filter(m => m.role === 'assistant')
-        .slice(-3) // Últimos 3 mensajes de la IA
-        .map(m => m.content)
-        .join('\n\n')
-      // IMPORTANTE: No re-extraer/reescribir datos en frontend si el backend ya entregó `data`.
-      // El extractor local no conserva banderas internas (ej. titular_registral_confirmado) y puede revertir pasos.
-      if (!hasServerData) {
-        const allAIMessages = (previousAIMessages ? previousAIMessages + '\n\n' : '') + messagesToAdd.join('\n\n')
-        const extractedData = extractDataFromMessage(allAIMessages, currentInput, data)
-        if (extractedData) {
+        if (!response.ok) {
+          throw new Error(`Error: ${response.status}`)
+        }
+
+        const result = await response.json()
+        const messagesToAdd = result.messages || [result.message]
+        if (result?.state) {
+          setServerState(result.state as ServerStateSnapshot)
+        }
+
+        // Fuente de verdad de datos estructurados: si el backend ya pudo parsear <DATA_UPDATE>,
+        // aplicarlo directo al estado para que el panel "Información Capturada" refleje confirmaciones.
+        const hasServerData = !!result?.data
+        if (hasServerData) {
           setData(prevData => {
-            const newData = { ...prevData }
-            
-            // Actualizar tipoOperacion
-            if (extractedData.tipoOperacion !== undefined) {
-              newData.tipoOperacion = extractedData.tipoOperacion
-            }
+            const nextData = { ...prevData }
+            const d = result.data
 
-            // v1.4: arrays y estructura de inmueble
-            if (extractedData.vendedores !== undefined) {
-              newData.vendedores = extractedData.vendedores as any
+            if (d.tipoOperacion !== undefined) nextData.tipoOperacion = d.tipoOperacion
+            if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (nextData as any)._document_intent = (d as any)._document_intent
+            if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) (nextData as any)._document_people_pending = (d as any)._document_people_pending
+            if (d.vendedores !== undefined) nextData.vendedores = inferMarriageStatus(d.vendedores as any)
+            if (d.compradores !== undefined) nextData.compradores = inferMarriageStatus(d.compradores as any)
+            if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
+            if (d.gravamenes !== undefined) nextData.gravamenes = d.gravamenes as any
+            // CRÍTICO: Merge profundo de inmueble (en chat) para no perder datos extraídos del documento
+            // cuando el backend manda un update parcial (ej. solo existe_hipoteca).
+            if (Object.prototype.hasOwnProperty.call(d, 'inmueble')) {
+              const prevI: any = (nextData as any).inmueble || {}
+              const nextI: any = (d as any).inmueble
+              if (nextI && typeof nextI === 'object') {
+                const mergedDireccion =
+                  (prevI?.direccion && nextI?.direccion)
+                    ? { ...prevI.direccion, ...nextI.direccion }
+                    : (nextI?.direccion ?? prevI?.direccion)
+                  ; (nextData as any).inmueble = {
+                    ...prevI,
+                    ...nextI,
+                    direccion: mergedDireccion,
+                    folio_real: nextI?.folio_real ?? prevI?.folio_real ?? null,
+                    partidas: nextI?.partidas ?? prevI?.partidas ?? [],
+                    superficie: nextI?.superficie ?? prevI?.superficie ?? null,
+                    existe_hipoteca: (nextI?.existe_hipoteca !== undefined ? nextI.existe_hipoteca : prevI?.existe_hipoteca),
+                  }
+              } else if (nextI === null) {
+                ; (nextData as any).inmueble = prevI
+              }
             }
-            if (extractedData.compradores !== undefined) {
-              newData.compradores = extractedData.compradores as any
+            // CRÍTICO: Merge estable de `folios` también en chat (handleSend), para no perder selection confirmada
+            if (d.folios !== undefined) {
+              const prevF: any = (nextData as any).folios || { candidates: [], selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false } }
+              const nextF: any = d.folios
+              const map = new Map<string, any>()
+              for (const c of [...(prevF.candidates || []), ...(nextF.candidates || [])]) {
+                const folio = String(c?.folio || '').replace(/\D/g, '')
+                const scope = c?.scope || 'otros'
+                if (!folio) continue
+                const key = `${scope}:${folio}`
+                const prevC = map.get(key) || {}
+                map.set(key, {
+                  ...prevC,
+                  ...c,
+                  folio,
+                  scope,
+                  attrs: { ...(prevC.attrs || {}), ...(c.attrs || {}) },
+                  sources: [...(prevC.sources || []), ...(c.sources || [])],
+                })
+              }
+              const preserveSelection =
+                prevF.selection?.confirmed_by_user === true &&
+                (!nextF.selection?.confirmed_by_user || !nextF.selection?.selected_folio)
+                ; (nextData as any).folios = {
+                  candidates: Array.from(map.values()),
+                  selection: preserveSelection ? prevF.selection : (nextF.selection || prevF.selection),
+                }
             }
-            // creditos puede ser [] (contado) o [..] (crédito) o undefined (no confirmado)
-            if (Object.prototype.hasOwnProperty.call(extractedData, 'creditos')) {
-              newData.creditos = extractedData.creditos as any
+            if (d.control_impresion) nextData.control_impresion = d.control_impresion
+            if (d.validaciones) nextData.validaciones = d.validaciones
+
+            nextData.actosNotariales = {
+              cancelacionCreditoVendedor: determineActosNotariales(nextData).cancelacionCreditoVendedor,
+              compraventa: determineActosNotariales(nextData).compraventa,
+              aperturaCreditoComprador: determineActosNotariales(nextData).aperturaCreditoComprador ?? false
             }
-            if (extractedData.gravamenes !== undefined) {
-              newData.gravamenes = extractedData.gravamenes as any
-            }
-            if (extractedData.inmueble) {
-              newData.inmueble = extractedData.inmueble as any
-            }
-            
-            // Determinar actos notariales
-            const actos = determineActosNotariales(newData)
-            newData.actosNotariales = actos
-            
-            return newData
+            return nextData
           })
         }
-      }
 
-    } catch (error) {
-      // No mostrar error si fue cancelado por el usuario
-      if ((error as any)?.name === 'AbortError' || messageAbort.signal.aborted) {
-        return
+        // Detectar si el mensaje contiene el resumen final
+        const hasSummary = messagesToAdd.some((msg: string) =>
+          msg.includes('RESUMEN DE INFORMACIÓN CAPTURADA') ||
+          msg.includes('=== RESUMEN DE INFORMACIÓN CAPTURADA ===')
+        )
+
+        if (hasSummary && isCompleteByServer) {
+          setShowExportOptions(true)
+        }
+        // ─── 4. Algoritmo de concurrencia controlada con orden estricto de aplicación ───
+        const batchAbort = new AbortController()
+
+        // Agregar mensajes con delay para efecto conversacional
+        for (let i = 0; i < messagesToAdd.length; i++) {
+          await new Promise(resolve => setTimeout(resolve, i * 300)) // 300ms entre mensajes
+          const assistantMessage: ChatMessage = {
+            id: generateMessageId('ai'),
+            role: 'assistant',
+            content: toUserFacingAssistantText(messagesToAdd[i]),
+            timestamp: new Date()
+          }
+          setMessages(prev => {
+            // Verificar que no esté duplicado
+            const exists = prev.some(m => m.id === assistantMessage.id ||
+              (m.role === 'assistant' && m.content === assistantMessage.content &&
+                Math.abs(m.timestamp.getTime() - assistantMessage.timestamp.getTime()) < 1000))
+            if (exists) return prev
+            return [...prev, assistantMessage]
+          })
+        }
+
+        // Intentar extraer información estructurada de la respuesta
+        // Incluir mensajes previos de la IA para detectar confirmaciones
+        const previousAIMessages = messages
+          .filter(m => m.role === 'assistant')
+          .slice(-3) // Últimos 3 mensajes de la IA
+          .map(m => m.content)
+          .join('\n\n')
+        // IMPORTANTE: No re-extraer/reescribir datos en frontend si el backend ya entregó `data`.
+        // El extractor local no conserva banderas internas (ej. titular_registral_confirmado) y puede revertir pasos.
+        if (!hasServerData) {
+          const allAIMessages = (previousAIMessages ? previousAIMessages + '\n\n' : '') + messagesToAdd.join('\n\n')
+          const extractedData = extractDataFromMessage(allAIMessages, currentInput, data)
+          if (extractedData) {
+            setData(prevData => {
+              const newData = { ...prevData }
+
+              // Actualizar tipoOperacion
+              if (extractedData.tipoOperacion !== undefined) {
+                newData.tipoOperacion = extractedData.tipoOperacion
+              }
+
+              // v1.4: arrays y estructura de inmueble
+              if (extractedData.vendedores !== undefined) {
+                newData.vendedores = extractedData.vendedores as any
+              }
+              if (extractedData.compradores !== undefined) {
+                newData.compradores = extractedData.compradores as any
+              }
+              // creditos puede ser [] (contado) o [..] (crédito) o undefined (no confirmado)
+              if (Object.prototype.hasOwnProperty.call(extractedData, 'creditos')) {
+                newData.creditos = extractedData.creditos as any
+              }
+              if (extractedData.gravamenes !== undefined) {
+                newData.gravamenes = extractedData.gravamenes as any
+              }
+              if (extractedData.inmueble) {
+                newData.inmueble = extractedData.inmueble as any
+              }
+
+              // Determinar actos notariales
+              const actos = determineActosNotariales(newData)
+              newData.actosNotariales = {
+                cancelacionCreditoVendedor: actos.cancelacionCreditoVendedor,
+                compraventa: actos.compraventa,
+                aperturaCreditoComprador: actos.aperturaCreditoComprador ?? false
+              }
+
+              return newData
+            })
+          }
+        }
+
+      } catch (error) {
+        // No mostrar error si fue cancelado por el usuario
+        if ((error as any)?.name === 'AbortError' || messageAbort.signal.aborted) {
+          return
+        }
+        console.error('Error en chat:', error)
+        const errorMessage: ChatMessage = {
+          id: generateMessageId('error'),
+          role: 'assistant',
+          content: 'Disculpe, ha ocurrido un error al procesar su mensaje. Por favor, intente nuevamente o proporcione la información de otra manera.',
+          timestamp: new Date()
+        }
+        setMessages(prev => [...prev, errorMessage])
+      } finally {
+        setIsProcessing(false)
+        isSubmittingRef.current = false // Siempre liberar lock al terminar
+        // Limpiar abort controller si es el actual
+        if (messageAbortRef.current === messageAbort) {
+          messageAbortRef.current = null
+        }
+        // Restaurar foco en el input después de procesar
+        setTimeout(() => {
+          textInputRef.current?.focus()
+        }, 100)
       }
-      console.error('Error en chat:', error)
-      const errorMessage: ChatMessage = {
-        id: generateMessageId('error'),
-        role: 'assistant',
-        content: 'Disculpe, ha ocurrido un error al procesar su mensaje. Por favor, intente nuevamente o proporcione la información de otra manera.',
-        timestamp: new Date()
-      }
-      setMessages(prev => [...prev, errorMessage])
     } finally {
-      setIsProcessing(false)
-      // Limpiar abort controller si es el actual
-      if (messageAbortRef.current === messageAbort) {
-        messageAbortRef.current = null
-      }
-      // Restaurar foco en el input después de procesar
-      setTimeout(() => {
-        textInputRef.current?.focus()
-      }, 100)
+      // FIX CRÍTICO: Asegurar que siempre se libere el lock, incluso si hay retornos tempranos
+      isSubmittingRef.current = false
     }
   }
 
-  const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false, skipUserMessage = false) => {
+  const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false, skipUserMessage = false, userText: string | null = null) => {
     if (!files || files.length === 0) return
-    
+
     // Convertir FileList a array si es necesario
     const filesArray = Array.isArray(files) ? files : Array.from(files)
 
+    // Esperar a que la sesión esté lista si es necesario (igual que handleSend)
+    if (!conversationIdRef.current) {
+      console.log('Esperando inicialización de sesión para upload...')
+
+      // ✅ FIX: Si no hay sesión, intentar crearla explícitamente primero
+      if (!isCreatingSessionRef.current) {
+        try {
+          await createInitialSession()
+        } catch (e) {
+          console.error("Error creating initial session during upload:", e)
+        }
+      }
+
+      // Pequeño retry loop (máx 3 segundos) para asegurar que se estableció
+      for (let i = 0; i < 30; i++) {
+        if (conversationIdRef.current) break
+        await new Promise(r => setTimeout(r, 100))
+      }
+    }
+
+    // ... (keep existing logic for creating initial trámite if needed) ...
     // Verificar que activeTramiteId esté establecido antes de procesar
-    // Si no está, intentar crearlo o esperar un momento
     if (!activeTramiteId && user?.id) {
+      // ... (omitted for brevity, keep existing code until line 1771) ...
       try {
         const { data: { session: currentSession } } = await supabase.auth.getSession()
         const headers: HeadersInit = { 'Content-Type': 'application/json' }
@@ -1551,25 +1708,39 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
 
     // Siempre establecer isProcessingDocument para mostrar la barra de progreso
-    // incluso si hay un mensaje pendiente
     setIsProcessingDocument(true)
     setProcessingProgress(0)
     cancelDocumentBatchRequestedRef.current = false
-    // Cancelar cualquier batch anterior colgado
     if (documentBatchAbortRef.current) {
-      try { documentBatchAbortRef.current.abort() } catch {}
+      try { documentBatchAbortRef.current.abort() } catch { }
     }
     const batchAbort = new AbortController()
     documentBatchAbortRef.current = batchAbort
-    
-    // Separar PDFs e imágenes
-    const pdfFiles = filesArray.filter(
+
+    // Filter out duplicates (already uploaded files)
+    // Filter out duplicates (already uploaded files)
+    const newFiles: File[] = []
+
+    for (const file of filesArray) {
+      // Simplificación: procesar siempre como nuevo archivo para evitar error de processCommand faltante
+      newFiles.push(file)
+    }
+
+    if (newFiles.length === 0) {
+      // Si todos eran duplicados (y ya los procesamos arriba), terminamos.
+      setIsProcessingDocument(false)
+      setProcessingProgress(0)
+      return
+    }
+
+
+
+    const pdfFiles = newFiles.filter(
       file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
     )
-    const imageFiles = filesArray.filter(file => !pdfFiles.includes(file))
+    const imageFiles = newFiles.filter(file => !pdfFiles.includes(file))
 
-    // Agregar documentos originales a la lista (sin mostrar imágenes convertidas)
-    const originalDocs: UploadedDocument[] = filesArray.map(file => ({
+    const originalDocs: UploadedDocument[] = newFiles.map(file => ({
       id: generateMessageId('doc'),
       file,
       name: file.name,
@@ -1579,22 +1750,21 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }))
     setUploadedDocuments(prev => [...prev, ...originalDocs])
 
-    // Obtener nombres de archivos para uso en toda la función
-    const fileNames = filesArray.map(f => f.name)
+    const fileNames = newFiles.map(f => f.name)
 
-    // Mensaje de usuario solo si no se debe omitir (cuando hay texto pendiente, el mensaje se crea en handleSend)
     if (!skipUserMessage) {
+      const content = userText || `He subido el siguiente documento: ${fileNames.join(', ')}`
       const fileMessage: ChatMessage = {
         id: generateMessageId('file'),
         role: 'user',
-        content: `He subido el siguiente documento: ${fileNames.join(', ')}`,
+        content,
         timestamp: new Date(),
         attachments: filesArray
       }
       setMessages(prev => [...prev, fileMessage])
+
     }
 
-    // Mensaje de procesamiento
     const processingMessage: ChatMessage = {
       id: generateMessageId('processing'),
       role: 'assistant',
@@ -1602,6 +1772,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       timestamp: new Date()
     }
     setMessages(prev => [...prev, processingMessage])
+
+
+
 
     // Asegurar sesión válida antes de procesar (evita quedarse en 50% si la sesión expiró)
     const ensureSession = async () => {
@@ -1647,7 +1820,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         const { convertPdfToImages } = await import('@/lib/ocr-client')
         let totalPages = 0
         let convertedPages = 0
-        
+
         // Contar páginas totales
         for (const pdfFile of pdfFiles) {
           if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
@@ -1679,7 +1852,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
 
     setProcessingProgress(50) // 50% después de conversión
-    const newDocuments = [...data.documentos, ...fileNames]
+    const newDocuments = [...(data.documentos || []), ...fileNames]
     setData(prev => ({ ...prev, documentos: newDocuments }))
 
     // Procesar cada documento con IA
@@ -1691,24 +1864,24 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         const lastAssistantMessage = [...messages]
           .reverse()
           .find(m => m.role === 'assistant')?.content || ''
-        
+
         if (!lastAssistantMessage) return null
-        
+
         const msg = lastAssistantMessage.toLowerCase()
-        
+
         // Si pregunta por comprador o datos del comprador → esperar identificación
-        if (msg.includes('comprador') || msg.includes('adquirente') || 
-            msg.includes('quién será el comprador') || msg.includes('nombre del comprador') ||
-            msg.includes('datos del comprador') || msg.includes('identificación del comprador')) {
+        if (msg.includes('comprador') || msg.includes('adquirente') ||
+          msg.includes('quién será el comprador') || msg.includes('nombre del comprador') ||
+          msg.includes('datos del comprador') || msg.includes('identificación del comprador')) {
           return 'identificacion'
         }
-        
+
         // Si pregunta por cónyuge → esperar identificación (default). Si el usuario sube acta,
         // `detectDocumentType` la clasificará por nombre como acta_matrimonio.
         // CRÍTICO: esto debe ir ANTES que el bloque de "estado civil", porque frases como
         // "está casado" aparecen también en preguntas del cónyuge y causan falsos positivos.
         if (msg.includes('cónyuge') || msg.includes('conyuge') || msg.includes('esposa') || msg.includes('esposo') ||
-            msg.includes('pareja') || msg.includes('nombre del cónyuge')) {
+          msg.includes('pareja') || msg.includes('nombre del cónyuge')) {
           return 'identificacion'
         }
 
@@ -1717,17 +1890,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (msg.includes('estado civil') || msg.includes('estado civil del comprador')) {
           return 'acta_matrimonio'
         }
-        
+
         // Si pregunta por vendedor o titular registral → esperar identificación o inscripción
         if (msg.includes('vendedor') || msg.includes('titular registral') || msg.includes('propietario')) {
           return 'identificacion'
         }
-        
+
         // Si pregunta por folio real o inscripción → esperar inscripción
         if (msg.includes('folio real') || msg.includes('hoja de inscripción') || msg.includes('inscripción')) {
           return 'inscripcion'
         }
-        
+
         return null
       }
 
@@ -1737,28 +1910,28 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           .toLowerCase()
           .normalize('NFD')
           .replace(/[\u0300-\u036f]/g, '')
-        
+
         // 1. Detección por nombre (prioridad alta)
         if (name.includes('inscripcion') || name.includes('hoja de inscripcion') || name.includes('folio real')) return 'inscripcion'
         if (name.includes('escritura') || name.includes('titulo') || name.includes('propiedad')) return 'escritura'
         if (name.includes('matrimonio') || name.includes('acta de matrimonio') || name.includes('acta_matrimonio')) return 'acta_matrimonio'
         if (name.includes('plano') || name.includes('croquis') || name.includes('catastral')) return 'plano'
-        if (name.includes('ine') || name.includes('ife') || name.includes('identificacion') || 
-            name.includes('pasaporte') || name.includes('licencia') || name.includes('curp') ||
-            name.includes('generales') || name.includes('identidad') || name.includes('credencial')) return 'identificacion'
-        
+        if (name.includes('ine') || name.includes('ife') || name.includes('identificacion') ||
+          name.includes('pasaporte') || name.includes('licencia') || name.includes('curp') ||
+          name.includes('generales') || name.includes('identidad') || name.includes('credencial')) return 'identificacion'
+
         // 2. Inferir del contexto (última pregunta del agente)
         const expectedType = inferExpectedDocumentType()
         if (expectedType) {
           return expectedType
         }
-        
+
         // 3. Detección por tamaño/tipo (fallback)
         // Para imágenes pequeñas o genéricas, asumir que puede ser identificación
         if (file.type.startsWith('image/') && file.size < 5 * 1024 * 1024) {
           return 'identificacion'
         }
-        
+
         return 'escritura' // default
       }
 
@@ -1826,6 +1999,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           return 'Timeout procesando el documento. Intenta de nuevo o sube imágenes individuales.'
         }
         if (status >= 500) {
+          // Si el backend envió un mensaje específico (ya parseado en processOne), usarlo
+          if (res.text && res.text.length < 300 && !res.text.includes('Unexpected token') && !res.text.startsWith('{')) {
+            return res.text
+          }
           return 'El backend no pudo procesar el documento. Intenta de nuevo en unos minutos.'
         }
         if (status === 0 || !status) {
@@ -1840,7 +2017,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           sessionExpired = true
           try {
             documentBatchAbortRef.current?.abort()
-          } catch {}
+          } catch { }
           return
         }
         if (processResult?.__error) {
@@ -1870,13 +2047,58 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           }
         }
 
-        // Marcar documento original como procesado (una vez basta; este setState es idempotente)
+        // Marcar documento original como procesado (una vez basta; este setState es idempotente PERO debe hacer merge)
         setUploadedDocuments(prev => {
-          const next = prev.map(d =>
-            d.name === item.originalFile.name
-              ? { ...d, processed: true, extractedData: processResult.extractedData, documentType: item.docType }
-              : d
-          )
+          const next = prev.map(d => {
+            if (d.name !== item.originalFile.name) return d
+
+            // Merge de extractedData (para soportar múltiples páginas que llegan en paralelo/secuencia)
+            const prevData = d.extractedData || {}
+            const nextData = processResult.extractedData || {}
+
+            // Función helper para mergear arrays de strings únicos
+            const mergeUnique = (a: any[], b: any[]) => Array.from(new Set([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])])).filter(Boolean)
+
+            // Función helper para mergear foliosConInfo (dedupe por folio)
+            const mergeFoliosInfo = (a: any[], b: any[]) => {
+              const map = new Map<string, any>()
+              const normalize = (s: string) => String(s || '').replace(/\D/g, '')
+
+              const listA = Array.isArray(a) ? a : []
+              const listB = Array.isArray(b) ? b : []
+
+              for (const item of [...listA, ...listB]) {
+                const f = normalize(item?.folio)
+                if (!f) continue
+                const existing = map.get(f) || {}
+                map.set(f, { ...existing, ...item }) // Merge de atributos, el último gana (podría mejorarse)
+              }
+              return Array.from(map.values())
+            }
+
+            const mergedData = {
+              ...prevData,
+              ...nextData,
+              // Arrays críticos que deben acumularse
+              foliosReales: mergeUnique(prevData.foliosReales, nextData.foliosReales),
+              foliosRealesUnidades: mergeUnique(prevData.foliosRealesUnidades, nextData.foliosRealesUnidades),
+              foliosRealesInmueblesAfectados: mergeUnique(prevData.foliosRealesInmueblesAfectados, nextData.foliosRealesInmueblesAfectados),
+              foliosConInfo: mergeFoliosInfo(prevData.foliosConInfo, nextData.foliosConInfo),
+              partidas: mergeUnique(prevData.partidas, nextData.partidas),
+              partidasTitulo: mergeUnique(prevData.partidasTitulo, nextData.partidasTitulo),
+              partidasAntecedentes: mergeUnique(prevData.partidasAntecedentes, nextData.partidasAntecedentes),
+              // Objetos simples: preferir el nuevo si existe, o mantener el viejo (ya cubierto por Spread, pero cuidado con nulls)
+              inmueble: { ...prevData.inmueble, ...nextData.inmueble },
+              propietario: { ...prevData.propietario, ...nextData.propietario },
+            }
+
+            return {
+              ...d,
+              processed: true,
+              extractedData: mergedData,
+              documentType: item.docType
+            }
+          })
           workingDocs = next
           return next
         })
@@ -1889,12 +2111,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             if (d.tipoOperacion !== undefined) updated.tipoOperacion = d.tipoOperacion
             if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (updated as any)._document_intent = (d as any)._document_intent
             if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) (updated as any)._document_people_pending = (d as any)._document_people_pending
-            
+
             // CRÍTICO: Merge inteligente de vendedores (no sobrescribir si ya existen)
             if (d.vendedores !== undefined) {
               const prevVendedores = Array.isArray(updated.vendedores) ? updated.vendedores : []
-              const nextVendedores = Array.isArray(d.vendedores) ? d.vendedores : []
-              
+              const nextVendedores = Array.isArray(d.vendedores) ? inferMarriageStatus(d.vendedores) : []
+
               // Si hay vendedores previos y nuevos, hacer merge preservando los previos
               if (prevVendedores.length > 0 && nextVendedores.length > 0) {
                 // Merge: preferir vendedores nuevos si tienen más información, pero preservar los previos si tienen datos importantes
@@ -1904,7 +2126,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   const key = v?.party_id || `vendedor_${idx}`
                   prevMap.set(key, v)
                 })
-                
+
                 // Agregar/actualizar con los nuevos
                 nextVendedores.forEach((v: any, idx: number) => {
                   const key = v?.party_id || `vendedor_${idx}`
@@ -1918,8 +2140,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                       persona_fisica: v.persona_fisica || prev.persona_fisica,
                       persona_moral: v.persona_moral || prev.persona_moral,
                       // Preservar confirmación si ya estaba confirmado
-                      titular_registral_confirmado: v.titular_registral_confirmado !== undefined 
-                        ? v.titular_registral_confirmado 
+                      titular_registral_confirmado: v.titular_registral_confirmado !== undefined
+                        ? v.titular_registral_confirmado
                         : prev.titular_registral_confirmado
                     })
                     prevMap.delete(key)
@@ -1927,7 +2149,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     merged.push(v)
                   }
                 })
-                
+
                 // Agregar vendedores previos que no fueron actualizados
                 prevMap.forEach((v) => merged.push(v))
                 updated.vendedores = merged
@@ -1937,12 +2159,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               }
               // Si solo hay previos, mantenerlos (no hacer nada)
             }
-            
+
             // CRÍTICO: Merge inteligente de compradores (preservar cónyuge y otros datos importantes)
             if (d.compradores !== undefined) {
               const prevCompradores = Array.isArray(updated.compradores) ? updated.compradores : []
-              const nextCompradores = Array.isArray(d.compradores) ? d.compradores : []
-              
+              const nextCompradores = Array.isArray(d.compradores) ? inferMarriageStatus(d.compradores) : []
+
               if (prevCompradores.length > 0 && nextCompradores.length > 0) {
                 // Merge: preservar compradores previos pero actualizar con nuevos
                 const merged: any[] = []
@@ -1951,7 +2173,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   const key = c?.party_id || `comprador_${idx}`
                   prevMap.set(key, c)
                 })
-                
+
                 // Agregar/actualizar con los nuevos
                 nextCompradores.forEach((c: any, idx: number) => {
                   const key = c?.party_id || `comprador_${idx}`
@@ -1975,7 +2197,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                     merged.push(c)
                   }
                 })
-                
+
                 // Agregar compradores previos que no fueron actualizados
                 prevMap.forEach((c) => merged.push(c))
                 updated.compradores = merged
@@ -2023,15 +2245,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   sources: [...(prevC.sources || []), ...(c.sources || [])],
                 })
               }
-              
+
               // CRÍTICO: Preservar selección de folio si ya fue confirmada por el usuario
               // Solo sobrescribir si el nuevo tiene una selección confirmada O si la previa no estaba confirmada
-              const preserveSelection = prevF.selection?.confirmed_by_user === true && 
-                                       (!nextF.selection?.confirmed_by_user || !nextF.selection?.selected_folio)
-              
+              const preserveSelection = prevF.selection?.confirmed_by_user === true &&
+                (!nextF.selection?.confirmed_by_user || !nextF.selection?.selected_folio)
+
               updated.folios = {
                 candidates: Array.from(map.values()),
-                selection: preserveSelection 
+                selection: preserveSelection
                   ? prevF.selection  // Preservar selección previa confirmada
                   : (nextF.selection || prevF.selection)  // Usar nueva selección o preservar previa
               }
@@ -2041,111 +2263,119 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 selection: nextF.selection || prevF.selection,
               }
             }
-            updated.actosNotariales = determineActosNotariales(updated)
+            const actos = determineActosNotariales(updated)
+            updated.actosNotariales = {
+              cancelacionCreditoVendedor: actos.cancelacionCreditoVendedor,
+              compraventa: actos.compraventa,
+              aperturaCreditoComprador: actos.aperturaCreditoComprador ?? false
+            }
             // CRÍTICO: Actualizar workingData con la versión actualizada ANTES de continuar
             workingData = updated
             return updated
           })
-          
-          // CRÍTICO: También actualizar workingData directamente para que esté disponible inmediatamente
-          // para el siguiente procesamiento (especialmente importante para documentos procesados secuencialmente)
-          const d = processResult.data
-          // CRÍTICO: Merge inteligente de compradores (preservar cónyuge y otros datos importantes)
-          if (d.compradores !== undefined) {
-            const prevCompradores = Array.isArray(workingData.compradores) ? workingData.compradores : []
-            const nextCompradores = Array.isArray(d.compradores) ? d.compradores : []
-            
-            if (prevCompradores.length > 0 && nextCompradores.length > 0) {
-              // Merge: preservar compradores previos pero actualizar con nuevos
-              const merged: any[] = []
-              const prevMap = new Map<string, any>()
-              prevCompradores.forEach((c: any, idx: number) => {
-                const key = c?.party_id || `comprador_${idx}`
-                prevMap.set(key, c)
-              })
-              
-              // Agregar/actualizar con los nuevos
-              nextCompradores.forEach((c: any, idx: number) => {
-                const key = c?.party_id || `comprador_${idx}`
-                const prev = prevMap.get(key)
-                if (prev) {
-                  // Merge profundo: preservar datos previos pero actualizar con nuevos
-                  merged.push({
-                    ...prev,
-                    ...c,
-                    // Preservar nombre si el nuevo no lo tiene
-                    persona_fisica: c.persona_fisica ? {
-                      ...prev.persona_fisica,
-                      ...c.persona_fisica,
-                      // CRÍTICO: Preservar cónyuge si ya existe y el nuevo no lo incluye
-                      conyuge: c.persona_fisica?.conyuge || prev.persona_fisica?.conyuge
-                    } : prev.persona_fisica,
-                    persona_moral: c.persona_moral || prev.persona_moral
-                  })
-                  prevMap.delete(key)
-                } else {
-                  merged.push(c)
-                }
-              })
-              
-              // Agregar compradores previos que no fueron actualizados
-              prevMap.forEach((c) => merged.push(c))
-              workingData.compradores = merged
-            } else if (nextCompradores.length > 0) {
-              // Si solo hay nuevos, usar esos
-              workingData.compradores = nextCompradores
-            }
-            // Si solo hay previos, mantenerlos (no hacer nada)
+
+          // Si processResult.data no existía, asegurarnos de que workingData refleje workingDocs
+          // (esto es redundante si setUploadedDocuments se ejecuta, pero por seguridad)
+        } else {
+          // Si no hay data del backend, al menos actualizar workingDocs
+          // workingDocs ya fue actualizado arriba
+        }
+
+        // CRÍTICO: También actualizar workingData directamente para que esté disponible inmediatamente
+        // para el siguiente procesamiento (especialmente importante para documentos procesados secuencialmente)
+        const d = processResult.data
+        // CRÍTICO: Merge inteligente de compradores (preservar cónyuge y otros datos importantes)
+        if (d.compradores !== undefined) {
+          const prevCompradores = Array.isArray(workingData.compradores) ? workingData.compradores : []
+          const nextCompradores = Array.isArray(d.compradores) ? d.compradores : []
+
+          if (prevCompradores.length > 0 && nextCompradores.length > 0) {
+            // Merge: preservar compradores previos pero actualizar con nuevos
+            const merged: any[] = []
+            const prevMap = new Map<string, any>()
+            prevCompradores.forEach((c: any, idx: number) => {
+              const key = c?.party_id || `comprador_${idx}`
+              prevMap.set(key, c)
+            })
+
+            // Agregar/actualizar con los nuevos
+            nextCompradores.forEach((c: any, idx: number) => {
+              const key = c?.party_id || `comprador_${idx}`
+              const prev = prevMap.get(key)
+              if (prev) {
+                // Merge profundo: preservar datos previos pero actualizar con nuevos
+                merged.push({
+                  ...prev,
+                  ...c,
+                  // Preservar nombre si el nuevo no lo tiene
+                  persona_fisica: c.persona_fisica ? {
+                    ...prev.persona_fisica,
+                    ...c.persona_fisica,
+                    // CRÍTICO: Preservar cónyuge si ya existe y el nuevo no lo incluye
+                    conyuge: c.persona_fisica?.conyuge || prev.persona_fisica?.conyuge
+                  } : prev.persona_fisica,
+                  persona_moral: c.persona_moral || prev.persona_moral
+                })
+                prevMap.delete(key)
+              } else {
+                merged.push(c)
+              }
+            })
+
+            // Agregar compradores previos que no fueron actualizados
+            prevMap.forEach((c) => merged.push(c))
+            workingData.compradores = merged
+          } else if (nextCompradores.length > 0) {
+            // Si solo hay nuevos, usar esos
+            workingData.compradores = nextCompradores
           }
-          // CRÍTICO: Merge inteligente de vendedores (preservar existentes si el backend no los incluye)
-          if (d.vendedores !== undefined) {
-            const prevVendedores = Array.isArray(workingData.vendedores) ? workingData.vendedores : []
-            const nextVendedores = Array.isArray(d.vendedores) ? d.vendedores : []
-            
-            if (prevVendedores.length > 0 && nextVendedores.length > 0) {
-              // Merge: preservar vendedores previos pero actualizar con nuevos
-              const merged: any[] = []
-              const prevMap = new Map<string, any>()
-              prevVendedores.forEach((v: any, idx: number) => {
-                const key = v?.party_id || `vendedor_${idx}`
-                prevMap.set(key, v)
-              })
-              
-              nextVendedores.forEach((v: any, idx: number) => {
-                const key = v?.party_id || `vendedor_${idx}`
-                const prev = prevMap.get(key)
-                if (prev) {
-                  merged.push({
-                    ...prev,
-                    ...v,
-                    persona_fisica: v.persona_fisica || prev.persona_fisica,
-                    persona_moral: v.persona_moral || prev.persona_moral,
-                    titular_registral_confirmado: v.titular_registral_confirmado !== undefined 
-                      ? v.titular_registral_confirmado 
-                      : prev.titular_registral_confirmado
-                  })
-                  prevMap.delete(key)
-                } else {
-                  merged.push(v)
-                }
-              })
-              
-              prevMap.forEach((v) => merged.push(v))
-              workingData.vendedores = merged
-            } else if (nextVendedores.length > 0) {
-              workingData.vendedores = nextVendedores
-            }
-            // Si solo hay previos, mantenerlos (no hacer nada)
+          // Si solo hay previos, mantenerlos (no hacer nada)
+        }
+        // CRÍTICO: Merge inteligente de vendedores (preservar existentes si el backend no los incluye)
+        if (d.vendedores !== undefined) {
+          const prevVendedores = Array.isArray(workingData.vendedores) ? workingData.vendedores : []
+          const nextVendedores = Array.isArray(d.vendedores) ? d.vendedores : []
+
+          if (prevVendedores.length > 0 && nextVendedores.length > 0) {
+            // Merge: preservar vendedores previos pero actualizar con nuevos
+            const merged: any[] = []
+            const prevMap = new Map<string, any>()
+            prevVendedores.forEach((v: any, idx: number) => {
+              const key = v?.party_id || `vendedor_${idx}`
+              prevMap.set(key, v)
+            })
+
+            nextVendedores.forEach((v: any, idx: number) => {
+              const key = v?.party_id || `vendedor_${idx}`
+              const prev = prevMap.get(key)
+              if (prev) {
+                merged.push({
+                  ...prev,
+                  ...v,
+                  persona_fisica: v.persona_fisica || prev.persona_fisica,
+                  persona_moral: v.persona_moral || prev.persona_moral,
+                  titular_registral_confirmado: v.titular_registral_confirmado !== undefined
+                    ? v.titular_registral_confirmado
+                    : prev.titular_registral_confirmado
+                })
+                prevMap.delete(key)
+              } else {
+                merged.push(v)
+              }
+            })
+
+            prevMap.forEach((v) => merged.push(v))
+            workingData.vendedores = merged
+          } else if (nextVendedores.length > 0) {
+            workingData.vendedores = nextVendedores
           }
-          if (d.tipoOperacion !== undefined) {
-            workingData.tipoOperacion = d.tipoOperacion
-          }
-          if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) {
-            (workingData as any)._document_intent = (d as any)._document_intent
-          }
-          if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) {
-            (workingData as any)._document_people_pending = (d as any)._document_people_pending
-          }
+          // Si solo hay previos, mantenerlos (no hacer nada)
+        }
+        if (d.tipoOperacion !== undefined) {
+          workingData.tipoOperacion = d.tipoOperacion
+        }
+        if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) {
+          (workingData as any)._document_people_pending = (d as any)._document_people_pending
         }
 
         // S3 upload (solo 1 por archivo original)
@@ -2190,7 +2420,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             uploadFormData.append('file', item.originalFile)
             uploadFormData.append('compradorId', '')
             uploadFormData.append('tipo', expedienteTipo)
-            uploadFormData.append('tramiteId', activeTramiteId)
+            uploadFormData.append('tramiteId', activeTramiteId || '')
+            uploadFormData.append('sessionId', conversationIdRef.current || '')
             uploadFormData.append('metadata', JSON.stringify({
               preaviso_subtype: item.docType,
               original_name: item.originalFile.name,
@@ -2222,7 +2453,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                           pageNumber: p.pageNumber,
                           text: p.text,
                         }, 15_000)
-                      } catch {}
+                      } catch { }
                     }
                     pendingOcrByOriginalKey.delete(item.originalKey)
                   }
@@ -2237,42 +2468,43 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           }
         }
 
-        // OCR por página: guardar texto para RAG (si llegó del backend).
-        if (activeTramiteId && processResult?.ocrText && typeof processResult.ocrText === 'string') {
-          const text = processResult.ocrText.trim()
-          if (text) {
-            const inferPageNumber = (): number => {
-              const n = item.imageFile?.name || item.originalFile?.name || ''
-              const m1 = n.match(/page[_-]?(\d{1,4})/i)
-              if (m1?.[1]) return Math.max(1, Number(m1[1]))
-              const m2 = n.match(/[_-](\d{1,4})\.(png|jpe?g|webp)$/i)
-              if (m2?.[1]) return Math.max(1, Number(m2[1]))
-              return 1
-            }
-            const pageNumber = inferPageNumber()
-            const docId = documentoIdByOriginalKey.get(item.originalKey) || null
-            const meta = { page_file: item.imageFile?.name || null }
-            if (docId) {
-              try {
-                await postJsonWithTimeout('/api/ai/preaviso-ocr-cache/upsert', {
-                  tramiteId: activeTramiteId,
-                  docName: item.originalFile.name,
-                  docSubtype: item.docType,
-                  docRole: null,
-                  pageNumber,
-                  text,
-                }, 15_000)
-              } catch {
-                // no bloquear
+        try {
+          if (activeTramiteId && processResult?.ocrText && typeof processResult.ocrText === 'string') {
+            const text = processResult.ocrText.trim()
+            if (text) {
+              const inferPageNumber = (): number => {
+                const n = item.imageFile?.name || item.originalFile?.name || ''
+                const m1 = n.match(/page[_-]?(\d{1,4})/i)
+                if (m1?.[1]) return Math.max(1, Number(m1[1]))
+                const m2 = n.match(/[_-](\d{1,4})\.(png|jpe?g|webp)$/i)
+                if (m2?.[1]) return Math.max(1, Number(m2[1]))
+                return 1
               }
-            } else {
-              const prev = pendingOcrByOriginalKey.get(item.originalKey) || []
-              prev.push({ pageNumber, text, metadata: meta })
-              pendingOcrByOriginalKey.set(item.originalKey, prev)
+              const pageNumber = inferPageNumber()
+              const docId = documentoIdByOriginalKey.get(item.originalKey) || null
+              const meta = { page_file: item.imageFile?.name || null }
+              if (docId) {
+                try {
+                  await postJsonWithTimeout('/api/ai/preaviso-ocr-cache/upsert', {
+                    tramiteId: activeTramiteId,
+                    docName: item.originalFile.name,
+                    docSubtype: item.docType,
+                    docRole: null,
+                    pageNumber,
+                    text,
+                  }, 15_000)
+                } catch { }
+              } else {
+                const prev = pendingOcrByOriginalKey.get(item.originalKey) || []
+                prev.push({ pageNumber, text, metadata: meta })
+                pendingOcrByOriginalKey.set(item.originalKey, prev)
+              }
             }
           }
+        } catch (err) {
+          console.warn("Error in batch processing item:", err)
         }
-      }
+      }; // End of applyResult
 
       const onOneDone = async (idx: number, item: ImgItem, result: any) => {
         pending.set(idx, { item, result })
@@ -2312,7 +2544,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           comprador0EstadoCivil: workingData?.compradores?.[0]?.persona_fisica?.estado_civil || null,
           conyuge: workingData?.compradores?.[0]?.persona_fisica?.conyuge?.nombre || null,
         })
-        
+
         // Contexto actual (snapshot) para que el backend devuelva merge + state.
         // Para PDFs (inscripción/escritura/plano) la dependencia de contexto es baja.
         // Para identificaciones dejamos concurrencia=1 (ver pool abajo).
@@ -2368,7 +2600,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
         let processResponse: Response
         try {
-          processResponse = await fetchWithTimeout('/api/ai/preaviso-process-document-v2', {
+          processResponse = await fetchWithTimeout('/api/ai/preaviso-process-document', {
             method: 'POST',
             headers,
             body: formData
@@ -2382,7 +2614,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         if (!processResponse.ok) {
-          return { __error: true, status: processResponse.status, text: await processResponse.text() }
+          let errorMsg = await processResponse.text()
+          try {
+            const errorJson = JSON.parse(errorMsg)
+            if (errorJson.message) errorMsg = errorJson.message
+          } catch { }
+          return { __error: true, status: processResponse.status, text: errorMsg }
         }
         const json = await processResponse.json()
         if (cacheableTypes.has(item.docType) && !json?.__error) {
@@ -2444,14 +2681,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           content: 'Tu sesión expiró mientras se procesaba el documento. Por favor actualiza la página e inicia sesión de nuevo.',
           timestamp: new Date()
         }]))
+        // FIX: Liberar locks explícitamente en error
         setIsProcessingDocument(false)
         setProcessingProgress(0)
         setProcessingFileName(null)
         setIsProcessing(false)
+        isSubmittingRef.current = false
         return
       }
 
       if (errorCount > 0) {
+        // ... (lines 2709-2720)
         const uniqueErrors = Array.from(new Set(errorMessages))
         const fallback = 'Error procesando el documento. Por favor, intenta nuevamente.'
         const message =
@@ -2464,10 +2704,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           content: message,
           timestamp: new Date()
         }]))
+        // FIX: Liberar locks explícitamente en error
         setIsProcessingDocument(false)
         setProcessingProgress(0)
         setProcessingFileName(null)
         setIsProcessing(false)
+        isSubmittingRef.current = false
         return
       }
 
@@ -2483,7 +2725,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       workingDocs = uploadedDocumentsRef.current
 
       // DEBUG: verificar que el chat reciba el contexto actualizado (incluye _document_intent y cónyuge si ya fue capturado)
-      console.log('[PreavisoChat] before /preaviso-chat-v2 -> context snapshot', {
+      console.log('[PreavisoChat] before /preaviso-chat -> context snapshot', {
         _document_intent: (workingData as any)?._document_intent ?? null,
         _document_people_pending: (workingData as any)?._document_people_pending ?? null,
         comprador0: workingData?.compradores?.[0]?.persona_fisica?.nombre || workingData?.compradores?.[0]?.persona_moral?.denominacion_social || null,
@@ -2494,7 +2736,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       // Después de procesar, consultar al agente de IA para determinar siguientes pasos
       const newDocuments = [...workingData.documentos, ...fileNames]
-      
+
       // Recopilar información extraída de los documentos procesados
       const processedDocsInfo = workingDocs
         .filter(d => d.processed && d.extractedData)
@@ -2511,7 +2753,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         })
         .join('\n\n')
 
-      const chatResponse = await fetch('/api/ai/preaviso-chat-v2', {
+      const chatResponse = await fetch('/api/ai/preaviso-chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2520,9 +2762,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         body: JSON.stringify({
           messages: [
             ...messages.filter(m => m.id !== processingMessage.id).map(m => ({ role: m.role, content: m.content })),
-            { 
-              role: 'user' as const, 
-              content: `He subido el siguiente documento: ${fileNames.join(', ')}`
+            {
+              role: 'user' as const,
+              content: userText || `He subido el siguiente documento: ${fileNames.join(', ')}`
             }
           ],
           context: {
@@ -2547,7 +2789,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 informacionExtraida: d.extractedData
               }))
           },
-          tramiteId: activeTramiteId
+          tramiteId: activeTramiteId,
+          conversation_id: conversationIdRef.current
         })
       })
 
@@ -2567,32 +2810,37 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (nextData as any)._document_intent = (d as any)._document_intent
             if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) (nextData as any)._document_people_pending = (d as any)._document_people_pending
             if (Object.prototype.hasOwnProperty.call(d, '_last_question_intent')) (nextData as any)._last_question_intent = (d as any)._last_question_intent
-          if (Object.prototype.hasOwnProperty.call(d, '_last_question_intent')) (nextData as any)._last_question_intent = (d as any)._last_question_intent
-            if (d.vendedores !== undefined) nextData.vendedores = d.vendedores as any
-            if (d.compradores !== undefined) nextData.compradores = d.compradores as any
+
+            if (d.vendedores !== undefined) nextData.vendedores = inferMarriageStatus(d.vendedores as any)
+            if (d.compradores !== undefined) nextData.compradores = inferMarriageStatus(d.compradores as any)
             if (Object.prototype.hasOwnProperty.call(d, 'creditos')) nextData.creditos = d.creditos as any
             if (d.gravamenes !== undefined) nextData.gravamenes = d.gravamenes as any
             if (d.inmueble) nextData.inmueble = d.inmueble as any
             if (d.folios !== undefined) nextData.folios = d.folios as any
             if (d.control_impresion) nextData.control_impresion = d.control_impresion
             if (d.validaciones) nextData.validaciones = d.validaciones
-            nextData.actosNotariales = determineActosNotariales(nextData)
-            
+            const actos = determineActosNotariales(nextData)
+            nextData.actosNotariales = {
+              cancelacionCreditoVendedor: actos.cancelacionCreditoVendedor,
+              compraventa: actos.compraventa,
+              aperturaCreditoComprador: actos.aperturaCreditoComprador ?? false
+            }
+
             // CRÍTICO: dataRef.current se actualiza automáticamente en el useEffect cuando data cambia
             // Pero necesitamos actualizar workingData inmediatamente para que esté disponible en este batch
             // Nota: dataRef.current se actualizará cuando React ejecute el useEffect, pero workingData
             // se actualiza aquí mismo porque está en el scope del handleFileUpload
             workingData = nextData
             dataRef.current = nextData
-            
+
             return nextData
           })
         }
         const messagesToAdd = result.messages || [result.message]
-        
+
         // Remover mensaje de procesamiento y agregar respuesta del agente
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
-        
+
         const baseTimestamp = Date.now()
         for (let i = 0; i < messagesToAdd.length; i++) {
           await new Promise(resolve => setTimeout(resolve, i * 300))
@@ -2603,14 +2851,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             timestamp: new Date()
           }
           setMessages(prev => {
-            const exists = prev.some(m => m.id === assistantMessage.id || 
-              (m.role === 'assistant' && m.content === assistantMessage.content && 
-               Math.abs(m.timestamp.getTime() - assistantMessage.timestamp.getTime()) < 1000))
+            const exists = prev.some(m => m.id === assistantMessage.id ||
+              (m.role === 'assistant' && m.content === assistantMessage.content &&
+                Math.abs(m.timestamp.getTime() - assistantMessage.timestamp.getTime()) < 1000))
             if (exists) return prev
             return [...prev, assistantMessage]
           })
         }
       }
+
+      return { updatedData: workingData, updatedDocs: workingDocs }
     } catch (error) {
       if ((error as any)?.name === 'AbortError' || batchAbort.signal.aborted || cancelDocumentBatchRequestedRef.current) {
         // Cancelado por el usuario
@@ -2623,19 +2873,21 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
         setMessages(prev => [...prev, cancelMessage])
       } else {
-      console.error('Error procesando documento:', error)
-      setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
-      const errorMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: 'Error al procesar el documento. Por favor, intente nuevamente.',
-        timestamp: new Date()
-      }
-      setMessages(prev => [...prev, errorMessage])
+        console.error('Error procesando documento:', error)
+        setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
+        const errorMessage: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: 'Error al procesar el documento. Por favor, intente nuevamente.',
+          timestamp: new Date()
+        }
+        setMessages(prev => [...prev, errorMessage])
       }
     } finally {
       setIsProcessing(false)
       setIsProcessingDocument(false)
+      isSubmittingRef.current = false // Liberar lock tambien aqui por si acaso
+      setProcessingProgress(0)
       setProcessingProgress(0)
       setProcessingFileName(null)
       // Limpiar abort controller del batch actual
@@ -2689,11 +2941,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
     // Intentar extraer JSON estructurado del mensaje de la IA (v1.4 compatible)
     const dataUpdateMatch = aiMessage.match(/<DATA_UPDATE>([\s\S]*?)<\/DATA_UPDATE>/)
-    
+
     if (dataUpdateMatch) {
       try {
         const jsonData = JSON.parse(dataUpdateMatch[1].trim())
-        
+
         // Actualizar tipoOperacion
         if (jsonData.tipoOperacion !== undefined && jsonData.tipoOperacion !== null) {
           updates.tipoOperacion = jsonData.tipoOperacion
@@ -2765,7 +3017,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           // Función helper para validar institución
           const esInstitucionValida = (institucion: string | null | undefined): boolean => {
             if (!institucion || typeof institucion !== 'string') return false
-            
+
             const valoresInvalidos = [
               'credito', 'crédito', 'el credito', 'el crédito', 'un credito', 'un crédito',
               'hipoteca', 'la hipoteca', 'un hipoteca', 'financiamiento', 'el financiamiento',
@@ -2776,26 +3028,26 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               'el credito del comprador', 'el crédito del comprador', 'credito del comprador',
               'crédito del comprador', 'el credito que', 'el crédito que', 'credito que', 'crédito que'
             ]
-            
+
             const institucionNormalizada = institucion.toLowerCase().trim()
             const esInvalido = valoresInvalidos.some(invalido => {
               const regex = new RegExp(`^${invalido.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$|[.,;:])`, 'i')
               return regex.test(institucionNormalizada)
             })
-            
+
             // También validar si contiene solo palabras genéricas
             const palabrasGenericas = /\b(el|la|un|una|del|de|los|las|que|con|por|para|mediante|a través de)\b/gi
             const textoSinGenericos = institucionNormalizada.replace(palabrasGenericas, '').trim()
-            const esSoloGenerico = textoSinGenericos.length === 0 || 
-                                   ['credito', 'crédito', 'hipoteca', 'banco', 'institucion', 'institución', 'entidad', 'financiamiento'].includes(textoSinGenericos)
-            
+            const esSoloGenerico = textoSinGenericos.length === 0 ||
+              ['credito', 'crédito', 'hipoteca', 'banco', 'institucion', 'institución', 'entidad', 'financiamiento'].includes(textoSinGenericos)
+
             return !esInvalido && !esSoloGenerico && institucion.length >= 3
           }
-          
+
           const normalizedCreditos: CreditoElement[] = jsonData.creditos.map((c: any) => {
             // Validar institución antes de agregar - rechazar valores genéricos
             const institucionValida = esInstitucionValida(c.institucion) ? c.institucion : null
-            
+
             return {
               credito_id: c?.credito_id ?? null,
               institucion: institucionValida,
@@ -2845,13 +3097,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             ...inmuebleBase,
             folio_real: jsonData.inmueble.folio_real !== undefined ? jsonData.inmueble.folio_real : inmuebleBase.folio_real,
             partidas: jsonData.inmueble.partidas ? [...inmuebleBase.partidas, ...jsonData.inmueble.partidas] : inmuebleBase.partidas,
-            all_registry_pages_confirmed: jsonData.inmueble.all_registry_pages_confirmed !== undefined 
-              ? jsonData.inmueble.all_registry_pages_confirmed 
+            all_registry_pages_confirmed: jsonData.inmueble.all_registry_pages_confirmed !== undefined
+              ? jsonData.inmueble.all_registry_pages_confirmed
               : inmuebleBase.all_registry_pages_confirmed,
-            direccion: jsonData.inmueble.direccion 
+            direccion: jsonData.inmueble.direccion
               ? { ...inmuebleBase.direccion, ...jsonData.inmueble.direccion }
               : inmuebleBase.direccion,
-            superficie: jsonData.inmueble.superficie !== undefined 
+            superficie: jsonData.inmueble.superficie !== undefined
               ? (typeof jsonData.inmueble.superficie === 'string' ? jsonData.inmueble.superficie : String(jsonData.inmueble.superficie))
               : inmuebleBase.superficie,
             valor: jsonData.inmueble.valor !== undefined
@@ -2922,10 +3174,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Detectar confirmaciones: si el usuario responde "sí", "si", "correcto", etc., extraer datos de la pregunta previa de la IA
       // También detectar confirmaciones más largas como "sí, confirmo" o "si, confirmo que son todas"
       const confirmacionMatch = userInput.match(/^(sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|está correcto|confirmo|confirmado|sí\s*,\s*confirmo|si\s*,\s*confirmo)/i) ||
-                                userInput.match(/(?:sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|está correcto|confirmo|confirmado).*(?:confirmo|son todas|hojas registrales|titular registral)/i)
+        userInput.match(/(?:sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|está correcto|confirmo|confirmado).*(?:confirmo|son todas|hojas registrales|titular registral)/i)
       if (confirmacionMatch && aiMessage) {
         // Extraer información de la pregunta previa de la IA que contiene los datos a confirmar
-        
+
         // Detectar Folio Real (v1.4)
         const folioMatch = aiMessage.match(/folio\s+real\s+(\d+)/i)
         if (folioMatch && !currentData.inmueble?.folio_real) {
@@ -2958,7 +3210,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           updates.inmueble.folio_real = folioMatch[1]
           hasUpdates = true
         }
-        
+
         // Detectar Partida (v1.4)
         const partidaMatch = aiMessage.match(/partida\s+(\d+)/i)
         if (partidaMatch) {
@@ -2975,286 +3227,159 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             hasUpdates = true
           }
         }
-          hasUpdates = true
-        }
-        
-        // Detectar superficie (con diferentes formatos)
-        const superficieMatch = aiMessage.match(/superficie\s+de\s+([\d,.]+)\s*m[²2]/i) || aiMessage.match(/([\d,.]+)\s*m[²2]/i)
-        if (superficieMatch && !currentData.inmueble.superficie) {
-          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
-          updates.inmueble.superficie = superficieMatch[1].replace(/,/g, '')
-          hasUpdates = true
-        }
-        
-        // Detectar valor
-        const valorMatch = aiMessage.match(/valor\s+de\s+(\$?[\d,.]+)/i) || aiMessage.match(/\$\s*([\d,.]+)/i)
-        if (valorMatch && !currentData.inmueble.valor) {
-          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
-          updates.inmueble.valor = valorMatch[1].replace(/,/g, '')
-          hasUpdates = true
-        }
-        
-        // Detectar dirección (buscando patrones como "LOTE X MANZANA Y", "DESARROLLO", etc.)
-        const direccionPatterns = [
-          /(lote\s+\d+\s+manzana\s+\d+[^.]*)/i,
-          /(desarrollo[^.,]*)/i,
-          /(fraccionamiento[^.,]*)/i,
-          /(colonia[^.,]*)/i
-        ]
-        for (const pattern of direccionPatterns) {
-          const direccionMatch = aiMessage.match(pattern)
-          if (direccionMatch && !currentData.inmueble.direccion) {
-            if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
-            // Extraer más contexto alrededor del match
-            const matchIndex = aiMessage.toLowerCase().indexOf(direccionMatch[1].toLowerCase())
-            const start = Math.max(0, matchIndex - 50)
-            const end = Math.min(aiMessage.length, matchIndex + direccionMatch[1].length + 100)
-            const contexto = aiMessage.substring(start, end)
-            // Buscar municipio también
-            const municipioMatch = contexto.match(/municipio[:\s]+([A-ZÁÉÍÓÚÑ\s]+?)(?:,|\.|$)/i)
-            const municipio = municipioMatch ? municipioMatch[1].trim() : 'TIJUANA'
-            updates.inmueble.direccion = direccionMatch[1].trim() + (municipio ? `, ${municipio}` : '')
-            hasUpdates = true
-            break
-          }
-        }
-        
-        // Extraer LOTE y MANZANA específicos (v1.4)
-        const loteMatch = aiMessage.match(/lote\s+(\d+)/i)
-        if (loteMatch && !currentData.inmueble?.datos_catastrales?.lote) {
-          if (!updates.inmueble) {
-            updates.inmueble = {
-              ...currentData.inmueble,
-              datos_catastrales: {
-                ...currentData.inmueble?.datos_catastrales,
-                lote: null,
-                manzana: null,
-                fraccionamiento: null,
-                condominio: null,
-                unidad: null,
-                modulo: null
-              }
-            }
-          }
-          if (!updates.inmueble.datos_catastrales) {
-            updates.inmueble.datos_catastrales = {
-              ...currentData.inmueble?.datos_catastrales,
-              lote: null,
-              manzana: null,
-              fraccionamiento: null,
-              condominio: null,
-              unidad: null,
-              modulo: null
-            }
-          }
-          updates.inmueble.datos_catastrales.lote = loteMatch[1]
-          hasUpdates = true
-        }
-        
-        const manzanaMatch = aiMessage.match(/manzana\s+(\d+)/i)
-        if (manzanaMatch && !currentData.inmueble?.datos_catastrales?.manzana) {
-          if (!updates.inmueble) {
-            updates.inmueble = {
-              ...currentData.inmueble,
-              datos_catastrales: {
-                ...currentData.inmueble?.datos_catastrales,
-                lote: null,
-                manzana: null,
-                fraccionamiento: null,
-                condominio: null,
-                unidad: null,
-                modulo: null
-              }
-            }
-          }
-          if (!updates.inmueble.datos_catastrales) {
-            updates.inmueble.datos_catastrales = {
-              ...currentData.inmueble?.datos_catastrales,
-              lote: null,
-              manzana: null,
-              fraccionamiento: null,
-              condominio: null,
-              unidad: null,
-              modulo: null
-            }
-          }
-          updates.inmueble.datos_catastrales.manzana = manzanaMatch[1]
-          hasUpdates = true
-        }
-        
-        // Extraer fraccionamiento (v1.4)
-        const fraccionamientoMatch = aiMessage.match(/(?:desarrollo|fraccionamiento)\s+([A-ZÁÉÍÓÚÑ0-9\s]+?)(?:,|\.|municipio|$)/i)
-        if (fraccionamientoMatch && !currentData.inmueble?.datos_catastrales?.fraccionamiento) {
-          if (!updates.inmueble) {
-            updates.inmueble = {
-              ...currentData.inmueble,
-              datos_catastrales: {
-                ...currentData.inmueble?.datos_catastrales,
-                lote: null,
-                manzana: null,
-                fraccionamiento: null,
-                condominio: null,
-                unidad: null,
-                modulo: null
-              }
-            }
-          }
-          if (!updates.inmueble.datos_catastrales) {
-            updates.inmueble.datos_catastrales = {
-              ...currentData.inmueble?.datos_catastrales,
-              lote: null,
-              manzana: null,
-              fraccionamiento: null,
-              condominio: null,
-              unidad: null,
-              modulo: null
-            }
-          }
-          updates.inmueble.datos_catastrales.fraccionamiento = fraccionamientoMatch[1].trim()
-          hasUpdates = true
-        }
-        
-        // Tipo de operación siempre es compraventa (no se detecta, ya está establecido)
-        
-        // Detectar forma de pago:
-        // IMPORTANTE: NO inferir del texto del asistente (aiMessage), solo del userInput confirmado.
-        // La detección basada en aiMessage causaba falsos positivos ("contado" por pregunta tipo "¿contado o crédito?").
+        hasUpdates = true
+      }
 
-        // Detectar institución de crédito del comprador
-        // PRIMERO: Buscar instituciones comunes directamente (más confiable)
-        const institucionesComunes = ['FOVISSSTE', 'INFONAVIT', 'HSBC', 'BANAMEX', 'BANCOMER', 'BBVA', 'SANTANDER', 'BANORTE', 'SCOTIABANK', 'BANCO AZTECA', 'BANCO DEL BAJIO']
-        let institucionEncontrada = false
-        for (const inst of institucionesComunes) {
-          // Buscar en ambos: mensaje de IA y input del usuario (v1.4 - arrays)
-          if (userInput.match(new RegExp(`\\b${inst}\\b`, 'i'))) {
-            // Actualizar o crear crédito con institución
-            const creditosActuales = currentData.creditos || []
-            if (creditosActuales.length === 0) {
-              updates.creditos = [{
-                credito_id: null,
-                institucion: inst,
-                monto: null,
-                participantes: [],
-                tipo_credito: null
-              }]
-            } else {
-              updates.creditos = creditosActuales.map((c, i) => 
-                i === 0 ? { ...c, institucion: inst } : c
-              )
-            }
-            hasUpdates = true
-            institucionEncontrada = true
-            break
-          }
-        }
-        
-        // Si no se encontró una institución común, buscar con patrones más flexibles
-        if (!institucionEncontrada) {
-          // Patrón 1: "crédito FOVISSSTE" o "a crédito FOVISSSTE" (institución después de "crédito")
-          let institucionMatch = userInput.match(/(?:totalmente\s+)?(?:a\s+)?(?:crédito|credito)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{2,})(?:\s|\.|,|$|por|será|es)/i)
-          
-          // Patrón 2: "institución: X" o "banco: X" (más estricto para evitar capturar "qu" o RFC/CURP)
-          // Detenerse antes de encontrar "RFC", "CURP" o un punto seguido de espacio y mayúscula (nueva oración)
-          if (!institucionMatch) {
-            institucionMatch = userInput.match(/(?:institución|institucion|banco|entidad)[\s\w]*?[:\s]+(?:es|será|es\s+)?\*?\*?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,}?)(?:\s*(?:RFC|CURP)|\s*\.\s+[A-ZÁÉÍÓÚÑ]|\s*$)\*?\*?/i)
-          }
-          
-          // Patrón 3: "con FOVISSSTE" o "mediante FOVISSSTE"
-          if (!institucionMatch) {
-            institucionMatch = userInput.match(/(?:con|mediante|por|a través de)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,})(?:\s|\.|,|$)/i)
-          }
-          
-          if (institucionMatch && institucionMatch[1]) {
-            let institucion = institucionMatch[1].trim().replace(/\*\*/g, '')
-            
-            // Limpiar: remover cualquier texto que contenga "RFC" o "CURP" y todo lo que sigue
-            institucion = institucion.replace(/\s*(?:RFC|CURP).*$/i, '').trim()
-            // Limpiar: remover punto final y cualquier texto después de un punto seguido de espacio (nueva oración)
-            institucion = institucion.replace(/\s*\.\s+[A-ZÁÉÍÓÚÑ].*$/, '').replace(/[.,]$/, '')
-            // Limpiar: remover "Y" o "AND" seguido de texto (ej: "FOVISSSTE Y CURP...")
-            institucion = institucion.replace(/\s+(?:Y|AND)\s+.*$/i, '').trim()
-            
-            // Validar que tenga al menos 3 caracteres y NO sea un CURP (formato: 4 letras + 6 dígitos + 3 letras + 2 dígitos)
-            const esCURP = /^[A-Z]{4}\d{6}[A-Z]{3}\d{2}$/.test(institucion.replace(/\s/g, ''))
-            // También validar que no sea un RFC (formato: 4 letras + 6 dígitos + 3 caracteres)
-            const esRFC = /^[A-Z]{4}\d{6}[A-Z0-9]{3}$/.test(institucion.replace(/\s/g, ''))
-            // Validar que no contenga "CURP" o "RFC" en el texto
-            const contieneCURP = /\bCURP\b/i.test(institucion)
-            const contieneRFC = /\bRFC\b/i.test(institucion)
-            // Validar que no empiece con "CURP" o "RFC"
-            const empiezaConCURP = /^CURP\s/i.test(institucion)
-            const empiezaConRFC = /^RFC\s/i.test(institucion)
-            // Validar que no contenga formato de RFC o CURP en cualquier parte
-            const contieneFormatoRFC = /[A-Z]{4}\d{6}[A-Z0-9]{3}/.test(institucion.replace(/\s/g, ''))
-            const contieneFormatoCURP = /[A-Z]{4}\d{6}[A-Z]{3}\d{2}/.test(institucion.replace(/\s/g, ''))
-            // Validar que no contenga frases comunes que no son nombres de instituciones
-            const contieneFraseInvalida = /\b(?:QUE|QUE\s+UTILIZARÁ|UTILIZARÁ|EL\s+COMPRADOR|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA)\b/i.test(institucion)
-            // Validar que no sea solo palabras comunes
-            const esSoloPalabrasComunes = /^(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE)(?:\s+(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE))*$/i.test(institucion)
-            
-            if (institucion && institucion.length >= 3 && !esCURP && !esRFC && !contieneCURP && !contieneRFC && !empiezaConCURP && !empiezaConRFC && !contieneFormatoRFC && !contieneFormatoCURP && !contieneFraseInvalida && !esSoloPalabrasComunes) {
-              // Actualizar o crear crédito con institución (v1.4)
-              const creditosActuales = currentData.creditos || []
-              if (creditosActuales.length === 0) {
-                updates.creditos = [{
-                  credito_id: null,
-                  institucion: institucion.toUpperCase(),
-                  monto: null,
-                  participantes: [],
-                  tipo_credito: null
-                }]
-              } else {
-                updates.creditos = creditosActuales.map((c, i) => 
-                  i === 0 ? { ...c, institucion: institucion.toUpperCase() } : c
-                )
-              }
-              hasUpdates = true
-            }
-          }
-        }
+      // Detectar superficie (con diferentes formatos)
+      const superficieMatch = aiMessage.match(/superficie\s+de\s+([\d,.]+)\s*m[²2]/i) || aiMessage.match(/([\d,.]+)\s*m[²2]/i)
+      if (superficieMatch && !currentData.inmueble.superficie) {
+        if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+        updates.inmueble.superficie = superficieMatch[1].replace(/,/g, '')
+        hasUpdates = true
+      }
 
-        // Detectar monto de crédito del comprador en mensaje de IA
-        // Patrón mejorado: busca "monto del crédito será por $X" o "crédito será por $X"
-        // NOTA: el monto/institución deben venir del usuario o de <DATA_UPDATE>.
+      // Detectar valor
+      const valorMatch = aiMessage.match(/valor\s+de\s+(\$?[\d,.]+)/i) || aiMessage.match(/\$\s*([\d,.]+)/i)
+      if (valorMatch && !currentData.inmueble.valor) {
+        if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+        updates.inmueble.valor = valorMatch[1].replace(/,/g, '')
+        hasUpdates = true
+      }
+
+      // Detectar dirección (buscando patrones como "LOTE X MANZANA Y", "DESARROLLO", etc.)
+      const direccionPatterns = [
+        /(lote\s+\d+\s+manzana\s+\d+[^.]*)/i,
+        /(desarrollo[^.,]*)/i,
+        /(fraccionamiento[^.,]*)/i,
+        /(colonia[^.,]*)/i
+      ]
+      for (const pattern of direccionPatterns) {
+        const direccionMatch = aiMessage.match(pattern)
+        if (direccionMatch && !currentData.inmueble.direccion) {
+          if (!updates.inmueble) updates.inmueble = { ...currentData.inmueble }
+          // Extraer más contexto alrededor del match
+          const matchIndex = aiMessage.toLowerCase().indexOf(direccionMatch[1].toLowerCase())
+          const start = Math.max(0, matchIndex - 50)
+          const end = Math.min(aiMessage.length, matchIndex + direccionMatch[1].length + 100)
+          const contexto = aiMessage.substring(start, end)
+          // Buscar municipio también
+          const municipioMatch = contexto.match(/municipio[:\s]+([A-ZÁÉÍÓÚÑ\s]+?)(?:,|\.|$)/i)
+          const municipio = municipioMatch ? municipioMatch[1].trim() : 'TIJUANA'
+          updates.inmueble.direccion = direccionMatch[1].trim() + (municipio ? `, ${municipio}` : '')
+          hasUpdates = true
+          break
+        }
+      }
+
+      // Extraer LOTE y MANZANA específicos (v1.4)
+      const loteMatch = aiMessage.match(/lote\s+(\d+)/i)
+      if (loteMatch && !currentData.inmueble?.datos_catastrales?.lote) {
+        if (!updates.inmueble) {
+          updates.inmueble = {
+            ...currentData.inmueble,
+            datos_catastrales: {
+              ...currentData.inmueble?.datos_catastrales,
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          }
+        }
+        if (!updates.inmueble.datos_catastrales) {
+          updates.inmueble.datos_catastrales = {
+            ...currentData.inmueble?.datos_catastrales,
+            lote: null,
+            manzana: null,
+            fraccionamiento: null,
+            condominio: null,
+            unidad: null,
+            modulo: null
+          }
+        }
+        updates.inmueble.datos_catastrales.lote = loteMatch[1]
+        hasUpdates = true
+      }
+
+      const manzanaMatch = aiMessage.match(/manzana\s+(\d+)/i)
+      if (manzanaMatch && !currentData.inmueble?.datos_catastrales?.manzana) {
+        if (!updates.inmueble) {
+          updates.inmueble = {
+            ...currentData.inmueble,
+            datos_catastrales: {
+              ...currentData.inmueble?.datos_catastrales,
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          }
+        }
+        if (!updates.inmueble.datos_catastrales) {
+          updates.inmueble.datos_catastrales = {
+            ...currentData.inmueble?.datos_catastrales,
+            lote: null,
+            manzana: null,
+            fraccionamiento: null,
+            condominio: null,
+            unidad: null,
+            modulo: null
+          }
+        }
+        updates.inmueble.datos_catastrales.manzana = manzanaMatch[1]
+        hasUpdates = true
+      }
+
+      // Extraer fraccionamiento (v1.4)
+      const fraccionamientoMatch = aiMessage.match(/(?:desarrollo|fraccionamiento)\s+([A-ZÁÉÍÓÚÑ0-9\s]+?)(?:,|\.|municipio|$)/i)
+      if (fraccionamientoMatch && !currentData.inmueble?.datos_catastrales?.fraccionamiento) {
+        if (!updates.inmueble) {
+          updates.inmueble = {
+            ...currentData.inmueble,
+            datos_catastrales: {
+              ...currentData.inmueble?.datos_catastrales,
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          }
+        }
+        if (!updates.inmueble.datos_catastrales) {
+          updates.inmueble.datos_catastrales = {
+            ...currentData.inmueble?.datos_catastrales,
+            lote: null,
+            manzana: null,
+            fraccionamiento: null,
+            condominio: null,
+            unidad: null,
+            modulo: null
+          }
+        }
+        updates.inmueble.datos_catastrales.fraccionamiento = fraccionamientoMatch[1].trim()
+        hasUpdates = true
       }
 
       // Tipo de operación siempre es compraventa (no se detecta, ya está establecido)
 
-      // Detectar forma de pago (permitir actualización incluso si ya tiene valor)
-      const contadoMatch = userInput.match(/(?:pago|pagar|forma de pago|se paga|se pagará|será pagado|sera pagado)[:\s]+(?:de\s+)?contado/i)
-      // Detectar "será a crédito", "sera a credito", "será con crédito", etc.
-      const seraCreditoMatch = userInput.match(/(?:será|sera|es|ser)\s+(?:a|con|mediante|por|totalmente\s+a)\s+(?:crédito|credito|hipoteca|bancario|financiamiento|préstamo)/i)
-      const creditoMatch = userInput.match(/(?:pago|pagar|forma de pago|se paga|se pagará|será pagado|sera pagado|mediante|con|a través de)[:\s]+(?:mediante\s+)?(?:crédito|credito|hipoteca|bancario|financiamiento|préstamo)/i)
-      const creditoSimpleMatch = userInput.match(/(?:crédito|credito|hipoteca|bancario|financiamiento|préstamo)/i)
+      // Detectar forma de pago:
+      // IMPORTANTE: NO inferir del texto del asistente (aiMessage), solo del userInput confirmado.
+      // La detección basada en aiMessage causaba falsos positivos ("contado" por pregunta tipo "¿contado o crédito?").
 
-      if (contadoMatch) {
-        // Contado = sin créditos (v1.4)
-        // Establecer creditos = [] cuando el usuario explícitamente confirma contado
-        // Esto marca creditosProvided = true y ESTADO_1 como completed
-        updates.creditos = []
-        hasUpdates = true
-      } else if (seraCreditoMatch || creditoMatch || (creditoSimpleMatch && userInput.match(/(?:sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|confirmo|confirmado)/i))) {
-        // Crédito detectado (v1.4)
-        // Solo establecer creditos si el usuario explícitamente confirma crédito
-        if (!currentData.creditos || currentData.creditos.length === 0) {
-          updates.creditos = [{
-            credito_id: null,
-            institucion: null,
-            monto: null,
-            participantes: [],
-            tipo_credito: null
-          }]
-          hasUpdates = true
-        }
-      }
-
-      // Detectar institución de crédito del comprador (fuera del bloque de confirmación)
-      // PRIMERO: Buscar instituciones comunes directamente
-      const institucionesComunes2 = ['FOVISSSTE', 'INFONAVIT', 'HSBC', 'BANAMEX', 'BANCOMER', 'BBVA', 'SANTANDER', 'BANORTE', 'SCOTIABANK', 'BANCO AZTECA', 'BANCO DEL BAJIO']
-      let institucionEncontrada2 = false
-      for (const inst of institucionesComunes2) {
-        if (aiMessage.match(new RegExp(`\\b${inst}\\b`, 'i')) || userInput.match(new RegExp(`\\b${inst}\\b`, 'i'))) {
-          // Actualizar o crear crédito con institución (v1.4)
+      // Detectar institución de crédito del comprador
+      // PRIMERO: Buscar instituciones comunes directamente (más confiable)
+      const institucionesComunes = ['FOVISSSTE', 'INFONAVIT', 'HSBC', 'BANAMEX', 'BANCOMER', 'BBVA', 'SANTANDER', 'BANORTE', 'SCOTIABANK', 'BANCO AZTECA', 'BANCO DEL BAJIO']
+      let institucionEncontrada = false
+      for (const inst of institucionesComunes) {
+        // Buscar en ambos: mensaje de IA y input del usuario (v1.4 - arrays)
+        if (userInput.match(new RegExp(`\\b${inst}\\b`, 'i'))) {
+          // Actualizar o crear crédito con institución
           const creditosActuales = currentData.creditos || []
           if (creditosActuales.length === 0) {
             updates.creditos = [{
@@ -3265,72 +3390,42 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               tipo_credito: null
             }]
           } else {
-            updates.creditos = creditosActuales.map((c, i) => 
+            updates.creditos = creditosActuales.map((c, i) =>
               i === 0 ? { ...c, institucion: inst } : c
             )
           }
           hasUpdates = true
-          institucionEncontrada2 = true
+          institucionEncontrada = true
           break
         }
       }
-      
-      // Si no se encontró, buscar con patrones más flexibles
-      if (!institucionEncontrada2) {
-        // Patrón 1: "crédito FOVISSSTE" o "a crédito FOVISSSTE"
-        let institucionMatch = (aiMessage + ' ' + userInput).match(/(?:totalmente\s+)?(?:a\s+)?(?:crédito|credito)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{2,})(?:\s|\.|,|$|por|será|es)/i)
-        
-        // Patrón 2: "institución: X" o "banco: X" (mínimo 3 caracteres)
+
+      // Si no se encontró una institución común, buscar con patrones más flexibles
+      if (!institucionEncontrada) {
+        // Patrón 1: "crédito FOVISSSTE" o "a crédito FOVISSSTE" (institución después de "crédito")
+        let institucionMatch = userInput.match(/(?:totalmente\s+)?(?:a\s+)?(?:crédito|credito)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{2,})(?:\s|\.|,|$|por|será|es)/i)
+
+        // Patrón 2: "institución: X" o "banco: X" (más estricto para evitar capturar "qu" o RFC/CURP)
         // Detenerse antes de encontrar "RFC", "CURP" o un punto seguido de espacio y mayúscula (nueva oración)
         if (!institucionMatch) {
-          institucionMatch = (aiMessage + ' ' + userInput).match(/(?:institución|institucion|banco|entidad)[\s\w]*?[:\s]+(?:es|será|es\s+)?\*?\*?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,}?)(?:\s*(?:RFC|CURP)|\s*\.\s+[A-ZÁÉÍÓÚÑ]|\s*$)\*?\*?/i)
+          institucionMatch = userInput.match(/(?:institución|institucion|banco|entidad)[\s\w]*?[:\s]+(?:es|será|es\s+)?\*?\*?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,}?)(?:\s*(?:RFC|CURP)|\s*\.\s+[A-ZÁÉÍÓÚÑ]|\s*$)\*?\*?/i)
         }
-        
+
         // Patrón 3: "con FOVISSSTE" o "mediante FOVISSSTE"
         if (!institucionMatch) {
-          institucionMatch = (aiMessage + ' ' + userInput).match(/(?:con|mediante|por|a través de)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,})(?:\s|\.|,|$)/i)
+          institucionMatch = userInput.match(/(?:con|mediante|por|a través de)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,})(?:\s|\.|,|$)/i)
         }
-        
+
         if (institucionMatch && institucionMatch[1]) {
           let institucion = institucionMatch[1].trim().replace(/\*\*/g, '')
-          
+
           // Limpiar: remover cualquier texto que contenga "RFC" o "CURP" y todo lo que sigue
           institucion = institucion.replace(/\s*(?:RFC|CURP).*$/i, '').trim()
           // Limpiar: remover punto final y cualquier texto después de un punto seguido de espacio (nueva oración)
           institucion = institucion.replace(/\s*\.\s+[A-ZÁÉÍÓÚÑ].*$/, '').replace(/[.,]$/, '')
-          
-          // VALIDACIÓN: Rechazar valores genéricos que NO son instituciones reales
-          const valoresInvalidos = [
-            'credito', 'crédito', 'el credito', 'el crédito', 'un credito', 'un crédito',
-            'hipoteca', 'la hipoteca', 'un hipoteca', 'financiamiento', 'el financiamiento',
-            'prestamo', 'préstamo', 'el prestamo', 'el préstamo', 'banco', 'el banco',
-            'institucion', 'institución', 'la institucion', 'la institución', 'una institucion',
-            'una institución', 'institución crediticia', 'institucion crediticia',
-            'entidad', 'la entidad', 'una entidad', 'entidad financiera',
-            'el credito del comprador', 'el crédito del comprador', 'credito del comprador',
-            'crédito del comprador', 'el credito que', 'el crédito que', 'credito que', 'crédito que'
-          ]
-          
-          const institucionNormalizada = institucion.toLowerCase().trim()
-          const esInvalido = valoresInvalidos.some(invalido => {
-            // Comparación exacta o que empiece con el valor inválido seguido de espacio/puntuación
-            const regex = new RegExp(`^${invalido.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$|[.,;:])`, 'i')
-            return regex.test(institucionNormalizada)
-          })
-          
-          // También validar si contiene solo palabras genéricas
-          const palabrasGenericas = /\b(el|la|un|una|del|de|los|las|que|con|por|para|mediante|a través de)\b/gi
-          const textoSinGenericos = institucionNormalizada.replace(palabrasGenericas, '').trim()
-          const esSoloGenerico = textoSinGenericos.length === 0 || 
-                                 ['credito', 'crédito', 'hipoteca', 'banco', 'institucion', 'institución', 'entidad', 'financiamiento'].includes(textoSinGenericos)
-          
-          // Si es un valor inválido o solo genérico, NO actualizar
-          if (esInvalido || esSoloGenerico) {
-            institucionMatch = null
-          }
           // Limpiar: remover "Y" o "AND" seguido de texto (ej: "FOVISSSTE Y CURP...")
           institucion = institucion.replace(/\s+(?:Y|AND)\s+.*$/i, '').trim()
-          
+
           // Validar que tenga al menos 3 caracteres y NO sea un CURP (formato: 4 letras + 6 dígitos + 3 letras + 2 dígitos)
           const esCURP = /^[A-Z]{4}\d{6}[A-Z]{3}\d{2}$/.test(institucion.replace(/\s/g, ''))
           // También validar que no sea un RFC (formato: 4 letras + 6 dígitos + 3 caracteres)
@@ -3348,7 +3443,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           const contieneFraseInvalida = /\b(?:QUE|QUE\s+UTILIZARÁ|UTILIZARÁ|EL\s+COMPRADOR|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA)\b/i.test(institucion)
           // Validar que no sea solo palabras comunes
           const esSoloPalabrasComunes = /^(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE)(?:\s+(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE))*$/i.test(institucion)
-          
+
           if (institucion && institucion.length >= 3 && !esCURP && !esRFC && !contieneCURP && !contieneRFC && !empiezaConCURP && !empiezaConRFC && !contieneFormatoRFC && !contieneFormatoCURP && !contieneFraseInvalida && !esSoloPalabrasComunes) {
             // Actualizar o crear crédito con institución (v1.4)
             const creditosActuales = currentData.creditos || []
@@ -3361,7 +3456,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 tipo_credito: null
               }]
             } else {
-              updates.creditos = creditosActuales.map((c, i) => 
+              updates.creditos = creditosActuales.map((c, i) =>
                 i === 0 ? { ...c, institucion: institucion.toUpperCase() } : c
               )
             }
@@ -3370,175 +3465,321 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
       }
 
-      // Detectar monto de crédito del comprador (v1.4)
-      // Patrón 1: "el mismo que el valor" o "igual al valor" - usar valor del inmueble
-      const mismoValorMatch = userInput.match(/(?:el\s+mismo|igual|mismo\s+que|igual\s+que|el\s+mismo\s+que)\s+(?:el\s+)?(?:valor|precio|casa|inmueble|operación)/i) ||
-                              userInput.match(/(?:será|es)\s+(?:el\s+mismo|igual)\s+(?:que\s+)?(?:el\s+)?(?:valor|precio)/i)
-      if (mismoValorMatch && currentData.inmueble?.valor) {
+      // Detectar monto de crédito del comprador en mensaje de IA
+      // Patrón mejorado: busca "monto del crédito será por $X" o "crédito será por $X"
+      // NOTA: el monto/institución deben venir del usuario o de <DATA_UPDATE>.
+    }
+
+    // Tipo de operación siempre es compraventa (no se detecta, ya está establecido)
+
+    // Detectar forma de pago (permitir actualización incluso si ya tiene valor)
+    const contadoMatch = userInput.match(/(?:pago|pagar|forma de pago|se paga|se pagará|será pagado|sera pagado)[:\s]+(?:de\s+)?contado/i)
+    // Detectar "será a crédito", "sera a credito", "será con crédito", etc.
+    const seraCreditoMatch = userInput.match(/(?:será|sera|es|ser)\s+(?:a|con|mediante|por|totalmente\s+a)\s+(?:crédito|credito|hipoteca|bancario|financiamiento|préstamo)/i)
+    const creditoMatch = userInput.match(/(?:pago|pagar|forma de pago|se paga|se pagará|será pagado|sera pagado|mediante|con|a través de)[:\s]+(?:mediante\s+)?(?:crédito|credito|hipoteca|bancario|financiamiento|préstamo)/i)
+    const creditoSimpleMatch = userInput.match(/(?:crédito|credito|hipoteca|bancario|financiamiento|préstamo)/i)
+
+    if (contadoMatch) {
+      // Contado = sin créditos (v1.4)
+      // Establecer creditos = [] cuando el usuario explícitamente confirma contado
+      // Esto marca creditosProvided = true y ESTADO_1 como completed
+      updates.creditos = []
+      hasUpdates = true
+    } else if (seraCreditoMatch || creditoMatch || (creditoSimpleMatch && userInput.match(/(?:sí|si|yes|correcto|afirmativo|de acuerdo|ok|okay|vale|está bien|confirmo|confirmado)/i))) {
+      // Crédito detectado (v1.4)
+      // Solo establecer creditos si el usuario explícitamente confirma crédito
+      if (!currentData.creditos || currentData.creditos.length === 0) {
+        updates.creditos = [{
+          credito_id: null,
+          institucion: null,
+          monto: null,
+          participantes: [],
+          tipo_credito: null
+        }]
+        hasUpdates = true
+      }
+    }
+
+    // Detectar institución de crédito del comprador (fuera del bloque de confirmación)
+    // PRIMERO: Buscar instituciones comunes directamente
+    const institucionesComunes2 = ['FOVISSSTE', 'INFONAVIT', 'HSBC', 'BANAMEX', 'BANCOMER', 'BBVA', 'SANTANDER', 'BANORTE', 'SCOTIABANK', 'BANCO AZTECA', 'BANCO DEL BAJIO']
+    let institucionEncontrada2 = false
+    for (const inst of institucionesComunes2) {
+      if (aiMessage.match(new RegExp(`\\b${inst}\\b`, 'i')) || userInput.match(new RegExp(`\\b${inst}\\b`, 'i'))) {
+        // Actualizar o crear crédito con institución (v1.4)
         const creditosActuales = currentData.creditos || []
         if (creditosActuales.length === 0) {
           updates.creditos = [{
             credito_id: null,
-            institucion: null,
-            monto: currentData.inmueble.valor,
+            institucion: inst,
+            monto: null,
             participantes: [],
             tipo_credito: null
           }]
         } else {
-          updates.creditos = creditosActuales.map((c, i) => 
-            i === 0 ? { ...c, monto: currentData.inmueble?.valor || null } : c
+          updates.creditos = creditosActuales.map((c, i) =>
+            i === 0 ? { ...c, institucion: inst } : c
           )
         }
         hasUpdates = true
+        institucionEncontrada2 = true
+        break
       }
-      // Patrón 2: Monto explícito en mensaje de IA o input del usuario
-      if (!mismoValorMatch || !currentData.inmueble?.valor) {
-        const montoMatch = aiMessage.match(/(?:monto|cantidad|importe|crédito)[\s\w]*?[:\s]+(?:es|será|es\s+)?(?:por\s+)?\*?\*?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?\*?\*?/i) ||
-                          userInput.match(/(?:monto|cantidad|importe|crédito)[\s\w]*?[:\s]+(?:de\s+)?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?/i) ||
-                          aiMessage.match(/\$\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?/i)
-        if (montoMatch && montoMatch[1]) {
-          let monto = montoMatch[1].trim().replace(/\*\*/g, '').replace(/\s+/g, '')
-          // Formatear monto: agregar $ y mantener comas
-          if (monto && !monto.startsWith('$')) {
-            monto = `$${monto}`
-          }
-          if (monto && monto.length > 1) {
-            // Actualizar monto en crédito (v1.4)
-            const creditosActuales = currentData.creditos || []
-            if (creditosActuales.length === 0) {
-              updates.creditos = [{
-                credito_id: null,
-                institucion: null,
-                monto: monto,
-                participantes: [],
-                tipo_credito: null
-              }]
-            } else {
-              updates.creditos = creditosActuales.map((c, i) => 
-                i === 0 ? { ...c, monto: monto } : c
-              )
-            }
-            hasUpdates = true
-          }
-        }
+    }
+
+    // Si no se encontró, buscar con patrones más flexibles
+    if (!institucionEncontrada2) {
+      // Patrón 1: "crédito FOVISSSTE" o "a crédito FOVISSSTE"
+      let institucionMatch = (aiMessage + ' ' + userInput).match(/(?:totalmente\s+)?(?:a\s+)?(?:crédito|credito)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{2,})(?:\s|\.|,|$|por|será|es)/i)
+
+      // Patrón 2: "institución: X" o "banco: X" (mínimo 3 caracteres)
+      // Detenerse antes de encontrar "RFC", "CURP" o un punto seguido de espacio y mayúscula (nueva oración)
+      if (!institucionMatch) {
+        institucionMatch = (aiMessage + ' ' + userInput).match(/(?:institución|institucion|banco|entidad)[\s\w]*?[:\s]+(?:es|será|es\s+)?\*?\*?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,}?)(?:\s*(?:RFC|CURP)|\s*\.\s+[A-ZÁÉÍÓÚÑ]|\s*$)\*?\*?/i)
       }
 
-      // Detectar nombres (patrones comunes) - v1.4
-      const nombrePattern = /(?:nombre|vendedor|comprador)[:\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)+)/gi
-      const nombres = [...userInput.matchAll(nombrePattern)]
-      
-      // Detectar RFC
-      const rfcPattern = /RFC[:\s]+([A-Z]{3,4}\d{6}[A-Z0-9]{3})/gi
-      const rfcMatch = userInput.match(rfcPattern)
-      
-      // Detectar CURP
-      const curpPattern = /CURP[:\s]+([A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d)/gi
-      const curpMatch = userInput.match(curpPattern)
-
-      // Actualizar datos si se encuentran (v1.4 - arrays)
-      const primerVendedor = currentData.vendedores?.[0]
-      const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
-      
-      if (nombres.length > 0 && !vendedorNombre) {
-        if (!updates.vendedores) {
-          updates.vendedores = currentData.vendedores ? [...currentData.vendedores] : []
-        }
-        if (updates.vendedores.length === 0) {
-          updates.vendedores = [{
-            party_id: null,
-            tipo_persona: 'persona_fisica',
-            persona_fisica: {
-              nombre: nombres[0][1] || null,
-              rfc: null,
-              curp: null,
-              estado_civil: null
-            },
-            tiene_credito: null
-          }]
-        } else {
-          updates.vendedores[0] = {
-            ...updates.vendedores[0],
-            persona_fisica: {
-              ...updates.vendedores[0].persona_fisica,
-              nombre: nombres[0][1] || updates.vendedores[0].persona_fisica?.nombre || null
-            }
-          }
-        }
-        hasUpdates = true
+      // Patrón 3: "con FOVISSSTE" o "mediante FOVISSSTE"
+      if (!institucionMatch) {
+        institucionMatch = (aiMessage + ' ' + userInput).match(/(?:con|mediante|por|a través de)\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s&.,-]{3,})(?:\s|\.|,|$)/i)
       }
 
-      if (rfcMatch && !primerVendedor?.persona_fisica?.rfc && !primerVendedor?.persona_moral?.rfc) {
-        if (!updates.vendedores) {
-          updates.vendedores = currentData.vendedores ? [...currentData.vendedores] : []
-        }
-        if (updates.vendedores.length === 0) {
-          updates.vendedores = [{
-            party_id: null,
-            tipo_persona: 'persona_fisica',
-            persona_fisica: {
-              nombre: null,
-              rfc: rfcMatch[1] || null,
-              curp: null,
-              estado_civil: null
-            },
-            tiene_credito: null
-          }]
-        } else {
-          updates.vendedores[0] = {
-            ...updates.vendedores[0],
-            persona_fisica: {
-              ...updates.vendedores[0].persona_fisica,
-              rfc: rfcMatch[1] || updates.vendedores[0].persona_fisica?.rfc || null
-            }
-          }
-        }
-        hasUpdates = true
-      }
+      if (institucionMatch && institucionMatch[1]) {
+        let institucion = institucionMatch[1].trim().replace(/\*\*/g, '')
 
-      if (curpMatch && !primerVendedor?.persona_fisica?.curp) {
-        if (!updates.vendedores) {
-          updates.vendedores = currentData.vendedores ? [...currentData.vendedores] : []
+        // Limpiar: remover cualquier texto que contenga "RFC" o "CURP" y todo lo que sigue
+        institucion = institucion.replace(/\s*(?:RFC|CURP).*$/i, '').trim()
+        // Limpiar: remover punto final y cualquier texto después de un punto seguido de espacio (nueva oración)
+        institucion = institucion.replace(/\s*\.\s+[A-ZÁÉÍÓÚÑ].*$/, '').replace(/[.,]$/, '')
+
+        // VALIDACIÓN: Rechazar valores genéricos que NO son instituciones reales
+        const valoresInvalidos = [
+          'credito', 'crédito', 'el credito', 'el crédito', 'un credito', 'un crédito',
+          'hipoteca', 'la hipoteca', 'un hipoteca', 'financiamiento', 'el financiamiento',
+          'prestamo', 'préstamo', 'el prestamo', 'el préstamo', 'banco', 'el banco',
+          'institucion', 'institución', 'la institucion', 'la institución', 'una institucion',
+          'una institución', 'institución crediticia', 'institucion crediticia',
+          'entidad', 'la entidad', 'una entidad', 'entidad financiera',
+          'el credito del comprador', 'el crédito del comprador', 'credito del comprador',
+          'crédito del comprador', 'el credito que', 'el crédito que', 'credito que', 'crédito que'
+        ]
+
+        const institucionNormalizada = institucion.toLowerCase().trim()
+        const esInvalido = valoresInvalidos.some(invalido => {
+          // Comparación exacta o que empiece con el valor inválido seguido de espacio/puntuación
+          const regex = new RegExp(`^${invalido.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$|[.,;:])`, 'i')
+          return regex.test(institucionNormalizada)
+        })
+
+        // También validar si contiene solo palabras genéricas
+        const palabrasGenericas = /\b(el|la|un|una|del|de|los|las|que|con|por|para|mediante|a través de)\b/gi
+        const textoSinGenericos = institucionNormalizada.replace(palabrasGenericas, '').trim()
+        const esSoloGenerico = textoSinGenericos.length === 0 ||
+          ['credito', 'crédito', 'hipoteca', 'banco', 'institucion', 'institución', 'entidad', 'financiamiento'].includes(textoSinGenericos)
+
+        // Si es un valor inválido o solo genérico, NO actualizar
+        if (esInvalido || esSoloGenerico) {
+          institucionMatch = null
         }
-        if (updates.vendedores.length === 0) {
-          updates.vendedores = [{
-            party_id: null,
-            tipo_persona: 'persona_fisica',
-            persona_fisica: {
-              nombre: null,
-              rfc: null,
-              curp: curpMatch[1] || null,
-              estado_civil: null
-            },
-            tiene_credito: null
-          }]
-        } else {
-          updates.vendedores[0] = {
-            ...updates.vendedores[0],
-            persona_fisica: {
-              ...updates.vendedores[0].persona_fisica,
-              curp: curpMatch[1] || updates.vendedores[0].persona_fisica?.curp || null
-            }
+        // Limpiar: remover "Y" o "AND" seguido de texto (ej: "FOVISSSTE Y CURP...")
+        institucion = institucion.replace(/\s+(?:Y|AND)\s+.*$/i, '').trim()
+
+        // Validar que tenga al menos 3 caracteres y NO sea un CURP (formato: 4 letras + 6 dígitos + 3 letras + 2 dígitos)
+        const esCURP = /^[A-Z]{4}\d{6}[A-Z]{3}\d{2}$/.test(institucion.replace(/\s/g, ''))
+        // También validar que no sea un RFC (formato: 4 letras + 6 dígitos + 3 caracteres)
+        const esRFC = /^[A-Z]{4}\d{6}[A-Z0-9]{3}$/.test(institucion.replace(/\s/g, ''))
+        // Validar que no contenga "CURP" o "RFC" en el texto
+        const contieneCURP = /\bCURP\b/i.test(institucion)
+        const contieneRFC = /\bRFC\b/i.test(institucion)
+        // Validar que no empiece con "CURP" o "RFC"
+        const empiezaConCURP = /^CURP\s/i.test(institucion)
+        const empiezaConRFC = /^RFC\s/i.test(institucion)
+        // Validar que no contenga formato de RFC o CURP en cualquier parte
+        const contieneFormatoRFC = /[A-Z]{4}\d{6}[A-Z0-9]{3}/.test(institucion.replace(/\s/g, ''))
+        const contieneFormatoCURP = /[A-Z]{4}\d{6}[A-Z]{3}\d{2}/.test(institucion.replace(/\s/g, ''))
+        // Validar que no contenga frases comunes que no son nombres de instituciones
+        const contieneFraseInvalida = /\b(?:QUE|QUE\s+UTILIZARÁ|UTILIZARÁ|EL\s+COMPRADOR|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA)\b/i.test(institucion)
+        // Validar que no sea solo palabras comunes
+        const esSoloPalabrasComunes = /^(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE)(?:\s+(?:QUE|UTILIZARÁ|EL|COMPRADOR|SERÁ|SERA|ES|POR|PARA|DEL|DE|LA|LAS|LOS|UN|UNA|Y|O|A|CON|MEDIANTE))*$/i.test(institucion)
+
+        if (institucion && institucion.length >= 3 && !esCURP && !esRFC && !contieneCURP && !contieneRFC && !empiezaConCURP && !empiezaConRFC && !contieneFormatoRFC && !contieneFormatoCURP && !contieneFraseInvalida && !esSoloPalabrasComunes) {
+          // Actualizar o crear crédito con institución (v1.4)
+          const creditosActuales = currentData.creditos || []
+          if (creditosActuales.length === 0) {
+            updates.creditos = [{
+              credito_id: null,
+              institucion: institucion.toUpperCase(),
+              monto: null,
+              participantes: [],
+              tipo_credito: null
+            }]
+          } else {
+            updates.creditos = creditosActuales.map((c, i) =>
+              i === 0 ? { ...c, institucion: institucion.toUpperCase() } : c
+            )
+          }
+          hasUpdates = true
+        }
+      }
+    }
+
+    // Detectar monto de crédito del comprador (v1.4)
+    // Patrón 1: "el mismo que el valor" o "igual al valor" - usar valor del inmueble
+    const mismoValorMatch = userInput.match(/(?:el\s+mismo|igual|mismo\s+que|igual\s+que|el\s+mismo\s+que)\s+(?:el\s+)?(?:valor|precio|casa|inmueble|operación)/i) ||
+      userInput.match(/(?:será|es)\s+(?:el\s+mismo|igual)\s+(?:que\s+)?(?:el\s+)?(?:valor|precio)/i)
+    if (mismoValorMatch && currentData.inmueble?.valor) {
+      const creditosActuales = currentData.creditos || []
+      if (creditosActuales.length === 0) {
+        updates.creditos = [{
+          credito_id: null,
+          institucion: null,
+          monto: currentData.inmueble.valor,
+          participantes: [],
+          tipo_credito: null
+        }]
+      } else {
+        updates.creditos = creditosActuales.map((c, i) =>
+          i === 0 ? { ...c, monto: currentData.inmueble?.valor || null } : c
+        )
+      }
+      hasUpdates = true
+    }
+    // Patrón 2: Monto explícito en mensaje de IA o input del usuario
+    if (!mismoValorMatch || !currentData.inmueble?.valor) {
+      const montoMatch = aiMessage.match(/(?:monto|cantidad|importe|crédito)[\s\w]*?[:\s]+(?:es|será|es\s+)?(?:por\s+)?\*?\*?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?\*?\*?/i) ||
+        userInput.match(/(?:monto|cantidad|importe|crédito)[\s\w]*?[:\s]+(?:de\s+)?\$?\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?/i) ||
+        aiMessage.match(/\$\s*([\d,]+(?:\s*[\d,]+)*)\s*(?:pesos|mxn|mxp)?/i)
+      if (montoMatch && montoMatch[1]) {
+        let monto = montoMatch[1].trim().replace(/\*\*/g, '').replace(/\s+/g, '')
+        // Formatear monto: agregar $ y mantener comas
+        if (monto && !monto.startsWith('$')) {
+          monto = `$${monto}`
+        }
+        if (monto && monto.length > 1) {
+          // Actualizar monto en crédito (v1.4)
+          const creditosActuales = currentData.creditos || []
+          if (creditosActuales.length === 0) {
+            updates.creditos = [{
+              credito_id: null,
+              institucion: null,
+              monto: monto,
+              participantes: [],
+              tipo_credito: null
+            }]
+          } else {
+            updates.creditos = creditosActuales.map((c, i) =>
+              i === 0 ? { ...c, monto: monto } : c
+            )
+          }
+          hasUpdates = true
+        }
+      }
+    }
+
+    // Detectar nombres (patrones comunes) - v1.4
+    const nombrePattern = /(?:nombre|vendedor|comprador)[:\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)+)/gi
+    const nombres = [...userInput.matchAll(nombrePattern)]
+
+    // Detectar RFC
+    const rfcPattern = /RFC[:\s]+([A-Z]{3,4}\d{6}[A-Z0-9]{3})/gi
+    const rfcMatch = userInput.match(rfcPattern)
+
+    // Detectar CURP
+    const curpPattern = /CURP[:\s]+([A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d)/gi
+    const curpMatch = userInput.match(curpPattern)
+
+    // Actualizar datos si se encuentran (v1.4 - arrays)
+    const primerVendedor = currentData.vendedores?.[0]
+    const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
+
+    if (nombres.length > 0 && !vendedorNombre) {
+      if (!updates.vendedores) {
+        updates.vendedores = currentData.vendedores ? [...currentData.vendedores] : []
+      }
+      if (updates.vendedores.length === 0) {
+        updates.vendedores = [{
+          party_id: null,
+          tipo_persona: 'persona_fisica',
+          persona_fisica: {
+            nombre: nombres[0][1] || null,
+            rfc: null,
+            curp: null,
+            estado_civil: null
+          },
+          tiene_credito: null
+        }]
+      } else {
+        updates.vendedores[0] = {
+          ...updates.vendedores[0],
+          persona_fisica: {
+            ...updates.vendedores[0].persona_fisica,
+            nombre: nombres[0][1] || updates.vendedores[0].persona_fisica?.nombre || null
           }
         }
-        hasUpdates = true
       }
+      hasUpdates = true
+    }
+
+    if (rfcMatch && !primerVendedor?.persona_fisica?.rfc && !primerVendedor?.persona_moral?.rfc) {
+      if (!updates.vendedores) {
+        updates.vendedores = currentData.vendedores ? [...currentData.vendedores] : []
+      }
+      if (updates.vendedores.length === 0) {
+        updates.vendedores = [{
+          party_id: null,
+          tipo_persona: 'persona_fisica',
+          persona_fisica: {
+            nombre: null,
+            rfc: rfcMatch[1] || null,
+            curp: null,
+            estado_civil: null
+          },
+          tiene_credito: null
+        }]
+      } else {
+        updates.vendedores[0] = {
+          ...updates.vendedores[0],
+          persona_fisica: {
+            ...updates.vendedores[0].persona_fisica,
+            rfc: rfcMatch[1] || updates.vendedores[0].persona_fisica?.rfc || null
+          }
+        }
+      }
+      hasUpdates = true
+    }
+
+    if (curpMatch && !primerVendedor?.persona_fisica?.curp) {
+      if (!updates.vendedores) {
+        updates.vendedores = currentData.vendedores ? [...currentData.vendedores] : []
+      }
+      if (updates.vendedores.length === 0) {
+        updates.vendedores = [{
+          party_id: null,
+          tipo_persona: 'persona_fisica',
+          persona_fisica: {
+            nombre: null,
+            rfc: null,
+            curp: curpMatch[1] || null,
+            estado_civil: null
+          },
+          tiene_credito: null
+        }]
+      } else {
+        updates.vendedores[0] = {
+          ...updates.vendedores[0],
+          persona_fisica: {
+            ...updates.vendedores[0].persona_fisica,
+            curp: curpMatch[1] || updates.vendedores[0].persona_fisica?.curp || null
+          }
+        }
+      }
+      hasUpdates = true
+    }
 
     return hasUpdates ? updates : null
   }
 
-  const determineActosNotariales = (data: PreavisoData) => {
-    const primerVendedor = data.vendedores?.[0]
-    const tieneCreditos = data.creditos && data.creditos.length > 0
-    
-    return {
-      cancelacionCreditoVendedor: primerVendedor?.tiene_credito === true || false,
-      compraventa: true,
-      aperturaCreditoComprador: tieneCreditos
-    }
-  }
-
   return (
-    <div 
+    <div
       className="h-full flex flex-col gap-4 overflow-hidden relative"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
@@ -3561,15 +3802,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           </div>
         </div>
       )}
-      
+
       {/* Layout con panel de información - Parte superior */}
-      <div className={`flex-1 flex ${
-        !showDataPanel 
-          ? 'flex-col' 
-          : (isMobile || isTablet) 
-            ? 'flex-col' 
-            : ''
-      } gap-4 min-h-0 overflow-hidden`}>  
+      <div className={`flex-1 flex ${!showDataPanel ? 'flex-col' : ''} gap-4 min-h-0 overflow-hidden`}>
         {/* Botón para mostrar panel si está oculto */}
         {!showDataPanel && (
           <div className='flex justify-end'>
@@ -3582,1156 +3817,297 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 setHidePanelsAfterMessage(false)
               }}
             >
-              <Eye className="h-4 w-4" /> 
+              <Eye className="h-4 w-4" />
               <span className="text-xs">Mostrar informacion capturada</span>
             </Button>
           </div>
         )}
-        
-        <Card className={`flex-1 p-0 flex flex-col shadow-xl border border-gray-200 overflow-hidden bg-white ${(isMobile || isTablet) ? 'min-h-[550px]' : 'min-h-0'}`}>
-        <CardContent className="flex-1 flex flex-col p-0 min-h-0">
-          {/* Header moderno */}
-          <div className="border-b border-gray-200/80 bg-gradient-to-r from-white via-gray-50/50 to-white backdrop-blur-sm px-6 py-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <div className="relative group">
-                  <div className="w-12 h-12 rounded-2xl overflow-hidden bg-gradient-to-br f from-slate-100 to-slate-300 flex items-center justify-center shadow-lg ring-2 ring-blue-100  transition-all">
-                      <Bot className="w-5 h-5 text-black" />
-                  </div>
-                  <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-white shadow-sm">
-                    <div className="w-full h-full bg-green-400 rounded-full animate-pulse"></div>
-                  </div>
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center space-x-2">
-                    <h3 className="font-semibold text-base text-gray-900">Asistente de Pre-Aviso</h3>
-                    <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
-                      En línea
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-0.5 flex items-center space-x-1">
-                    <span>Compraventa de Inmueble</span>
-                    <span className="text-gray-300">•</span>
-                    <span>Notaría Pública #3</span>
-                  </p>
-                </div>
-              </div>
-              
-              {/* Acciones del header */}
-              <div className="flex items-center space-x-1">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-9 w-9 rounded-xl hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors"
-                      title="Más opciones"
-                    >
-                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                      </svg>
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-48">
-                    <DropdownMenuItem onClick={handleNewChat} className="cursor-pointer hover:!bg-gray-100 focus:!bg-gray-100 focus:!text-gray-900">
-                      <MessageSquarePlus className="mr-2 h-4 w-4" />
-                      Nuevo chat
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </div>
-          </div>
-
-          {/* Messages con diseño moderno */}
-          <div className="flex-1 overflow-hidden bg-gradient-to-b from-gray-50/50 to-white">
-            <div className="h-full overflow-auto">
-              <div className="p-6 space-y-4">
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} group`}
-                >
-                  <div
-                    className={`flex items-end space-x-2 max-w-[60ch] ${
-                      message.role === 'user' ? 'flex-row-reverse space-x-reverse' : ''
-                    }`}
-                  >
-                    {/* Avatar moderno */}
-                    {message.role === 'assistant' && (
-                      <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-slate-100 to-slate-300 flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
-                          <Bot className="w-5 h-5 text-black bg-gray-200" />
-                      </div>
-                    )}
-                    
-                    {/* Mensaje moderno */}
-                    <div
-                      className={`rounded-2xl px-4 py-2.5 max-w-full ${
-                        message.role === 'user'
-                          ? 'bg-gray-800 text-white shadow-lg'
-                          : 'bg-white text-gray-900 shadow-sm border border-gray-100'
-                      }`}
-                    >
-                      {/* Ocultar el texto si es "Procesando documento..." */}
-                      {!(message.role === 'assistant' && message.content === 'Procesando documento...') && (
-                        <p className={`text-sm leading-relaxed whitespace-pre-wrap ${
-                          message.role === 'user' ? 'text-white' : 'text-gray-800'
-                        }`}>{message.content}</p>
-                      )}
-                      
-                      {/* Barra de progreso para mensajes de procesamiento */}
-                      {message.role === 'assistant' && 
-                       message.content === 'Procesando documento...' &&
-                       isProcessingDocument && (
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="text-gray-600 font-medium flex items-center space-x-2">
-                              <Loader2 className="h-3 w-3 animate-spin text-blue-600" />
-                              <span>{processingFileName ? `Procesando: ${processingFileName}` : 'Procesando documento...'}</span>
-                            </span>
-                            <span className="text-blue-600 font-semibold pl-6">{Math.round(processingProgress)}%</span>
-                          </div>
-                          <Progress value={processingProgress} className="h-1.5 bg-blue-100" />
-                        </div>
-                      )}
-                      
-                      {/* Adjuntos */}
-                      {message.attachments && message.attachments.length > 0 && (
-                        <div className={`mt-3 pt-3 ${
-                          message.role === 'user' ? 'border-t border-white/20' : 'border-t border-gray-100'
-                        }`}>
-                          <div className="flex flex-wrap gap-2">
-                            {message.attachments.map((file, idx) => {
-                              const isImage = file.type.startsWith('image/')
-                              // Buscar el documento correspondiente en uploadedDocuments para verificar su estado de procesamiento
-                              const correspondingDoc = uploadedDocuments.find(doc => doc.name === file.name)
-                              const isProcessing = correspondingDoc ? !correspondingDoc.processed : false
-                              const isProcessed = correspondingDoc?.processed || false
-                              const hasError = correspondingDoc?.error ? true : false
-                              const isCancelled = correspondingDoc?.cancelled || false
-                              
-                              return (
-                                <div key={idx}>
-                                  {isImage ? (
-                                    <ImageThumbnail 
-                                      file={file} 
-                                      isProcessing={isProcessing}
-                                      isProcessed={isProcessed}
-                                      hasError={hasError}
-                                      isCancelled={isCancelled}
-                                    />
-                                  ) : (
-                                    <div className={`flex items-center space-x-2 text-xs ${
-                                      message.role === 'user' ? 'text-gray-200' : 'text-gray-600'
-                                    }`}>
-                                      <FileCheck className="h-3.5 w-3.5" />
-                                      <span className="truncate">{file.name}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )}
-                      
-                      {/* Timestamp moderno */}
-                      <p className={`text-[10px] mt-1.5 ${
-                        message.role === 'user' ? 'text-gray-300' : 'text-gray-400'
-                      }`}>
-                        {message.timestamp.toLocaleTimeString('es-MX', { 
-                          hour: '2-digit', 
-                          minute: '2-digit' 
-                        })}
-                      </p>
-                    </div>
-                    
-                    {/* Avatar usuario */}
-                    {message.role === 'user' && (
-                      <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center flex-shrink-0 shadow-sm mb-1">
-                        <User className="h-4 w-4 text-white" />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-              
-              {isProcessing && (
-                <div className="flex justify-start">
-                  <div className="flex items-end space-x-2">
-                    <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-slate-100 to-slate-300  flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
+        {/* Chat principal */}
+        <Card className="flex-1 p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
+          <CardContent className="flex-1 flex flex-col p-0 min-h-0">
+            {/* Header moderno */}
+            <div className="border-b border-gray-200/80 bg-gradient-to-r from-white via-gray-50/50 to-white backdrop-blur-sm px-6 py-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <div className="relative group">
+                    <div className="w-12 h-12 rounded-2xl overflow-hidden bg-gradient-to-br f from-slate-100 to-slate-300 flex items-center justify-center shadow-lg ring-2 ring-blue-100  transition-all">
                       <Bot className="w-5 h-5 text-black" />
                     </div>
-                    <div className="bg-white rounded-2xl px-4 py-3 shadow-sm border border-gray-100">
-                      <div className="flex space-x-1.5">
-                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-                      </div>
+                    <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-white shadow-sm">
+                      <div className="w-full h-full bg-green-400 rounded-full animate-pulse"></div>
                     </div>
                   </div>
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2">
+                      <h3 className="font-semibold text-base text-gray-900">Asistente de Pre-Aviso</h3>
+                      <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                        En línea
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5 flex items-center space-x-1">
+                      <span>Compraventa de Inmueble</span>
+                      <span className="text-gray-300">•</span>
+                      <span>Notaría Pública #3</span>
+                    </p>
+                  </div>
                 </div>
-              )}
-              
-              
-              <div ref={scrollRef} />
+
+                {/* Acciones del header */}
+                <div className="flex items-center space-x-1">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 rounded-xl hover:bg-gray-100 text-gray-600 hover:text-gray-900 transition-colors"
+                        title="Más opciones"
+                      >
+                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                        </svg>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48">
+                      <DropdownMenuItem onClick={handleNewChat} className="cursor-pointer hover:!bg-gray-100 focus:!bg-gray-100 focus:!text-gray-900">
+                        <MessageSquarePlus className="mr-2 h-4 w-4" />
+                        Nuevo chat
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleDeleteSession} className="cursor-pointer text-red-600 hover:!bg-gray-100 focus:!bg-gray-100 focus:!text-red-700">
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Eliminar conversación
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
 
+            {/* Messages con diseño moderno */}
+            <div className="flex-1 overflow-hidden bg-gradient-to-b from-gray-50/50 to-white">
+              <div className="h-full overflow-auto">
+                <div className="p-6 space-y-4">
+                  {messages.map((message) => (
+                    <ChatMessageItem
+                      key={message.id}
+                      message={message}
+                      isProcessingDocument={isProcessingDocument}
+                      processingFileName={processingFileName}
+                      processingProgress={processingProgress}
+                      uploadedDocuments={uploadedDocuments}
+                    />
+                  ))}
 
-          {/* Input moderno */}
-          <div className="border-t border-gray-200 bg-white px-4 py-2.5">
-            <div className="flex items-end">
-              {/* Input de texto moderno con iconos dentro */}
-              <div className="flex-1 relative">
-                {/* Contenedor del input con borde y fondo */}
-                <div className="border border-gray-300 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/20 rounded-2xl bg-gray-50 focus-within:bg-white transition-all">
-                  
-                  {/* Panel de archivos pendientes dentro del input */}
-                  {pendingFiles.length > 0 && !hidePanelsAfterMessage && (
-                    <div className="px-3 pt-3 pb-2 border-b border-gray-200">
-                      <div className="mb-2">
-                        <p className="text-xs text-gray-500 font-medium">Archivos pendientes (se procesarán al enviar):</p>
-                      </div>
-                      <div className="w-full overflow-y-auto overflow-x-hidden" style={{ maxHeight: '300px', width: '100%' }}>
-                        <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-3 pb-2" style={{ width: '100%' }}>
-                          {pendingFiles.map((file, index) => {
-                            const fileUrl = URL.createObjectURL(file)
-                            const isImage = file.type.startsWith('image/')
-                            const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-                            
-                            return (
-                              <div
-                                key={`pending-${index}-${file.name}`}
-                                className="group relative flex-shrink-0 w-24 bg-white rounded-lg border-2 border-dashed border-blue-300 hover:border-blue-400 hover:shadow-lg transition-all duration-200 overflow-hidden"
-                              >
-                                {/* Preview */}
-                                <div className="relative h-20 bg-gradient-to-br from-blue-50 to-blue-100">
-                                  {isImage ? (
-                                    <img
-                                      src={fileUrl}
-                                      alt={file.name}
-                                      className="w-full h-full object-cover opacity-70"
-                                      onLoad={() => URL.revokeObjectURL(fileUrl)}
-                                    />
-                                  ) : isPDF ? (
-                                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
-                                      <FileText className="h-6 w-6 text-red-500 opacity-70" />
-                                    </div>
-                                  ) : (
-                                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
-                                      <FileText className="h-6 w-6 text-blue-500 opacity-70" />
-                                    </div>
-                                  )}
-                                  
-                                  {/* Badge de pendiente */}
-                                  <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
-                                    <Upload className="h-2.5 w-2.5 text-white" />
-                                  </div>
-                                  
-                                  {/* Botón para eliminar */}
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      URL.revokeObjectURL(fileUrl)
-                                      setPendingFiles(prev => prev.filter((_, i) => i !== index))
-                                    }}
-                                    className="absolute top-1.5 left-1.5 bg-red-500 hover:bg-red-600 rounded-full p-1 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                                    title="Eliminar archivo"
-                                  >
-                                    <X className="h-2.5 w-2.5 text-white" />
-                                  </button>
-                                </div>
-                                
-                                {/* Información */}
-                                <div className="p-2 bg-white">
-                                  <p className="text-xs font-medium text-gray-900 truncate mb-0.5" title={file.name}>
-                                    {file.name}
-                                  </p>
-                                  <p className="text-xs text-gray-400">
-                                    {(file.size / 1024 / 1024).toFixed(2)} MB
-                                  </p>
-                                </div>
-                              </div>
-                            )
-                          })}
+                  {isProcessing && (
+                    <div className="flex justify-start">
+                      <div className="flex items-end space-x-2">
+                        <div className="w-8 h-8 rounded-xl overflow-hidden bg-gradient-to-br from-slate-100 to-slate-300  flex items-center justify-center flex-shrink-0 shadow-sm mb-1 ring-1 ring-white/20">
+                          <Bot className="w-5 h-5 text-black" />
+                        </div>
+                        <div className="bg-white rounded-2xl px-4 py-3 shadow-sm border border-gray-100">
+                          <div className="flex space-x-1.5">
+                            <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                            <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                            <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                          </div>
                         </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Contenedor relativo para el textarea y los iconos */}
-                  <div className="relative">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      accept=".pdf,.jpg,.jpeg,.png,.docx"
-                      onChange={(e) => {
-                        const files = e.target.files
-                        if (files && files.length > 0) {
-                          // Solo agregar a pendientes, no procesar aún
-                          setPendingFiles(prev => [...prev, ...Array.from(files)])
-                        }
-                        // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
-                        // Usar setTimeout para asegurar que se resetee después de procesar los archivos
-                        setTimeout(() => {
-                          if (e.target) {
-                            e.target.value = ''
-                          }
-                        }, 0)
-                      }}
-                      className="hidden"
-                    />
-                    
-                    <Textarea
-                      ref={textInputRef}
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      onPaste={handlePaste}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault()
-                          handleSend()
-                        }
-                      }}
-                      placeholder="Escribe tu mensaje o pega una imagen (Ctrl+V / Cmd+V)..."
-                      className="min-h-[44px] max-h-[120px] resize-none border-0 bg-transparent focus:ring-0 focus-visible:ring-0 pl-12 pr-12 py-3"
-                      disabled={isProcessing || isProcessingDocument}
-                    />
-                    
-                    {/* Botón de adjuntar archivos dentro del input - izquierda */}
-                    <Button
-                      type="button"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        // Asegurar que el input esté reseteado antes de abrir el diálogo
-                        if (fileInputRef.current) {
-                          fileInputRef.current.value = ''
-                          fileInputRef.current.click()
-                        }
-                      }}
-                      variant="ghost"
-                      size="icon"
-                      className="absolute left-2 bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-gray-600 hover:text-blue-600 transition-colors"
-                      title="Adjuntar documentos"
-                    >
-                      <Upload className="h-4 w-4" />
-                    </Button>
 
-                    {/* Botón de enviar dentro del input - derecha */}
-                    <Button
-                      onClick={(isProcessing || isProcessingDocument) ? cancelMessageRequest : handleSend}
-                      disabled={!(isProcessing || isProcessingDocument) && (!input.trim() && pendingFiles.length === 0)}
-                      className="absolute right-2 bg-transparent bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-black disabled:opacity-50 disabled:cursor-not-allowed "
-                      size="icon"
-                      title={(isProcessing || isProcessingDocument) ? "Cancelar solicitud" : (pendingFiles.length > 0 ? "Procesar archivos y enviar" : "Enviar mensaje")}
-                    >
-                      {(isProcessing || isProcessingDocument) ? (
-                        <Square className="h-4 w-4 fill-current" />
-                      ) : (
-                        <ArrowUp className="h-4 w-4" />
-                      )}
-                    </Button>
-                    
-                    {/* Contador de caracteres o indicador */}
-                    {input.length > 0 && (
-                      <div className="absolute bottom-2 right-12 text-xs text-gray-400">
-                        {input.length}
+                  <div ref={scrollRef} />
+                </div>
+              </div>
+            </div>
+
+
+            {/* Input moderno */}
+            <div className="border-t border-gray-200 bg-white px-4 py-2.5">
+              <div className="flex items-end">
+                {/* Input de texto moderno con iconos dentro */}
+                <div className="flex-1 relative">
+                  {/* Contenedor del input con borde y fondo */}
+                  <div className="border border-gray-300 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/20 rounded-2xl bg-gray-50 focus-within:bg-white transition-all">
+
+                    {/* Panel de archivos pendientes dentro del input */}
+                    {pendingFiles.length > 0 && !hidePanelsAfterMessage && (
+                      <div className="px-3 pt-3 pb-2 border-b border-gray-200">
+                        <div className="mb-2">
+                          <p className="text-xs text-gray-500 font-medium">Archivos pendientes (se procesarán al enviar):</p>
+                        </div>
+                        <div className="w-full overflow-y-auto overflow-x-hidden" style={{ maxHeight: '300px', width: '100%' }}>
+                          <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-3 pb-2" style={{ width: '100%' }}>
+                            {pendingFiles.map((file, index) => {
+                              const fileUrl = URL.createObjectURL(file)
+                              const isImage = file.type.startsWith('image/')
+                              const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+
+                              return (
+                                <div
+                                  key={`pending-${index}-${file.name}`}
+                                  className="group relative flex-shrink-0 w-24 bg-white rounded-lg border-2 border-dashed border-blue-300 hover:border-blue-400 hover:shadow-lg transition-all duration-200 overflow-hidden"
+                                >
+                                  {/* Preview */}
+                                  <div className="relative h-20 bg-gradient-to-br from-blue-50 to-blue-100">
+                                    {isImage ? (
+                                      <img
+                                        src={fileUrl}
+                                        alt={file.name}
+                                        className="w-full h-full object-cover opacity-70"
+                                        onLoad={() => URL.revokeObjectURL(fileUrl)}
+                                      />
+                                    ) : isPDF ? (
+                                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
+                                        <FileText className="h-6 w-6 text-red-500 opacity-70" />
+                                      </div>
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
+                                        <FileText className="h-6 w-6 text-blue-500 opacity-70" />
+                                      </div>
+                                    )}
+
+                                    {/* Badge de pendiente */}
+                                    <div className="absolute top-1.5 right-1.5 bg-blue-500 rounded-full p-1 shadow-lg">
+                                      <Upload className="h-2.5 w-2.5 text-white" />
+                                    </div>
+
+                                    {/* Botón para eliminar */}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        URL.revokeObjectURL(fileUrl)
+                                        setPendingFiles(prev => prev.filter((_, i) => i !== index))
+                                      }}
+                                      className="absolute top-1.5 left-1.5 bg-red-500 hover:bg-red-600 rounded-full p-1 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                                      title="Eliminar archivo"
+                                    >
+                                      <X className="h-2.5 w-2.5 text-white" />
+                                    </button>
+                                  </div>
+
+                                  {/* Información */}
+                                  <div className="p-2 bg-white">
+                                    <p className="text-xs font-medium text-gray-900 truncate mb-0.5" title={file.name}>
+                                      {file.name}
+                                    </p>
+                                    <p className="text-xs text-gray-400">
+                                      {(file.size / 1024 / 1024).toFixed(2)} MB
+                                    </p>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
                       </div>
                     )}
-                  </div>
-                </div>
-              </div>
-            </div>
-            
-            {/* Indicador de tipos de archivo aceptados */}
-            <div className="mt-2 flex items-center justify-start space-x-4 text-xs text-gray-400">
-              <span className="flex items-center space-x-1">
-                <FileText className="h-3 w-3" />
-                <span>Sube tus archivos PDF, JPG, PNG, DOCX (Máx. 20MB)</span>
-              </span>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
-      {/* Panel de información extraída - Primero en móvil/tablet, después en desktop */}
-      {showDataPanel && (isMobile || isTablet) && (
-        <Card className="w-full p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
-          <CardContent className="flex-1 flex flex-col p-0 min-h-0">
-            {/* Header del panel */}
-            <div className="border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white px-4 py-3">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-sm text-gray-900">Información Capturada</h3>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 hover:bg-gray-200 hover:text-foreground"
-                  onClick={() => setShowDataPanel(false)}
-                >
-                  <EyeOff className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="mt-2">
-                <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
-                  <span>Progreso</span>
-                  <span>{progress.completed}/{progress.total} pasos</span>
-                </div>
-                <Progress value={progress.percentage} className="h-2" />
-              </div>
-            </div>
-
-            {/* Contenido del panel */}
-            <div className="flex-1 min-h-0 overflow-hidden">
-              <div className="h-full overflow-auto">
-                <div className="p-4 space-y-4">
-                {/* PASO 1 – OPERACIÓN Y FORMA DE PAGO */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_1 === 'completed' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <CreditCard className="h-4 w-4" />
-                      <span>PASO 1: Operación y Forma de Pago</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.tipoOperacion ? (
-                      <>
-                        <div><span className="font-medium">Tipo de operación:</span> {data.tipoOperacion}</div>
-                        {serverState?.state_status?.ESTADO_1 === 'completed' ? (
-                          data.creditos !== undefined && data.creditos.length > 0 ? (
-                            <div><span className="font-medium">Forma de pago:</span> Crédito</div>
-                          ) : data.creditos !== undefined && data.creditos.length === 0 ? (
-                            <div><span className="font-medium">Forma de pago:</span> Contado</div>
-                          ) : (
-                            <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
-                          )
-                        ) : (
-                          <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
-                        )}
-                      </>
-                    ) : (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* PASO 2 – INMUEBLE Y REGISTRO (CONSOLIDADO) */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_2 === 'completed' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <Building2 className="h-4 w-4" />
-                      <span>PASO 2: Inmueble y Registro</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.inmueble?.folio_real && (
-                      <div><span className="font-medium">Folio Real:</span> {data.inmueble.folio_real}</div>
-                    )}
-                    {data.inmueble?.partidas && data.inmueble.partidas.length > 0 && (
-                      <div><span className="font-medium">Partida(s):</span> {
-                        data.inmueble.partidas
-                          .map((p: any) => {
-                            if (typeof p === 'string') return p
-                            if (!p) return null
-                            return p.partida || p.numero || p.folio || p.value || null
-                          })
-                          .filter(Boolean)
-                          .join(', ')
-                      }</div>
-                    )}
-                    {data.inmueble?.direccion?.calle && (
-                      <div><span className="font-medium">Dirección:</span> {
-                        typeof data.inmueble.direccion === 'string' 
-                          ? data.inmueble.direccion 
-                          : (() => {
-                              const unidad = data.inmueble?.datos_catastrales?.unidad
-                              const base = `${data.inmueble.direccion.calle || ''} ${data.inmueble.direccion.numero || ''} ${data.inmueble.direccion.colonia || ''}`.trim()
-                              return unidad ? `Unidad ${unidad}, ${base}` : base
-                            })()
-                      }</div>
-                    )}
-                    {data.inmueble?.superficie && (
-                      <div><span className="font-medium">Superficie:</span> {
-                        typeof data.inmueble.superficie === 'string' 
-                          ? data.inmueble.superficie 
-                          : String(data.inmueble.superficie)
-                      }</div>
-                    )}
-                    {data.inmueble?.valor && (
-                      <div><span className="font-medium">Valor:</span> {
-                        typeof data.inmueble.valor === 'string' 
-                          ? data.inmueble.valor 
-                          : String(data.inmueble.valor)
-                      }</div>
-                    )}
-                    {!data.inmueble?.folio_real && (!data.inmueble?.partidas || data.inmueble.partidas.length === 0) && (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* PASO 3 – VENDEDOR(ES) */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_3 === 'completed' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <UserCircle className="h-4 w-4" />
-                      <span>PASO 3: Vendedor(es)</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.vendedores && data.vendedores.length > 0 && (
-                      <>
-                        {data.vendedores[0].persona_fisica?.nombre && (
-                          <div><span className="font-medium">Nombre:</span> {data.vendedores[0].persona_fisica.nombre}</div>
-                        )}
-                        {data.vendedores[0].persona_moral?.denominacion_social && (
-                          <div><span className="font-medium">Denominación Social:</span> {data.vendedores[0].persona_moral.denominacion_social}</div>
-                        )}
-                        {(data.vendedores[0].persona_fisica?.rfc || data.vendedores[0].persona_moral?.rfc) && (
-                          <div><span className="font-medium">RFC:</span> {data.vendedores[0].persona_fisica?.rfc || data.vendedores[0].persona_moral?.rfc}</div>
-                        )}
-                        {data.vendedores[0].persona_fisica?.curp && (
-                          <div><span className="font-medium">CURP:</span> {data.vendedores[0].persona_fisica.curp}</div>
-                        )}
-                        {(() => {
-                          const vendedor = data.vendedores[0]
-                          const tieneCredito = vendedor?.tiene_credito
-                          const hasGravamen =
-                            data.inmueble?.existe_hipoteca === true ||
-                            (Array.isArray(data.gravamenes) && data.gravamenes.length > 0)
-
-                          if (tieneCredito === true) {
-                            return <div><span className="font-medium">Crédito pendiente:</span> Sí</div>
+                    {/* Contenedor relativo para el textarea y los iconos */}
+                    <div className="relative">
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        accept=".pdf,.jpg,.jpeg,.png,.docx"
+                        onChange={(e) => {
+                          const files = e.target.files
+                          if (files && files.length > 0) {
+                            // Solo agregar a pendientes, no procesar aún
+                            setPendingFiles(prev => [...prev, ...Array.from(files)])
                           }
-                          if (tieneCredito === false && !hasGravamen) {
-                            return <div><span className="font-medium">Crédito pendiente:</span> No</div>
-                          }
-                          if (hasGravamen) {
-                            return <div><span className="font-medium">Crédito pendiente:</span> Sí (por gravamen/hipoteca)</div>
-                          }
-                          return null
-                        })()}
-                      </>
-                    )}
-                    {(!data.vendedores || data.vendedores.length === 0 || (!data.vendedores[0].persona_fisica?.nombre && !data.vendedores[0].persona_moral?.denominacion_social)) && (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* PASO 4 – COMPRADOR(ES) (CONSOLIDADO CON EXPEDIENTE) */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_4 === 'completed' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <Users className="h-4 w-4" />
-                      <span>PASO 4: Comprador(es)</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-2 text-xs text-gray-600">
-                    {data.compradores && data.compradores.length > 0 ? (
-                      data.compradores.map((comprador, idx) => {
-                        const nombre = comprador.persona_fisica?.nombre || comprador.persona_moral?.denominacion_social || null
-                        const rfc = comprador.persona_fisica?.rfc || comprador.persona_moral?.rfc || null
-                        const curp = comprador.persona_fisica?.curp || null
-                        
-                        // Función auxiliar para normalizar nombres (quitar espacios extra, convertir a minúsculas)
-                        const normalizeName = (str: string | null | undefined): string => {
-                          if (!str) return ''
-                          return str.toLowerCase().trim().replace(/\s+/g, ' ')
-                        }
-                        
-                        // Determinar rol en crédito si hay créditos
-                        // Buscar en TODOS los créditos, no solo el primero
-                        let rolEnCredito: string | null = null
-                        if (data.creditos && data.creditos.length > 0 && nombre) {
-                          // Iterar sobre todos los créditos
-                          for (const credito of data.creditos) {
-                            if (!credito.participantes || !Array.isArray(credito.participantes)) continue
-                            
-                            const participante = credito.participantes.find((p: any) => {
-                              // 1) Si tiene party_id, buscar por party_id (incluye 'comprador_1', 'comprador_2', etc.)
-                              if (p.party_id && comprador.party_id) {
-                                return p.party_id === comprador.party_id
-                              }
-                              
-                              // 2) Si el participante tiene party_id como 'comprador_X' y el comprador tiene el mismo índice
-                              if (p.party_id && typeof p.party_id === 'string' && p.party_id.startsWith('comprador_')) {
-                                const numStr = p.party_id.replace('comprador_', '')
-                                const num = parseInt(numStr, 10)
-                                if (!isNaN(num) && num === idx + 1) {
-                                  return true
-                                }
-                              }
-                              
-                              // 3) Si tiene nombre directo, comparar por nombre normalizado
-                              if (p.nombre && nombre) {
-                                const nombreNormalizado = normalizeName(nombre)
-                                const participanteNombreNormalizado = normalizeName(p.nombre)
-                                if (nombreNormalizado && participanteNombreNormalizado) {
-                                  // Comparación exacta o parcial (por si hay diferencias menores)
-                                  return nombreNormalizado === participanteNombreNormalizado ||
-                                         nombreNormalizado.includes(participanteNombreNormalizado) ||
-                                         participanteNombreNormalizado.includes(nombreNormalizado)
-                                }
-                              }
-                              
-                              return false
-                            })
-                            
-                            if (participante) {
-                              rolEnCredito = participante.rol === 'acreditado' ? 'Acreditado' : 
-                                           participante.rol === 'coacreditado' ? 'Coacreditado' : null
-                              break // Si encontramos el rol, no necesitamos seguir buscando
+                          // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
+                          // Usar setTimeout para asegurar que se resetee después de procesar los archivos
+                          setTimeout(() => {
+                            if (e.target) {
+                              e.target.value = ''
                             }
+                          }, 0)
+                        }}
+                        className="hidden"
+                      />
+
+                      <Textarea
+                        ref={textInputRef}
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onPaste={handlePaste}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault()
+                            handleSend()
                           }
-                        }
-                        
-                        if (!nombre) return null
-                        
-                        return (
-                          <div key={idx} className="border-l-2 border-blue-200 pl-2 space-y-1">
-                            <div className="font-semibold text-gray-700">
-                              {data.compradores.length > 1 ? `Comprador ${idx + 1}` : 'Comprador'} 
-                              {rolEnCredito && ` (${rolEnCredito})`}
-                            </div>
-                            {comprador.persona_fisica?.nombre && (
-                              <div><span className="font-medium">Nombre:</span> {comprador.persona_fisica.nombre}</div>
-                            )}
-                            {comprador.persona_moral?.denominacion_social && (
-                              <div><span className="font-medium">Denominación Social:</span> {comprador.persona_moral.denominacion_social}</div>
-                            )}
-                            {rfc && (
-                              <div><span className="font-medium">RFC:</span> {rfc}</div>
-                            )}
-                            {curp && (
-                              <div><span className="font-medium">CURP:</span> {curp}</div>
-                            )}
-                            {comprador.persona_fisica?.estado_civil && (
-                              <div><span className="font-medium">Estado Civil:</span> {comprador.persona_fisica.estado_civil}</div>
-                            )}
-                            {comprador.persona_fisica?.conyuge?.nombre && (
-                              <div className="text-gray-500 italic">
-                                <span className="font-medium">Cónyuge:</span> {comprador.persona_fisica.conyuge.nombre}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })
-                    ) : (
-                      <div className="text-gray-400 italic">Pendiente (requiere identificación oficial)</div>
-                    )}
-                  </div>
-                </div>
+                        }}
+                        placeholder="Escribe tu mensaje o pega una imagen (Ctrl+V / Cmd+V)..."
+                        className="min-h-[44px] max-h-[120px] resize-none border-0 bg-transparent focus:ring-0 focus-visible:ring-0 pl-12 pr-12 py-3"
+                        disabled={isProcessing || isProcessingDocument}
+                      />
 
-                {/* PASO 5 – CRÉDITO DEL COMPRADOR (si aplica) */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_5 === 'completed' || serverState?.state_status?.ESTADO_5 === 'not_applicable' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : serverState?.state_status?.ESTADO_5 === 'incomplete' ? (
-                      <AlertCircle className="h-4 w-4 text-yellow-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <CreditCard className="h-4 w-4" />
-                      <span>PASO 5: Crédito del Comprador</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.tipoOperacion ? (
-                      // Verificar estado del servidor para determinar si está pendiente
-                      serverState?.state_status?.ESTADO_5 === 'pending' ? (
-                        <div className="text-gray-400 italic">Pendiente: aún no se ha confirmado si será crédito o contado</div>
-                      ) : data.creditos !== undefined && data.creditos.length > 0 ? (
-                        <>
-                          {data.creditos.map((credito, idx) => (
-                            <div key={idx} className="mb-2">
-                              {credito.institucion && (
-                                <div><span className="font-medium">Institución {data.creditos.length > 1 ? `(${idx + 1})` : ''}:</span> {credito.institucion}</div>
-                              )}
-                              {credito.monto && (
-                                <div><span className="font-medium">Monto {data.creditos.length > 1 ? `(${idx + 1})` : ''}:</span> {credito.monto}</div>
-                              )}
-                              {!credito.institucion && (
-                                <div className="text-yellow-600 italic">Información pendiente</div>
-                              )}
-                            </div>
-                          ))}
-                        </>
-                      ) : data.creditos !== undefined && data.creditos.length === 0 ? (
-                        <div className="text-gray-500">No aplica (pago de contado)</div>
-                      ) : (
-                        <div className="text-gray-400 italic">Pendiente: aún no se ha confirmado si será crédito o contado</div>
-                      )
-                    ) : (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
-                  </div>
-                </div>
+                      {/* Botón de adjuntar archivos dentro del input - izquierda */}
+                      <Button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          // Asegurar que el input esté reseteado antes de abrir el diálogo
+                          if (fileInputRef.current) {
+                            fileInputRef.current.value = ''
+                            fileInputRef.current.click()
+                          }
+                        }}
+                        variant="ghost"
+                        size="icon"
+                        className="absolute left-2 bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-gray-600 hover:text-blue-600 transition-colors"
+                        title="Adjuntar documentos"
+                      >
+                        <Upload className="h-4 w-4" />
+                      </Button>
 
-                {/* PASO 6 – CANCELACIÓN DE HIPOTECA (si existe) */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_6 === 'completed' || serverState?.state_status?.ESTADO_6 === 'not_applicable' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : serverState?.state_status?.ESTADO_6 === 'incomplete' ? (
-                      <AlertCircle className="h-4 w-4 text-yellow-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <FileCheck2 className="h-4 w-4" />
-                      <span>PASO 6: Cancelación de Hipoteca</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.inmueble?.existe_hipoteca === false ? (
-                      <div className="text-gray-500">Libre de gravamen/hipoteca (confirmado)</div>
-                    ) : Array.isArray(data.gravamenes) && data.gravamenes.length > 0 ? (
-                      (() => {
-                        const g0: any = data.gravamenes[0]
-                        const acreedor = g0?.institucion || g0?.acreedor || g0?.institucion_financiera || null
-                        const numero = g0?.numero || g0?.folio || g0?.numero_hipoteca || null
-                        return (
-                          <>
-                            {acreedor && <div><span className="font-medium">Acreedor:</span> {acreedor}</div>}
-                            {numero && <div><span className="font-medium">Número:</span> {numero}</div>}
-                          </>
-                        )
-                      })()
-                    ) : (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
+                      {/* Botón de enviar dentro del input - derecha */}
+                      <Button
+                        onClick={(isProcessing || isProcessingDocument) ? cancelMessageRequest : handleSend}
+                        disabled={!(isProcessing || isProcessingDocument) && (!input.trim() && pendingFiles.length === 0)}
+                        className="absolute right-2 bg-transparent bottom-2 h-8 w-8 rounded-lg hover:bg-gray-100 text-black disabled:opacity-50 disabled:cursor-not-allowed "
+                        size="icon"
+                        title={(isProcessing || isProcessingDocument) ? "Cancelar solicitud" : (pendingFiles.length > 0 ? "Procesar archivos y enviar" : "Enviar mensaje")}
+                      >
+                        {(isProcessing || isProcessingDocument) ? (
+                          <Square className="h-4 w-4 fill-current" />
+                        ) : (
+                          <ArrowUp className="h-4 w-4" />
+                        )}
+                      </Button>
+
+                      {/* Contador de caracteres o indicador */}
+                      {input.length > 0 && (
+                        <div className="absolute bottom-2 right-12 text-xs text-gray-400">
+                          {input.length}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-                </div>
+              </div>
+
+              {/* Indicador de tipos de archivo aceptados */}
+              <div className="mt-2 flex items-center justify-start space-x-4 text-xs text-gray-400">
+                <span className="flex items-center space-x-1">
+                  <FileText className="h-3 w-3" />
+                  <span>Sube tus archivos PDF, JPG, PNG, DOCX (Máx. 20MB)</span>
+                </span>
               </div>
             </div>
           </CardContent>
         </Card>
-      )}
 
-      {/* Panel de información extraída - Desktop (lado derecho) */}
-      {showDataPanel && !(isMobile || isTablet) && (
-        <Card className="w-80 p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
-          <CardContent className="flex-1 flex flex-col p-0 min-h-0">
-            {/* Header del panel */}
-            <div className="border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white px-4 py-3">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-sm text-gray-900">Información Capturada</h3>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 hover:bg-gray-200 hover:text-foreground"
-                  onClick={() => setShowDataPanel(false)}
-                >
-                  <EyeOff className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="mt-2">
-                <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
-                  <span>Progreso</span>
-                  <span>{progress.completed}/{progress.total} pasos</span>
-                </div>
-                <Progress value={progress.percentage} className="h-2" />
-              </div>
-            </div>
-
-            {/* Contenido del panel */}
-            <div className="flex-1 min-h-0 overflow-hidden">
-              <div className="h-full overflow-auto">
-                <div className="p-4 space-y-4">
-                {/* PASO 1 – OPERACIÓN Y FORMA DE PAGO */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_1 === 'completed' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <CreditCard className="h-4 w-4" />
-                      <span>PASO 1: Operación y Forma de Pago</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.tipoOperacion ? (
-                      <>
-                        <div><span className="font-medium">Tipo de operación:</span> {data.tipoOperacion}</div>
-                        {serverState?.state_status?.ESTADO_1 === 'completed' ? (
-                          data.creditos !== undefined && data.creditos.length > 0 ? (
-                            <div><span className="font-medium">Forma de pago:</span> Crédito</div>
-                          ) : data.creditos !== undefined && data.creditos.length === 0 ? (
-                            <div><span className="font-medium">Forma de pago:</span> Contado</div>
-                          ) : (
-                            <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
-                          )
-                        ) : (
-                          <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
-                        )}
-                      </>
-                    ) : (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* PASO 2 – INMUEBLE Y REGISTRO (CONSOLIDADO) */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_2 === 'completed' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <Building2 className="h-4 w-4" />
-                      <span>PASO 2: Inmueble y Registro</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.inmueble?.folio_real && (
-                      <div><span className="font-medium">Folio Real:</span> {data.inmueble.folio_real}</div>
-                    )}
-                    {data.inmueble?.partidas && data.inmueble.partidas.length > 0 && (
-                      <div><span className="font-medium">Partida(s):</span> {
-                        data.inmueble.partidas
-                          .map((p: any) => {
-                            if (typeof p === 'string') return p
-                            if (!p) return null
-                            return p.partida || p.numero || p.folio || p.value || null
-                          })
-                          .filter(Boolean)
-                          .join(', ')
-                      }</div>
-                    )}
-                    {data.inmueble?.direccion?.calle && (
-                      <div><span className="font-medium">Dirección:</span> {
-                        typeof data.inmueble.direccion === 'string' 
-                          ? data.inmueble.direccion 
-                          : (() => {
-                              const unidad = data.inmueble?.datos_catastrales?.unidad
-                              const base = `${data.inmueble.direccion.calle || ''} ${data.inmueble.direccion.numero || ''} ${data.inmueble.direccion.colonia || ''}`.trim()
-                              return unidad ? `Unidad ${unidad}, ${base}` : base
-                            })()
-                      }</div>
-                    )}
-                    {data.inmueble?.superficie && (
-                      <div><span className="font-medium">Superficie:</span> {
-                        typeof data.inmueble.superficie === 'string' 
-                          ? data.inmueble.superficie 
-                          : String(data.inmueble.superficie)
-                      }</div>
-                    )}
-                    {data.inmueble?.valor && (
-                      <div><span className="font-medium">Valor:</span> {
-                        typeof data.inmueble.valor === 'string' 
-                          ? data.inmueble.valor 
-                          : String(data.inmueble.valor)
-                      }</div>
-                    )}
-                    {!data.inmueble?.folio_real && (!data.inmueble?.partidas || data.inmueble.partidas.length === 0) && (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* PASO 3 – VENDEDOR(ES) */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_3 === 'completed' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <UserCircle className="h-4 w-4" />
-                      <span>PASO 3: Vendedor(es)</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.vendedores && data.vendedores.length > 0 && (
-                      <>
-                        {data.vendedores[0].persona_fisica?.nombre && (
-                          <div><span className="font-medium">Nombre:</span> {data.vendedores[0].persona_fisica.nombre}</div>
-                        )}
-                        {data.vendedores[0].persona_moral?.denominacion_social && (
-                          <div><span className="font-medium">Denominación Social:</span> {data.vendedores[0].persona_moral.denominacion_social}</div>
-                        )}
-                        {(data.vendedores[0].persona_fisica?.rfc || data.vendedores[0].persona_moral?.rfc) && (
-                          <div><span className="font-medium">RFC:</span> {data.vendedores[0].persona_fisica?.rfc || data.vendedores[0].persona_moral?.rfc}</div>
-                        )}
-                        {data.vendedores[0].persona_fisica?.curp && (
-                          <div><span className="font-medium">CURP:</span> {data.vendedores[0].persona_fisica.curp}</div>
-                        )}
-                        {(() => {
-                          const vendedor = data.vendedores[0]
-                          const tieneCredito = vendedor?.tiene_credito
-                          const hasGravamen =
-                            data.inmueble?.existe_hipoteca === true ||
-                            (Array.isArray(data.gravamenes) && data.gravamenes.length > 0)
-
-                          if (tieneCredito === true) {
-                            return <div><span className="font-medium">Crédito pendiente:</span> Sí</div>
-                          }
-                          if (tieneCredito === false && !hasGravamen) {
-                            return <div><span className="font-medium">Crédito pendiente:</span> No</div>
-                          }
-                          if (hasGravamen) {
-                            return <div><span className="font-medium">Crédito pendiente:</span> Sí (por gravamen/hipoteca)</div>
-                          }
-                          return null
-                        })()}
-                      </>
-                    )}
-                    {(!data.vendedores || data.vendedores.length === 0 || (!data.vendedores[0].persona_fisica?.nombre && !data.vendedores[0].persona_moral?.denominacion_social)) && (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* PASO 4 – COMPRADOR(ES) (CONSOLIDADO CON EXPEDIENTE) */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_4 === 'completed' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <Users className="h-4 w-4" />
-                      <span>PASO 4: Comprador(es)</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-2 text-xs text-gray-600">
-                    {data.compradores && data.compradores.length > 0 ? (
-                      data.compradores.map((comprador, idx) => {
-                        const nombre = comprador.persona_fisica?.nombre || comprador.persona_moral?.denominacion_social || null
-                        const rfc = comprador.persona_fisica?.rfc || comprador.persona_moral?.rfc || null
-                        const curp = comprador.persona_fisica?.curp || null
-                        
-                        // Función auxiliar para normalizar nombres (quitar espacios extra, convertir a minúsculas)
-                        const normalizeName = (str: string | null | undefined): string => {
-                          if (!str) return ''
-                          return str.toLowerCase().trim().replace(/\s+/g, ' ')
-                        }
-                        
-                        // Determinar rol en crédito si hay créditos
-                        // Buscar en TODOS los créditos, no solo el primero
-                        let rolEnCredito: string | null = null
-                        if (data.creditos && data.creditos.length > 0 && nombre) {
-                          // Iterar sobre todos los créditos
-                          for (const credito of data.creditos) {
-                            if (!credito.participantes || !Array.isArray(credito.participantes)) continue
-                            
-                            const participante = credito.participantes.find((p: any) => {
-                              // 1) Si tiene party_id, buscar por party_id (incluye 'comprador_1', 'comprador_2', etc.)
-                              if (p.party_id && comprador.party_id) {
-                                return p.party_id === comprador.party_id
-                              }
-                              
-                              // 2) Si el participante tiene party_id como 'comprador_X' y el comprador tiene el mismo índice
-                              if (p.party_id && typeof p.party_id === 'string' && p.party_id.startsWith('comprador_')) {
-                                const numStr = p.party_id.replace('comprador_', '')
-                                const num = parseInt(numStr, 10)
-                                if (!isNaN(num) && num === idx + 1) {
-                                  return true
-                                }
-                              }
-                              
-                              // 3) Si tiene nombre directo, comparar por nombre normalizado
-                              if (p.nombre && nombre) {
-                                const nombreNormalizado = normalizeName(nombre)
-                                const participanteNombreNormalizado = normalizeName(p.nombre)
-                                if (nombreNormalizado && participanteNombreNormalizado) {
-                                  // Comparación exacta o parcial (por si hay diferencias menores)
-                                  return nombreNormalizado === participanteNombreNormalizado ||
-                                         nombreNormalizado.includes(participanteNombreNormalizado) ||
-                                         participanteNombreNormalizado.includes(nombreNormalizado)
-                                }
-                              }
-                              
-                              return false
-                            })
-                            
-                            if (participante) {
-                              rolEnCredito = participante.rol === 'acreditado' ? 'Acreditado' : 
-                                           participante.rol === 'coacreditado' ? 'Coacreditado' : null
-                              break // Si encontramos el rol, no necesitamos seguir buscando
-                            }
-                          }
-                        }
-                        
-                        if (!nombre) return null
-                        
-                        return (
-                          <div key={idx} className="border-l-2 border-blue-200 pl-2 space-y-1">
-                            <div className="font-semibold text-gray-700">
-                              {data.compradores.length > 1 ? `Comprador ${idx + 1}` : 'Comprador'} 
-                              {rolEnCredito && ` (${rolEnCredito})`}
-                            </div>
-                            {comprador.persona_fisica?.nombre && (
-                              <div><span className="font-medium">Nombre:</span> {comprador.persona_fisica.nombre}</div>
-                            )}
-                            {comprador.persona_moral?.denominacion_social && (
-                              <div><span className="font-medium">Denominación Social:</span> {comprador.persona_moral.denominacion_social}</div>
-                            )}
-                            {rfc && (
-                              <div><span className="font-medium">RFC:</span> {rfc}</div>
-                            )}
-                            {curp && (
-                              <div><span className="font-medium">CURP:</span> {curp}</div>
-                            )}
-                            {comprador.persona_fisica?.estado_civil && (
-                              <div><span className="font-medium">Estado Civil:</span> {comprador.persona_fisica.estado_civil}</div>
-                            )}
-                            {comprador.persona_fisica?.conyuge?.nombre && (
-                              <div className="text-gray-500 italic">
-                                <span className="font-medium">Cónyuge:</span> {comprador.persona_fisica.conyuge.nombre}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })
-                    ) : (
-                      <div className="text-gray-400 italic">Pendiente (requiere identificación oficial)</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* PASO 5 – CRÉDITO DEL COMPRADOR (si aplica) */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_5 === 'completed' || serverState?.state_status?.ESTADO_5 === 'not_applicable' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : serverState?.state_status?.ESTADO_5 === 'incomplete' ? (
-                      <AlertCircle className="h-4 w-4 text-yellow-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <CreditCard className="h-4 w-4" />
-                      <span>PASO 5: Crédito del Comprador</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.tipoOperacion ? (
-                      // Verificar estado del servidor para determinar si está pendiente
-                      serverState?.state_status?.ESTADO_5 === 'pending' ? (
-                        <div className="text-gray-400 italic">Pendiente: aún no se ha confirmado si será crédito o contado</div>
-                      ) : data.creditos !== undefined && data.creditos.length > 0 ? (
-                        <>
-                          {data.creditos.map((credito, idx) => (
-                            <div key={idx} className="mb-2">
-                              {credito.institucion && (
-                                <div><span className="font-medium">Institución {data.creditos.length > 1 ? `(${idx + 1})` : ''}:</span> {credito.institucion}</div>
-                              )}
-                              {credito.monto && (
-                                <div><span className="font-medium">Monto {data.creditos.length > 1 ? `(${idx + 1})` : ''}:</span> {credito.monto}</div>
-                              )}
-                              {!credito.institucion && (
-                                <div className="text-yellow-600 italic">Información pendiente</div>
-                              )}
-                            </div>
-                          ))}
-                        </>
-                      ) : data.creditos !== undefined && data.creditos.length === 0 ? (
-                        <div className="text-gray-500">No aplica (pago de contado)</div>
-                      ) : (
-                        <div className="text-gray-400 italic">Pendiente: aún no se ha confirmado si será crédito o contado</div>
-                      )
-                    ) : (
-                      <div className="text-gray-400 italic">Pendiente</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* PASO 6 – CANCELACIÓN DE HIPOTECA (si existe) */}
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    {serverState?.state_status?.ESTADO_6 === 'completed' || serverState?.state_status?.ESTADO_6 === 'not_applicable' ? (
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    ) : serverState?.state_status?.ESTADO_6 === 'incomplete' ? (
-                      <AlertCircle className="h-4 w-4 text-yellow-500" />
-                    ) : (
-                      <AlertCircle className="h-4 w-4 text-gray-400" />
-                    )}
-                    <h4 className="font-medium text-sm text-gray-900 flex items-center space-x-1">
-                      <FileCheck2 className="h-4 w-4" />
-                      <span>PASO 6: Cancelación de Hipoteca</span>
-                    </h4>
-                  </div>
-                  <div className="ml-6 space-y-1 text-xs text-gray-600">
-                    {data.inmueble?.existe_hipoteca === false ? (
-                      <div className="text-gray-500">Libre de gravamen/hipoteca (confirmado)</div>
-                    ) : Array.isArray(data.gravamenes) && data.gravamenes.length > 0 ? (
-                      (() => {
-                        const g0: any = data.gravamenes[0]
-                        const acreedor = g0?.institucion ? (
-                          <div className="text-gray-700">Acreedor: {g0.institucion}</div>
-                        ) : null
-                        if (g0?.cancelacion_confirmada === true) {
-                          return (
-                            <>
-                              <div className="text-green-700">Existe gravamen/hipoteca: cancelación ya inscrita (confirmado)</div>
-                              {acreedor}
-                            </>
-                          )
-                        }
-                        if (g0?.cancelacion_confirmada === false) {
-                          return (
-                            <>
-                              <div className="text-green-700">Existe gravamen/hipoteca: se cancelará en la escritura/trámite (confirmado)</div>
-                              {acreedor}
-                            </>
-                          )
-                        }
-                        return (
-                          <>
-                            <div className="text-gray-400 italic">Pendiente: confirmar si la cancelación ya está inscrita (sí/no)</div>
-                            {acreedor}
-                          </>
-                        )
-                      })()
-                    ) : (
-                      <div className="text-gray-400 italic">Pendiente: confirmar si está libre de gravamen/hipoteca (sí/no)</div>
-                    )}
-                  </div>
-                </div>
-
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+        {/* Panel de información extraída */}
+        <DocumentSidebar
+          data={data}
+          serverState={serverState}
+          isVisible={showDataPanel}
+        />
       </div>
 
-     
+
 
       {/* Dialog de confirmación para nuevo chat */}
       <Dialog open={showNewChatDialog} onOpenChange={setShowNewChatDialog}>
@@ -4739,7 +4115,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           <DialogHeader>
             <DialogTitle>¿Iniciar un nuevo chat?</DialogTitle>
             <DialogDescription>
-              Se perderá todo el progreso actual del chat. Esta acción no se puede deshacer.
+              Se guardará la conversación actual en el historial y comenzarás un trámite nuevo desde cero.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
