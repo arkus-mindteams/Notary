@@ -1417,21 +1417,6 @@ function DeslindePageInner() {
     URL.revokeObjectURL(url)
   }
 
-  // Show mobile/tablet message - must be after all hooks
-  if (isMobile || isTablet) {
-    return (
-      <ProtectedRoute>
-        <DashboardLayout>
-          <div className="min-h-screen flex items-center justify-center p-6">
-            <div className="text-center space-y-4">
-              <h1 className="text-2xl font-bold text-gray-900">Vista disponible para web</h1>
-              <p className="text-gray-600">Por favor, accede desde un dispositivo de escritorio para usar esta funcionalidad.</p>
-            </div>
-          </div>
-        </DashboardLayout>
-      </ProtectedRoute>
-    )
-  }
 
   if (appState === "processing") {
     const watchdogMs = 120000 // 2 minutes for image processing
@@ -1501,7 +1486,7 @@ function DeslindePageInner() {
   return (
     <ProtectedRoute>
       <DashboardLayout>
-        <div className="p-6">
+        <div className="p-3 sm:p-4 md:p-6">
           {/* Header - More subtle */}
           <div className="mb-6">
             <h1 className="text-2xl font-bold text-gray-900 break-words">Lectura de Plantas Arquitectónicas</h1>
@@ -1585,9 +1570,9 @@ function DeslindePageInner() {
           </div>
 
           {/* Main Layout: Upload Zone (prominent) with Selected Images inside */}
-          <div className="space-y-6 mt-4">
+          <div className="space-y-4 sm:space-y-6 mt-4">
             {/* Upload Zone with Selected Images inside */}
-            <div className="min-h-[450px] flex flex-col items-center justify-center">
+            <div className="min-h-[300px] sm:min-h-[450px] flex flex-col items-center justify-center">
               <div className="w-full">
                 <UploadZone
                   onFilesSelect={handleFilesSelect}

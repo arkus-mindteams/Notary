@@ -143,7 +143,9 @@ export async function POST(req: Request) {
       const tramiteId = context?.tramiteId || null
       const supabase = createServerClient()
 
-      if (conversationId && result.extractedData) {
+      const isArtifact = context?.is_processing_artifact === true
+
+      if (conversationId && result.extractedData && !isArtifact) {
         // 1. Guardar documento en tabla 'documentos'
         const { data: documento, error: docError } = await supabase
           .from('documentos')

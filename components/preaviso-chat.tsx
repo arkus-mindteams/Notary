@@ -1946,18 +1946,23 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         originalFile: File
         docType: string
         originalKey: string
+        isArtifact: boolean
       }
 
       const items: ImgItem[] = []
+      const userImageCount = imageFiles.length // Las primeras N imágenes son archivos directos del usuario
+
       for (let i = 0; i < allImageFiles.length; i++) {
         if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
         const imageFile = allImageFiles[i]
+        const isArtifact = i >= userImageCount // Si el índice es mayor al conteo de imágenes iniciales, es una página extraída de un PDF
+
         const originalFile = filesArray.find(f =>
           imageFile.name.includes(f.name.replace(/\.[^.]+$/, ''))
         ) || filesArray[0]
         const docType = await detectDocumentType(originalFile.name, originalFile)
         const originalKey = `${originalFile.name}:${originalFile.size}:${(originalFile as any).lastModified || ''}`
-        items.push({ index: i, imageFile, originalFile, docType, originalKey })
+        items.push({ index: i, imageFile, originalFile, docType, originalKey, isArtifact })
       }
 
       const totalFiles = items.length
@@ -2558,6 +2563,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         formData.append('needOcr', '1')
         formData.append('context', JSON.stringify({
           conversation_id: conversationIdRef.current,
+          is_processing_artifact: item.isArtifact,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
           _document_people_pending: (workingData as any)._document_people_pending ?? null,

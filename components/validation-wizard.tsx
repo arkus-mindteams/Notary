@@ -608,9 +608,9 @@ export function ValidationWizard({
       {/* Main Content - Split View with Collapsible Viewer */}
       <div className="flex-1 overflow-hidden min-h-0">
         <div className="container mx-auto px-3 sm:px-4 py-2 h-full overflow-hidden">
-          <div className={`grid gap-3 h-full overflow-y-auto transition-all duration-300 ${isViewerCollapsed
-              ? "grid-cols-1"
-              : "grid-cols-1 lg:grid-cols-[minmax(300px,40%)_minmax(400px,60%)]"
+          <div className={`grid gap-3 h-full overflow-y-auto lg:overflow-hidden transition-all duration-300 ${isViewerCollapsed
+            ? "grid-cols-1"
+            : "grid-cols-1 lg:grid-cols-[minmax(300px,40%)_minmax(400px,60%)]"
             }`}>
             {/* Document/Image Viewer - Left Side with Toggle */}
             {!isViewerCollapsed && (
@@ -627,7 +627,7 @@ export function ValidationWizard({
                     <Button
                       variant="outline"
                       size="sm"
-                      className="absolute top-2 right-2 z-10 h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity bg-background/90 shadow-sm"
+                      className="absolute top-2 right-2 z-10 h-8 w-8 p-0 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity bg-background/90 shadow-sm"
                       onClick={() => setIsViewerCollapsed(true)}
                       title="Ocultar documento"
                     >
@@ -645,7 +645,7 @@ export function ValidationWizard({
             )}
 
             {/* Text Panel - Right Side / Full width when viewer collapsed */}
-            <div className={`h-[400px] sm:h-[500px] lg:h-full overflow-y-auto min-h-0 ${isViewerCollapsed ? "" : ""}`}>
+            <div className={`h-[350px] sm:h-[450px] lg:h-full overflow-y-auto min-h-0 ${isViewerCollapsed ? "" : ""}`}>
               {/* Toggle Button to show viewer when collapsed */}
               {isViewerCollapsed && (
                 <div className="mb-2">
@@ -690,8 +690,8 @@ export function ValidationWizard({
                       </div>
                       <textarea
                         className={`w-full min-h-[180px] resize-none border rounded bg-background p-2 text-sm overflow-y-auto font-mono ${isCurrentUnitAuthorized
-                            ? "cursor-not-allowed opacity-75 bg-muted/50"
-                            : ""
+                          ? "cursor-not-allowed opacity-75 bg-muted/50"
+                          : ""
                           }`}
                         value={currentAiText}
                         placeholder={isCurrentUnitAuthorized ? "Unidad autorizada - Desautoriza para editar" : "Ingresa o edita las colindancias..."}
@@ -749,8 +749,8 @@ export function ValidationWizard({
                       </div>
                       <textarea
                         className={`w-full min-h-[180px] resize-none border rounded bg-background p-2 text-sm overflow-y-auto leading-relaxed ${isCurrentUnitAuthorized
-                            ? "cursor-not-allowed opacity-75 bg-muted/50"
-                            : ""
+                          ? "cursor-not-allowed opacity-75 bg-muted/50"
+                          : ""
                           }`}
                         value={currentNotarialText}
                         placeholder={
