@@ -257,20 +257,6 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
                     </div>
                   </Button>
 
-                  <Button
-                    variant="ghost"
-                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/settings/stats'
-                      ? 'bg-gray-700 text-gray-200'
-                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                      }`}
-                    onClick={() => handleNavigation('/dashboard/settings/stats')}
-                  >
-                    <div className="flex items-center">
-                      <span className="w-1.5 h-1.5 rounded-full bg-purple-500 mr-2"></span>
-                      Estadísticas de uso
-                    </div>
-                  </Button>
-
                   <div className="my-1 border-t border-gray-700" />
 
                   <div className="px-2 py-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">
