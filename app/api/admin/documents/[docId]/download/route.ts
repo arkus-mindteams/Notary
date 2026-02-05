@@ -9,9 +9,10 @@ export const dynamic = 'force-dynamic'
  */
 export async function GET(
     req: Request,
-    { params }: { params: { docId: string } }
+    { params }: { params: Promise<{ docId: string }> }
 ) {
     try {
+        const { docId } = await params
         const supabase = createServerClient()
 
         // Check authentication (ADMIN ONLY)
@@ -20,12 +21,10 @@ export async function GET(
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
         }
 
-        const docId = params.docId
-
         // Fetch document metadata
         const { data: doc, error: docError } = await supabase
             .from('documentos')
-            .select('id, nombre, ruta_s3, tipo')
+            .select('id, nombre, s3_key, s3_bucket, tipo')
             .eq('id', docId)
             .single()
 
@@ -34,16 +33,10 @@ export async function GET(
             return NextResponse.json({ error: 'Document not found' }, { status: 404 })
         }
 
-        // If S3 path exists, generate pre-signed URL or redirect
-        if (doc.ruta_s3) {
-            // Option 1: If using Supabase Storage
-
-            // Extract bucket and path from ruta_s3
-            // Assuming format: "bucket/path/to/file" or full URL
-            const s3Path = doc.ruta_s3.replace(/^https?:\/\/[^\/]+\//, '') // Remove domain if present
-            const pathParts = s3Path.split('/')
-            const bucket = pathParts[0] || 'documentos' // Default bucket
-            const filePath = pathParts.slice(1).join('/')
+        // If S3 path exists, generate pre-signed URL
+        if (doc.s3_key) {
+            const bucket = doc.s3_bucket || 'documentos'
+            const filePath = doc.s3_key
 
             // Generate signed URL (expires in 1 hour)
             const { data: signedUrlData, error: urlError } = await supabase
@@ -53,8 +46,7 @@ export async function GET(
 
             if (urlError) {
                 console.error('Error generating signed URL:', urlError)
-                // Fallback: return the direct S3 path (might not be accessible)
-                return NextResponse.redirect(doc.ruta_s3)
+                return NextResponse.json({ error: 'Error generating download link' }, { status: 500 })
             }
 
             if (signedUrlData?.signedUrl) {

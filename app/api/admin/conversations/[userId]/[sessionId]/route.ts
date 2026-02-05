@@ -127,7 +127,7 @@ export async function GET(
         const totalTokens = usageLogs?.reduce((sum, log) => sum + (log.tokens_total || 0), 0) || 0
         const totalCost = usageLogs?.reduce((sum, log) => sum + (Number(log.estimated_cost) || 0), 0) || 0
 
-        // Fetch related documents via chat_session_documents bridge table
+        // 4. Fetch related documents via chat_session_documents bridge table
         const { data: linkedDocs } = await supabase
             .from('chat_session_documents')
             .select(`
@@ -143,7 +143,28 @@ export async function GET(
         // Flatten the join results
         const documents = linkedDocs?.map((ld: any) => ld.documentos).filter(Boolean) || []
 
-        // Fallback: If no linked docs, check last_context.tramite_id (legacy)
+        // Fallback 1: Check activity_logs for 'document_upload' events in this session
+        // This catches documents that might have missed the bridge table link
+        const { data: docLogs } = await supabase
+            .from('activity_logs')
+            .select('data')
+            .eq('category', 'document_processing')
+            .eq('event_type', 'document_upload')
+            .eq('session_id', sessionId)
+
+        const logDocIds = docLogs?.map(log => log.data?.documento_id).filter(Boolean) || []
+        if (logDocIds.length > 0) {
+            const { data: extraDocs } = await supabase
+                .from('documentos')
+                .select('id, nombre, tipo, created_at')
+                .in('id', logDocIds)
+
+            if (extraDocs) {
+                documents.push(...extraDocs)
+            }
+        }
+
+        // Fallback 2: If no linked docs, check last_context.tramite_id (legacy)
         if (documents.length === 0) {
             const tramiteId = session.last_context?.tramite_id
             if (tramiteId) {
