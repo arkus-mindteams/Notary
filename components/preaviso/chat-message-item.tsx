@@ -140,7 +140,7 @@ export function ChatMessageItem({
                         }`}
                 >
                     {!(message.role === 'assistant' && message.content === 'Procesando documento...') && (
-                        <p className={`text-sm leading-relaxed whitespace-pre-wrap ${message.role === 'user' ? 'text-white' : 'text-gray-800'
+                        <p className={`text-[13px] md:text-sm leading-relaxed whitespace-pre-wrap ${message.role === 'user' ? 'text-white' : 'text-gray-800'
                             }`}>{message.content}</p>
                     )}
 

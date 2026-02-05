@@ -837,7 +837,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // La limpieza se hace en el botón de eliminar y en onLoad de las imágenes
     }
   }, [pendingFiles])
-  const [showDataPanel, setShowDataPanel] = useState(true)
+  const [showDataPanel, setShowDataPanel] = useState(!(isMobile || isTablet))
+
+  // Sincronizar showDataPanel con el viewport inicial
+  useEffect(() => {
+    if (isMobile || isTablet) {
+      setShowDataPanel(false)
+    } else {
+      setShowDataPanel(true)
+    }
+  }, [isMobile, isTablet])
   const [hidePanelsAfterMessage, setHidePanelsAfterMessage] = useState(false)
   const previousPendingFilesLengthRef = useRef(0)
 
@@ -1602,7 +1611,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // ✅ FIX: Si no hay sesión, intentar crearla explícitamente primero
       if (!isCreatingSessionRef.current) {
         try {
-          await createInitialSession()
+          await createNewSession()
         } catch (e) {
           console.error("Error creating initial session during upload:", e)
         }
@@ -3790,7 +3799,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
   return (
     <div
-      className="h-full flex flex-col gap-4 overflow-hidden relative"
+      className={`${(isMobile || isTablet) ? 'h-auto min-h-screen' : 'h-full'} flex flex-col gap-4 ${(isMobile || isTablet) ? '' : 'overflow-hidden'} relative`}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -3813,42 +3822,33 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         </div>
       )}
 
-      {/* Layout con panel de información - Parte superior */}
-      <div className={`flex-1 flex ${!showDataPanel
+      {/* Botón para mostrar panel si está oculto - Arriba del chat */}
+      {!showDataPanel && (
+        <div className='flex justify-end mb-4'>
+          <Button
+            variant="outline"
+            className="gap-2 h-9 px-4 shrink-0 hover:bg-gray-50 border-gray-200 text-gray-700 shadow-sm"
+            onClick={() => {
+              setShowDataPanel(true)
+              setHidePanelsAfterMessage(false)
+            }}
+          >
+            <Eye className="h-4 w-4" />
+            <span className="text-sm font-medium">Mostrar informacion capturada</span>
+          </Button>
+        </div>
+      )}
+
+      <div className={`${(isMobile || isTablet) ? 'flex-none' : 'flex-1'} flex ${!showDataPanel
         ? 'flex-col'
         : (isMobile || isTablet)
-          ? 'flex-col'
+          ? 'flex-col h-auto'
           : ''
-        } gap-4 min-h-0 overflow-hidden`}>
-        {/* Botón para mostrar panel si está oculto */}
-        {!showDataPanel && (
-          <div className='flex justify-end'>
-            <Button
-              variant="outline"
-              size="icon"
-              className="gap-1 h-8 px-2 shrink-0 hover:bg-gray-200 hover:text-foreground w-fit "
-              onClick={() => {
-                setShowDataPanel(true)
-                setHidePanelsAfterMessage(false)
-              }}
-            >
-              <Eye className="h-4 w-4" />
-              <span className="text-xs">Mostrar informacion capturada</span>
-            </Button>
-          </div>
-        )}
+        } gap-4 ${(isMobile || isTablet) ? 'min-h-0' : 'min-h-0 overflow-hidden'}`}>
 
-        {/* Panel de información extraída - Primero en móvil/tablet, después en desktop */}
-        {showDataPanel && (isMobile || isTablet) && (
-          <DocumentSidebar
-            data={data}
-            serverState={serverState}
-            isVisible={showDataPanel}
-          />
-        )}
 
         {/* Chat principal */}
-        <Card className={`flex-1 p-0 flex flex-col shadow-xl border border-gray-200 overflow-hidden bg-white ${(isMobile || isTablet) ? 'min-h-[550px]' : 'min-h-0'
+        <Card className={`${(isMobile || isTablet) ? 'flex-none' : 'flex-1'} p-0 flex flex-col shadow-xl border border-gray-200 overflow-hidden bg-white ${(isMobile || isTablet) ? 'min-h-[550px]' : 'min-h-0'
           }`}>
           <CardContent className="flex-1 flex flex-col p-0 min-h-0">
             {/* Header moderno */}
@@ -3865,20 +3865,23 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center space-x-2">
-                      <h3 className="font-semibold text-base text-gray-900">Asistente de Pre-Aviso</h3>
-                      <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                      <h3 className={`font-semibold ${isMobile ? 'text-sm' : 'text-base'} text-gray-900`}>Asistente de Pre-Aviso</h3>
+                      <span className={`px-2 py-0.5 ${isMobile ? 'text-[10px]' : 'text-xs'} font-medium bg-blue-100 text-blue-700 rounded-full`}>
                         En línea
                       </span>
                     </div>
-                    <p className="text-xs text-gray-500 mt-0.5 flex items-center space-x-1">
+                    <p className={`${isMobile ? 'text-[10px]' : 'text-xs'} text-gray-500 mt-0.5 flex items-center space-x-1`}>
                       <span>Compraventa de Inmueble</span>
-                      <span className="text-gray-300">•</span>
-                      <span>Notaría Pública #3</span>
+                      {!isMobile && (
+                        <>
+                          <span className="text-gray-300">•</span>
+                          <span>Notaría Pública #3</span>
+                        </>
+                      )}
                     </p>
                   </div>
                 </div>
 
-                {/* Acciones del header */}
                 <div className="flex items-center space-x-1">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -4125,12 +4128,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           </CardContent>
         </Card>
 
-        {/* Panel de información extraída - Desktop only (mobile/tablet shown above) */}
-        {showDataPanel && !(isMobile || isTablet) && (
+        {/* Panel de información extraída - Mobile/Tablet (abajo) o Desktop (derecha) */}
+        {showDataPanel && (
           <DocumentSidebar
             data={data}
             serverState={serverState}
             isVisible={showDataPanel}
+            onClose={(isMobile || isTablet) ? () => setShowDataPanel(false) : undefined}
           />
         )}
       </div>
