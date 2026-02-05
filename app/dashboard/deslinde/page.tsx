@@ -11,7 +11,7 @@ import { DocumentViewer } from "@/components/document-viewer"
 import { simulateOCR, type PropertyUnit } from "@/lib/ocr-simulator"
 import type { StructuredUnit, StructuringResponse } from "@/lib/ai-structuring-types"
 import { createStructuredSegments, type TransformedSegment } from "@/lib/text-transformer"
-import { StatsService } from "@/lib/services/stats-service"
+import { StatsService, STATS_EVENTS } from "@/lib/services/stats-service"
 import { calculateSimilarity } from "@/lib/utils/text-metrics"
 import { useAuth } from "@/lib/auth-context"
 import { FileText, Scale, Shield, ArrowLeft, X, ImageIcon, Play, Check, CheckSquare, RotateCw, RotateCcw, Crop, ZoomIn, ZoomOut, Maximize2, Move } from "lucide-react"
@@ -21,6 +21,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Checkbox } from "@/components/ui/checkbox"
 import { toast } from "sonner"
 import Link from "next/link"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { useIsTablet } from "@/hooks/use-tablet"
 type AppState = "upload" | "processing" | "validation"
 
 // Helper function to format numbers preserving original decimal places
@@ -302,6 +304,8 @@ function PdfImageCard({
 }
 
 function DeslindePageInner() {
+  const isMobile = useIsMobile()
+  const isTablet = useIsTablet()
   const [appState, setAppState] = useState<AppState>("upload")
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [documentUrl, setDocumentUrl] = useState<string>("")
@@ -322,24 +326,38 @@ function DeslindePageInner() {
   const [imageCrops, setImageCrops] = useState<Map<number, { x: number; y: number; width: number; height: number }>>(new Map())
   const [showCropDialog, setShowCropDialog] = useState(false)
   const [currentCropIndex, setCurrentCropIndex] = useState<number | null>(null)
-  const { user, session } = useAuth()
+  const { user } = useAuth()
 
-  // Logging refs & state - REMOVED (Stats now handled server-side)
-  /* const [processingLogId, setProcessingLogId] = useState<string | null>(null)
-  const processingLogIdRef = useRef<string | null>(null) 
-  const unitsLogRef = useRef<Map<string, any>>(new Map()) */
+  // Logging refs & state
+  const [processingLogId, setProcessingLogId] = useState<string | null>(null)
+  const processingLogIdRef = useRef<string | null>(null)
+  const latestTextRef = useRef<string>("")
+  const isLogFinalizedRef = useRef(false)
+  const unitsLogRef = useRef<Map<string, any>>(new Map())
 
-  // Sync latest text to ref - REMOVED
-  /* useEffect(() => {
-    // legacy logic removed
-  }, [unitSegments]) */
+  // Sync latest text to ref for unmount cleanup
+  useEffect(() => {
+    const text = Array.from(unitSegments.values())
+      .flatMap((segments) => segments.map((seg) => seg.notarialText))
+      .join("\n\n")
+    if (text) latestTextRef.current = text
+  }, [unitSegments])
 
-  // Handle unmount / navigation away logic - REMOVED (Stats now handled server-side)
-  /* useEffect(() => {
+  // Handle unmount / navigation away logic
+  useEffect(() => {
     return () => {
-       // logic removed
+      // If we have an active log and it wasn't finalized (exported)
+      if (processingLogIdRef.current && !isLogFinalizedRef.current) {
+        const finalText = latestTextRef.current
+        // Auto-save the session as abandoned/viewed
+        StatsService.updateEvent(processingLogIdRef.current, {
+          final_text: finalText,
+          status: 'abandoned_or_viewed',
+          completion_method: 'navigation_away'
+        })
+      }
     }
-  }, []) */
+  }, [])
 
 
   const searchParams = useSearchParams()
@@ -665,17 +683,11 @@ function DeslindePageInner() {
           console.warn("[deslinde] Skipping invalid image file:", image)
         }
       })
-      // force hash refresh
+      // Optionally force refresh to bypass cache (useful for debugging)
       // formData.append("forceRefresh", "true")
-
-      const headers: HeadersInit = {}
-      if (session?.access_token) {
-        headers['Authorization'] = `Bearer ${session.access_token}`
-      }
 
       const resp = await fetch("/api/ai/structure", {
         method: "POST",
-        headers,
         body: formData,
       })
       if (!resp.ok) {
@@ -1144,16 +1156,9 @@ function DeslindePageInner() {
         .flatMap((segments) => segments.map((seg) => seg.notarialText))
         .join("\n\n")
       setInitialAiText(initialText)
-      setInitialAiText(initialText)
-      // latestTextRef.current = initialText // REMOVED
+      latestTextRef.current = initialText // Initialize ref
 
       // Create initial log record
-<<<<<<< Updated upstream
-      // Create initial log record - REMOVED (Stats now handled server-side)
-      /* if (user?.id) {
-         // StatsService.logEvent removed
-      } */
-=======
       if (user?.id) {
         StatsService.logEvent(user.authUserId || user.id, STATS_EVENTS.ARCHITECTURAL_PLAN_PROCESSED, {
           // NESTED STRUCTURE (Clean JSON from start)
@@ -1186,7 +1191,6 @@ function DeslindePageInner() {
           }
         })
       }
->>>>>>> Stashed changes
     } catch (e) {
       console.error("[deslinde] Error processing with AI:", e)
 
@@ -1288,16 +1292,98 @@ function DeslindePageInner() {
 
   // Handle unit authorization logging
   const handleUnitAuthorized = async (unitId: string, data: { final_text: string, original_text: string, usage?: any }) => {
-    // Client-side logging removed to prevent RLS/FK errors.
-    // Logging is now handled server-side in the API route.
+    if (!processingLogId) return
+
+    // Calculate basic metrics from the original (AI) text vs final (authorized) text
+    const metricsResult = calculateSimilarity(data.original_text, data.final_text || "")
+    const cost = data.usage ? StatsService.calculateEstimatedCost(data.usage) : 0
+
+    // 1. Log detailed row to child table (Normalization)
+    await StatsService.logUnitProcessing(processingLogId, {
+      unit_id: unitId,
+      original_text: data.original_text,
+      final_text: data.final_text,
+      similarity_score: metricsResult.similarity,
+      cost_usd: cost,
+      usage: data.usage,
+      metrics: {
+        edit_distance: metricsResult.distance,
+        chars_added: metricsResult.charsAdded,
+        chars_removed: metricsResult.charsRemoved
+      }
+    })
+
+    // 2. Keep minimal stats in memory for global aggregation (no heavy text)
+    unitsLogRef.current.set(unitId, {
+      unit_id: unitId,
+      // original_text: REMOVED
+      // final_text: REMOVED
+      similarity_score: metricsResult.similarity,
+      edit_distance: metricsResult.distance,
+      chars_added: metricsResult.charsAdded,
+      chars_removed: metricsResult.charsRemoved,
+      usage: data.usage,
+      cost_usd: cost,
+      authorized_at: new Date().toISOString()
+    })
+
+    // REMOVED: StatsService.updateEvent for units_detailed (Optimization)
+
+    // [NEW] Check if ALL units are authorized
+    if (unitsLogRef.current.size === units.length) {
+      // Calculate global metrics
+      const notarialText = Array.from(unitSegments.values())
+        .flatMap((segments) => segments.map((seg) => seg.notarialText))
+        .join("\n\n")
+
+      const metrics = initialAiText
+        ? calculateSimilarity(initialAiText, notarialText)
+        : { similarity: 1, distance: 0, charsAdded: 0, charsRemoved: 0 }
+
+      // Aggregate global costs from units
+      const unitsStats = Array.from(unitsLogRef.current.values())
+      const unitsTotalCost = unitsStats.reduce((acc, u) => acc + (u.cost_usd || 0), 0)
+      const unitsTotalTokens = unitsStats.reduce((acc, u) => acc + (u.usage?.total_tokens || 0), 0)
+
+      StatsService.updateEvent(processingLogId, {
+        status: 'completed',
+        completion_method: 'all_units_authorized',
+
+        meta_request: {
+          images_count: selectedFiles.length,
+          has_location: !!lotLocation,
+          has_surface: !!totalLotSurface,
+          authorized_units_count: unitsStats.length
+        },
+        costs_summary: {
+          units_cost_usd: unitsTotalCost,
+          units_tokens_total: unitsTotalTokens
+        },
+        quality_metrics: {
+          global_similarity: metrics.similarity,
+          global_edit_distance: metrics.distance,
+          chars_added: metrics.charsAdded,
+          chars_removed: metrics.charsRemoved
+        }
+      })
+      isLogFinalizedRef.current = true
+    }
   }
 
   const handleBack = () => {
     // Explicitly handle "Abandon" logic since component doesn't unmount
-    // Explicitly handle "Abandon" logic - REMOVED (Server-side logging)
-    /* if (processingLogId && !isLogFinalizedRef.current) {
-        // logic removed
-    } */
+    if (processingLogId && !isLogFinalizedRef.current) {
+      const finalText = Array.from(unitSegments.values())
+        .flatMap((segments) => segments.map((seg) => seg.notarialText))
+        .join("\n\n")
+
+      StatsService.updateEvent(processingLogId, {
+        final_text: finalText,
+        status: 'abandoned_or_viewed',
+        completion_method: 'navigation_back_button'
+      })
+      isLogFinalizedRef.current = true
+    }
 
     setAppState("upload")
     setSelectedFiles([])
@@ -1313,10 +1399,12 @@ function DeslindePageInner() {
 
     // Explicitly finalize the log - OPTIONAL safety check or metadata update if needed
     // But primary completion is now triggered by authorization
-    // Explicitly finalize the log - REMOVED (Server-side logging)
-    /* if (processingLogId && !isLogFinalizedRef.current) {
-       // logic removed
-    } */
+    if (processingLogId && !isLogFinalizedRef.current) {
+      // We leave this as a fallback if they export before authorizing everything (unlikely if UI prevents it)
+      StatsService.updateEvent(processingLogId, {
+        completion_method: 'export_fallback'
+      })
+    }
 
     const blob = new Blob([notarialText], { type: "text/plain" })
     const url = URL.createObjectURL(blob)
@@ -1327,6 +1415,22 @@ function DeslindePageInner() {
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+  }
+
+  // Show mobile/tablet message - must be after all hooks
+  if (isMobile || isTablet) {
+    return (
+      <ProtectedRoute>
+        <DashboardLayout>
+          <div className="min-h-screen flex items-center justify-center p-6">
+            <div className="text-center space-y-4">
+              <h1 className="text-2xl font-bold text-gray-900">Vista disponible para web</h1>
+              <p className="text-gray-600">Por favor, accede desde un dispositivo de escritorio para usar esta funcionalidad.</p>
+            </div>
+          </div>
+        </DashboardLayout>
+      </ProtectedRoute>
+    )
   }
 
   if (appState === "processing") {

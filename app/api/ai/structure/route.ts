@@ -3,13 +3,8 @@ import type { StructuringRequest, StructuringResponse, StructuredUnit } from "@/
 import { StatsService } from "@/lib/stats-service"
 import { createServerClient } from "@/lib/supabase"
 import { AgentUsageService } from "@/lib/services/agent-usage-service"
-<<<<<<< Updated upstream
-import { createServerClient as createSSRClient } from "@supabase/ssr"
-import { cookies } from "next/headers"
-=======
 import { getCurrentUserFromRequest } from "@/lib/utils/auth-helper"
 import { ActivityLogService } from "@/lib/services/activity-log-service"
->>>>>>> Stashed changes
 
 const cache = new Map<string, StructuredUnit[]>()
 const metadataCache = new Map<string, { lotLocation?: string; totalLotSurface?: number }>()
@@ -1185,19 +1180,13 @@ function parseBoundariesFromText(ocrText: string): StructuredUnit["boundaries"] 
  * @param images Array of image files to analyze
  * @returns Parsed JSON response
  */
-async function callOpenAIVision(prompt: string, images: File[], isRetry: boolean = false): Promise<any> {
+async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
   const apiKey = process.env.OPENAI_API_KEY
   // Default to gpt-4o, but can be overridden with OPENAI_MODEL env var
   // For GPT-5.1, set OPENAI_MODEL=gpt-5.1
   // Note: Model names may vary (e.g., gpt-5.1, gpt-5.1-preview, gpt-5.1-2024-12-01)
   // Check OpenAI documentation for the exact model identifier
-  let model = process.env.OPENAI_MODEL || "gpt-4o"
-
-  // If this is a retry (fallback), force usage of a known vision-capable model
-  if (isRetry) {
-    console.log("[OpenAI Vision] Retrying with fallback model: gpt-4o")
-    model = "gpt-4o"
-  }
+  const model = process.env.OPENAI_MODEL || "gpt-4o"
 
   // Log the model being used for debugging
   if (process.env.NODE_ENV === "development") {
@@ -1245,11 +1234,11 @@ async function callOpenAIVision(prompt: string, images: File[], isRetry: boolean
           ],
         },
       ],
-      // Temperature is often restricted in reasoning models (o1, o3)
-      ...(!model.includes("o1") && !model.includes("o3") ? { temperature: 0.1 } : {}),
+      temperature: 0.1,
       response_format: { type: "json_object" },
-      // GPT-5.x, o1, and o3 models require max_completion_tokens instead of max_tokens
-      ...(model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
+      // GPT-5.1 and newer models require max_completion_tokens instead of max_tokens
+      // We use max_completion_tokens for newer models (gpt-5.x, o1) and max_tokens for older ones
+      ...(model.includes("gpt-5") || model.includes("o1")
         ? { max_completion_tokens: 4000 }
         : { max_tokens: 4000 }
       ),
@@ -1258,21 +1247,6 @@ async function callOpenAIVision(prompt: string, images: File[], isRetry: boolean
 
   if (!resp.ok) {
     const errorText = await resp.text()
-
-    // Check for specific 400 errors related to model incompatibility or vision support
-    if (resp.status === 400 && !isRetry) {
-      if (
-        errorText.includes("image_url") ||
-        errorText.includes("content type") ||
-        errorText.includes("not support") ||
-        errorText.includes("unsupported_value")
-      ) {
-        console.warn(`[OpenAI Vision] Model '${model}' failed with vision error: ${errorText}`)
-        console.log(`[OpenAI Vision] Attempting automatic fallback to gpt-4o...`)
-        return callOpenAIVision(prompt, images, true)
-      }
-    }
-
     throw new Error(`OpenAI API error: ${resp.status} - ${errorText}`)
   }
 
@@ -1391,10 +1365,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "bad_request", message: "images required" }, { status: 400 })
     }
 
-
-    // Cache is disabled - always process images with AI
-    // This ensures fresh results every time, avoiding stale cache issues
-    console.log(`[api/ai/structure] (Cache disabled)`)
+    // Increment counter for provisional stats (Legacy)
+    const totalProcessed = StatsService.incrementPlantasProcesadas()
+    console.log(`[api/ai/structure] Processing ${images.length} image(s). Total plans: ${totalProcessed}`)
 
     let processedUnits: StructuredUnit[] | null = null
     let processedMetadata: { lotLocation?: string; totalLotSurface?: number } | undefined = undefined
@@ -1539,10 +1512,10 @@ export async function POST(req: Request) {
         units = aiResponse.map((u: any) => normalizeUnit(u)).filter((u: any): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.results)) {
         // Legacy format with results wrapper
-        units = aiResponse.results.map(normalizeUnit).filter((u: any): u is StructuredUnit => u !== null)
+        units = aiResponse.results.map((u: any) => normalizeUnit(u)).filter((u: any): u is StructuredUnit => u !== null)
       } else if (Array.isArray(aiResponse.units)) {
         // New format with units wrapper (IA puede devolver { units: [...] })
-        units = aiResponse.units.map(normalizeUnit).filter((u: any): u is StructuredUnit => u !== null)
+        units = aiResponse.units.map((u: any) => normalizeUnit(u)).filter((u: any): u is StructuredUnit => u !== null)
       } else if (aiResponse.result) {
         const normalized = normalizeUnit(aiResponse.result)
         if (normalized) units = [normalized]
@@ -1610,7 +1583,7 @@ export async function POST(req: Request) {
 
       // Ensure unit_name exists
       if (!unit.unit_name) {
-        unit.unit_name = (unit as any).unit?.name || "UNIDAD"
+        unit.unit_name = "UNIDAD"
       }
 
       // Preserve directions if present (new format from AI)
@@ -1684,146 +1657,15 @@ export async function POST(req: Request) {
       }
     })
 
-<<<<<<< Updated upstream
-    // Log usage stats (Server-Side)
-    const debugLogs: string[] = []
-    const logDebug = (msg: string) => {
-      console.log(msg)
-      debugLogs.push(msg)
-    }
-    const logError = (msg: string, err?: any) => {
-      console.error(msg, err)
-      debugLogs.push(`ERROR: ${msg} ${err ? JSON.stringify(err) : ''}`)
-    }
-
-    try {
-      // 1. Get User via Standard SSR Client (cookies)
-      // We need this because the Admin client (lib/supabase) uses Service Role and doesn't know the session
-      const cookieStore = await cookies()
-      const supabaseSSR = createSSRClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-        {
-          cookies: {
-            getAll() { return cookieStore.getAll() },
-            setAll(cookiesToSet) {
-              // route handlers are read-only for auth usually, but we just need to read
-              try {
-                cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options))
-              } catch (e) { /* ignore in route handler */ }
-            },
-          },
-        }
-      )
-      logDebug("[api/ai/structure] Starting hybrid auth check...")
-      let { data: { user }, error: authError } = await supabaseSSR.auth.getUser()
-
-      // Fallback: Check Authorization header if cookie auth failed
-      if (!user) {
-        logDebug("[api/ai/structure] Cookie auth failed/missing. Checking Authorization header...")
-        const { headers } = await import("next/headers")
-        const headerStore = await headers()
-        const authHeader = headerStore.get("authorization")
-
-        if (authHeader) {
-          const token = authHeader.replace("Bearer ", "")
-          const { data: { user: headerUser }, error: headerError } = await supabaseSSR.auth.getUser(token)
-          if (headerUser) {
-            user = headerUser
-            authError = null
-            logDebug("[api/ai/structure] User identified via Authorization header")
-          } else {
-            logError("[api/ai/structure] Auth Header verification failed:", headerError)
-          }
-        }
-      }
-
-      // 2. Write Stats via Admin Client (Service Role)
-      const supabaseAdmin = createServerClient()
-
-      if (authError) {
-        logError("[api/ai/structure] Auth Error (getUser):", authError)
-      }
-
-      if (user) {
-        logDebug(`[api/ai/structure] User identified: ${user.id}`)
-
-        // Resolve public.usuarios ID (required for foreign key in usage_stats)
-        const { data: userProfile, error: profileError } = await supabaseAdmin
-          .from('usuarios')
-          .select('id')
-          .eq('auth_user_id', user.id)
-          .single()
-
-        if (profileError) {
-          logError(`[api/ai/structure] Profile lookup failed for auth_id ${user.id}:`, profileError)
-        }
-
-        if (userProfile?.id && usage) {
-          logDebug(`[api/ai/structure] Profile found: ${userProfile.id}. Attempting insert...`)
-
-          const estimatedCost = (
-            (usage.prompt_tokens / 1_000_000) * 2.50 +
-            (usage.completion_tokens / 1_000_000) * 10.00
-          )
-
-          const { error: insertError } = await supabaseAdmin.from('usage_stats').insert({
-            user_id: userProfile.id,
-            event_type: 'architectural_plan_processed',
-            metadata: {
-              meta_request: {
-                images_count: images.length,
-                has_location: !!(processedMetadata?.lotLocation),
-                has_surface: !!(processedMetadata?.totalLotSurface),
-                authorized_units_count: results.length
-              },
-              costs_summary: {
-                units_cost_usd: 0, // No authorized units yet
-                units_tokens_total: 0,
-                initial_analysis_cost_usd: estimatedCost,
-                initial_tokens_total: usage.total_tokens
-              },
-              quality_metrics: {
-                // Initial analysis has no quality comparisons yet
-              },
-              tokens_input: usage.prompt_tokens,
-              tokens_output: usage.completion_tokens,
-              total_tokens: usage.total_tokens,
-              model: process.env.OPENAI_MODEL || "gpt-4o",
-              estimated_cost: estimatedCost,
-              units_found: results.length,
-              status: 'in_progress'
-            }
-          })
-
-          if (insertError) {
-            console.error("[api/ai/structure] INSERT FAILED:", insertError)
-          } else {
-            console.log(`[api/ai/structure] Stats SUCCESSFULLY logged for user ${userProfile.id}`)
-          }
-        } else {
-          console.warn("[api/ai/structure] Log skipped: Missing profile or usage data", { hasProfile: !!userProfile, hasUsage: !!usage })
-        }
-      } else {
-        console.warn("[api/ai/structure] No user session found via cookies.")
-      }
-    } catch (logErr) {
-      console.error("[api/ai/structure] CRITICAL ERROR logging stats:", logErr)
-      // Non-blocking error
-    }
-=======
     // Obtener usuario autenticado usando el helper oficial
     const usuario = await getCurrentUserFromRequest(req)
     const authUserId = usuario?.auth_user_id || null
->>>>>>> Stashed changes
 
     const resp: StructuringResponse = {
       results,
       ...(processedMetadata?.lotLocation ? { lotLocation: processedMetadata.lotLocation } : {}),
       ...(processedMetadata?.totalLotSurface ? { totalLotSurface: processedMetadata.totalLotSurface } : {}),
       usage,
-      // @ts-ignore - temporary debug field
-      _debug_logs: debugLogs
     }
 
     // Log AI Usage to unified activity_logs table
