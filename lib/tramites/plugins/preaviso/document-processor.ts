@@ -2,6 +2,7 @@ import { Command } from '../../base/types'
 import { createHash } from 'crypto'
 import { DocumentoService } from '../../../services/documento-service'
 import { getHandler } from './document-processor/handlers/registry'
+import { ActivityLogService } from '../../../services/activity-log-service'
 
 export class PreavisoDocumentProcessor {
   /**
@@ -46,16 +47,62 @@ export class PreavisoDocumentProcessor {
     }
 
     // 1. Llamar a OpenAI Vision API (usando prompts del handler)
-    let extracted = await this.extractWithOpenAI(file, documentType)
+    const { extracted, usage: firstPassUsage } = await this.extractWithOpenAI(file, documentType)
+
+    // ✅ LOGGING: 1er pase
+    if (context._userId && firstPassUsage) {
+      try {
+        await ActivityLogService.logAIUsage({
+          userId: context._userId,
+          sessionId: context.conversation_id,
+          tramiteId: context.tramiteId,
+          model: process.env.OPENAI_MODEL || 'gpt-4o',
+          tokensInput: firstPassUsage.prompt_tokens || 0,
+          tokensOutput: firstPassUsage.completion_tokens || 0,
+          actionType: 'extract_document_data',
+          metadata: {
+            document_type: documentType,
+            file_name: file.name,
+            file_hash: fileHash,
+            pass: 'first',
+            from_cache: false
+          }
+        })
+      } catch (logError) {
+        console.error('[PreavisoDocumentProcessor] Error logging first pass:', logError)
+      }
+    }
 
     // 2. Segundo pase para folios (solo inscripción)
     let secondPassSuccess = false
     if (documentType === 'inscripcion') {
-      const { result, success } = await this.ensureAllFoliosOnPage(file, extracted)
-      extracted = result
-      if (success) {
-        extracted._v = 2
-        secondPassSuccess = true
+      const { result, success, usage: secondPassUsage } = await this.ensureAllFoliosOnPage(file, extracted, context)
+      extracted._v = 2
+      secondPassSuccess = success
+
+      // ✅ LOGGING: 2do pase (solo si se ejecutó)
+      if (context._userId && secondPassUsage) {
+        try {
+          await ActivityLogService.logAIUsage({
+            userId: context._userId,
+            sessionId: context.conversation_id,
+            tramiteId: context.tramiteId,
+            model: process.env.OPENAI_MODEL || 'gpt-4o',
+            tokensInput: secondPassUsage.prompt_tokens || 0,
+            tokensOutput: secondPassUsage.completion_tokens || 0,
+            actionType: 'extract_document_folios',
+            metadata: {
+              document_type: 'inscripcion',
+              file_name: file.name,
+              file_hash: fileHash,
+              pass: 'second',
+              folios_detected: result.foliosReales?.length || 0,
+              from_cache: false
+            }
+          })
+        } catch (logError) {
+          console.error('[PreavisoDocumentProcessor] Error logging second pass:', logError)
+        }
       }
     } else {
       extracted._v = 2
@@ -82,7 +129,7 @@ export class PreavisoDocumentProcessor {
    * Segundo pase dedicado para detectar TODOS los folios
    * El LLM a veces solo detecta el primer folio, este pase asegura que se detecten todos
    */
-  private async ensureAllFoliosOnPage(file: File, current: any): Promise<{ result: any; success: boolean }> {
+  private async ensureAllFoliosOnPage(file: File, current: any, context?: any): Promise<{ result: any; success: boolean; usage: any }> {
     const folios = Array.isArray(current?.foliosReales) ? current.foliosReales.filter(Boolean) : []
     const foliosConInfo = Array.isArray(current?.foliosConInfo) ? current.foliosConInfo : []
     const foliosConInfoFolios = foliosConInfo.map((f: any) => f?.folio).filter(Boolean)
@@ -101,7 +148,7 @@ export class PreavisoDocumentProcessor {
       const apiKey = process.env.OPENAI_API_KEY
       const model = process.env.OPENAI_MODEL || 'gpt-4o'
 
-      if (!apiKey) return { result: current, success: false }
+      if (!apiKey) return { result: current, success: false, usage: null }
 
       // Convertir archivo a base64
       const arrayBuffer = await file.arrayBuffer()
@@ -160,9 +207,14 @@ REGLAS CRÍTICAS:
               ]
             }
           ],
-          temperature: 0,
-          response_format: { type: 'json_object' },
-          ...(model.includes("gpt-5") || model.includes("o1")
+          // o1 models don't support temperature or response_format
+          ...(model.includes("o1") || model.includes("o3") ? {} : {
+            temperature: 0,
+            response_format: { type: 'json_object' }
+          }),
+          // gpt-4o, gpt-4o-mini, o1, o3 use max_completion_tokens
+          // gpt-3.5-turbo uses max_tokens
+          ...(model.includes("gpt-4") || model.includes("o1") || model.includes("o3")
             ? { max_completion_tokens: 2000 }
             : { max_tokens: 2000 })
         })
@@ -170,11 +222,12 @@ REGLAS CRÍTICAS:
 
       if (!response.ok) {
         // Si hay error, no bloquear el flujo principal
-        return { result: current, success: false }
+        return { result: current, success: false, usage: null }
       }
 
       const data = await response.json()
       const content = data.choices[0]?.message?.content || '{}'
+      const usage = data.usage || null // ✅ Capturar usage del segundo pase
 
       let parsed: any = null
       try {
@@ -188,18 +241,18 @@ REGLAS CRÍTICAS:
         parsed = null
       }
 
-      if (!parsed) return { result: current, success: false }
+      if (!parsed) return { result: current, success: false, usage: usage }
 
       const scanned = Array.isArray(parsed?.foliosReales) ? parsed.foliosReales.filter(Boolean).map((x: any) => String(x)) : []
       const scannedFolios = Array.isArray(parsed?.folios) ? parsed.folios : []
-      if (scanned.length === 0 && scannedFolios.length === 0) return { result: current, success: true } // Success but no new info is technically a success
+      if (scanned.length === 0 && scannedFolios.length === 0) return { result: current, success: true, usage: usage } // Success but no new info is technically a success
 
       const scannedFromObjects = scannedFolios
         .map((f: any) => f?.folio)
         .filter(Boolean)
         .map((x: any) => String(x))
       const scannedAll = [...scanned, ...scannedFromObjects]
-      if (scannedAll.length === 0) return { result: current, success: true }
+      if (scannedAll.length === 0) return { result: current, success: true, usage: usage }
 
       // Merge (dedupe por dígitos)
       const norm = (v: any) => {
@@ -277,17 +330,17 @@ REGLAS CRÍTICAS:
       }
       next.foliosConInfo = Array.from(infoMap.values())
 
-      return { result: next, success: true }
+      return { result: next, success: true, usage: usage }
     } catch (error) {
       console.error('[DocumentProcessor] Error en segundo pase de folios:', error)
-      return { result: current, success: false }
+      return { result: current, success: false, usage: null }
     }
   }
 
   /**
    * Extrae información con OpenAI Vision API
    */
-  private async extractWithOpenAI(file: File, documentType: string): Promise<any> {
+  private async extractWithOpenAI(file: File, documentType: string): Promise<{ extracted: any; usage: any }> {
     const apiKey = process.env.OPENAI_API_KEY
     const model = process.env.OPENAI_MODEL || 'gpt-4o'
 
@@ -335,9 +388,14 @@ REGLAS CRÍTICAS:
             ]
           }
         ],
-        temperature: 0.1,
-        response_format: { type: 'json_object' },
-        ...(model.includes("gpt-5") || model.includes("o1")
+        // o1 models don't support temperature or response_format
+        ...(model.includes("o1") || model.includes("o3") ? {} : {
+          temperature: 0.1,
+          response_format: { type: 'json_object' }
+        }),
+        // gpt-4o, gpt-4o-mini, o1, o3 use max_completion_tokens
+        // gpt-3.5-turbo uses max_tokens
+        ...(model.includes("gpt-4") || model.includes("o1") || model.includes("o3")
           ? { max_completion_tokens: 2000 }
           : { max_tokens: 2000 }
         )
@@ -352,12 +410,19 @@ REGLAS CRÍTICAS:
 
     const data = await response.json()
     const content = data.choices[0]?.message?.content || '{}'
+    const usage = data.usage || null // ✅ Capturar usage
 
     try {
-      return JSON.parse(content)
+      return {
+        extracted: JSON.parse(content),
+        usage: usage
+      }
     } catch (error) {
       console.error('[DocumentProcessor] Error parsing OpenAI response:', error)
-      return {}
+      return {
+        extracted: {},
+        usage: usage
+      }
     }
   }
 

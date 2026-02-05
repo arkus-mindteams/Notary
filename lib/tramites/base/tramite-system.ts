@@ -599,7 +599,9 @@ export class TramiteSystem {
       undefined,
       context?._userId,
       'interpret_intent',
-      plugin.id // category
+      plugin.id, // category
+      context?.conversation_id || context?.sessionId,
+      context?.tramiteId
     )
     const extracted = this.extractDataFromLLMResponse(response)
 

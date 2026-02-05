@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { createBrowserClient } from '@/lib/supabase'
 import { StatsService, STATS_EVENTS } from "@/lib/services/stats-service"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
 import { Loader2, Users, FileText, Calendar, DollarSign, Zap, Activity, History, Sparkles, Brain } from "lucide-react"
@@ -28,7 +29,8 @@ export function StatsDashboard() {
     const [dailyStats, setDailyStats] = useState<DailyStat[]>([])
     const [totalUsage, setTotalUsage] = useState(0)
     const [uniqueUsers, setUniqueUsers] = useState(0)
-    const [userBreakdown, setUserBreakdown] = useState<UserUsage[]>([])
+    const [chatUserBreakdown, setChatUserBreakdown] = useState<any[]>([])
+    const [deslindeUserBreakdown, setDeslindeUserBreakdown] = useState<any[]>([])
     // History Table State
     const [historyData, setHistoryData] = useState<any[]>([])
     const [historyCount, setHistoryCount] = useState(0)
@@ -41,10 +43,15 @@ export function StatsDashboard() {
     const [analysisResult, setAnalysisResult] = useState<any | null>(null)
     const [showAnalysis, setShowAnalysis] = useState(false)
 
-    // New metrics
+    // AI Usage Metrics (Global)
     const [totalCost, setTotalCost] = useState(0)
     const [totalTokens, setTotalTokens] = useState(0)
     const [avgSimilarity, setAvgSimilarity] = useState(0)
+    const [categoryStats, setCategoryStats] = useState<any[]>([])
+
+    // Per-module metrics
+    const [deslindeStats, setDeslindeStats] = useState({ count: 0, tokens: 0, cost: 0, similarity: 0 })
+    const [chatStats, setChatStats] = useState({ count: 0, tokens: 0, cost: 0 })
 
     useEffect(() => {
         loadStats()
@@ -71,46 +78,65 @@ export function StatsDashboard() {
         try {
             setLoading(true)
 
-            // Load daily usage
+            // 1. Get daily usage for charts
             const dailyData = await StatsService.getDailyUsage(STATS_EVENTS.ARCHITECTURAL_PLAN_PROCESSED, 30)
             setDailyStats(dailyData)
 
-            // Calculate total from daily (approximate for the window) or fetch all
-            const total = dailyData.reduce((acc, curr) => acc + curr.count, 0)
-            setTotalUsage(total)
+            // 2. Fetch all activity logs (or at least recent ones) for global & module stats
+            const supabase = createBrowserClient()
+            const { data: { session } } = await supabase.auth.getSession()
 
-            // Get unique users count
-            const usersCount = await StatsService.getUniqueUsersCount(STATS_EVENTS.ARCHITECTURAL_PLAN_PROCESSED)
-            setUniqueUsers(usersCount)
+            if (session) {
+                // Use our new usage-stats API which handles categorization
+                const res = await fetch('/api/admin/usage-stats?range=all', {
+                    headers: { 'Authorization': `Bearer ${session.access_token}` }
+                })
 
-            // Get detailed stats to breakdown by user and calculate costs
-            // Note: For large datasets, we should move aggregation to the DB side
-            const allEvents = await StatsService.getUsageStats(STATS_EVENTS.ARCHITECTURAL_PLAN_PROCESSED, 'total')
-            if (allEvents) {
-                // setAllHistory(allEvents) // Removed: Using paginated fetch for table now
-                let costSum = 0
-                let tokenSum = 0
+                if (res.ok) {
+                    const json = await res.json()
+                    setTotalCost(json.totalCost || 0)
+                    setTotalTokens(json.totalTokens || 0)
+                    setCategoryStats(json.categoryStats || [])
+
+                    // Set module specific user breakdowns from API
+                    setDeslindeUserBreakdown(json.deslindeUserStats || [])
+                    setChatUserBreakdown(json.chatUserStats || [])
+
+                    // Extract module specific summary stats from category breakdown
+                    const deslinde = json.categoryStats.find((c: any) => c.category === 'Planos Arquitectónicos')
+                    const chat = json.categoryStats.find((c: any) => c.category === 'Chat Notarial')
+
+                    if (deslinde) {
+                        setDeslindeStats(prev => ({ ...prev, tokens: deslinde.tokens, cost: deslinde.cost }))
+                    }
+                    if (chat) {
+                        setChatStats(prev => ({ ...prev, tokens: chat.tokens, cost: chat.cost }))
+                    }
+                }
+            }
+
+            // 3. Get unique users
+            const { data: userData } = await supabase
+                .from('activity_logs')
+                .select('user_id', { count: 'exact', head: false })
+                .not('user_id', 'is', null)
+
+            const uniqueUserIds = new Set(userData?.map(u => u.user_id) || [])
+            setUniqueUsers(uniqueUserIds.size)
+
+            // 4. Calculate similarity specifically for deslinde
+            const deslindeEvents = await StatsService.getUsageStats(STATS_EVENTS.ARCHITECTURAL_PLAN_PROCESSED, 'total')
+            if (deslindeEvents) {
+                setTotalUsage(deslindeEvents.length)
+                setDeslindeStats(prev => ({ ...prev, count: deslindeEvents.length }))
+
                 let similaritySum = 0
                 let similarityCount = 0
 
-                // Group by user
-                const byUser = allEvents.reduce((acc: Record<string, UserUsage>, curr: any) => {
-                    const userId = curr.user_id
+                deslindeEvents.forEach((curr: any) => {
                     const meta = curr.metadata || {}
-
-                    // Aggregate totals
-                    const costs = meta.costs_summary || {}
                     const quality = meta.quality_metrics || {}
 
-                    // Cost (units + initial if any)
-                    const c = (costs.units_cost_usd || 0) + (costs.initial_analysis_cost_usd || 0) + (meta.estimated_cost_usd || 0)
-                    costSum += c
-
-                    // Tokens
-                    const t = (costs.units_tokens_total || 0) + (costs.initial_tokens_total || 0) + (meta.tokens_total || 0)
-                    tokenSum += t
-
-                    // Similarity (0-1)
                     if (quality.global_similarity !== undefined) {
                         similaritySum += quality.global_similarity
                         similarityCount++
@@ -118,28 +144,11 @@ export function StatsDashboard() {
                         similaritySum += meta.quality_metrics.global_similarity
                         similarityCount++
                     }
+                })
 
-                    if (!acc[userId]) {
-                        acc[userId] = {
-                            user_id: userId,
-                            email: curr.users?.email || 'Unknown',
-                            nombre: `${curr.users?.nombre || ''} ${curr.users?.apellido_paterno || ''}`.trim(),
-                            count: 0,
-                            last_used: curr.created_at
-                        }
-                    }
-                    acc[userId].count += 1
-                    if (new Date(curr.created_at) > new Date(acc[userId].last_used)) {
-                        acc[userId].last_used = curr.created_at
-                    }
-                    return acc
-                }, {})
-
-                setUserBreakdown(Object.values(byUser).sort((a, b) => b.count - a.count))
-                setTotalUsage(allEvents.length) // Correct total based on all events
-                setTotalCost(costSum)
-                setTotalTokens(tokenSum)
-                setAvgSimilarity(similarityCount > 0 ? (similaritySum / similarityCount) * 100 : 0)
+                const avgSim = similarityCount > 0 ? (similaritySum / similarityCount) * 100 : 0
+                setAvgSimilarity(avgSim)
+                setDeslindeStats(prev => ({ ...prev, similarity: avgSim }))
             }
 
         } catch (error) {
@@ -153,6 +162,20 @@ export function StatsDashboard() {
         setIsAnalyzing(true)
         setShowAnalysis(true)
         try {
+            const combinedUserBreakdown = [
+                ...chatUserBreakdown,
+                ...deslindeUserBreakdown
+            ].reduce((acc: any[], curr) => {
+                const existing = acc.find(u => u.userId === curr.userId)
+                if (existing) {
+                    existing.cost += curr.cost
+                    existing.count += curr.count
+                } else {
+                    acc.push({ ...curr })
+                }
+                return acc
+            }, [])
+
             const resp = await fetch('/api/ai/stats-analysis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -162,7 +185,7 @@ export function StatsDashboard() {
                     totalTokens,
                     avgSimilarity,
                     dailyStats,
-                    userBreakdown
+                    userBreakdown: combinedUserBreakdown
                 })
             })
 
@@ -279,13 +302,132 @@ export function StatsDashboard() {
                 </Card>
             </div>
 
+            {/* Module Breakdown */}
+            <div className="grid gap-4 md:grid-cols-2">
+                {/* Architectural Plans Section */}
+                <Card className="border-l-4 border-l-blue-500">
+                    <CardHeader className="pb-2">
+                        <div className="flex items-center justify-between">
+                            <CardTitle className="text-lg flex items-center gap-2">
+                                <FileText className="h-5 w-5 text-blue-500" />
+                                Planos Arquitectónicos
+                            </CardTitle>
+                            <span className="text-xs font-medium px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
+                                {deslindeStats.count} Procesados
+                            </span>
+                        </div>
+                        <CardDescription>Extracción de medidas y colindancias</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="grid grid-cols-3 gap-2 mt-2">
+                            <div className="text-center p-2 bg-muted/30 rounded">
+                                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Costo</p>
+                                <p className="text-sm font-bold">${deslindeStats.cost.toFixed(3)}</p>
+                            </div>
+                            <div className="text-center p-2 bg-muted/30 rounded">
+                                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Tokens</p>
+                                <p className="text-sm font-bold">{(deslindeStats.tokens / 1000).toFixed(1)}k</p>
+                            </div>
+                            <div className="text-center p-2 bg-muted/30 rounded">
+                                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Calidad</p>
+                                <p className="text-sm font-bold text-green-600">{deslindeStats.similarity.toFixed(1)}%</p>
+                            </div>
+                        </div>
+
+                        {/* Deslinde User Table */}
+                        <div className="mt-4 space-y-2 max-h-[150px] overflow-y-auto">
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase px-1">Uso por Usuario</p>
+                            {deslindeUserBreakdown.map((user) => (
+                                <div key={user.userId} className="flex items-center justify-between text-xs p-1 hover:bg-muted/50 rounded">
+                                    <div className="truncate pr-2">
+                                        <p className="font-medium truncate">{user.nombre}</p>
+                                        <p className="text-[10px] text-muted-foreground truncate">{user.email}</p>
+                                    </div>
+                                    <div className="flex items-center gap-3 shrink-0">
+                                        <div className="text-right">
+                                            <p className="font-bold">{user.count}</p>
+                                            <p className="text-[9px] text-muted-foreground">docs</p>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className="font-bold text-muted-foreground">{(user.tokens / 1000).toFixed(1)}k</p>
+                                            <p className="text-[9px] text-muted-foreground">tokens</p>
+                                        </div>
+                                        <div className="text-right min-w-[45px]">
+                                            <p className="font-bold text-blue-600">${user.cost.toFixed(2)}</p>
+                                            <p className="text-[9px] text-muted-foreground">usd</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                            {deslindeUserBreakdown.length === 0 && (
+                                <p className="text-xs text-muted-foreground text-center py-2">Sin actividad</p>
+                            )}
+                        </div>
+                    </CardContent>
+                </Card>
+
+                {/* Chat Interactions Section */}
+                <Card className="border-l-4 border-l-purple-500">
+                    <CardHeader className="pb-2">
+                        <div className="flex items-center justify-between">
+                            <CardTitle className="text-lg flex items-center gap-2">
+                                <Zap className="h-5 w-5 text-purple-500" />
+                                Chat Notarial
+                            </CardTitle>
+                            <span className="text-xs font-medium px-2 py-1 bg-purple-100 text-purple-700 rounded-full">
+                                Activo
+                            </span>
+                        </div>
+                        <CardDescription>Revisiones, consultas y trámites</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                            <div className="text-center p-2 bg-muted/30 rounded">
+                                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Costo Estimado</p>
+                                <p className="text-sm font-bold">${chatStats.cost.toFixed(3)}</p>
+                            </div>
+                            <div className="text-center p-2 bg-muted/30 rounded">
+                                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Tokens</p>
+                                <p className="text-sm font-bold">{(chatStats.tokens / 1000).toFixed(1)}k</p>
+                            </div>
+                        </div>
+
+                        {/* Chat User Table */}
+                        <div className="mt-4 space-y-2 max-h-[150px] overflow-y-auto">
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase px-1">Uso por Usuario</p>
+                            {chatUserBreakdown.map((user) => (
+                                <div key={user.userId} className="flex items-center justify-between text-xs p-1 hover:bg-muted/50 rounded">
+                                    <div className="truncate pr-2">
+                                        <p className="font-medium truncate">{user.nombre}</p>
+                                        <p className="text-[10px] text-muted-foreground truncate">{user.email}</p>
+                                    </div>
+                                    <div className="flex items-center gap-3 shrink-0">
+                                        <div className="text-right">
+                                            <p className="font-bold">{user.count}</p>
+                                            <p className="text-[9px] text-muted-foreground">chats</p>
+                                        </div>
+                                        <div className="text-right min-w-[45px]">
+                                            <p className="font-bold text-purple-600">${user.cost.toFixed(2)}</p>
+                                            <p className="text-[9px] text-muted-foreground">usd</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                            {chatUserBreakdown.length === 0 && (
+                                <p className="text-xs text-muted-foreground text-center py-2">Sin actividad</p>
+                            )}
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
+
             {/* Charts */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
                 <Card className="col-span-4">
                     <CardHeader>
-                        <CardTitle>Uso Diario</CardTitle>
+                        <CardTitle>Histórico de Uso</CardTitle>
                         <CardDescription>
-                            Procesamientos en los últimos 30 días
+                            Volumen de actividad diaria
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="pl-2">
@@ -322,30 +464,68 @@ export function StatsDashboard() {
                     </CardContent>
                 </Card>
 
-                {/* User table */}
+                {/* Category Breakdown Chart */}
                 <Card className="col-span-3">
                     <CardHeader>
-                        <CardTitle>Uso por Usuario</CardTitle>
+                        <CardTitle>Distribución de Costos</CardTitle>
                         <CardDescription>
-                            Desglose de actividad por usuario
+                            Consumo por módulo principal
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="h-[300px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={categoryStats} layout="vertical">
+                                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
+                                    <XAxis type="number" hide />
+                                    <YAxis
+                                        dataKey="category"
+                                        type="category"
+                                        stroke="#888888"
+                                        fontSize={10}
+                                        width={110}
+                                    />
+                                    <Tooltip
+                                        contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: 'var(--radius)' }}
+                                        labelStyle={{ color: 'hsl(var(--foreground))' }}
+                                    />
+                                    <Bar dataKey="cost" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </CardContent>
+                </Card>
+                {/* Global User table */}
+                <Card className="col-span-3">
+                    <CardHeader>
+                        <CardTitle>Uso por Usuario (Chat)</CardTitle>
+                        <CardDescription>
+                            Actividad de consultas y trámites por usuario
                         </CardDescription>
                     </CardHeader>
                     <CardContent>
                         <div className="space-y-4 max-h-[300px] overflow-y-auto">
-                            {userBreakdown.map((user) => (
-                                <div key={user.user_id} className="flex items-center justify-between">
-                                    <div className="space-y-1">
-                                        <p className="text-sm font-medium leading-none">{user.nombre}</p>
-                                        <p className="text-xs text-muted-foreground">{user.email}</p>
+                            {chatUserBreakdown.length > 0 ? (
+                                chatUserBreakdown.map((user) => (
+                                    <div key={user.userId} className="flex items-center justify-between">
+                                        <div className="space-y-1">
+                                            <p className="text-sm font-medium leading-none">{user.nombre}</p>
+                                            <p className="text-xs text-muted-foreground">{user.email}</p>
+                                        </div>
+                                        <div className="flex items-center gap-4 text-right">
+                                            <div>
+                                                <div className="font-bold">{user.count}</div>
+                                                <p className="text-[10px] text-muted-foreground">Chats</p>
+                                            </div>
+                                            <div>
+                                                <div className="font-bold text-purple-600">${user.cost.toFixed(2)}</div>
+                                                <p className="text-[10px] text-muted-foreground">Chat USD</p>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                        <div className="font-bold">{user.count}</div>
-                                        <span className="text-xs text-muted-foreground">docs</span>
-                                    </div>
-                                </div>
-                            ))}
-                            {userBreakdown.length === 0 && (
-                                <p className="text-sm text-muted-foreground text-center py-4">No hay datos disponibles</p>
+                                ))
+                            ) : (
+                                <p className="text-sm text-muted-foreground text-center py-4">No hay actividad de chat registrada</p>
                             )}
                         </div>
                     </CardContent>
@@ -477,6 +657,6 @@ export function StatsDashboard() {
                     </ScrollArea>
                 </DialogContent>
             </Dialog>
-        </div >
+        </div>
     )
 }

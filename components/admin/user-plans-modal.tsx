@@ -48,7 +48,7 @@ export function UserPlansModal({ user, onClose }: UserPlansModalProps) {
                 return
             }
 
-            const res = await fetch(`/api/admin/conversations/${user.userId}`, {
+            const res = await fetch(`/api/admin/conversations/${user.userId}?includePlans=true`, {
                 headers: {
                     'Authorization': `Bearer ${session.access_token}`,
                 },

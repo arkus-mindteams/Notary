@@ -3,8 +3,13 @@ import type { StructuringRequest, StructuringResponse, StructuredUnit } from "@/
 import { StatsService } from "@/lib/stats-service"
 import { createServerClient } from "@/lib/supabase"
 import { AgentUsageService } from "@/lib/services/agent-usage-service"
+<<<<<<< Updated upstream
 import { createServerClient as createSSRClient } from "@supabase/ssr"
 import { cookies } from "next/headers"
+=======
+import { getCurrentUserFromRequest } from "@/lib/utils/auth-helper"
+import { ActivityLogService } from "@/lib/services/activity-log-service"
+>>>>>>> Stashed changes
 
 const cache = new Map<string, StructuredUnit[]>()
 const metadataCache = new Map<string, { lotLocation?: string; totalLotSurface?: number }>()
@@ -1379,6 +1384,8 @@ export async function POST(req: Request) {
     // Accept FormData with images
     const formData = await req.formData()
     const images = formData.getAll("images") as File[]
+    const sessionId = formData.get("sessionId") as string | null
+    const tramiteId = formData.get("tramiteId") as string | null
 
     if (!images || images.length === 0) {
       return NextResponse.json({ error: "bad_request", message: "images required" }, { status: 400 })
@@ -1677,6 +1684,7 @@ export async function POST(req: Request) {
       }
     })
 
+<<<<<<< Updated upstream
     // Log usage stats (Server-Side)
     const debugLogs: string[] = []
     const logDebug = (msg: string) => {
@@ -1803,6 +1811,11 @@ export async function POST(req: Request) {
       console.error("[api/ai/structure] CRITICAL ERROR logging stats:", logErr)
       // Non-blocking error
     }
+=======
+    // Obtener usuario autenticado usando el helper oficial
+    const usuario = await getCurrentUserFromRequest(req)
+    const authUserId = usuario?.auth_user_id || null
+>>>>>>> Stashed changes
 
     const resp: StructuringResponse = {
       results,
@@ -1813,29 +1826,30 @@ export async function POST(req: Request) {
       _debug_logs: debugLogs
     }
 
-    // Log Usage Async
-    try {
-      const supabase = createServerClient()
-      const { data: { user } } = await supabase.auth.getUser()
-      const usageService = new AgentUsageService()
-
-      if (usage) {
-        usageService.logUsage({
-          userId: user?.id,
-          model: "gpt-4o", // O el modelo que use callOpenAIVision, idealmente dinámico
+    // Log AI Usage to unified activity_logs table
+    if (usage && authUserId) {
+      try {
+        await ActivityLogService.logAIUsage({
+          userId: authUserId,
+          sessionId: sessionId || undefined,
+          tramiteId: tramiteId || undefined,
+          model: process.env.OPENAI_MODEL || "gpt-4o",
           tokensInput: usage.prompt_tokens,
           tokensOutput: usage.completion_tokens,
-          actionType: 'extract_data',
-          category: 'deslinde',
+          actionType: 'extract_data', // Coincide con el tipo para deslinde
           metadata: {
+            category: 'deslinde',
             endpoint: 'ai/structure',
-            units_found: results.length
+            units_found: results.length,
+            lot_location: processedMetadata?.lotLocation || null,
+            total_lot_surface: processedMetadata?.totalLotSurface || null
           }
-        }).catch(console.error)
+        })
+      } catch (logErr) {
+        console.error("[api/ai/structure] Error logging usage:", logErr)
       }
-    } catch (logErr) {
-      console.error("[api/ai/structure] Error logging usage:", logErr)
     }
+
     console.log(`[api/ai/structure] Returning ${results.length} units (fresh processing, cache disabled)`)
     return NextResponse.json(resp)
   } catch (e: any) {

@@ -13,7 +13,7 @@ export async function GET(req: Request) {
         { status: 401 }
       )
     }
-    
+
     if (!usuario.activo) {
       return NextResponse.json(
         { error: 'forbidden', message: 'Usuario desactivado' },
@@ -25,6 +25,7 @@ export async function GET(req: Request) {
     const nombreCompleto = `${usuario.nombre} ${usuario.apellido_paterno || ''} ${usuario.apellido_materno || ''}`.trim()
     const authUser: AuthUser = {
       id: usuario.id,
+      authUserId: usuario.auth_user_id || '',
       email: usuario.email,
       name: nombreCompleto,
       role: usuario.rol,

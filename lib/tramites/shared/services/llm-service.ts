@@ -25,7 +25,9 @@ export class LLMService {
     systemPrompts?: string[],
     userId?: string,
     actionType: string = 'general_chat',
-    category: string = 'general'
+    category: string = 'general',
+    sessionId?: string,
+    tramiteId?: string
   ): Promise<string> {
     if (!this.apiKey) {
       throw new Error('OPENAI_API_KEY no configurada')
@@ -73,16 +75,16 @@ export class LLMService {
     const content = data.choices[0]?.message?.content || ''
 
     // Log usage asynchronously (don't block response)
-    if (data.usage) {
-      this.usageService.logUsage({
-        userId,
-        model: this.model,
-        tokensInput: data.usage.prompt_tokens,
-        tokensOutput: data.usage.completion_tokens,
-        actionType: actionType as any,
-        category
-      }).catch(err => console.error('Failed to log usage:', err))
-    }
+    this.usageService.logUsage({
+      userId,
+      sessionId,
+      tramiteId,
+      model: this.model,
+      tokensInput: data.usage.prompt_tokens,
+      tokensOutput: data.usage.completion_tokens,
+      actionType: actionType as any,
+      category
+    }).catch(err => console.error('Failed to log usage:', err))
 
     return content
   }

@@ -5,8 +5,9 @@
 import { NextResponse } from 'next/server'
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
 import { getPreavisoTransitionRules } from '@/lib/tramites/plugins/preaviso/preaviso-transitions'
-import { PreavisoConversationLogService } from '@/lib/services/preaviso-conversation-log-service'
 import { createServerClient } from '@/lib/supabase'
+import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
+import { ActivityLogService } from '@/lib/services/activity-log-service'
 
 export async function POST(req: Request) {
   try {
@@ -62,17 +63,48 @@ export async function POST(req: Request) {
     // Obtener sistema de trámites
     const tramiteSystem = getTramiteSystem()
 
-    // Obtener usuario autenticado para logging de usage
-    const authHeader = req.headers.get('authorization')
-    const token = authHeader?.replace('Bearer ', '')
-    const supabase = createServerClient()
-    const { data: { user } } = token ? await supabase.auth.getUser(token) : { data: { user: null } }
-    const userId = user?.id
+    // Obtener usuario autenticado usando el helper oficial
+    const usuario = await getCurrentUserFromRequest(req)
+    let authUserId = usuario?.auth_user_id || null
 
-    // Inyectar userId en el contexto
+    // Fallback: si no hay usuario en el request, intentar obtenerlo de la sesión o trámite previos
+    if (!authUserId) {
+      const convId = (typeof body?.conversation_id === 'string' && body.conversation_id) || (typeof context?.conversation_id === 'string' && context.conversation_id)
+      const tId = tramiteIdFromBody || context?.tramiteId
+
+      if (convId || tId) {
+        const supabase = createServerClient()
+        if (convId) {
+          const { data: sessionRecord } = await supabase
+            .from('chat_sessions')
+            .select('user_id')
+            .eq('id', convId)
+            .single()
+          if (sessionRecord?.user_id) authUserId = sessionRecord.user_id
+        }
+        if (!authUserId && tId) {
+          const { data: tramiteRecord } = await supabase
+            .from('tramites')
+            .select('auth_user_id')
+            .eq('id', tId)
+            .single()
+          if (tramiteRecord?.auth_user_id) authUserId = tramiteRecord.auth_user_id
+        }
+      }
+    }
+
+    // Inyectar userId y sessionId en el contexto para trazabilidad logs
+    const conversationId =
+      (typeof body?.conversation_id === 'string' && body.conversation_id) ||
+      (typeof context?.conversation_id === 'string' && context.conversation_id) ||
+      (typeof context?.sessionId === 'string' && context.sessionId) ||
+      null
+
     const processingContext = {
       ...(context || {}),
-      _userId: userId // System-reserved field for user tracking
+      _userId: authUserId, // System-reserved field for user tracking
+      conversation_id: conversationId, // System-reserved field for session tracking
+      tramiteId: tramiteIdFromBody || context?.tramiteId || null
     }
 
     // Procesar mensaje
@@ -87,19 +119,13 @@ export async function POST(req: Request) {
     try {
       const supabase = createServerClient()
       const conversationId =
-        context?.conversation_id ||
-        body?.conversation_id ||
+        (typeof body?.conversation_id === 'string' && body.conversation_id) ||
+        (typeof context?.conversation_id === 'string' && context.conversation_id) ||
+        (typeof context?.sessionId === 'string' && context.sessionId) ||
         null
 
       if (conversationId) {
         // 1. Guardar mensaje del usuario
-        // Nota: en una implementación ideal, el frontend ya habría guardado el mensaje del usuario
-        // mediante el endpoint POST /api/chat/sessions/[id]/messages para optimismo.
-        // Pero por robustez, verificamos o insertamos si no existe, o simplemente asumimos
-        // que este endpoint es el encargado de procesar y persistir todo si se usa como "monolito".
-        // Para simplificar la migración: insertamos ambos aquí.
-
-        // Insertar user message
         const { error: userMsgError } = await supabase.from('chat_messages').insert({
           session_id: conversationId,
           role: 'user',
@@ -122,11 +148,13 @@ export async function POST(req: Request) {
             role: 'assistant',
             content: lastAssistantMessage,
             metadata: {
-              processing_time: null, // Podríamos medir esto
+              processing_time: null,
               tokens: result.meta?.usage || null
             }
           })
           if (assistantMsgError) console.error('[preaviso-chat] Error saving assistant message:', assistantMsgError)
+        } else {
+          console.warn('[preaviso-chat] AI result has no message to save to chat_messages')
         }
 
         // 2. Actualizar sesión (Last Context + Título Dinámico)
@@ -138,9 +166,6 @@ export async function POST(req: Request) {
         // Título dinámico: Si detectamos Folio Real en el contexto
         const folioReal = result.data?.inmueble?.folio_real
         if (folioReal) {
-          // Solo actualizamos si el título no ha sido personalizado (esto es difícil de saber sin flag, 
-          // pero podemos asumir que si empieza con "Chat " es default o si queremos forzarlo)
-          // Estrategia: "Folio Real: <folio>"
           updates.title = `Folio Real: ${folioReal}`
         }
 
@@ -150,23 +175,38 @@ export async function POST(req: Request) {
           .eq('id', conversationId)
 
         if (sessionError) console.error('[preaviso-chat] Error updating session:', sessionError)
+
+        // 3. Registrar uso de IA en activity_logs para el dashboard unificado
+        if (authUserId && result.meta?.usage) {
+          ActivityLogService.logAIUsage({
+            userId: authUserId,
+            sessionId: conversationId,
+            tramiteId: tramiteIdFromBody || undefined,
+            model: process.env.OPENAI_MODEL || 'gpt-4o',
+            tokensInput: result.meta.usage.prompt_tokens,
+            tokensOutput: result.meta.usage.completion_tokens,
+            actionType: 'general_chat',
+            metadata: {
+              category: 'preaviso',
+              plugin_id: pluginId
+            }
+          }).catch(console.error)
+        }
       }
     } catch (e) {
       console.error('[preaviso-chat] logging error', e)
     }
 
     // Retornar respuesta (formato compatible con frontend)
-    // El frontend espera: { message(s), data, state }
     const transitionRules = pluginId === 'preaviso' ? getPreavisoTransitionRules() : []
 
     return NextResponse.json({
-      message: result.message, // String único
-      messages: [result.message], // Array para compatibilidad
+      message: result.message,
+      messages: [result.message],
       data: result.data,
       state: {
         current_state: result.state.current,
         state_status: {
-          // Mapear estados completados/faltantes a status
           ...result.state.completed.reduce((acc: any, id: string) => {
             acc[id] = 'completed'
             return acc
@@ -183,7 +223,7 @@ export async function POST(req: Request) {
         transition_info: result.meta?.transition || null,
         transition_rules: transitionRules
       },
-      commands: result.commands, // Para debugging
+      commands: result.commands,
       meta: result.meta || null
     })
 

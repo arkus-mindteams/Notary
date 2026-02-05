@@ -5,9 +5,9 @@ const s3Client = new S3Client({
   region: process.env.AWS_REGION || 'us-east-1',
   credentials: process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
     ? {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-      }
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+    }
     : undefined,
 })
 
@@ -75,22 +75,22 @@ export class S3Service {
    * Si compradorId empieza con "temp-", se usa estructura temporal
    */
   static generateKey(
-    compradorId: string, 
-    tramiteId: string, 
+    compradorId: string,
+    tramiteId: string,
     tipoTramite: string,
-    tipoDocumento: string, 
+    tipoDocumento: string,
     fileName: string
   ): string {
     const sanitizedFileName = this.sanitizeFileName(fileName)
     const timestamp = Date.now()
     const yearMonth = this.getYearMonthPrefix()
-    
+
     // Si es temporal (sin comprador aún), usar estructura temporal
     if (compradorId.startsWith('temp-')) {
       const tempId = compradorId.replace('temp-', '')
       return `expedientes/_temp/${tempId}/tramites/${tramiteId}/${tipoTramite}/${tipoDocumento}/${yearMonth}/${timestamp}-${sanitizedFileName}`
     }
-    
+
     return `expedientes/${compradorId}/tramites/${tramiteId}/${tipoTramite}/${tipoDocumento}/${yearMonth}/${timestamp}-${sanitizedFileName}`
   }
 
@@ -107,13 +107,13 @@ export class S3Service {
     const sanitizedFileName = this.sanitizeFileName(fileName)
     const timestamp = Date.now()
     const yearMonth = this.getYearMonthPrefix()
-    
+
     // Si es temporal (sin comprador aún), usar estructura temporal
     if (compradorId.startsWith('temp-')) {
       const tempId = compradorId.replace('temp-', '')
       return `expedientes/_temp/${tempId}/documentos/${tipoDocumento}/${yearMonth}/${timestamp}-${sanitizedFileName}`
     }
-    
+
     return `expedientes/${compradorId}/documentos/${tipoDocumento}/${yearMonth}/${timestamp}-${sanitizedFileName}`
   }
 
@@ -125,14 +125,14 @@ export class S3Service {
    * Ejemplo: expedientes/abc123/generados/preaviso/2025/12/1733256000000-preaviso_compraventa.docx
    */
   static generateKeyForGeneratedDocument(
-    compradorId: string, 
-    tipoTramite: string, 
+    compradorId: string,
+    tipoTramite: string,
     fileName: string
   ): string {
     const sanitizedFileName = this.sanitizeFileName(fileName)
     const timestamp = Date.now()
     const yearMonth = this.getYearMonthPrefix()
-    
+
     return `expedientes/${compradorId}/generados/${tipoTramite}/${yearMonth}/${timestamp}-${sanitizedFileName}`
   }
 
@@ -147,7 +147,7 @@ export class S3Service {
     const sanitizedFileName = this.sanitizeFileName(fileName)
     const timestamp = Date.now()
     const yearMonth = this.getYearMonthPrefix()
-    
+
     return `temp/${tipo}/${yearMonth}/${timestamp}-${sanitizedFileName}`
   }
 
@@ -195,21 +195,31 @@ export class S3Service {
     // Verificar que el bucket existe antes de intentar subir
     await this.verifyBucket()
 
-    const arrayBuffer = file instanceof File 
-      ? await file.arrayBuffer() 
+    const arrayBuffer = file instanceof File
+      ? await file.arrayBuffer()
       : file
     const body = new Uint8Array(arrayBuffer)
 
     try {
-    await s3Client.send(
-      new PutObjectCommand({
-        Bucket: BUCKET,
-        Key: key,
-        Body: body,
-        ContentType: contentType || (file instanceof File ? file.type : 'application/octet-stream'),
-        Metadata: metadata,
-      })
-    )
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: BUCKET,
+          Key: key,
+          Body: body,
+          ContentType: contentType || (file instanceof File ? file.type : 'application/octet-stream'),
+          Metadata: metadata ? Object.fromEntries(
+            Object.entries(metadata).map(([k, v]) => [
+              k,
+              // S3 metadata values must be US-ASCII. Replace non-ASCII characters with underscores.
+              // We use normalize('NFD') to decompose characters like 'ó' into 'o' + '´', then remove the accent.
+              String(v)
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .replace(/[^\x20-\x7E]/g, '_')
+            ])
+          ) : undefined,
+        })
+      )
     } catch (error: any) {
       if (error.name === 'NoSuchBucket' || error.name === 'NotFound') {
         throw new Error(

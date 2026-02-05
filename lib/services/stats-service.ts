@@ -45,21 +45,37 @@ export const StatsService = {
      * @param metadata Optional additional data.
      * @returns The UUID of the created log, or null if error.
      */
-    async logEvent(userId: string, eventType: string, metadata: Record<string, any> = {}): Promise<string | null> {
+    async logEvent(
+        userId: string,
+        eventType: string,
+        metadata: Record<string, any> = {},
+        aiUsage?: {
+            tokensInput?: number
+            tokensOutput?: number
+            estimatedCost?: number
+        }
+    ): Promise<string | null> {
         try {
+            // Note: Redirected to activity_logs to resolve RLS error and unify auditing
             const { data, error } = await supabase
-                .from('usage_stats')
+                .from('activity_logs')
                 .insert({
                     user_id: userId,
+                    category: 'user_event',
                     event_type: eventType,
-                    metadata,
+                    tokens_input: aiUsage?.tokensInput,
+                    tokens_output: aiUsage?.tokensOutput,
+                    tokens_total: (aiUsage?.tokensInput || 0) + (aiUsage?.tokensOutput || 0) || null,
+                    estimated_cost: aiUsage?.estimatedCost,
+                    data: metadata,
                 })
                 .select('id')
                 .single()
 
             if (error) {
-                console.error('Error logging stats event:', JSON.stringify(error, null, 2))
-                console.error('Failed payload:', { userId, eventType, metadata })
+                console.error('[StatsService.logEvent] Supabase Error:', JSON.stringify(error, null, 2))
+                console.error('[StatsService.logEvent] Mismatch likely: userId MUST be the auth.users UUID, not public.usuarios UUID.')
+                console.error('[StatsService.logEvent] Debug Context:', { userId, eventType, metadata })
                 return null
             }
 
@@ -75,25 +91,26 @@ export const StatsService = {
      */
     async updateEvent(logId: string, metadata: Record<string, any>) {
         try {
-            // First fetch existing metadata to merge
+            // Note: Redirected to activity_logs
+            // First fetch existing data to merge
             const { data: existing } = await supabase
-                .from('usage_stats')
-                .select('metadata')
+                .from('activity_logs')
+                .select('data')
                 .eq('id', logId)
                 .single()
 
-            const mergedMetadata = {
-                ...(existing?.metadata || {}),
+            const mergedData = {
+                ...(existing?.data || {}),
                 ...metadata
             }
 
             const { error } = await supabase
-                .from('usage_stats')
-                .update({ metadata: mergedMetadata })
+                .from('activity_logs')
+                .update({ data: mergedData })
                 .eq('id', logId)
 
             if (error) {
-                console.error('Error updating stats event:', error)
+                console.error('Error updating activity log (StatsService):', error)
             }
         } catch (error) {
             console.error('Error in StatsService.updateEvent:', error)
@@ -101,8 +118,7 @@ export const StatsService = {
     },
 
     /**
-     * Logs a specific unit authorization detail to the child table.
-     * This avoids bloating the main usage_stats JSON.
+     * Logs a specific unit authorization detail to the activity_logs table.
      */
     async logUnitProcessing(
         statsId: string,
@@ -117,21 +133,37 @@ export const StatsService = {
         }
     ) {
         try {
+            // Note: Redirected to activity_logs with category 'document_processing'
+            // We first try to get the user_id from the parent log to keep it consistent
+            const { data: parentLog } = await supabase
+                .from('activity_logs')
+                .select('user_id')
+                .eq('id', statsId)
+                .single()
+
             const { error } = await supabase
-                .from('processed_units_log')
+                .from('activity_logs')
                 .insert({
-                    stats_id: statsId,
-                    unit_id: data.unit_id,
-                    original_text: data.original_text,
-                    final_text: data.final_text,
-                    similarity_score: data.similarity_score,
-                    cost_usd: data.cost_usd,
-                    usage: data.usage,
-                    metrics: data.metrics
+                    user_id: parentLog?.user_id,
+                    category: 'document_processing',
+                    event_type: 'unit_processed',
+                    estimated_cost: data.cost_usd,
+                    tokens_input: data.usage?.prompt_tokens,
+                    tokens_output: data.usage?.completion_tokens,
+                    tokens_total: data.usage?.total_tokens || ((data.usage?.prompt_tokens || 0) + (data.usage?.completion_tokens || 0)) || null,
+                    data: {
+                        stats_id: statsId,
+                        unit_id: data.unit_id,
+                        original_text: data.original_text,
+                        final_text: data.final_text,
+                        similarity_score: data.similarity_score,
+                        usage: data.usage,
+                        metrics: data.metrics
+                    }
                 })
 
             if (error) {
-                console.error('Error logUnitProcessing:', error)
+                console.error('Error logUnitProcessing in activity_logs:', error)
             }
         } catch (error) {
             console.error('Error in StatsService.logUnitProcessing:', error)
@@ -144,8 +176,13 @@ export const StatsService = {
      */
     async getUsageStats(eventType: string, period: StatsPeriod = 'day', filter: StatsFilter = {}) {
         let query = supabase
-            .from('usage_stats')
-            .select('created_at, user_id, metadata, users:user_id(email, nombre, apellido_paterno)')
+            .from('activity_logs')
+            .select(`
+                created_at, 
+                user_id, 
+                data, 
+                usuarios:user_id(email, nombre)
+            `)
             .eq('event_type', eventType)
             .order('created_at', { ascending: false })
 
@@ -163,7 +200,11 @@ export const StatsService = {
             throw error
         }
 
-        return data
+        // Map back to 'metadata' if component expects it
+        return data?.map(d => ({
+            ...d,
+            metadata: d.data
+        }))
     },
 
     /**
@@ -176,7 +217,7 @@ export const StatsService = {
     ) {
         // First get the count
         let countQuery = supabase
-            .from('usage_stats')
+            .from('activity_logs')
             .select('*', { count: 'exact', head: true })
             .eq('event_type', STATS_EVENTS.ARCHITECTURAL_PLAN_PROCESSED)
 
@@ -187,8 +228,14 @@ export const StatsService = {
 
         // Then get data
         let query = supabase
-            .from('usage_stats')
-            .select('id, created_at, user_id, metadata, users:user_id(email, nombre, apellido_paterno)')
+            .from('activity_logs')
+            .select(`
+                id, 
+                created_at, 
+                user_id, 
+                data, 
+                usuarios:user_id(email, nombre)
+            `)
             .eq('event_type', STATS_EVENTS.ARCHITECTURAL_PLAN_PROCESSED)
             .order('created_at', { ascending: false })
             .range((page - 1) * pageSize, page * pageSize - 1)
@@ -199,11 +246,17 @@ export const StatsService = {
         const { data, error } = await query
 
         if (error) {
-            console.error("Error fetching logs:", error)
+            console.error("Error fetching logs from activity_logs:", error)
             throw error
         }
 
-        return { data: data || [], count: count || 0 }
+        // Map back to 'metadata' if component expects it
+        const mappedData = data?.map(d => ({
+            ...d,
+            metadata: d.data
+        })) || []
+
+        return { data: mappedData, count: count || 0 }
     },
 
     /**
@@ -214,7 +267,7 @@ export const StatsService = {
         startDate.setDate(startDate.getDate() - days)
 
         const { data, error } = await supabase
-            .from('usage_stats')
+            .from('activity_logs')
             .select('created_at')
             .eq('event_type', eventType)
             .gte('created_at', startDate.toISOString())
@@ -248,13 +301,13 @@ export const StatsService = {
       */
     async getUniqueUsersCount(eventType: string) {
         const { data, error } = await supabase
-            .from('usage_stats')
+            .from('activity_logs')
             .select('user_id')
             .eq('event_type', eventType)
 
         if (error) throw error
 
-        const uniqueUsers = new Set((data || []).map(d => d.user_id))
+        const uniqueUsers = new Set((data || []).map(log => log.user_id).filter(Boolean))
         return uniqueUsers.size
     },
 
@@ -263,15 +316,22 @@ export const StatsService = {
      */
     async getLogDetails(statsId: string) {
         const { data, error } = await supabase
-            .from('processed_units_log')
+            .from('activity_logs') // Changed to query units from activity_logs
             .select('*')
-            .eq('stats_id', statsId)
+            .eq('category', 'document_processing')
+            .eq('event_type', 'unit_processed')
+            .contains('data', { stats_id: statsId }) // Filter by parent log ID in JSONB
             .order('created_at', { ascending: true })
 
         if (error) {
-            console.error('Error fetching log details:', error)
+            console.error('Error fetching log details from activity_logs:', error)
             return []
         }
-        return data
+
+        // Map data back to structure expected by component
+        return data.map(log => ({
+            ...log.data,
+            created_at: log.created_at
+        }))
     }
 }

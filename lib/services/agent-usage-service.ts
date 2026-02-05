@@ -23,6 +23,7 @@ export type AgentActionType = 'generate_question' | 'extract_data' | 'interpret_
 interface LogUsageParams {
     userId?: string
     sessionId?: string
+    tramiteId?: string
     model: string
     tokensInput: number
     tokensOutput: number
@@ -54,7 +55,7 @@ export class AgentUsageService {
     }
 
     /**
-     * Logs usage to the database
+     * Logs usage to the database (unified activity_logs table)
      */
     async logUsage(params: LogUsageParams) {
         try {
@@ -62,22 +63,26 @@ export class AgentUsageService {
             const totalTokens = params.tokensInput + params.tokensOutput
 
             const { error } = await this.supabase
-                .from('agent_usage_logs')
+                .from('activity_logs')
                 .insert({
                     user_id: params.userId || null,
                     session_id: params.sessionId || null,
-                    model: params.model,
+                    tramite_id: params.tramiteId || null,
+                    category: 'ai_usage',
+                    event_type: params.actionType,
                     tokens_input: params.tokensInput,
                     tokens_output: params.tokensOutput,
-                    total_tokens: totalTokens,
+                    tokens_total: totalTokens,
                     estimated_cost: cost,
-                    action_type: params.actionType,
-                    category: params.category || 'uncategorized',
-                    metadata: params.metadata || {}
+                    data: {
+                        model: params.model,
+                        category: params.category || 'uncategorized',
+                        ...params.metadata
+                    }
                 })
 
             if (error) {
-                console.error('[AgentUsageService] Error logging usage:', error)
+                console.error('[AgentUsageService] Error logging usage to activity_logs:', error)
             }
         } catch (err) {
             console.error('[AgentUsageService] Unexpected error:', err)

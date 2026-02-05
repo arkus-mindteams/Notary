@@ -1148,10 +1148,45 @@ function DeslindePageInner() {
       // latestTextRef.current = initialText // REMOVED
 
       // Create initial log record
+<<<<<<< Updated upstream
       // Create initial log record - REMOVED (Stats now handled server-side)
       /* if (user?.id) {
          // StatsService.logEvent removed
       } */
+=======
+      if (user?.id) {
+        StatsService.logEvent(user.authUserId || user.id, STATS_EVENTS.ARCHITECTURAL_PLAN_PROCESSED, {
+          // NESTED STRUCTURE (Clean JSON from start)
+          meta_request: {
+            images_count: imageFilesCount,
+            has_location: !!data.lotLocation,
+            has_surface: !!data.totalLotSurface,
+            authorized_units_count: 0 // Initial
+          },
+          costs_summary: {
+            units_cost_usd: 0, // No authorized units yet
+            units_tokens_total: 0,
+            initial_analysis_cost_usd: usageCost, // Track initial cost separately or sum it
+            initial_tokens_total: data.usage?.total_tokens || 0
+          },
+          quality_metrics: {
+            // Will be populated later
+          },
+          // REMOVED: ai_draft_text (User requested removal)
+          status: 'in_progress'
+        }, {
+          tokensInput: data.usage?.prompt_tokens,
+          tokensOutput: data.usage?.completion_tokens,
+          estimatedCost: usageCost
+        }).then(id => {
+          if (id) {
+            setProcessingLogId(id)
+            processingLogIdRef.current = id
+            isLogFinalizedRef.current = false
+          }
+        })
+      }
+>>>>>>> Stashed changes
     } catch (e) {
       console.error("[deslinde] Error processing with AI:", e)
 

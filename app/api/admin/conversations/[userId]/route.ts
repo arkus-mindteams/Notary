@@ -46,6 +46,10 @@ export async function GET(
             return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
         }
 
+        // 0. Parse query parameters
+        const url = new URL(req.url)
+        const includePlans = url.searchParams.get('includePlans') === 'true'
+
         // 1. Fetch sessions OR empty array if anon
         let sessions: any[] = []
         if (!isAnon) {
@@ -63,35 +67,41 @@ export async function GET(
             sessions = sData || []
         }
 
-        // 3. Fetch Architectural Plans from activity_logs
-        const { data: planLogs } = await supabase
-            .from('activity_logs')
-            .select('id, created_at, data, tokens_total, estimated_cost')
-            .eq('user_id', userId)
-            .eq('event_type', 'architectural_plan_processed')
-            .order('created_at', { ascending: false })
+        // 3. Fetch Architectural Plans from activity_logs (ONLY IF REQUESTED)
+        let planLogs: any[] = []
+        if (includePlans) {
+            const { data: pLogs } = await supabase
+                .from('activity_logs')
+                .select('id, created_at, data, tokens_total, estimated_cost')
+                .eq('user_id', userId)
+                .eq('event_type', 'architectural_plan_processed')
+                .order('created_at', { ascending: false })
+            planLogs = pLogs || []
+        }
 
-        // 4. Fetch Unit Processing details to sum them up with parents
-        const { data: unitLogs } = await supabase
-            .from('activity_logs')
-            .select('data, tokens_total, estimated_cost')
-            .eq('user_id', userId)
-            .eq('event_type', 'unit_processed')
-
+        // 4. Fetch Unit Processing details to sum them up with parents (ONLY IF REQUESTED)
         const unitStatsByPlan = new Map<string, { tokens: number, cost: number, count: number }>()
-        unitLogs?.forEach(unit => {
-            const statsId = unit.data?.stats_id
-            if (statsId) {
-                const current = unitStatsByPlan.get(statsId) || { tokens: 0, cost: 0, count: 0 }
-                unitStatsByPlan.set(statsId, {
-                    tokens: current.tokens + (unit.tokens_total || 0),
-                    cost: current.cost + (Number(unit.estimated_cost) || 0),
-                    count: current.count + 1
-                })
-            }
-        })
+        if (includePlans) {
+            const { data: unitLogs } = await supabase
+                .from('activity_logs')
+                .select('data, tokens_total, estimated_cost')
+                .eq('user_id', userId)
+                .eq('event_type', 'unit_processed')
 
-        // 5. Enriched active sessions
+            unitLogs?.forEach(unit => {
+                const statsId = unit.data?.stats_id
+                if (statsId) {
+                    const current = unitStatsByPlan.get(statsId) || { tokens: 0, cost: 0, count: 0 }
+                    unitStatsByPlan.set(statsId, {
+                        tokens: current.tokens + (unit.tokens_total || 0),
+                        cost: current.cost + (Number(unit.estimated_cost) || 0),
+                        count: current.count + 1
+                    })
+                }
+            })
+        }
+
+        // 5. Enriched active sessions using UNIFIED activity_logs
         const enrichedSessions = await Promise.all(
             sessions.map(async (session) => {
                 if (!session.id) return null
@@ -101,13 +111,15 @@ export async function GET(
                         .select('*', { count: 'exact', head: true })
                         .eq('session_id', session.id)
 
+                    // ✅ Use activity_logs (unified table) instead of agent_usage_logs
                     const { data: usageLogs } = await supabase
-                        .from('agent_usage_logs')
-                        .select('total_tokens, estimated_cost')
+                        .from('activity_logs')
+                        .select('tokens_total, estimated_cost')
                         .eq('session_id', session.id)
+                        .eq('category', 'ai_usage')
 
-                    const totalTokens = usageLogs?.reduce((sum, log) => sum + (log.total_tokens || 0), 0) || 0
-                    const totalCost = usageLogs?.reduce((sum, log) => sum + (log.estimated_cost || 0), 0) || 0
+                    const totalTokens = usageLogs?.reduce((sum, log) => sum + (log.tokens_total || 0), 0) || 0
+                    const totalCost = usageLogs?.reduce((sum, log) => sum + (Number(log.estimated_cost) || 0), 0) || 0
 
                     return {
                         ...session,
@@ -123,36 +135,42 @@ export async function GET(
 
         const sessionsList = (enrichedSessions.filter(Boolean) as any[])
 
-        // 6. Map Plan logs to session-like objects
-        planLogs?.forEach(plan => {
-            const children = unitStatsByPlan.get(plan.id) || { tokens: 0, cost: 0, count: 0 }
-            sessionsList.push({
-                id: plan.id,
-                title: 'Plan Arquitectónico',
-                summary: `Procesamiento de imagen (${plan.data?.meta_request?.images_count || 1} archivos)`,
-                messageCount: children.count, // Using messageCount to show number of units in the list
-                totalTokens: (plan.tokens_total || 0) + children.tokens,
-                totalCost: Number(((Number(plan.estimated_cost) || 0) + children.cost).toFixed(4)),
-                created_at: plan.created_at,
-                isPlan: true // Flag for UI to render differently
+        // 6. Map Plan logs (ONLY IF REQUESTED)
+        if (includePlans) {
+            planLogs.forEach(plan => {
+                const children = unitStatsByPlan.get(plan.id) || { tokens: 0, cost: 0, count: 0 }
+                sessionsList.push({
+                    id: plan.id,
+                    title: 'Plan Arquitectónico',
+                    summary: `Procesamiento de imagen (${plan.data?.meta_request?.images_count || 1} archivos)`,
+                    messageCount: children.count,
+                    totalTokens: (plan.tokens_total || 0) + children.tokens,
+                    totalCost: Number(((Number(plan.estimated_cost) || 0) + children.cost).toFixed(4)),
+                    created_at: plan.created_at,
+                    isPlan: true
+                })
             })
-        })
+        }
 
         // 7. Sort merged list by created_at desc
         sessionsList.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
 
-        // 8. Fetch orphan logs (linked to user OR truly anonymous if isAnon)
-        const query = supabase.from('agent_usage_logs').select('total_tokens, estimated_cost')
+        // 8. Fetch orphan logs from activity_logs
+        const query = supabase
+            .from('activity_logs')
+            .select('tokens_total, estimated_cost')
+            .eq('category', 'ai_usage')
+            .is('session_id', null)
 
         if (isAnon) {
-            query.is('user_id', null).is('session_id', null)
+            query.is('user_id', null)
         } else {
-            query.eq('user_id', userId).is('session_id', null)
+            query.eq('user_id', userId)
         }
 
         const { data: orphanLogs } = await query
-        const orphanTokens = orphanLogs?.reduce((sum, log) => sum + (log.total_tokens || 0), 0) || 0
-        const orphanCost = orphanLogs?.reduce((sum, log) => sum + (log.estimated_cost || 0), 0) || 0
+        const orphanTokens = orphanLogs?.reduce((sum, log) => sum + (log.tokens_total || 0), 0) || 0
+        const orphanCost = orphanLogs?.reduce((sum, log) => sum + (Number(log.estimated_cost) || 0), 0) || 0
 
         if (orphanTokens > 0) {
             sessionsList.unshift({

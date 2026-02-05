@@ -4,10 +4,21 @@
 
 import { NextResponse } from 'next/server'
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
-import { PreavisoConversationLogService } from '@/lib/services/preaviso-conversation-log-service'
+import { ActivityLogService } from '@/lib/services/activity-log-service'
+import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 
 export async function POST(req: Request) {
+  // Import createServerClient here, as it's only used in the fallback logic
+  const { createServerClient } = await import('@/lib/supabase')
+
   try {
+    // ✅ Obtener usuario autenticado usando el helper oficial
+    // Esto valida el token del header Authorization
+    const usuario = await getCurrentUserFromRequest(req)
+
+    // El ID que necesitamos para activity_logs es el auth_user_id (el de Supabase Auth)
+    let authUserId: string | null = usuario?.auth_user_id || null
+
     const formData = await req.formData()
     const file = formData.get('file') as File | null
     const documentType = formData.get('documentType') as string | null
@@ -26,15 +37,15 @@ export async function POST(req: Request) {
         pluginId = tramiteIdRaw
       } else {
         // Es UUID, usar el tipo del trámite del contexto si está disponible
-        let context: any = null
+        let contextTmp: any = null
         if (contextRaw) {
           try {
-            context = JSON.parse(contextRaw)
+            contextTmp = JSON.parse(contextRaw)
           } catch {
-            context = null
+            contextTmp = null
           }
         }
-        const contextTipo = context?.tipoOperacion || context?.tipo
+        const contextTipo = contextTmp?.tipoOperacion || contextTmp?.tipo
         if (contextTipo === 'preaviso' || !contextTipo) {
           pluginId = 'preaviso'
         } else {
@@ -67,12 +78,47 @@ export async function POST(req: Request) {
       }
     }
 
+    // ✅ Fallback: si no hay usuario en el request, intentar obtenerlo del trámite
+    if (!authUserId && context?.tramiteId) {
+      try {
+        const supabase = createServerClient()
+        const { data: tramite } = await supabase
+          .from('tramites')
+          .select('usuario_id')
+          .eq('id', context.tramiteId)
+          .single()
+
+        if (tramite?.usuario_id) {
+          // El usuario_id en tramites es el ID de la tabla publica usuarios.
+          // Necesitamos el auth_user_id para el activity_log
+          const { data: userRecord } = await supabase
+            .from('usuarios')
+            .select('auth_user_id')
+            .eq('id', tramite.usuario_id)
+            .single()
+
+          authUserId = userRecord?.auth_user_id || null
+        }
+      } catch (e) {
+        console.error('[preaviso-process-document] Error en fallback de userId:', e)
+      }
+    }
+
+    // ✅ Inyectar userId en el contexto para que el DocumentProcessor lo use al loggear
+    if (authUserId && context) {
+      context._userId = authUserId
+    } else if (authUserId) {
+      context = { _userId: authUserId }
+    }
+
     // DEBUG: Verificar que el backend reciba _document_intent y el comprador/cónyuge en el contexto
     try {
       console.log('[preaviso-process-document] incoming', {
         documentType,
         fileName: file?.name || null,
         pluginId,
+        userId: authUserId,
+        tramiteId: context?.tramiteId || null,
         _document_intent: context?._document_intent ?? null,
         comprador0: context?.compradores?.[0]?.persona_fisica?.nombre || context?.compradores?.[0]?.persona_moral?.denominacion_social || null,
         comprador0EstadoCivil: context?.compradores?.[0]?.persona_fisica?.estado_civil || null,
@@ -91,44 +137,66 @@ export async function POST(req: Request) {
       context || {}
     )
 
-    // Logging (DB): registrar evento de documento como parte de la conversación si hay conversation_id
+    // ✅ 4. Guardar documento en DB y vincular con sesión (Logging Unificado)
     try {
       const conversationId = context?.conversation_id || null
-      if (conversationId) {
-        const asUuidOrNull = (v: any): string | null => {
-          if (!v || typeof v !== 'string') return null
-          const s = v.trim()
-          return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : null
-        }
-        const tramiteIdForLog =
-          asUuidOrNull(context?.tramiteId) ||
-          asUuidOrNull(tramiteIdRaw) ||
-          null
+      const tramiteId = context?.tramiteId || null
+      const supabase = createServerClient()
 
-        const meta = {
-          kind: 'document_upload',
-          documentType,
-          fileName: file?.name || null,
-          user_agent: req.headers.get('user-agent'),
-          ts: new Date().toISOString(),
-          tramite_id_raw: typeof tramiteIdRaw === 'string' ? tramiteIdRaw : null,
-          ...(result.meta || {})
+      if (conversationId && result.extractedData) {
+        // 1. Guardar documento en tabla 'documentos'
+        const { data: documento, error: docError } = await supabase
+          .from('documentos')
+          .insert({
+            tipo: documentType,
+            nombre: file.name,
+            s3_key: `chat/${conversationId}/${file.name}`,
+            s3_bucket: process.env.S3_BUCKET || 'notary-documents',
+            tamaño: file.size,
+            mime_type: file.type || 'application/pdf',
+            metadata: {
+              extracted_data: result.extractedData,
+              via: 'preaviso_chat'
+            }
+          })
+          .select()
+          .single()
+
+        if (docError) {
+          console.error('[preaviso-process-document] Error saving to documentos:', docError)
+        } else if (documento) {
+          // 2. Vincular con la sesión de chat
+          const { error: linkError } = await supabase
+            .from('chat_session_documents')
+            .insert({
+              session_id: conversationId,
+              documento_id: documento.id,
+              uploaded_by: authUserId,
+              metadata: {
+                document_type: documentType,
+                extraction_success: true,
+                tramite_id: tramiteId
+              }
+            })
+
+          if (linkError) {
+            console.error('[preaviso-process-document] Error linking document to session:', linkError)
+          }
+
+          // 3. Registrar upload en activity_logs
+          await ActivityLogService.logDocumentUpload({
+            userId: authUserId || 'system',
+            sessionId: String(conversationId),
+            tramiteId: tramiteId ? String(tramiteId) : undefined,
+            documentoId: documento.id,
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.type || 'application/pdf'
+          }).catch(console.error)
         }
-        // No siempre tenemos el arreglo completo de messages aquí; guardamos meta + snapshot del contexto.
-        await PreavisoConversationLogService.upsert({
-          conversationId: String(conversationId),
-          tramiteId: tramiteIdForLog,
-          pluginId,
-          // IMPORTANT: no sobrescribir messages existentes
-          lastUserMessage: `He subido el siguiente documento: ${file?.name || ''}`.trim(),
-          lastAssistantMessage: 'Documento procesado correctamente',
-          context: result.data || context,
-          state: { commands: result.commands?.map((c: any) => c.type) || [] },
-          meta,
-        })
       }
     } catch (e) {
-      console.error('[preaviso-process-document] logging error', e)
+      console.error('[preaviso-process-document] unified logging error', e)
     }
 
     // Guardar OCR en Redis si se requiere (reutilizar lógica existente)

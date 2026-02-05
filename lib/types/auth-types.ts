@@ -28,7 +28,8 @@ export interface Usuario {
 
 // Tipo para el usuario en el contexto de autenticación (simplificado)
 export interface AuthUser {
-  id: string
+  id: string          // ID interno en tabla usuarios
+  authUserId: string   // ID en Supabase Auth
   email: string
   name: string
   role: UserRole

@@ -2,6 +2,8 @@ import { NextResponse } from "next/server"
 import { notarialize } from "@/lib/notarial-formatter"
 import { readFileSync } from "fs"
 import { join } from "path"
+import { getCurrentUserFromRequest } from "@/lib/utils/auth-helper"
+import { ActivityLogService } from "@/lib/services/activity-log-service"
 
 export const runtime = "nodejs"
 
@@ -90,6 +92,9 @@ function buildNotarialPrompt(colindanciasText: string, unitName: string): string
 
 export async function POST(req: Request) {
   try {
+    const usuario = await getCurrentUserFromRequest(req)
+    const authUserId = usuario?.auth_user_id || null
+
     const contentType = req.headers.get("content-type") || ""
     if (!contentType.includes("application/json")) {
       return NextResponse.json(
@@ -100,6 +105,8 @@ export async function POST(req: Request) {
     const body = await req.json()
     const unitName = (body?.unitName || "").toString().trim()
     const colindanciasText = (body?.colindanciasText || "").toString()
+    const sessionId = body?.sessionId || null
+    const tramiteId = body?.tramiteId || null
 
     if (!unitName || !colindanciasText) {
       return NextResponse.json(
@@ -173,6 +180,24 @@ export async function POST(req: Request) {
         }
 
         result = notarialText
+
+        // Log usage if authenticated
+        if (authUserId && data.usage) {
+          ActivityLogService.logAIUsage({
+            userId: authUserId,
+            sessionId: sessionId,
+            tramiteId: tramiteId,
+            model: model,
+            tokensInput: data.usage.prompt_tokens,
+            tokensOutput: data.usage.completion_tokens,
+            actionType: 'notarialize',
+            metadata: {
+              unit_name: unitName,
+              category: 'deslinde'
+            }
+          }).catch(console.error)
+        }
+
         // Return result and usage
         return NextResponse.json({
           notarialText: result,
