@@ -7,10 +7,24 @@ export async function GET(req: Request) {
     try {
         const supabase = createServerClient()
 
-        // Check authentication (ADMIN ONLY ideally)
-        const { data: { user }, error: authError } = await supabase.auth.getUser()
+        // Check authentication - extract token from Authorization header
+        const authHeader = req.headers.get('authorization')
+
+        if (!authHeader) {
+            return NextResponse.json(
+                { error: 'Unauthorized', message: 'No autenticado' },
+                { status: 401 }
+            )
+        }
+
+        const token = authHeader.replace('Bearer ', '')
+        const { data: { user }, error: authError } = await supabase.auth.getUser(token)
+
         if (authError || !user) {
-            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+            return NextResponse.json(
+                { error: 'Unauthorized', message: 'Token inválido' },
+                { status: 401 }
+            )
         }
 
         // Parse query params for range (default: current month)
@@ -25,10 +39,20 @@ export async function GET(req: Request) {
             startDate = new Date(0) // Epoch
         }
 
-        // Fetch logs
+        // Fetch logs from unified table
         const { data: logs, error } = await supabase
-            .from('agent_usage_logs')
-            .select('user_id, estimated_cost, total_tokens, model, created_at, session_id, category')
+            .from('activity_logs')
+            .select(`
+                user_id, 
+                estimated_cost, 
+                tokens_total, 
+                category, 
+                event_type, 
+                created_at, 
+                session_id,
+                data,
+                usuarios:user_id(email, nombre, apellido_paterno)
+            `)
             .gte('created_at', startDate.toISOString())
 
         if (error) throw error
@@ -36,14 +60,15 @@ export async function GET(req: Request) {
         // Aggregate stats
         let totalCost = 0
         let totalTokens = 0
+        let similaritySum = 0
+        let similarityCount = 0
 
-        // User Stats
-        const userStatsMap = new Map<string, {
-            userId: string,
-            tokens: number,
-            cost: number,
-            conversations: Set<string>
-        }>()
+        // User Stats (Global)
+        const userStatsMap = new Map<string, any>()
+        // User Stats (Architectural Plans)
+        const deslindeUserStatsMap = new Map<string, any>()
+        // User Stats (Chat Notarial)
+        const chatUserStatsMap = new Map<string, any>()
 
         // Category Stats
         const categoryStatsMap = new Map<string, {
@@ -54,36 +79,122 @@ export async function GET(req: Request) {
 
         logs?.forEach(log => {
             // Global
-            totalCost += log.estimated_cost || 0
-            totalTokens += log.total_tokens || 0
+            totalCost += Number(log.estimated_cost) || 0
+            totalTokens += log.tokens_total || 0
+
+            // Quality / Similarity (mostly for architectural plans)
+            const meta = (log.data as any) || {}
+            const quality = meta.quality_metrics || {}
+            let sim = quality.global_similarity !== undefined ? quality.global_similarity : (meta.global_similarity)
+
+            // Fallback for units which use similarity_score directly in data
+            if (sim === undefined && meta.similarity_score !== undefined) {
+                sim = meta.similarity_score
+            }
+
+            if (sim !== undefined && sim !== null) {
+                similaritySum += Number(sim)
+                similarityCount++
+            }
 
             // User Breakdown
             const uid = log.user_id || 'anonymous'
-            if (!userStatsMap.has(uid)) {
-                userStatsMap.set(uid, { userId: uid, tokens: 0, cost: 0, conversations: new Set() })
-            }
-            const uStats = userStatsMap.get(uid)!
-            uStats.tokens += log.total_tokens || 0
-            uStats.cost += log.estimated_cost || 0
-            if (log.session_id) uStats.conversations.add(log.session_id)
+            const user = (log as any).usuarios || {}
+            const nombreCompleto = `${user.nombre || ''} ${user.apellido_paterno || ''}`.trim() || 'Desconocido'
 
-            // Category Breakdown
-            const cat = log.category || 'uncategorized'
+            if (!userStatsMap.has(uid)) {
+                const base = {
+                    userId: uid,
+                    email: user.email || 'N/A',
+                    nombre: nombreCompleto,
+                    tokens: 0,
+                    cost: 0,
+                    conversations: new Set(),
+                    lastActivity: log.created_at
+                }
+                userStatsMap.set(uid, { ...base })
+            }
+
+            const uStats = userStatsMap.get(uid)!
+            uStats.tokens += log.tokens_total || 0
+            uStats.cost += Number(log.estimated_cost) || 0
+            if (log.session_id) uStats.conversations.add(log.session_id)
+            if (new Date(log.created_at) > new Date(uStats.lastActivity)) {
+                uStats.lastActivity = log.created_at
+            }
+
+            // Category Breakdown - Better grouping for user-facing labels
+            let cat = log.category || 'uncategorized'
+
+            if (log.event_type === 'architectural_plan_processed' || log.event_type === 'unit_processed' || log.data?.category === 'deslinde') {
+                cat = 'Planos Arquitectónicos'
+            } else if (cat === 'ai_usage' || cat === 'chat' || log.session_id) {
+                cat = 'Chat Notarial'
+            } else {
+                // Formatting for other categories
+                cat = cat.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+            }
+
             if (!categoryStatsMap.has(cat)) {
                 categoryStatsMap.set(cat, { category: cat, tokens: 0, cost: 0 })
             }
             const cStats = categoryStatsMap.get(cat)!
-            cStats.tokens += log.total_tokens || 0
-            cStats.cost += log.estimated_cost || 0
+            cStats.tokens += log.tokens_total || 0
+            cStats.cost += Number(log.estimated_cost) || 0
+
+            // Module specific user breakdowns
+            if (cat === 'Planos Arquitectónicos') {
+                if (!deslindeUserStatsMap.has(uid)) {
+                    deslindeUserStatsMap.set(uid, {
+                        ...userStatsMap.get(uid),
+                        tokens: 0,
+                        cost: 0,
+                        count: 0,
+                        similaritySum: 0,
+                        similarityCount: 0
+                    })
+                }
+                const dUStats = deslindeUserStatsMap.get(uid)!
+                dUStats.tokens += log.tokens_total || 0
+                dUStats.cost += Number(log.estimated_cost) || 0
+
+                // CRITICAL: Only count the parent event as a "Document", 
+                // individual units contribute to cost/tokens but shouldn't inflate the count.
+                if (log.event_type === 'architectural_plan_processed') {
+                    dUStats.count += 1
+                }
+
+                if (sim !== undefined && sim !== null) {
+                    dUStats.similaritySum += Number(sim)
+                    dUStats.similarityCount += 1
+                }
+            } else if (cat === 'Chat Notarial') {
+                if (!chatUserStatsMap.has(uid)) {
+                    chatUserStatsMap.set(uid, {
+                        ...userStatsMap.get(uid),
+                        tokens: 0,
+                        cost: 0,
+                        conversations: new Set()
+                    })
+                }
+                const cUStats = chatUserStatsMap.get(uid)!
+                cUStats.tokens += log.tokens_total || 0
+                cUStats.cost += Number(log.estimated_cost) || 0
+                if (log.session_id) cUStats.conversations.add(log.session_id)
+            }
         })
 
-        // Convert map to array
-        const userBreakdown = Array.from(userStatsMap.values()).map(s => ({
-            userId: s.userId,
-            tokens: s.tokens,
-            cost: Number(s.cost.toFixed(4)), // Round for display
-            conversationCount: s.conversations.size
-        })).sort((a, b) => b.cost - a.cost) // Sort by cost desc
+        const formatUserStats = (map: Map<string, any>) =>
+            Array.from(map.values()).map(s => ({
+                userId: s.userId,
+                email: s.email,
+                nombre: s.nombre,
+                tokens: s.tokens,
+                cost: Number(s.cost.toFixed(4)),
+                count: s.count || s.conversations?.size || 0,
+                lastActivity: s.lastActivity,
+                avgSimilarity: s.similarityCount > 0 ? (s.similaritySum / s.similarityCount) * 100 : null
+            })).sort((a, b) => b.cost - a.cost)
 
         const categoryBreakdown = Array.from(categoryStatsMap.values()).map(s => ({
             category: s.category,
@@ -91,22 +202,14 @@ export async function GET(req: Request) {
             cost: Number(s.cost.toFixed(4))
         })).sort((a, b) => b.cost - a.cost)
 
-        // Fetch user details (emails) for the IDs found
-        // Note: In a real app we might join 'profiles' or use admin auth client. 
-        // For now, we return specific IDs. Frontend might resolve them or we try here.
-        // If we have access to auth admin:
-        // const { data: { users } } = await supabase.auth.admin.listUsers() 
-        // This usually requires SERVICE_ROLE key. createServerClient might use it if configured as such?
-        // standard createServerClient usually uses anon/user token. 
-
-        // Let's check 'profiles' table existence? 
-        // If not exists, we just return IDs.
-
         return NextResponse.json({
             period: range,
             totalCost: Number(totalCost.toFixed(4)),
             totalTokens,
-            userStats: userBreakdown,
+            avgSimilarity: similarityCount > 0 ? (similaritySum / similarityCount) * 100 : 0,
+            userStats: formatUserStats(userStatsMap),
+            deslindeUserStats: formatUserStats(deslindeUserStatsMap),
+            chatUserStats: formatUserStats(chatUserStatsMap),
             categoryStats: categoryBreakdown
         })
 

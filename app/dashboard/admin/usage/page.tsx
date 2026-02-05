@@ -16,12 +16,14 @@ import { Loader2, DollarSign, Activity, Users } from 'lucide-react'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { ProtectedRoute } from '@/components/protected-route'
 import { UserSessionsModal } from '@/components/admin/user-sessions-modal'
+import { UserPlansModal } from '@/components/admin/user-plans-modal'
 
 export default function UsageStatsPage() {
     const [loading, setLoading] = useState(true)
     const [data, setData] = useState<any>(null)
     const [range, setRange] = useState('month')
     const [selectedUser, setSelectedUser] = useState<any>(null)
+    const [selectedUserForPlans, setSelectedUserForPlans] = useState<any>(null)
 
     useEffect(() => {
         fetchStats()
@@ -98,8 +100,34 @@ export default function UsageStatsPage() {
                         </div>
                     ) : (
                         <>
+                            {/* Category Breakdown */}
+                            <div className="grid gap-4 md:grid-cols-1">
+                                <Card>
+                                    <CardHeader>
+                                        <CardTitle className="text-sm font-medium">Consumo por Categoría</CardTitle>
+                                        <CardDescription>Distribución de tokens y costos por módulo del sistema.</CardDescription>
+                                    </CardHeader>
+                                    <CardContent>
+                                        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                                            {data?.categoryStats?.map((cat: any) => (
+                                                <div key={cat.category} className="p-4 rounded-lg bg-muted/30 border border-muted flex flex-col gap-1">
+                                                    <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{cat.category}</div>
+                                                    <div className="text-lg font-bold">${cat.cost.toFixed(4)}</div>
+                                                    <div className="text-xs text-muted-foreground">{cat.tokens.toLocaleString()} tokens</div>
+                                                </div>
+                                            ))}
+                                            {data?.categoryStats?.length === 0 && (
+                                                <div className="col-span-full text-center py-4 text-muted-foreground text-sm italic">
+                                                    No hay datos por categoría.
+                                                </div>
+                                            )}
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </div>
+
                             {/* KPI Cards */}
-                            <div className="grid gap-4 md:grid-cols-3">
+                            <div className="grid gap-4 md:grid-cols-4">
                                 <Card>
                                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                                         <CardTitle className="text-sm font-medium">Costo Total Estimado</CardTitle>
@@ -128,6 +156,19 @@ export default function UsageStatsPage() {
 
                                 <Card>
                                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                                        <CardTitle className="text-sm font-medium">Certeza Promedio</CardTitle>
+                                        <Activity className="h-4 w-4 text-muted-foreground" />
+                                    </CardHeader>
+                                    <CardContent>
+                                        <div className="text-2xl font-bold">{data?.avgSimilarity?.toFixed(1) || 0}%</div>
+                                        <p className="text-xs text-muted-foreground">
+                                            Similitud IA vs Texto Final
+                                        </p>
+                                    </CardContent>
+                                </Card>
+
+                                <Card>
+                                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                                         <CardTitle className="text-sm font-medium">Usuarios Activos</CardTitle>
                                         <Users className="h-4 w-4 text-muted-foreground" />
                                     </CardHeader>
@@ -140,12 +181,12 @@ export default function UsageStatsPage() {
                                 </Card>
                             </div>
 
-                            {/* User Breakdown Table */}
-                            <Card>
+                            {/* Planos Arquitectónicos Table */}
+                            <Card className="border-l-4 border-l-blue-500">
                                 <CardHeader>
-                                    <CardTitle>Desglose por Usuario</CardTitle>
+                                    <CardTitle>Procesamiento de Planos Arquitectónicos</CardTitle>
                                     <CardDescription>
-                                        Detalle de consumo ordenado por costo.
+                                        Extracción de medidas y colindancias por usuario.
                                     </CardDescription>
                                 </CardHeader>
                                 <CardContent>
@@ -154,44 +195,99 @@ export default function UsageStatsPage() {
                                             <TableRow>
                                                 <TableHead>Usuario</TableHead>
                                                 <TableHead>Email</TableHead>
-                                                <TableHead>Chats</TableHead>
+                                                <TableHead className="text-center">Documentos</TableHead>
                                                 <TableHead>Tokens</TableHead>
+                                                <TableHead>Certeza</TableHead>
                                                 <TableHead>Costo (USD)</TableHead>
                                                 <TableHead>Última Actividad</TableHead>
                                             </TableRow>
                                         </TableHeader>
                                         <TableBody>
-                                            {data?.userStats?.length === 0 && (
+                                            {(data?.deslindeUserStats || []).length === 0 && (
                                                 <TableRow>
-                                                    <TableCell colSpan={4} className="text-center py-10 text-muted-foreground">
-                                                        No hay datos registrados en este periodo.
+                                                    <TableCell colSpan={7} className="text-center py-10 text-muted-foreground">
+                                                        No hay actividad de planos registrada.
                                                     </TableCell>
                                                 </TableRow>
                                             )}
-                                            {data?.userStats?.map((user: any) => (
+                                            {(data?.deslindeUserStats || []).map((user: any) => (
                                                 <TableRow
                                                     key={user.userId}
                                                     className="cursor-pointer hover:bg-muted/50 transition-colors"
-                                                    onClick={() => setSelectedUser(user)}
+                                                    onClick={() => setSelectedUserForPlans(user)}
                                                 >
-                                                    <TableCell className="font-medium">
-                                                        {user.nombre}
-                                                    </TableCell>
-                                                    <TableCell className="text-sm text-muted-foreground">
-                                                        {user.email}
-                                                    </TableCell>
-                                                    <TableCell>{user.conversationCount}</TableCell>
+                                                    <TableCell className="font-medium">{user.nombre}</TableCell>
+                                                    <TableCell className="text-sm text-muted-foreground">{user.email}</TableCell>
+                                                    <TableCell className="text-center">{user.count}</TableCell>
                                                     <TableCell>{user.tokens.toLocaleString()}</TableCell>
-                                                    <TableCell className="font-medium text-green-600 dark:text-green-400">
+                                                    <TableCell>
+                                                        <span className={`font-medium ${user.avgSimilarity > 90 ? 'text-green-600' : 'text-amber-600'}`}>
+                                                            {user.avgSimilarity ? `${user.avgSimilarity.toFixed(1)}%` : 'N/A'}
+                                                        </span>
+                                                    </TableCell>
+                                                    <TableCell className="font-medium text-blue-600">
                                                         ${user.cost.toFixed(4)}
                                                     </TableCell>
                                                     <TableCell className="text-sm text-muted-foreground">
                                                         {new Date(user.lastActivity).toLocaleDateString('es-MX', {
                                                             year: 'numeric',
                                                             month: 'short',
-                                                            day: 'numeric',
-                                                            hour: '2-digit',
-                                                            minute: '2-digit'
+                                                            day: 'numeric'
+                                                        })}
+                                                    </TableCell>
+                                                </TableRow>
+                                            ))}
+                                        </TableBody>
+                                    </Table>
+                                </CardContent>
+                            </Card>
+
+                            {/* Chat Notarial Table */}
+                            <Card className="border-l-4 border-l-purple-500">
+                                <CardHeader>
+                                    <CardTitle>Uso de Chat Notarial</CardTitle>
+                                    <CardDescription>
+                                        Actividad de revisiones y consultas por usuario.
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent>
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead>Usuario</TableHead>
+                                                <TableHead>Email</TableHead>
+                                                <TableHead className="text-center">Chats</TableHead>
+                                                <TableHead>Tokens</TableHead>
+                                                <TableHead>Costo (USD)</TableHead>
+                                                <TableHead>Última Actividad</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                            {(data?.chatUserStats || []).length === 0 && (
+                                                <TableRow>
+                                                    <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
+                                                        No hay actividad de chat registrada.
+                                                    </TableCell>
+                                                </TableRow>
+                                            )}
+                                            {(data?.chatUserStats || []).map((user: any) => (
+                                                <TableRow
+                                                    key={user.userId}
+                                                    className="cursor-pointer hover:bg-muted/50 transition-colors"
+                                                    onClick={() => setSelectedUser(user)}
+                                                >
+                                                    <TableCell className="font-medium">{user.nombre}</TableCell>
+                                                    <TableCell className="text-sm text-muted-foreground">{user.email}</TableCell>
+                                                    <TableCell className="text-center">{user.count}</TableCell>
+                                                    <TableCell>{user.tokens.toLocaleString()}</TableCell>
+                                                    <TableCell className="font-medium text-purple-600">
+                                                        ${user.cost.toFixed(4)}
+                                                    </TableCell>
+                                                    <TableCell className="text-sm text-muted-foreground">
+                                                        {new Date(user.lastActivity).toLocaleDateString('es-MX', {
+                                                            year: 'numeric',
+                                                            month: 'short',
+                                                            day: 'numeric'
                                                         })}
                                                     </TableCell>
                                                 </TableRow>
@@ -204,11 +300,19 @@ export default function UsageStatsPage() {
                     )}
                 </div>
 
-                {/* User Sessions Modal */}
+                {/* User Sessions Modal (Chat) */}
                 {selectedUser && (
                     <UserSessionsModal
                         user={selectedUser}
                         onClose={() => setSelectedUser(null)}
+                    />
+                )}
+
+                {/* User Plans Modal (Auditory) */}
+                {selectedUserForPlans && (
+                    <UserPlansModal
+                        user={selectedUserForPlans}
+                        onClose={() => setSelectedUserForPlans(null)}
                     />
                 )}
             </DashboardLayout>
