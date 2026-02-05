@@ -128,20 +128,28 @@ export async function GET(
         const totalCost = usageLogs?.reduce((sum, log) => sum + (Number(log.estimated_cost) || 0), 0) || 0
 
         // 4. Fetch related documents via chat_session_documents bridge table
-        const { data: linkedDocs } = await supabase
+        console.log('[session-detail] Fetching documents for session:', sessionId)
+        const { data: linkedDocs, error: linkedDocsError } = await supabase
             .from('chat_session_documents')
             .select(`
                 documentos:documento_id (
                     id, 
                     nombre, 
                     tipo, 
-                    created_at
+                    uploaded_at
                 )
             `)
             .eq('session_id', sessionId)
 
+        if (linkedDocsError) {
+            console.error('[session-detail] Error fetching linked docs:', linkedDocsError)
+        } else {
+            console.log('[session-detail] Linked docs raw:', linkedDocs)
+        }
+
         // Flatten the join results
         const documents = linkedDocs?.map((ld: any) => ld.documentos).filter(Boolean) || []
+        console.log('[session-detail] Flattened documents:', documents)
 
         // Fallback 1: Check activity_logs for 'document_upload' events in this session
         // This catches documents that might have missed the bridge table link
@@ -156,7 +164,7 @@ export async function GET(
         if (logDocIds.length > 0) {
             const { data: extraDocs } = await supabase
                 .from('documentos')
-                .select('id, nombre, tipo, created_at')
+                .select('id, nombre, tipo, uploaded_at')
                 .in('id', logDocIds)
 
             if (extraDocs) {
@@ -164,13 +172,26 @@ export async function GET(
             }
         }
 
-        // Fallback 2: If no linked docs, check last_context.tramite_id (legacy)
+        // Fallback 2: Check documents linked via metadata.conversation_id
+        // This is for documents uploaded that didn't get a record in activity_logs for some reason
+        if (documents.length === 0) {
+            const { data: metaDocs } = await supabase
+                .from('documentos')
+                .select('id, nombre, tipo, uploaded_at')
+                .contains('metadata', { conversation_id: sessionId })
+
+            if (metaDocs && metaDocs.length > 0) {
+                documents.push(...metaDocs)
+            }
+        }
+
+        // Fallback 3: If no linked docs, check last_context.tramite_id (legacy)
         if (documents.length === 0) {
             const tramiteId = session.last_context?.tramite_id
             if (tramiteId) {
                 const { data: legacyDocs } = await supabase
                     .from('documentos')
-                    .select('id, nombre, tipo, created_at')
+                    .select('id, nombre, tipo, uploaded_at')
                     .eq('tramite_id', tramiteId)
                 if (legacyDocs) documents.push(...legacyDocs)
             }

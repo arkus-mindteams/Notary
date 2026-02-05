@@ -341,7 +341,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           documentos: []
         })
 
-        // Inicializar con mensajes de bienvenida
         const initialMsgs = INITIAL_MESSAGES.map((msg, i) => ({
           id: `init-${Date.now()}-${i}`,
           role: 'assistant' as const,
@@ -349,44 +348,43 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           timestamp: new Date(Date.now() + i * 100)
         }))
         setMessages(initialMsgs)
+
+        // Persistir saludos iniciales en la DB para que no desaparezcan al refrescar
+        try {
+          const { data: { session: freshSession } } = await supabase.auth.getSession()
+          const headers: HeadersInit = { 'Content-Type': 'application/json' }
+          if (freshSession?.access_token) {
+            headers['Authorization'] = `Bearer ${freshSession.access_token}`
+          }
+
+          for (const msg of initialMsgs) {
+            await fetch(`/api/chat/sessions/${newId}/messages`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                role: msg.role,
+                content: msg.content,
+                metadata: { is_initial_msg: true }
+              })
+            })
+          }
+        } catch (err) {
+          console.error('[PreavisoChat] Error persistiendo saludos iniciales:', err)
+        }
+
         setInitialMessagesSent(true)
         initializationRef.current = true
         setActiveTramiteId(null)
-        setServerState(null) // FIX: Resetear estado del servidor (pasos completados) al crear nueva sesión
+        setServerState(null)
 
-        // FIX: Limpiar documentos cargados y otros estados de UI
         setUploadedDocuments([])
         setProcessingProgress(0)
         setIsProcessingDocument(false)
 
-        // Actualizar URL y navegar (triggers UI refresh for Sidebar)
-        // window.history.replaceState(null, '', `/dashboard/preaviso?chatId=${newId}`)
         router.push(`/dashboard/preaviso?chatId=${newId}`)
-
-        // FIX: Persistir mensajes iniciales en DB para que no se pierdan al recargar
-        try {
-          // Enviamos cada mensaje inicial al endpoint de persistencia
-          // Nota: Lo hacemos en background (no esperamos a que termine para mostrar UI)
-          (async () => {
-            for (const msg of initialMsgs) {
-              await supabase.from('chat_messages').insert({
-                session_id: newId,
-                role: msg.role,
-                content: msg.content,
-                metadata: {
-                  timestamp: msg.timestamp.toISOString(),
-                  is_initial_message: true
-                }
-              })
-            }
-          })()
-        } catch (err) {
-          console.error('Error persistiendo mensajes iniciales:', err)
-        }
       }
     } catch (e) {
       console.error('Error creating session', e)
-      // conversationIdRef.current = crypto.randomUUID() // Don't generate fake ID, let it fail or retry
     } finally {
       isCreatingSessionRef.current = false
     }
@@ -1596,7 +1594,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Esperar a que la sesión esté lista si es necesario (igual que handleSend)
     if (!conversationIdRef.current) {
       console.log('Esperando inicialización de sesión para upload...')
-      // Pequeño retry loop (máx 3 segundos)
+
+      // ✅ FIX: Si no hay sesión, intentar crearla explícitamente primero
+      if (!isCreatingSessionRef.current) {
+        try {
+          await createInitialSession()
+        } catch (e) {
+          console.error("Error creating initial session during upload:", e)
+        }
+      }
+
+      // Pequeño retry loop (máx 3 segundos) para asegurar que se estableció
       for (let i = 0; i < 30; i++) {
         if (conversationIdRef.current) break
         await new Promise(r => setTimeout(r, 100))
@@ -1755,27 +1763,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
       setMessages(prev => [...prev, fileMessage])
 
-      // Persistir mensaje del usuario en DB
-      if (conversationIdRef.current) {
-        try {
-          const { data: { session: currentSession } } = await supabase.auth.getSession()
-          const headers: HeadersInit = { 'Content-Type': 'application/json' }
-          if (currentSession?.access_token) {
-            headers['Authorization'] = `Bearer ${currentSession.access_token}`
-          }
-          fetch(`/api/chat/sessions/${conversationIdRef.current}/messages`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              role: 'user',
-              content,
-              tramite_id: activeTramiteId
-            })
-          }).catch(e => console.error('Error saving file message:', e))
-        } catch (e) {
-          console.error('Error persistence file msg:', e)
-        }
-      }
     }
 
     const processingMessage: ChatMessage = {
@@ -1786,33 +1773,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
     setMessages(prev => [...prev, processingMessage])
 
-    // Persistir mensaje de "procesando" del asistente (opcional, para feedback inmediato)
-    if (conversationIdRef.current) {
-      try {
-        const { data: { session: currentSession } } = await supabase.auth.getSession()
-        const headers: HeadersInit = { 'Content-Type': 'application/json' }
-        if (currentSession?.access_token) {
-          headers['Authorization'] = `Bearer ${currentSession.access_token}`
-        }
-        fetch(`/api/chat/sessions/${conversationIdRef.current}/messages`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            role: 'assistant',
-            content: 'Procesando documento...',
-            tramite_id: activeTramiteId
-          })
-        }).catch(() => { })
-      } catch { }
-    }
 
-    // ... (rest of processing logic stays same until chat API call) ...
-    // Note: I will need to replace the chat API call part specifically, but since I can't target detached blocks easily in a huge function without context, 
-    // I will use replace_file_content on the function signature and the specific API block separately or use multi_replace if appropriate.
-    // Actually, `replace_file_content` supports specifying StartLine/EndLine.
-    // But `handleFileUpload` is immense. I should try to target the signature and the API call separately.
-    // Wait, the tool description says "Use this tool ONLY when you are making a SINGLE CONTIGUOUS block of edits".
-    // I must use multi_replace.
 
 
     // Asegurar sesión válida antes de procesar (evita quedarse en 50% si la sesión expiró)
@@ -2459,7 +2420,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             uploadFormData.append('file', item.originalFile)
             uploadFormData.append('compradorId', '')
             uploadFormData.append('tipo', expedienteTipo)
-            uploadFormData.append('tramiteId', activeTramiteId)
+            uploadFormData.append('tramiteId', activeTramiteId || '')
+            uploadFormData.append('sessionId', conversationIdRef.current || '')
             uploadFormData.append('metadata', JSON.stringify({
               preaviso_subtype: item.docType,
               original_name: item.originalFile.name,
@@ -2827,7 +2789,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 informacionExtraida: d.extractedData
               }))
           },
-          tramiteId: activeTramiteId
+          tramiteId: activeTramiteId,
+          conversation_id: conversationIdRef.current
         })
       })
 

@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button'
 
 import { Loader2, Bot, User, Download, FileText, DollarSign, Hash, Calendar, Clock, Sparkles, MessageSquare, Zap } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { createBrowserClient } from '@/lib/supabase'
 
 interface SessionDetailModalProps {
     userId: string
@@ -65,8 +66,36 @@ export function SessionDetailModal({ userId, session, onClose }: SessionDetailMo
         }
     }
 
-    const handleDownload = (docId: string) => {
-        window.open(`/api/admin/documents/${docId}/download`, '_blank')
+    const handleDownload = async (docId: string) => {
+        try {
+            const supabase = createBrowserClient()
+            const { data: { session } } = await supabase.auth.getSession()
+            if (!session?.access_token) {
+                console.error('No auth token available')
+                return
+            }
+
+            const response = await fetch(`/api/admin/documents/${docId}/download`, {
+                headers: {
+                    'Authorization': `Bearer ${session.access_token}`
+                }
+            })
+
+            if (!response.ok) {
+                const error = await response.json()
+                console.error('Download error:', error)
+                return
+            }
+
+            // Get the signed URL from the response
+            const data = await response.json()
+            if (data.downloadUrl) {
+                // Open the signed URL in a new tab to trigger download
+                window.open(data.downloadUrl, '_blank')
+            }
+        } catch (error) {
+            console.error('Download failed:', error)
+        }
     }
 
     return (

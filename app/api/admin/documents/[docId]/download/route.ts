@@ -15,10 +15,28 @@ export async function GET(
         const { docId } = await params
         const supabase = createServerClient()
 
-        // Check authentication (ADMIN ONLY)
-        const { data: { user }, error: authError } = await supabase.auth.getUser()
+        // Check authentication - extract token from header for admin requests
+        const authHeader = req.headers.get('authorization')
+        const token = authHeader?.replace('Bearer ', '')
+
+        const { data: { user }, error: authError } = token
+            ? await supabase.auth.getUser(token)
+            : await supabase.auth.getUser()
+
         if (authError || !user) {
+            console.error('[download] Auth error:', authError)
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        }
+
+        // Verify admin role
+        const { data: usuario } = await supabase
+            .from('usuarios')
+            .select('rol')
+            .eq('auth_user_id', user.id)
+            .single()
+
+        if (!usuario || (usuario.rol !== 'superadmin' && usuario.rol !== 'admin')) {
+            return NextResponse.json({ error: 'Forbidden - Admin access required' }, { status: 403 })
         }
 
         // Fetch document metadata
@@ -33,24 +51,20 @@ export async function GET(
             return NextResponse.json({ error: 'Document not found' }, { status: 404 })
         }
 
-        // If S3 path exists, generate pre-signed URL
+        // If S3 path exists, generate signed URL using S3Service
         if (doc.s3_key) {
-            const bucket = doc.s3_bucket || 'documentos'
-            const filePath = doc.s3_key
+            try {
+                const { S3Service } = await import('@/lib/services/s3-service')
+                const signedUrl = await S3Service.getSignedUrl(doc.s3_key, 3600) // 1 hour expiry
 
-            // Generate signed URL (expires in 1 hour)
-            const { data: signedUrlData, error: urlError } = await supabase
-                .storage
-                .from(bucket)
-                .createSignedUrl(filePath, 3600) // 1 hour expiry
-
-            if (urlError) {
+                // Return the signed URL as JSON so the frontend can download it
+                return NextResponse.json({
+                    downloadUrl: signedUrl,
+                    fileName: doc.nombre
+                })
+            } catch (urlError: any) {
                 console.error('Error generating signed URL:', urlError)
                 return NextResponse.json({ error: 'Error generating download link' }, { status: 500 })
-            }
-
-            if (signedUrlData?.signedUrl) {
-                return NextResponse.redirect(signedUrlData.signedUrl)
             }
         }
 

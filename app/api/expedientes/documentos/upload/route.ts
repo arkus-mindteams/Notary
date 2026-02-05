@@ -3,6 +3,7 @@ import { DocumentoService } from '@/lib/services/documento-service'
 import { TramiteService } from '@/lib/services/tramite-service'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import type { TipoDocumento } from '@/lib/types/expediente-types'
+import { ActivityLogService } from '@/lib/services/activity-log-service'
 
 export async function POST(req: Request) {
   try {
@@ -20,6 +21,7 @@ export async function POST(req: Request) {
     const compradorId = formData.get('compradorId') as string | null
     const tipo = formData.get('tipo') as string | null
     const tramiteId = formData.get('tramiteId') as string | null
+    const sessionId = formData.get('sessionId') as string | null
     const metadataStr = formData.get('metadata') as string | null
     const ocrText = formData.get('ocrText') as string | null
 
@@ -59,13 +61,18 @@ export async function POST(req: Request) {
     }
 
     // Parsear metadata si existe
-    let metadata: Record<string, any> | undefined
+    let metadata: Record<string, any> = {}
     if (metadataStr) {
       try {
         metadata = JSON.parse(metadataStr)
       } catch (e) {
         console.warn('Error parsing metadata, ignoring:', e)
       }
+    }
+
+    // ✅ Ensure conversation_id is in metadata for better traceability
+    if (sessionId && !metadata.conversation_id) {
+      metadata.conversation_id = sessionId
     }
 
     // Si hay tramiteId, obtener el tipo de trámite para la estructura S3
@@ -95,6 +102,53 @@ export async function POST(req: Request) {
       tramiteId || undefined,
       tipoTramite
     )
+
+    // ✅ Establish formal link with chat session in bridge table
+    if (sessionId && documento?.id) {
+      console.log('[upload] Attempting to link document to session:', { sessionId, documentoId: documento.id })
+      try {
+        const { createServerClient } = await import('@/lib/supabase')
+        const supabase = createServerClient()
+
+        const { data, error } = await supabase
+          .from('chat_session_documents')
+          .insert({
+            session_id: sessionId,
+            documento_id: documento.id,
+            uploaded_by: currentUser.auth_user_id || null,
+            metadata: {
+              via: 'chat_upload_api',
+              original_type: tipo,
+              tramite_id: tramiteId
+            }
+          })
+          .select()
+
+        if (error) {
+          console.error('[upload] Error linking to chat session:', error)
+        } else {
+          console.log('[upload] Successfully linked document to session:', data)
+        }
+      } catch (linkError) {
+        console.error('[upload] Exception linking to chat session:', linkError)
+        // Non-blocking error
+      }
+    } else {
+      console.warn('[upload] Skipping session link - missing sessionId or documento.id:', { sessionId, documentoId: documento?.id })
+    }
+
+    // Log the upload activity
+    if (currentUser?.auth_user_id) {
+      ActivityLogService.logDocumentUpload({
+        userId: currentUser.auth_user_id,
+        sessionId: sessionId || undefined,
+        tramiteId: tramiteId || undefined,
+        documentoId: documento.id,
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type
+      }).catch(console.error)
+    }
 
     // Si hay texto OCR (previo o nuevo), procesarlo para RAG
     if (ocrText && tramiteId) {
