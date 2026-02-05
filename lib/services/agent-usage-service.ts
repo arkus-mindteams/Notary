@@ -1,20 +1,39 @@
 import { createClient } from '@supabase/supabase-js'
 
 // Pricing configuration (USD per 1M tokens)
-// As of Oct 2023 / current GPT-4o pricing reference
+// Updated: January 2026 - OpenAI official pricing
 const PRICING = {
     'gpt-4o': {
-        input: 5.00,  // $5.00 / 1M input tokens
-        output: 15.00 // $15.00 / 1M output tokens
+        input: 2.50,   // $2.50 / 1M input tokens (was $5.00)
+        output: 10.00, // $10.00 / 1M output tokens (was $15.00)
+        cached: 1.25   // $1.25 / 1M cached input tokens (50% off)
     },
     'gpt-4o-mini': {
-        input: 0.150, // $0.15 / 1M input tokens
-        output: 0.600 // $0.60 / 1M output tokens
+        input: 0.150,  // $0.15 / 1M input tokens
+        output: 0.600, // $0.60 / 1M output tokens
+        cached: 0.075  // $0.075 / 1M cached input tokens
     },
-    // Fallback
+    'o1': {
+        input: 15.00,  // $15.00 / 1M input tokens
+        output: 60.00  // $60.00 / 1M output tokens
+    },
+    'o1-mini': {
+        input: 1.10,   // $1.10 / 1M input tokens
+        output: 4.40   // $4.40 / 1M output tokens
+    },
+    'o3': {
+        input: 2.00,   // $2.00 / 1M input tokens (80% reduction from original)
+        output: 8.00,  // $8.00 / 1M output tokens
+        cached: 0.50   // $0.50 / 1M cached input tokens
+    },
+    'o3-mini': {
+        input: 1.10,   // $1.10 / 1M input tokens (same as o1-mini)
+        output: 4.40   // $4.40 / 1M output tokens
+    },
+    // Fallback for unknown models
     'default': {
-        input: 5.00,
-        output: 15.00
+        input: 2.50,
+        output: 10.00
     }
 }
 

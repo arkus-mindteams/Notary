@@ -36,6 +36,8 @@ import {
 } from 'lucide-react'
 import { PreavisoStateSnapshot, computePreavisoState } from '@/lib/preaviso-state'
 import { PreavisoExportOptions } from './preaviso-export-options'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { useIsTablet } from '@/hooks/use-tablet'
 import type { Command, LastQuestionIntent } from '@/lib/tramites/base/types'
 import {
   DropdownMenu,
@@ -175,6 +177,8 @@ function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasEr
 
 export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady }: PreavisoChatProps) {
   const { user, session } = useAuth()
+  const isMobile = useIsMobile()
+  const isTablet = useIsTablet()
   const supabase = useMemo(() => createBrowserClient(), [])
   const messageIdCounterRef = useRef(0)
   const conversationIdRef = useRef<string | null>(null)
@@ -3804,7 +3808,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       )}
 
       {/* Layout con panel de información - Parte superior */}
-      <div className={`flex-1 flex ${!showDataPanel ? 'flex-col' : ''} gap-4 min-h-0 overflow-hidden`}>
+      <div className={`flex-1 flex ${!showDataPanel
+        ? 'flex-col'
+        : (isMobile || isTablet)
+          ? 'flex-col'
+          : ''
+        } gap-4 min-h-0 overflow-hidden`}>
         {/* Botón para mostrar panel si está oculto */}
         {!showDataPanel && (
           <div className='flex justify-end'>
@@ -3822,8 +3831,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             </Button>
           </div>
         )}
+
+        {/* Panel de información extraída - Primero en móvil/tablet, después en desktop */}
+        {showDataPanel && (isMobile || isTablet) && (
+          <DocumentSidebar
+            data={data}
+            serverState={serverState}
+            isVisible={showDataPanel}
+          />
+        )}
+
         {/* Chat principal */}
-        <Card className="flex-1 p-0 flex flex-col shadow-xl border border-gray-200 min-h-0 overflow-hidden bg-white">
+        <Card className={`flex-1 p-0 flex flex-col shadow-xl border border-gray-200 overflow-hidden bg-white ${(isMobile || isTablet) ? 'min-h-[550px]' : 'min-h-0'
+          }`}>
           <CardContent className="flex-1 flex flex-col p-0 min-h-0">
             {/* Header moderno */}
             <div className="border-b border-gray-200/80 bg-gradient-to-r from-white via-gray-50/50 to-white backdrop-blur-sm px-6 py-2.5">
@@ -4099,12 +4119,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           </CardContent>
         </Card>
 
-        {/* Panel de información extraída */}
-        <DocumentSidebar
-          data={data}
-          serverState={serverState}
-          isVisible={showDataPanel}
-        />
+        {/* Panel de información extraída - Desktop only (mobile/tablet shown above) */}
+        {showDataPanel && !(isMobile || isTablet) && (
+          <DocumentSidebar
+            data={data}
+            serverState={serverState}
+            isVisible={showDataPanel}
+          />
+        )}
       </div>
 
 
