@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { createBrowserClient } from '@/lib/supabase'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import {
     Table,
@@ -14,11 +15,13 @@ import { Toaster } from 'sonner'
 import { Loader2, DollarSign, Activity, Users } from 'lucide-react'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { ProtectedRoute } from '@/components/protected-route'
+import { UserSessionsModal } from '@/components/admin/user-sessions-modal'
 
 export default function UsageStatsPage() {
     const [loading, setLoading] = useState(true)
     const [data, setData] = useState<any>(null)
     const [range, setRange] = useState('month')
+    const [selectedUser, setSelectedUser] = useState<any>(null)
 
     useEffect(() => {
         fetchStats()
@@ -27,10 +30,25 @@ export default function UsageStatsPage() {
     const fetchStats = async () => {
         setLoading(true)
         try {
-            const res = await fetch(`/api/admin/usage-stats?range=${range}`)
+            // Get current session for authorization header (like other admin endpoints)
+            const supabase = createBrowserClient()
+            const { data: { session } } = await supabase.auth.getSession()
+
+            if (!session) {
+                console.error('No active session')
+                return
+            }
+
+            const res = await fetch(`/api/admin/usage-stats?range=${range}`, {
+                headers: {
+                    'Authorization': `Bearer ${session.access_token}`,
+                },
+            })
             if (res.ok) {
                 const json = await res.json()
                 setData(json)
+            } else {
+                console.error('Error fetching stats:', res.status, await res.text())
             }
         } catch (err) {
             console.error(err)
@@ -116,7 +134,7 @@ export default function UsageStatsPage() {
                                     <CardContent>
                                         <div className="text-2xl font-bold">{data?.userStats?.length || 0}</div>
                                         <p className="text-xs text-muted-foreground">
-                                            Que han interactuado con el agente
+                                            Con actividad de IA
                                         </p>
                                     </CardContent>
                                 </Card>
@@ -134,10 +152,12 @@ export default function UsageStatsPage() {
                                     <Table>
                                         <TableHeader>
                                             <TableRow>
-                                                <TableHead>User ID</TableHead>
-                                                <TableHead>Conversaciones</TableHead>
-                                                <TableHead>Tokens Totales</TableHead>
-                                                <TableHead className="text-right">Costo Estimado (USD)</TableHead>
+                                                <TableHead>Usuario</TableHead>
+                                                <TableHead>Email</TableHead>
+                                                <TableHead>Chats</TableHead>
+                                                <TableHead>Tokens</TableHead>
+                                                <TableHead>Costo (USD)</TableHead>
+                                                <TableHead>Última Actividad</TableHead>
                                             </TableRow>
                                         </TableHeader>
                                         <TableBody>
@@ -149,55 +169,30 @@ export default function UsageStatsPage() {
                                                 </TableRow>
                                             )}
                                             {data?.userStats?.map((user: any) => (
-                                                <TableRow key={user.userId}>
-                                                    <TableCell className="font-mono text-xs text-muted-foreground">
-                                                        {user.userId}
+                                                <TableRow
+                                                    key={user.userId}
+                                                    className="cursor-pointer hover:bg-muted/50 transition-colors"
+                                                    onClick={() => setSelectedUser(user)}
+                                                >
+                                                    <TableCell className="font-medium">
+                                                        {user.nombre}
+                                                    </TableCell>
+                                                    <TableCell className="text-sm text-muted-foreground">
+                                                        {user.email}
                                                     </TableCell>
                                                     <TableCell>{user.conversationCount}</TableCell>
                                                     <TableCell>{user.tokens.toLocaleString()}</TableCell>
-                                                    <TableCell className="text-right font-medium text-green-600 dark:text-green-400">
+                                                    <TableCell className="font-medium text-green-600 dark:text-green-400">
                                                         ${user.cost.toFixed(4)}
                                                     </TableCell>
-                                                </TableRow>
-                                            ))}
-                                        </TableBody>
-                                    </Table>
-                                </CardContent>
-                            </Card>
-
-                            {/* Category Breakdown Table */}
-                            <Card>
-                                <CardHeader>
-                                    <CardTitle>Desglose por Categoría</CardTitle>
-                                    <CardDescription>
-                                        Consumo agrupado por funcionalidad (ej. Preaviso, Deslinde).
-                                    </CardDescription>
-                                </CardHeader>
-                                <CardContent>
-                                    <Table>
-                                        <TableHeader>
-                                            <TableRow>
-                                                <TableHead>Categoría</TableHead>
-                                                <TableHead>Tokens Totales</TableHead>
-                                                <TableHead className="text-right">Costo Estimado (USD)</TableHead>
-                                            </TableRow>
-                                        </TableHeader>
-                                        <TableBody>
-                                            {data?.categoryStats?.length === 0 && (
-                                                <TableRow>
-                                                    <TableCell colSpan={3} className="text-center py-10 text-muted-foreground">
-                                                        No hay datos registrados.
-                                                    </TableCell>
-                                                </TableRow>
-                                            )}
-                                            {data?.categoryStats?.map((cat: any) => (
-                                                <TableRow key={cat.category}>
-                                                    <TableCell className="font-medium capitalize">
-                                                        {cat.category}
-                                                    </TableCell>
-                                                    <TableCell>{cat.tokens.toLocaleString()}</TableCell>
-                                                    <TableCell className="text-right font-medium text-green-600 dark:text-green-400">
-                                                        ${cat.cost.toFixed(4)}
+                                                    <TableCell className="text-sm text-muted-foreground">
+                                                        {new Date(user.lastActivity).toLocaleDateString('es-MX', {
+                                                            year: 'numeric',
+                                                            month: 'short',
+                                                            day: 'numeric',
+                                                            hour: '2-digit',
+                                                            minute: '2-digit'
+                                                        })}
                                                     </TableCell>
                                                 </TableRow>
                                             ))}
@@ -208,6 +203,14 @@ export default function UsageStatsPage() {
                         </>
                     )}
                 </div>
+
+                {/* User Sessions Modal */}
+                {selectedUser && (
+                    <UserSessionsModal
+                        user={selectedUser}
+                        onClose={() => setSelectedUser(null)}
+                    />
+                )}
             </DashboardLayout>
         </ProtectedRoute>
     )

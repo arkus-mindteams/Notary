@@ -283,7 +283,8 @@ export class PreavisoPlugin implements TramitePlugin {
         systemPrompts,
         context?._userId,
         'generate_question',
-        'preaviso' // category
+        'preaviso', // category
+        context?.conversation_id // sessionId
       )
       return response.trim()
     } catch (error: any) {

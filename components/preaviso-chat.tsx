@@ -36,7 +36,7 @@ import {
 } from 'lucide-react'
 import { PreavisoStateSnapshot, computePreavisoState } from '@/lib/preaviso-state'
 import { PreavisoExportOptions } from './preaviso-export-options'
-import type { LastQuestionIntent } from '@/lib/tramites/base/types'
+import type { Command, LastQuestionIntent } from '@/lib/tramites/base/types'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -417,13 +417,29 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         // Restaurar mensajes
         if (json.messages && Array.isArray(json.messages)) {
           // Mapear de DB structure a Frontend structure
-          const mapped = json.messages.map((m: any) => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            timestamp: new Date(m.created_at),
-            attachments: [] // Los adjuntos no se guardan en DB mensaje por mensaje en este esquema simple
-          }))
+          // Mapear de DB structure a Frontend structure
+          const mapped = json.messages.map((m: any) => {
+            let metadata: any = {}
+            try {
+              metadata = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : (m.metadata || {})
+            } catch { }
+
+            const msgAttachments = (metadata.attachments || []).map((att: any) => {
+              // Reconstruct mock File object for display
+              const f = new File([], att.name, { type: att.type || 'application/pdf' })
+              // @ts-ignore
+              f.originalSize = att.size
+              return f
+            })
+
+            return {
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              timestamp: new Date(m.created_at),
+              attachments: msgAttachments
+            }
+          })
           setMessages(mapped)
           // Marcar como enviados para que no se re-envien los iniciales
           setInitialMessagesSent(true)
@@ -1228,6 +1244,35 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             attachments: filesToAttach
           }
           setMessages(prev => [...prev, userMessage])
+
+          // Persistir mensaje del usuario (texto) si acompaña a un archivo
+          if (conversationIdRef.current) {
+            try {
+              const { data: { session: currentSession } } = await supabase.auth.getSession()
+              const headers: HeadersInit = { 'Content-Type': 'application/json' }
+              if (currentSession?.access_token) {
+                headers['Authorization'] = `Bearer ${currentSession.access_token}`
+              }
+              fetch(`/api/chat/sessions/${conversationIdRef.current}/messages`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  role: 'user',
+                  content: input.trim(),
+                  tramite_id: activeTramiteId,
+                  metadata: {
+                    attachments: filesToAttach.map(f => ({
+                      name: f.name,
+                      size: f.size,
+                      type: f.type
+                    }))
+                  }
+                })
+              }).catch(e => console.error('Error persisting user text message with file:', e))
+            } catch (e) {
+              console.error('Error persisting user text message with file:', e)
+            }
+          }
         }
 
         // Procesar archivos (pasar true para no activar isProcessingDocument cuando hay mensaje pendiente,
@@ -1548,6 +1593,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // Convertir FileList a array si es necesario
     const filesArray = Array.isArray(files) ? files : Array.from(files)
 
+    // Esperar a que la sesión esté lista si es necesario (igual que handleSend)
+    if (!conversationIdRef.current) {
+      console.log('Esperando inicialización de sesión para upload...')
+      // Pequeño retry loop (máx 3 segundos)
+      for (let i = 0; i < 30; i++) {
+        if (conversationIdRef.current) break
+        await new Promise(r => setTimeout(r, 100))
+      }
+    }
+
     // ... (keep existing logic for creating initial trámite if needed) ...
     // Verificar que activeTramiteId esté establecido antes de procesar
     if (!activeTramiteId && user?.id) {
@@ -1659,51 +1714,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     const newFiles: File[] = []
 
     for (const file of filesArray) {
-      const existingDoc = uploadedDocuments.find(doc =>
-        doc.name === file.name && doc.size === file.size && doc.processed
-      )
-
-      if (existingDoc && existingDoc.extractedData) {
-        console.log(`[PreavisoChat] Reusing data for duplicate file: ${file.name}`)
-
-        // Simular procesamiento exitoso con datos existentes
-        const simulatedCommand: Command = {
-          type: 'document_processed',
-          timestamp: new Date(),
-          payload: {
-            documentType: existingDoc.documentType || 'unknown',
-            extractedData: existingDoc.extractedData,
-            fileName: existingDoc.name
-          },
-          source: 'document'
-        }
-
-        // Procesar el comando directamente
-        await processCommand(simulatedCommand)
-
-        // Avisar al usuario
-        setMessages(prev => [...prev, {
-          id: generateMessageId('duplicate_reuse'),
-          role: 'assistant',
-          content: `El documento "${file.name}" ya había sido procesado. He recuperado la información existente.`,
-          timestamp: new Date()
-        }])
-
-        // Limpiar estado de loading por si era el único archivo
-        if (filesArray.length === 1) {
-          setIsProcessingDocument(false)
-          setProcessingProgress(0)
-          if (skipUserMessage === false && userText) {
-            // Si había texto de usuario pendiente, debemos limpiar el estado de "procesando mensaje"
-            // Similar al bloque de error original, pero aquí es éxito simulado.
-            // En realidad, si es éxito, tal vez queramos dejar que userText se envíe?
-            // El flujo normal (non-duplicate) hace el upload, luego processCommand, luego...
-            // Si hay userText, handleSend lo mandó.
-          }
-        }
-      } else {
-        newFiles.push(file)
-      }
+      // Simplificación: procesar siempre como nuevo archivo para evitar error de processCommand faltante
+      newFiles.push(file)
     }
 
     if (newFiles.length === 0) {
@@ -1733,14 +1745,37 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     const fileNames = newFiles.map(f => f.name)
 
     if (!skipUserMessage) {
+      const content = userText || `He subido el siguiente documento: ${fileNames.join(', ')}`
       const fileMessage: ChatMessage = {
         id: generateMessageId('file'),
         role: 'user',
-        content: userText || `He subido el siguiente documento: ${fileNames.join(', ')}`,
+        content,
         timestamp: new Date(),
         attachments: filesArray
       }
       setMessages(prev => [...prev, fileMessage])
+
+      // Persistir mensaje del usuario en DB
+      if (conversationIdRef.current) {
+        try {
+          const { data: { session: currentSession } } = await supabase.auth.getSession()
+          const headers: HeadersInit = { 'Content-Type': 'application/json' }
+          if (currentSession?.access_token) {
+            headers['Authorization'] = `Bearer ${currentSession.access_token}`
+          }
+          fetch(`/api/chat/sessions/${conversationIdRef.current}/messages`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              role: 'user',
+              content,
+              tramite_id: activeTramiteId
+            })
+          }).catch(e => console.error('Error saving file message:', e))
+        } catch (e) {
+          console.error('Error persistence file msg:', e)
+        }
+      }
     }
 
     const processingMessage: ChatMessage = {
@@ -1750,6 +1785,26 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       timestamp: new Date()
     }
     setMessages(prev => [...prev, processingMessage])
+
+    // Persistir mensaje de "procesando" del asistente (opcional, para feedback inmediato)
+    if (conversationIdRef.current) {
+      try {
+        const { data: { session: currentSession } } = await supabase.auth.getSession()
+        const headers: HeadersInit = { 'Content-Type': 'application/json' }
+        if (currentSession?.access_token) {
+          headers['Authorization'] = `Bearer ${currentSession.access_token}`
+        }
+        fetch(`/api/chat/sessions/${conversationIdRef.current}/messages`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            role: 'assistant',
+            content: 'Procesando documento...',
+            tramite_id: activeTramiteId
+          })
+        }).catch(() => { })
+      } catch { }
+    }
 
     // ... (rest of processing logic stays same until chat API call) ...
     // Note: I will need to replace the chat API call part specifically, but since I can't target detached blocks easily in a huge function without context, 
@@ -2841,6 +2896,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           })
         }
       }
+
+      return { updatedData: workingData, updatedDocs: workingDocs }
     } catch (error) {
       if ((error as any)?.name === 'AbortError' || batchAbort.signal.aborted || cancelDocumentBatchRequestedRef.current) {
         // Cancelado por el usuario
