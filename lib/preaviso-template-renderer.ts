@@ -117,12 +117,11 @@ export class PreavisoTemplateRenderer {
     
     // Validar que los actos tienen los datos necesarios
     if (data.actos.cancelacionHipoteca) {
-      const g0 = data.gravamenes?.[0]
-      if (!g0) {
+      const gravamenesArr = data.gravamenes ?? []
+      if (gravamenesArr.length === 0) {
         errors.push('Acto de cancelación de hipoteca requiere al menos un gravamen capturado')
-      }
-      if (g0 && g0.cancelacion_confirmada !== false) {
-        errors.push('Acto de cancelación de hipoteca requiere que la cancelación esté pendiente (cancelacion_confirmada=false)')
+      } else if (!gravamenesArr.some((g: any) => g?.cancelacion_confirmada === false)) {
+        errors.push('Acto de cancelación de hipoteca requiere que la cancelación esté pendiente (cancelacion_confirmada=false) en al menos un gravamen')
       }
     }
     
