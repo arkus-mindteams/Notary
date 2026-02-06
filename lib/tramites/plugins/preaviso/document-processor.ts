@@ -212,9 +212,8 @@ REGLAS CRÍTICAS:
             temperature: 0,
             response_format: { type: 'json_object' }
           }),
-          // gpt-4o, gpt-4o-mini, o1, o3 use max_completion_tokens
-          // gpt-3.5-turbo uses max_tokens
-          ...(model.includes("gpt-4") || model.includes("o1") || model.includes("o3")
+          // gpt-4o, gpt-5.x, o1, o3 use max_completion_tokens; gpt-3.5-turbo uses max_tokens
+          ...(model.includes("gpt-4") || model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
             ? { max_completion_tokens: 2000 }
             : { max_tokens: 2000 })
         })
@@ -393,9 +392,8 @@ REGLAS CRÍTICAS:
           temperature: 0.1,
           response_format: { type: 'json_object' }
         }),
-        // gpt-4o, gpt-4o-mini, o1, o3 use max_completion_tokens
-        // gpt-3.5-turbo uses max_tokens
-        ...(model.includes("gpt-4") || model.includes("o1") || model.includes("o3")
+        // gpt-4o, gpt-5.x, o1, o3 use max_completion_tokens; gpt-3.5-turbo uses max_tokens
+        ...(model.includes("gpt-4") || model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
           ? { max_completion_tokens: 2000 }
           : { max_tokens: 2000 }
         )
