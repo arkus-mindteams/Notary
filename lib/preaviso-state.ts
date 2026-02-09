@@ -402,11 +402,13 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   const compradorTipoPersona = primerComprador?.tipo_persona
   // Regla:
   // - Persona moral: nombre + tipo_persona
-  // - Persona física: nombre + tipo_persona + estado_civil (para decidir rama de cónyuge y para el documento)
-  // CURP/RFC/CSF no bloqueantes.
+  // - Persona física soltero/divorciado/viudo: nombre + tipo_persona + estado_civil
+  // - Persona física casado: nombre + tipo_persona + estado_civil + cónyuge.nombre (no se completa hasta capturar cónyuge)
   const compradorEstadoCivil = primerComprador?.persona_fisica?.estado_civil || null
+  const conyugeNombre = primerComprador?.persona_fisica?.conyuge?.nombre || (compradores.length > 1 ? (compradores[1]?.persona_fisica?.nombre || compradores[1]?.persona_moral?.denominacion_social) : null) || null
   const compradorFisicaCompleto =
-    compradorTipoPersona === 'persona_fisica' && !!compradorNombre && !!compradorEstadoCivil
+    compradorTipoPersona === 'persona_fisica' && !!compradorNombre && !!compradorEstadoCivil &&
+    (compradorEstadoCivil !== 'casado' || !!conyugeNombre)
   const compradorMoralCompleto = compradorTipoPersona === 'persona_moral' && !!compradorNombre
 
   if (compradorFisicaCompleto || compradorMoralCompleto) {
@@ -593,6 +595,13 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
     if (!compradorTipoPersona) requiredMissing.push('compradores[].tipo_persona')
     if (compradorTipoPersona === 'persona_fisica' && !compradorEstadoCivil) {
       requiredMissing.push('compradores[0].persona_fisica.estado_civil')
+    }
+    // Si casado, el paso 4 no se completa hasta capturar el nombre del cónyuge
+    const conyugeRequerido = compradorTipoPersona === 'persona_fisica' && compradorEstadoCivil === 'casado'
+    const conyugeCapturado = !!primerComprador?.persona_fisica?.conyuge?.nombre ||
+      (compradores.length > 1 && !!(compradores[1]?.persona_fisica?.nombre || compradores[1]?.persona_moral?.denominacion_social))
+    if (conyugeRequerido && !conyugeCapturado) {
+      requiredMissing.push('compradores[].persona_fisica.conyuge.nombre')
     }
 
     // Verificar compradores adicionales (cónyuges) - NO requerir tipo_persona si es cónyuge

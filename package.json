@@ -12,8 +12,8 @@
     "create-superadmin": "tsx scripts/create-superadmin.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.931.0",
-    "@aws-sdk/client-textract": "3.931.0",
+    "@aws-sdk/client-s3": "^3.982.0",
+    "@aws-sdk/client-textract": "^3.982.0",
     "@aws-sdk/s3-request-presigner": "^3.943.0",
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "1.2.2",

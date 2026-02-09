@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
@@ -13,11 +13,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card"
 import Image from 'next/image'
 import {
   FileText,
@@ -49,6 +44,14 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
   const pathname = usePathname()
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [showLogoutDialog, setShowLogoutDialog] = useState(false)
+  const [configMenuExpanded, setConfigMenuExpanded] = useState(false)
+
+  // Abrir submenú Configuración cuando la ruta actual es de settings o admin
+  useEffect(() => {
+    if (pathname.startsWith('/dashboard/settings') || pathname.startsWith('/dashboard/admin')) {
+      setConfigMenuExpanded(true)
+    }
+  }, [pathname])
 
   const handleLogoutClick = () => {
     setShowLogoutDialog(true)
@@ -209,98 +212,98 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
         </Button>
 
 
-        {/* Separator and Configuración (Hover Menu) - Superadmin Only */}
+        {/* Separator and Configuración (expandible inline) - Superadmin Only */}
         {user?.role === 'superadmin' && (
           <>
             <div className="my-2 border-t border-gray-700 mx-4" />
-            <HoverCard openDelay={0} closeDelay={200}>
-              <HoverCardTrigger asChild>
-                <div className="w-full">
-                  <Button
-                    variant="ghost"
-                    className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
-                      } ${pathname.startsWith('/dashboard/settings') || pathname.startsWith('/dashboard/admin')
-                        ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
-                        : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                      }`}
-                    onClick={() => handleNavigation('/dashboard/settings')}
-                  >
-                    <Settings className="h-4 w-4 flex-shrink-0" />
-                    {!isCollapsed && (
-                      <div className="flex flex-1 items-center justify-between ml-3">
-                        <span className="truncate text-sm">Configuración</span>
-                        <ChevronRight className="h-3 w-3 opacity-50" />
-                      </div>
+            <div className="space-y-0.5">
+              <Button
+                variant="ghost"
+                className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
+                  } ${(pathname.startsWith('/dashboard/settings') || pathname.startsWith('/dashboard/admin')) && !configMenuExpanded
+                    ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                  }`}
+                onClick={() => {
+                  if (isCollapsed) {
+                    handleNavigation('/dashboard/settings')
+                  } else {
+                    setConfigMenuExpanded((prev) => !prev)
+                  }
+                }}
+              >
+                <Settings className="h-4 w-4 flex-shrink-0" />
+                {!isCollapsed && (
+                  <div className="flex flex-1 items-center justify-between ml-3">
+                    <span className="truncate text-sm">Configuración</span>
+                    {configMenuExpanded ? (
+                      <ChevronUp className="h-3 w-3 opacity-50" />
+                    ) : (
+                      <ChevronDown className="h-3 w-3 opacity-50" />
                     )}
-                  </Button>
-                </div>
-              </HoverCardTrigger>
-              <HoverCardContent side="right" align="start" className="w-56 bg-gray-800 border-gray-700 p-2 shadow-xl z-50">
-                <div className="space-y-1">
-                  {/* Header */}
-                  <div className="px-2 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  </div>
+                )}
+              </Button>
+
+              {/* Submenú inline cuando está expandido y el sidebar no está colapsado */}
+              {!isCollapsed && configMenuExpanded && (
+                <div className="ml-1 pl-2 space-y-1 py-1">
+                  <div className="px-2 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">
                     Opciones
                   </div>
-
-                  {/* General Settings */}
                   <Button
                     variant="ghost"
-                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/settings' && !window.location.search.includes('tab=stats')
+                    className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/settings'
                       ? 'bg-gray-700 text-gray-200'
                       : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                      }`}
+                    }`}
                     onClick={() => handleNavigation('/dashboard/settings')}
                   >
-                    <div className="flex items-center">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2"></span>
-                      Reglas de Texto Notarial
-                    </div>
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2 flex-shrink-0 inline-block" />
+                    <span className="truncate">Reglas de Texto Notarial</span>
                   </Button>
 
                   <div className="my-1 border-t border-gray-700" />
 
-                  <div className="px-2 py-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                  <div className="px-2 py-1 text-xs font-semibold text-gray-500 uppercase tracking-wider">
                     Administración
                   </div>
-
                   <Button
                     variant="ghost"
-                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/admin/usuarios'
+                    className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/usuarios'
                       ? 'bg-gray-700 text-gray-200'
                       : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                      }`}
+                    }`}
                     onClick={() => handleNavigation('/dashboard/admin/usuarios')}
                   >
-                    <Users className="h-4 w-4 mr-2" />
-                    Usuarios
+                    <Users className="h-4 w-4 mr-2 flex-shrink-0" />
+                    <span className="truncate">Usuarios</span>
                   </Button>
-
                   <Button
                     variant="ghost"
-                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/admin/preaviso-config'
+                    className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/preaviso-config'
                       ? 'bg-gray-700 text-gray-200'
                       : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                      }`}
+                    }`}
                     onClick={() => handleNavigation('/dashboard/admin/preaviso-config')}
                   >
-                    <FileCode className="h-4 w-4 mr-2" />
-                    Config. Preaviso
+                    <FileCode className="h-4 w-4 mr-2 flex-shrink-0" />
+                    <span className="truncate">Config. Preaviso</span>
                   </Button>
-
                   <Button
                     variant="ghost"
-                    className={`w-full justify-start h-9 px-2 text-sm ${pathname === '/dashboard/admin/usage'
+                    className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/usage'
                       ? 'bg-gray-700 text-gray-200'
                       : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                      }`}
+                    }`}
                     onClick={() => handleNavigation('/dashboard/admin/usage')}
                   >
-                    <Activity className="h-4 w-4 mr-2" />
-                    Consumo AI
+                    <Activity className="h-4 w-4 mr-2 flex-shrink-0" />
+                    <span className="truncate">Consumo AI</span>
                   </Button>
                 </div>
-              </HoverCardContent>
-            </HoverCard>
+              )}
+            </div>
           </>
         )}
       </div>

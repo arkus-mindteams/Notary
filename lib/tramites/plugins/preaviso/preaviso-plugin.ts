@@ -427,7 +427,14 @@ export class PreavisoPlugin implements TramitePlugin {
     if (stateId === 'ESTADO_1') {
       return 'Para avanzar necesito confirmar la forma de pago: ¿contado o crédito? Ejemplo: “Será crédito”.'
     }
-    if (stateId === 'ESTADO_4') {
+        if (stateId === 'ESTADO_4') {
+      const buyer0 = context?.compradores?.[0]
+      const casadoSinConyuge = buyer0?.persona_fisica?.estado_civil === 'casado' &&
+        !buyer0?.persona_fisica?.conyuge?.nombre &&
+        !(context?.compradores?.length > 1 && (context.compradores[1]?.persona_fisica?.nombre || context.compradores[1]?.persona_moral?.denominacion_social))
+      if (casadoSinConyuge) {
+        return 'Para avanzar necesito el nombre completo del cónyuge del comprador.'
+      }
       return 'Para avanzar necesito el nombre del comprador, tipo de persona y su estado civil. Ejemplo: “Comprador: Ana López, persona física, casada”.'
     }
     if (stateId === 'ESTADO_4B') {
@@ -469,6 +476,12 @@ export class PreavisoPlugin implements TramitePlugin {
       if (!buyerName) return 'buyer_name'
       if (!buyer0?.tipo_persona) return 'buyer_tipo_persona'
       if (buyer0?.tipo_persona === 'persona_fisica' && !buyer0?.persona_fisica?.estado_civil) return 'estado_civil'
+      // Si casado, no se completa el paso 4 hasta capturar el nombre del cónyuge
+      if (buyer0?.persona_fisica?.estado_civil === 'casado' && !buyer0?.persona_fisica?.conyuge?.nombre) {
+        const compradores = context?.compradores || []
+        const conyugeComoSegundo = compradores.length > 1 && (compradores[1]?.persona_fisica?.nombre || compradores[1]?.persona_moral?.denominacion_social)
+        if (!conyugeComoSegundo) return 'conyuge_name'
+      }
     }
     if (stateId === 'ESTADO_4B') {
       if (buyer0?.persona_fisica?.estado_civil === 'casado' && !buyer0?.persona_fisica?.conyuge?.nombre) {
