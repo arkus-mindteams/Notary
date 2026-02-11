@@ -780,7 +780,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       const primerComprador = data.compradores?.[0]
       const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
       const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
-      const direccion = data.inmueble?.direccion?.calle || (data.inmueble?.direccion as any)
+      const direccion = typeof data.inmueble?.direccion === 'string' ? data.inmueble.direccion : data.inmueble?.direccion?.calle || ''
 
       if (!session?.access_token || (!vendedorNombre && !direccion && !compradorNombre)) {
         return
@@ -2833,7 +2833,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           if (extracted.rfc) info += `RFC: ${extracted.rfc}\n`
           if (extracted.curp) info += `CURP: ${extracted.curp}\n`
           if (extracted.folioReal) info += `Folio Real: ${extracted.folioReal}\n`
-          if (extracted.direccion || extracted.ubicacion) info += `Dirección: ${extracted.direccion || extracted.ubicacion}\n`
+          if (extracted.direccion || extracted.ubicacion) info += `Objeto de compraventa: ${extracted.direccion || extracted.ubicacion}\n`
           if (extracted.tipoDocumento) info += `Tipo: ${extracted.tipoDocumento}\n`
           return info.trim()
         })
@@ -3187,7 +3187,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               ? jsonData.inmueble.all_registry_pages_confirmed
               : inmuebleBase.all_registry_pages_confirmed,
             direccion: jsonData.inmueble.direccion
-              ? { ...inmuebleBase.direccion, ...jsonData.inmueble.direccion }
+              ? (typeof jsonData.inmueble.direccion === 'string'
+                ? jsonData.inmueble.direccion
+                : (typeof inmuebleBase.direccion === 'object'
+                  ? { ...inmuebleBase.direccion, ...jsonData.inmueble.direccion }
+                  : jsonData.inmueble.direccion))
               : inmuebleBase.direccion,
             superficie: jsonData.inmueble.superficie !== undefined
               ? (typeof jsonData.inmueble.superficie === 'string' ? jsonData.inmueble.superficie : String(jsonData.inmueble.superficie))
@@ -3200,7 +3204,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               : inmuebleBase.datos_catastrales
           }
 
-          // Compatibilidad: si viene en formato antiguo, convertir
           if (jsonData.inmueble.folioReal) {
             inmuebleUpdates.folio_real = jsonData.inmueble.folioReal
           }
@@ -3208,8 +3211,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             inmuebleUpdates.partidas = [...inmuebleUpdates.partidas, jsonData.inmueble.partida]
           }
           if (jsonData.inmueble.direccion && typeof jsonData.inmueble.direccion === 'string') {
-            // Si viene como string, intentar parsear o usar como calle
-            inmuebleUpdates.direccion.calle = jsonData.inmueble.direccion
+            if (typeof inmuebleUpdates.direccion === 'object') {
+              inmuebleUpdates.direccion = { ...inmuebleUpdates.direccion, calle: jsonData.inmueble.direccion }
+            } else {
+              inmuebleUpdates.direccion = jsonData.inmueble.direccion
+            }
           }
           if (jsonData.inmueble.lote) inmuebleUpdates.datos_catastrales.lote = jsonData.inmueble.lote
           if (jsonData.inmueble.manzana) inmuebleUpdates.datos_catastrales.manzana = jsonData.inmueble.manzana
@@ -3217,7 +3223,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           if (jsonData.inmueble.condominio) inmuebleUpdates.datos_catastrales.condominio = jsonData.inmueble.condominio
           if (jsonData.inmueble.unidad) inmuebleUpdates.datos_catastrales.unidad = jsonData.inmueble.unidad
           if (jsonData.inmueble.modulo) inmuebleUpdates.datos_catastrales.modulo = jsonData.inmueble.modulo
-          if (jsonData.inmueble.colonia) inmuebleUpdates.direccion.colonia = jsonData.inmueble.colonia
+          if (jsonData.inmueble.colonia && typeof inmuebleUpdates.direccion === 'object') {
+            inmuebleUpdates.direccion.colonia = jsonData.inmueble.colonia
+          }
 
           updates.inmueble = inmuebleUpdates
           hasUpdates = true
@@ -3761,19 +3769,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
 
-    // Detectar nombres (patrones comunes) - v1.4
+
     const nombrePattern = /(?:nombre|vendedor|comprador)[:\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)+)/gi
     const nombres = [...userInput.matchAll(nombrePattern)]
 
-    // Detectar RFC
+
     const rfcPattern = /RFC[:\s]+([A-Z]{3,4}\d{6}[A-Z0-9]{3})/gi
     const rfcMatch = userInput.match(rfcPattern)
 
-    // Detectar CURP
+
     const curpPattern = /CURP[:\s]+([A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d)/gi
     const curpMatch = userInput.match(curpPattern)
 
-    // Actualizar datos si se encuentran (v1.4 - arrays)
+
     const primerVendedor = currentData.vendedores?.[0]
     const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
 

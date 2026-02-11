@@ -29,7 +29,7 @@ interface DocumentSidebarProps {
 export function DocumentSidebar({ data, serverState, isVisible, onClose }: DocumentSidebarProps) {
     if (!isVisible) return null
 
-    // Calcular progreso
+
     const progress = (() => {
         if (!serverState?.state_status) return { completed: 0, total: 6, percentage: 0 }
         const statuses = Object.values(serverState.state_status)
@@ -42,7 +42,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
         }
     })()
 
-    // Función auxiliar para normalizar nombres
+
     const normalizeName = (str: string | null | undefined): string => {
         if (!str) return ''
         return str.toLowerCase().trim().replace(/\s+/g, ' ')
@@ -153,10 +153,10 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                                         const d = data.inmueble?.direccion
                                         const dc = data.inmueble?.datos_catastrales
                                         if (typeof d === 'string' && d.trim()) {
-                                            return <div><span className="font-medium">Dirección:</span> {d}</div>
+                                            return <div><span className="font-medium">Objeto de compraventa:</span> {d}</div>
                                         }
-                                        const conCalle = d?.calle && `${(d.calle || '').trim()} ${(d.numero || '').trim()} ${(d.colonia || '').trim()}`.trim()
-                                        const conColoniaMunicipio = (d?.colonia || d?.municipio || d?.estado)
+                                        const conCalle = typeof d === 'object' && d?.calle && `${(d.calle || '').trim()} ${(d.numero || '').trim()} ${(d.colonia || '').trim()}`.trim()
+                                        const conColoniaMunicipio = typeof d === 'object' && (d?.colonia || d?.municipio || d?.estado)
                                             ? [d?.calle, d?.numero, d?.colonia, d?.municipio, d?.estado].filter(Boolean).join(', ')
                                             : ''
                                         const datosCat = dc && (dc.unidad || dc.condominio || dc.lote || dc.fraccionamiento || dc.manzana)
@@ -173,7 +173,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                                                 ? `${datosCat}, ${conCalle || conColoniaMunicipio}`
                                                 : (datosCat || conCalle || conColoniaMunicipio))
                                             : null
-                                        return texto ? <div><span className="font-medium">Dirección:</span> {texto}</div> : null
+                                        return texto ? <div><span className="font-medium">Objeto de compraventa:</span> {texto}</div> : null
                                     })()}
                                     {data.inmueble?.superficie && (
                                         <div><span className="font-medium">Superficie:</span> {
