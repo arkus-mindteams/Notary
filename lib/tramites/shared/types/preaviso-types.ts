@@ -93,7 +93,7 @@ export interface InmuebleV14 {
     seccion?: string | null;
     numero_expediente?: string | null;
     all_registry_pages_confirmed: boolean;
-    direccion: DireccionInmueble;
+    direccion: string | DireccionInmueble;
     superficie: string | null;
     valor: string | null;
     datos_catastrales: DatosCatastrales;
