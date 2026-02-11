@@ -17,6 +17,7 @@ import {
   getPreavisoToolRegistry,
   getPreavisoToolByCommandType
 } from './preaviso-tools'
+import { getPreavisoBlockToolsOpenAI, blockToolCallToCommands } from './preaviso-block-tools'
 import { getPreavisoStates } from './preaviso-state-definitions'
 import { PreavisoPrompts } from './preaviso-prompts'
 
@@ -593,6 +594,45 @@ export class PreavisoPlugin implements TramitePlugin {
       }
     }
 
+    if (data.inmueble && typeof data.inmueble === 'object') {
+      const inm = data.inmueble
+      const hasInmuebleData = inm.folio_real || (Array.isArray(inm.partidas) && inm.partidas.length > 0) || (inm.direccion && Object.keys(inm.direccion || {}).length > 0)
+      if (hasInmuebleData) {
+        const payload: Record<string, any> = {}
+        if (inm.folio_real) payload.folio_real = String(inm.folio_real)
+        if (Array.isArray(inm.partidas) && inm.partidas.length > 0) payload.partidas = inm.partidas.map(String)
+        if (inm.direccion && typeof inm.direccion === 'object') payload.direccion = inm.direccion
+        commands.push({
+          type: 'inmueble_manual',
+          timestamp: new Date(),
+          source: 'llm',
+          payload
+        })
+      }
+    }
+
+    if (data.inmueble?.existe_hipoteca === true || data.inmueble?.existe_hipoteca === false) {
+      const cancelacion = data.gravamenes?.[0]?.cancelacion_confirmada
+      commands.push({
+        type: 'encumbrance',
+        timestamp: new Date(),
+        source: 'llm',
+        payload: {
+          exists: Boolean(data.inmueble.existe_hipoteca),
+          cancellationConfirmed: cancelacion !== undefined && cancelacion !== null ? Boolean(cancelacion) : undefined,
+          tipo: 'hipoteca'
+        }
+      })
+    }
+    if (data.gravamenes?.[0]?.institucion) {
+      commands.push({
+        type: 'gravamen_acreedor',
+        timestamp: new Date(),
+        source: 'llm',
+        payload: { institucion: String(data.gravamenes[0].institucion) }
+      })
+    }
+
     if (data.folio_selection) {
       commands.push({
         type: 'folio_selection',
@@ -636,15 +676,41 @@ export class PreavisoPlugin implements TramitePlugin {
     return getPreavisoToolByCommandType(commandType)
   }
 
+  getBlockToolsOpenAI(): any[] {
+    return getPreavisoBlockToolsOpenAI()
+  }
+
+  convertBlockToolToCommands(toolName: string, args: Record<string, unknown>, context: any): Command[] {
+    return blockToolCallToCommands(toolName, args, context)
+  }
+
   getTransitionInfo(prevStateId: string | null, newStateId: string, context: any): any {
     return getPreavisoTransitionInfo(prevStateId, newStateId, context)
   }
 
   hasField(context: any, fieldPath: string): boolean {
+    // 1. Casos especiales para Preaviso que dependen de lógica derivada
+    if (fieldPath === 'inmueble.folio_real' || fieldPath === 'inmueble.partidas' || fieldPath === 'inmueble.direccion.calle' || fieldPath === 'inmueble.existe_hipoteca') {
+      const computed = computePreavisoState(context)
+      if (fieldPath === 'inmueble.folio_real') return !!computed.derived.folioReal
+      if (fieldPath === 'inmueble.partidas') return (computed.derived.partidas?.length || 0) > 0
+      if (fieldPath === 'inmueble.direccion.calle') return !!computed.derived.direccion
+      if (fieldPath === 'inmueble.existe_hipoteca') return computed.state.state_status.ESTADO_6 === 'completed'
+    }
+
     const parts = fieldPath.split('.')
     let current = context
 
     for (const part of parts) {
+      if (part === 'vendedores[]' || part === 'compradores[]' || part === 'creditos[]' || part === 'gravamenes[]') {
+        const arrayName = part.replace('[]', '')
+        if (!Array.isArray(current[arrayName]) || current[arrayName].length === 0) {
+          return false
+        }
+        current = current[arrayName][0]
+        continue
+      }
+
       if (part.includes('[]')) {
         const arrayName = part.replace('[]', '')
         if (!Array.isArray(current[arrayName]) || current[arrayName].length === 0) {
@@ -739,5 +805,22 @@ export class PreavisoPlugin implements TramitePlugin {
     updatedContext.inmueble = inmueble
 
     return updatedContext
+  }
+
+  /**
+   * Proporciona instrucciones extra para la interpretación (LLM)
+   */
+  getExtraInterpretationInstructions(context: any): string {
+    return `
+      REGLAS DE INTERPRETACIÓN Y USO DE HERRAMIENTAS:
+      - Paso 5 (Crédito): Si el usuario proporciona o CORRIGE la institución de crédito, LLAMA A set_credito. Extrae ÚNICAMENTE el nombre limpio del banco (ej. "SANTANDER", "BANJICO"). Ignora ruido como "perdon", "era con", "el credito es con", etc.
+      - Paso 6 (Gravamen): Si el usuario dice "sí tiene gravamen", REVISA EL CONTEXTO. Si ya existe una institución en documentosProcesados (ej. "BANORTE" de la inscripción), ÚSALA. Si NO hay institución en el contexto y el usuario NO la dijo, envía solo existe_hipoteca: true (NO inventes instituciones).
+      - Dirección: Si el usuario pide usar su ubicación o actualizar con datos de ubicación, llama set_inmueble usando los campos de ubicación del contexto.
+      - Estado Civil: Si el comprador tiene cónyuge, por defecto se asume comprador + cónyuge. Usa solo_comprador: true solo si el usuario indica que el cónyuge NO participa.
+      
+      REGLA DE ORO DE PERSISTENCIA:
+      - Si llamas a una HERRAMIENTA (ej. set_credito), NO incluyas ese mismo campo (ej. 'creditos') dentro de un bloque <DATA_UPDATE>. Las herramientas son el método preferido y más seguro para actualizar campos específicos.
+      - Si el usuario corrige un dato previo, tu prioridad es emitir el comando correcto con la herramienta correspondiente.
+    `
   }
 }

@@ -103,7 +103,7 @@ export class TramiteSystem {
       )
 
       if (llmResult.commands && llmResult.commands.length > 0) {
-        const filtered = this.filterCommandsByAllowedTools(llmResult.commands, allowedToolIds, plugin)
+        const filtered = this.filterCommandsByAllowedTools(llmResult.commands, allowedToolIds, plugin, toolState.id)
         commands.push(...filtered)
       }
 
@@ -188,8 +188,12 @@ export class TramiteSystem {
     }
 
     // 5. Ejecutar comandos con handlers (con recuperación y rollback)
+    if (commands.length > 0) {
+      console.log(`[TramiteSystem] 🚀 Ejecutando cola de comandos (${commands.length}):`, commands.map(c => c.type))
+    }
     const commandExecution = await this.executeCommandsWithRecovery(commands, updatedContext)
     updatedContext = commandExecution.updatedContext
+
 
     // 6. Recalcular estado (FLEXIBLE - puede saltar estados)
     const newState = this.stateMachine.determineCurrentState(plugin, updatedContext)
@@ -307,7 +311,7 @@ export class TramiteSystem {
           ? plugin.allowedToolsForState(toolState.id)
           : allToolIds
 
-      const filteredCommands = this.filterCommandsByAllowedTools(commands, allowedToolIds, plugin) // Fixed arg count
+      const filteredCommands = this.filterCommandsByAllowedTools(commands, allowedToolIds, plugin, toolState.id)
       const droppedCommands = commands
         .filter((c) => !filteredCommands.includes(c))
         .map((c) => c.type)
@@ -510,16 +514,24 @@ export class TramiteSystem {
     }
   }
 
-  private filterCommandsByAllowedTools(commands: Command[], allowedToolIds: string[], plugin: TramitePlugin): Command[] {
+  private filterCommandsByAllowedTools(commands: Command[], allowedToolIds: string[], plugin: TramitePlugin, stateId: string): Command[] {
     if (!allowedToolIds || allowedToolIds.length === 0) return commands
 
     // Si el plugin implementa getToolByCommandType, usarlo para filtrar
     if (plugin.getToolByCommandType) {
-      return commands.filter((command) => {
+      const allowed = commands.filter((command) => {
         const tool = plugin.getToolByCommandType!(command.type)
-        if (!tool) return false // Strict: si no hay tool definido para el comando, no se permite
-        return allowedToolIds.includes(tool.id)
+        if (!tool) {
+          console.warn(`[TramiteSystem] ⚠️ Comando ${command.type} no tiene tool definido en el plugin. Se descarta.`)
+          return false
+        }
+        const isAllowed = allowedToolIds.includes(tool.id)
+        if (!isAllowed) {
+          console.warn(`[TramiteSystem] 🚫 Comando ${command.type} (Tool: ${tool.id}) NO permitido en estado ${stateId}. Se descarta.`)
+        }
+        return isAllowed
       })
+      return allowed
     }
 
     return commands
@@ -557,7 +569,46 @@ export class TramiteSystem {
       `
       : ''
 
-    // LLM interpreta input incluso si está fuera de orden
+    const blockTools = plugin.getBlockToolsOpenAI?.() ?? []
+    const useBlockTools = Array.isArray(blockTools) && blockTools.length > 0 && typeof plugin.convertBlockToolToCommands === 'function'
+
+    if (useBlockTools) {
+      const extraInstructions = (plugin as any).getExtraInterpretationInstructions?.(context) || ''
+      const systemContent = `
+      Eres un asistente notarial experto ayudando con un ${plugin.name}.
+      Contexto actual:
+      ${JSON.stringify(context, null, 2)}
+      Tool Context: ${JSON.stringify(opts.toolContext, null, 2)}
+      ${missingInfo}
+      Tienes herramientas (set_inmueble, set_vendedor, set_forma_pago, set_comprador, set_conyuge, set_credito, set_gravamen). Usa las que correspondan con lo que el usuario diga o confirme.
+      
+      ${extraInstructions}
+
+      Si no hay nada que capturar, no llames herramientas.
+      `
+      const userContent = `Historial:\n${history.slice(-20).map((m: any) => `${m.role}: ${m.content}`).join('\n')}\n\nInput del usuario: "${input}"`
+      const result = await this.llmService.callWithTools(
+        [{ role: 'system', content: systemContent }, { role: 'user', content: userContent }],
+        blockTools,
+        { userId: context?._userId, actionType: 'interpret_intent', category: plugin.id, sessionId: context?.conversation_id || context?.sessionId, tramiteId: context?.tramiteId }
+      )
+      const commands: Command[] = []
+      const extracted = this.extractDataFromLLMResponse(result.content)
+
+      // 1. Primero los comandos de extracción (DATA_UPDATE) - son más generales
+      if (extracted) {
+        commands.push(...plugin.convertDataToCommands(extracted, context))
+      }
+
+      // 2. Después los comandos de herramientas - son más específicos y tienen prioridad
+      for (const tc of result.tool_calls) {
+        commands.push(...plugin.convertBlockToolToCommands!(tc.name, tc.arguments, context))
+      }
+
+      return { commands, updatedContext: extracted || undefined }
+    }
+
+    // LLM interpreta input incluso si está fuera de orden (modo legacy)
     const prompt = `
       Eres un asistente notarial ayudando con un ${plugin.name}.
       
@@ -572,8 +623,8 @@ export class TramiteSystem {
       Tools permitidas en este estado:
       ${allowedToolsText}
       
-      Historial de conversación (últimos 3 mensajes):
-      ${history.slice(-3).map((m: any) => `${m.role}: ${m.content}`).join('\n')}
+      Historial de conversación (usa todo el historial disponible para no perder datos que el usuario ya escribió):
+      ${history.slice(-20).map((m: any) => `${m.role}: ${m.content}`).join('\n')}
       
       Input del usuario: "${input}"
       

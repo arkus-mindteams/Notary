@@ -50,7 +50,26 @@ export class ValidationService {
     ]
 
     const normalized = institution.toLowerCase().trim()
-    return !invalidValues.includes(normalized) && normalized.length >= 3
+    if (invalidValues.includes(normalized)) return false
+
+    // Rechazar si contiene señales claras de corrección o ruido conversacional
+    // Incluso después de sanitizar, si quedó algo de esto, la cadena no es válida.
+    const repairKeywords = /\b(perdon|perd[oó]n|disculpa|error|equivoqu[eé]|no era|es con|sera con|ser[aá] con|corrijo|actualizar|cambiar|pero|redito|credito|cr[eé]dito|banco|institucion|instituci[oó]n)\b/i
+    if (repairKeywords.test(normalized)) {
+      return false
+    }
+
+    // Los nombres de bancos suelen ser cortos (1-3 palabras). 
+    // Si es muy largo (>30) y no tiene sufijos legales, es sospechoso.
+    if (normalized.length > 30) {
+      const isLegalEntity = /\b(s\.?a\.?|sociedad|anonima|banco|institucion|credit|finan)\b/i.test(normalized)
+      if (!isLegalEntity) return false
+    }
+
+    // No debe ser solo números o caracteres especiales
+    if (!/[a-z]{3,}/i.test(normalized)) return false
+
+    return normalized.length >= 3 && normalized.length <= 60
   }
 
   /**

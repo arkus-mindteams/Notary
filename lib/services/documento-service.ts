@@ -340,55 +340,141 @@ export class DocumentoService {
   /**
    * Procesa y guarda texto extraído de un documento para RAG.
    * Genera embeddings y guarda chunks.
+   * @param sessionId - Sesión de chat (prioritario para recuperar contexto al reabrir el chat)
+   * @param tramiteId - Trámite (opcional; expedientes/upload lo usan)
    */
   static async processAndSaveText(
     documentoId: string,
-    tramiteId: string,
     text: string,
-    pageNumber: number = 1
+    pageNumber: number = 1,
+    options: { tramiteId?: string | null; sessionId?: string | null } = {}
   ): Promise<void> {
-    if (!text || !text.trim()) return
+    const { tramiteId, sessionId } = options
+    if (!text || !text.trim()) {
+      console.warn('[DocumentoService.processAndSaveText] Skipping: text empty', { documentoId, sessionId: !!sessionId, tramiteId: !!tramiteId })
+      return
+    }
+    if (!tramiteId && !sessionId) {
+      console.warn('[DocumentoService.processAndSaveText] Skipping: neither tramiteId nor sessionId provided', { documentoId, textLength: text.length })
+      return
+    }
 
     const supabase = createServerClient()
 
     // 1. Generar Embedding
     const embedding = await EmbeddingsService.generateEmbedding(text)
+    if (!embedding || !Array.isArray(embedding)) {
+      console.error('[DocumentoService.processAndSaveText] No embedding generated (OPENAI_API_KEY o API falló). No se guardará chunk.', { documentoId, textLength: text.length })
+      throw new Error('Embedding generation failed: OPENAI_API_KEY missing or API error')
+    }
 
-    // 2. Guardar Chunk
-    // Por ahora guardamos todo el texto como un solo chunk por página.
-    // En el futuro podríamos dividir en chunks más pequeños si el texto es muy largo.
+    // 2. Guardar Chunk (ligado a session_id y/o tramite_id)
+    const payload = {
+      documento_id: documentoId,
+      tramite_id: tramiteId || null,
+      session_id: sessionId || null,
+      page_number: pageNumber,
+      chunk_index: 0,
+      text: text,
+      embedding: embedding,
+      metadata: { source: sessionId ? 'preaviso_chat' : 'ocr_upload' }
+    }
     const { error } = await supabase
       .from('documento_text_chunks')
-      .upsert({
-        documento_id: documentoId,
-        tramite_id: tramiteId,
-        page_number: pageNumber,
-        chunk_index: 0,
-        text: text,
-        embedding: embedding, // Vector(1536)
-        metadata: { source: 'ocr_upload' }
-      }, {
+      .upsert(payload, {
         onConflict: 'documento_id,page_number,chunk_index'
       })
 
     if (error) {
-      console.error('[DocumentoService] Error saving text chunk:', error)
-      // No lanzamos error para no romper el flujo principal de upload
+      console.error('[DocumentoService.processAndSaveText] Error saving text chunk:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        documentoId,
+        sessionId: sessionId ?? null,
+        tramiteId: tramiteId ?? null
+      })
+      throw new Error(`documento_text_chunks upsert failed: ${error.message}`)
     }
   }
 
+  /**
+   * Guarda múltiples chunks del documento completo para RAG (reemplaza los chunks existentes para este documento/página).
+   * Usar cuando se indexa el documento completo troceado (buildFullTextFromExtractedData + splitIntoChunks).
+   */
+  static async processAndSaveTextChunks(
+    documentoId: string,
+    textChunks: string[],
+    pageNumber: number = 1,
+    options: { tramiteId?: string | null; sessionId?: string | null } = {}
+  ): Promise<void> {
+    const { tramiteId, sessionId } = options
+    const chunks = textChunks.map(t => t?.trim()).filter(Boolean)
+    if (chunks.length === 0) {
+      console.warn('[DocumentoService.processAndSaveTextChunks] No chunks to save', { documentoId })
+      return
+    }
+    if (!tramiteId && !sessionId) {
+      console.warn('[DocumentoService.processAndSaveTextChunks] Skipping: neither tramiteId nor sessionId provided', { documentoId, chunkCount: chunks.length })
+      return
+    }
+
+    const supabase = createServerClient()
+
+    // Reemplazar chunks existentes para este documento/página
+    const { error: deleteError } = await supabase
+      .from('documento_text_chunks')
+      .delete()
+      .eq('documento_id', documentoId)
+      .eq('page_number', pageNumber)
+
+    if (deleteError) {
+      console.error('[DocumentoService.processAndSaveTextChunks] Error deleting previous chunks:', deleteError)
+      throw new Error(`documento_text_chunks delete failed: ${deleteError.message}`)
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      const text = chunks[i]
+      const embedding = await EmbeddingsService.generateEmbedding(text)
+      if (!embedding || !Array.isArray(embedding)) {
+        console.error('[DocumentoService.processAndSaveTextChunks] No embedding for chunk', { documentoId, chunkIndex: i, textLength: text.length })
+        throw new Error(`Embedding generation failed for chunk ${i}`)
+      }
+      const payload = {
+        documento_id: documentoId,
+        tramite_id: tramiteId || null,
+        session_id: sessionId || null,
+        page_number: pageNumber,
+        chunk_index: i,
+        text,
+        embedding,
+        metadata: { source: sessionId ? 'preaviso_chat' : 'ocr_upload', full_document: true }
+      }
+      const { error } = await supabase
+        .from('documento_text_chunks')
+        .insert(payload)
+
+      if (error) {
+        console.error('[DocumentoService.processAndSaveTextChunks] Error inserting chunk:', { chunkIndex: i, code: error.code, message: error.message })
+        throw new Error(`documento_text_chunks insert failed: ${error.message}`)
+      }
+    }
+  }
 
   /**
    * Busca chunks de documentos similares usando Semántica Vectorial (RAG).
-   * Llama a la función RPC match_document_chunks.
+   * Prioridad: si se pasa sessionId (conversación), filtra por sesión para tener contexto al reabrir el chat.
    */
   static async searchSimilarChunks(
     queryText: string,
-    tramiteId?: string,
+    tramiteId?: string | null,
     threshold: number = 0.5,
-    matchCount: number = 5
+    matchCount: number = 5,
+    sessionId?: string | null
   ): Promise<any[]> {
     if (!queryText?.trim()) return []
+    if (!tramiteId && !sessionId) return []
 
     const embedding = await EmbeddingsService.generateEmbedding(queryText)
     if (!embedding) return []
@@ -399,7 +485,8 @@ export class DocumentoService {
       query_embedding: embedding,
       match_threshold: threshold,
       match_count: matchCount,
-      filter_tramite_id: tramiteId || null
+      filter_tramite_id: tramiteId || null,
+      filter_session_id: sessionId || null
     })
 
     if (error) {

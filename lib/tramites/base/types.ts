@@ -96,6 +96,12 @@ export interface CreditParticipantCommand extends Command {
   }
 }
 
+/** Deja solo al comprador como acreditado (quita coacreditados). */
+export interface CreditParticipantsOnlyBuyerCommand extends Command {
+  type: 'credit_participants_only_buyer'
+  payload: { creditIndex: number }
+}
+
 export interface EncumbranceCommand extends Command {
   type: 'encumbrance'
   payload: {

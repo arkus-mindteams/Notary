@@ -12,7 +12,8 @@ export class ActaMatrimonioHandler implements PreavisoDocumentTypeHandler {
             systemPrompt: `Eres un experto en análisis de actas de matrimonio. Extrae información en formato JSON:
 {
   "conyuge1": { "nombre": "nombre completo del cónyuge 1 (exactamente como aparece)" },
-  "conyuge2": { "nombre": "nombre completo del cónyuge 2 (exactamente como aparece)" }
+  "conyuge2": { "nombre": "nombre completo del cónyuge 2 (exactamente como aparece)" },
+  "textoCompleto": "Transcripción literal de TODO el texto visible en el acta, en orden de lectura. Incluye encabezados, datos del acta, firmas legibles, sellos. Conserva saltos de línea. No omitas nada legible."
 }
 
 REGLAS:

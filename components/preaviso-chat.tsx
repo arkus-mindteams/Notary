@@ -183,6 +183,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const messageIdCounterRef = useRef(0)
   const conversationIdRef = useRef<string | null>(null)
   const documentProcessCacheRef = useRef<Map<string, any>>(new Map())
+  /** Para documentos ya en caché: siempre reprocesar (forceReprocess en backend) */
+  const earlyAlreadyProcessedRef = useRef<{ choice: 'use' | 'reprocess'; fileNames: string[] } | null>(null)
 
   // Función helper para generar IDs únicos para mensajes
   const generateMessageId = (prefix: string = 'msg'): string => {
@@ -196,6 +198,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const isManualResetRef = useRef(false)
   const isSubmittingRef = useRef(false) // Lock para prevenir doble envío
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
+  /** TramiteId recién creado en este batch; evita race donde processOne usa activeTramiteId aún null */
+  const batchTramiteIdRef = useRef<string | null>(null)
   const [expedienteExistente, setExpedienteExistente] = useState<{
     compradorId: string
     compradorNombre: string
@@ -275,7 +279,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const chatId = searchParams.get('chatId')
   const isNew = searchParams.get('new')
 
-  const createNewSession = async () => {
+  /** true cuando hay chatId en URL o ya tenemos sesión creada; evita usar el chat sin id */
+  const [sessionReady, setSessionReady] = useState(!!chatId)
+
+  const createNewSession = async (): Promise<string | null> => {
     console.log('[PreavisoChat] Creando nueva sesión...')
     try {
       const { data: { session: currentSession } } = await supabase.auth.getSession()
@@ -285,13 +292,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
 
       // Evitar duplicados por Strict Mode
-      if (isCreatingSessionRef.current) return
+      if (isCreatingSessionRef.current) return null
       isCreatingSessionRef.current = true
 
       const res = await fetch('/api/chat/sessions', { method: 'POST', headers })
       if (res.ok) {
         const json = await res.json()
-        const newId = json.session.id
+        const newId = json.session?.id ?? null
+        if (!newId) return null
         conversationIdRef.current = newId
         console.log('[PreavisoChat] Nueva sesión creada:', newId)
 
@@ -385,10 +393,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         setProcessingProgress(0)
         setIsProcessingDocument(false)
 
+        setSessionReady(true)
         router.push(`/dashboard/preaviso?chatId=${newId}`)
+        return newId
       }
+      return null
     } catch (e) {
       console.error('Error creating session', e)
+      return null
     } finally {
       isCreatingSessionRef.current = false
     }
@@ -474,22 +486,21 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
 
     if (chatId) {
-      // Cargar existente
+      setSessionReady(true)
       if (conversationIdRef.current !== chatId) {
         loadSession(chatId)
       }
     } else {
-      // Nueva sesión (si no tenemos una ya en memoria o si es explícito new)
+      // Nueva sesión: crear primero para que el chat tenga siempre chatId
       if (!conversationIdRef.current || isNew) {
-        // Resetear estado visual
+        setSessionReady(false)
         setMessages([])
         setInitialMessagesSent(false)
         initializationRef.current = false
-        // Crear sesión en backend
         createNewSession()
       }
     }
-  }, [chatId, isNew]) // Dependencies specific to what we use
+  }, [chatId, isNew])
 
   // Enviar mensajes iniciales y crear nuevo trámite al iniciar
   useEffect(() => {
@@ -1624,7 +1635,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
 
-    // ... (keep existing logic for creating initial trámite if needed) ...
+    // Sin sesión no se puede guardar documento ni indexar RAG; evitar procesar
+    if (!conversationIdRef.current) {
+      console.error('[PreavisoChat] No hay conversation_id tras esperar sesión; no se guardará el documento en BD ni RAG.')
+      setIsProcessingDocument(false)
+      setProcessingProgress(0)
+      setMessages(prev => [...prev, {
+        id: generateMessageId('error'),
+        role: 'assistant',
+        content: 'No se pudo iniciar la sesión de chat. Por favor, recarga la página e intenta de nuevo.',
+        timestamp: new Date()
+      }])
+      return
+    }
+
     // Verificar que activeTramiteId esté establecido antes de procesar
     if (!activeTramiteId && user?.id) {
       // ... (omitted for brevity, keep existing code until line 1771) ...
@@ -1694,6 +1718,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (response.ok) {
           const tramite = await response.json()
           setActiveTramiteId(tramite.id)
+          batchTramiteIdRef.current = tramite.id
         } else {
           console.error('Error creando trámite para carga de archivo')
           setIsProcessingDocument(false)
@@ -1720,6 +1745,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
 
+    // Limpiar tramiteId de batch anterior para no reutilizarlo en otra sesión
+    batchTramiteIdRef.current = null
     // Siempre establecer isProcessingDocument para mostrar la barra de progreso
     setIsProcessingDocument(true)
     setProcessingProgress(0)
@@ -1745,8 +1772,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       setProcessingProgress(0)
       return
     }
-
-
 
     const pdfFiles = newFiles.filter(
       file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
@@ -2570,13 +2595,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         formData.append('file', item.imageFile)
         formData.append('documentType', item.docType)
         formData.append('needOcr', '1')
+        const effectiveTramiteId = batchTramiteIdRef.current ?? activeTramiteId
+        const forceReprocess =
+          earlyAlreadyProcessedRef.current?.choice === 'reprocess' &&
+          earlyAlreadyProcessedRef.current.fileNames.includes(item.originalFile.name)
         formData.append('context', JSON.stringify({
           conversation_id: conversationIdRef.current,
           is_processing_artifact: item.isArtifact,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
           _document_people_pending: (workingData as any)._document_people_pending ?? null,
-          tramiteId: activeTramiteId,
+          tramiteId: effectiveTramiteId,
+          forceReprocess: forceReprocess || undefined,
           vendedores: workingData.vendedores || [],
           compradores: workingData.compradores || [],
           creditos: workingData.creditos,
@@ -2673,13 +2703,50 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         await Promise.all(workers)
       }
 
+      // Documentos ya procesados: comprobar GLOBAL (API) + conversación actual
+      let checkResults: { fileName: string; fileHash: string; alreadyProcessed: boolean }[] = []
+      try {
+        const checkForm = new FormData()
+        items.forEach((it: ImgItem) => checkForm.append('files', it.imageFile))
+        const { data: { session } } = await supabase.auth.getSession()
+        const checkRes = await fetch('/api/ai/preaviso-check-document', {
+          method: 'POST',
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          body: checkForm
+        })
+        if (checkRes.ok) {
+          const body = await checkRes.json()
+          checkResults = body.results || []
+        }
+      } catch (e) {
+        console.warn('[PreavisoChat] Check API error:', e)
+      }
+
+      const cacheableTypesSet = new Set(['inscripcion', 'escritura', 'plano'])
+      const alreadyProcessedItems = items.filter((item: ImgItem, j: number) => {
+        const fromApi = checkResults[j]?.alreadyProcessed === true
+        const cacheKey = `${item.originalKey}:${item.imageFile.name}:${item.docType}`
+        const fromCache = cacheableTypesSet.has(item.docType) && documentProcessCacheRef.current.get(cacheKey) && !documentProcessCacheRef.current.get(cacheKey)?.__error
+        const fromConversation = !!uploadedDocumentsRef.current.find(
+          d => d.name === item.originalFile.name && d.processed && d.extractedData
+        )
+        return fromApi || fromCache || fromConversation
+      })
+
+      const uniqueAlreadyProcessedNames = [...new Set(alreadyProcessedItems.map((i: ImgItem) => i.originalFile.name))]
+
+      // Siempre reprocesar: no mostrar modal; forzar reproceso para los que ya estaban en caché
+      if (alreadyProcessedItems.length > 0) {
+        earlyAlreadyProcessedRef.current = { choice: 'reprocess', fileNames: uniqueAlreadyProcessedNames }
+      }
+
       // Identificaciones: secuencial (context-sensitive). PDFs: concurrencia=2.
-      const idItems = items.filter(it => it.docType === 'identificacion')
-      const otherItems = items.filter(it => it.docType !== 'identificacion')
+      const idItems = items.filter((it: ImgItem) => it.docType === 'identificacion')
+      const otherItems = items.filter((it: ImgItem) => it.docType !== 'identificacion')
 
       // Inscripción/Escritura: secuencial para garantizar acumulación de `documentosProcesados` página a página.
-      const sequentialItems = otherItems.filter(it => it.docType === 'inscripcion' || it.docType === 'escritura')
-      const parallelItems = otherItems.filter(it => it.docType !== 'inscripcion' && it.docType !== 'escritura')
+      const sequentialItems = otherItems.filter((it: ImgItem) => it.docType === 'inscripcion' || it.docType === 'escritura')
+      const parallelItems = otherItems.filter((it: ImgItem) => it.docType !== 'inscripcion' && it.docType !== 'escritura')
 
       if (parallelItems.length > 0) {
         await runPool(parallelItems, 2)
@@ -3795,6 +3862,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
 
     return hasUpdates ? updates : null
+  }
+
+  if (!sessionReady) {
+    return (
+      <div className={`${(isMobile || isTablet) ? 'min-h-screen' : 'h-full'} flex flex-col items-center justify-center gap-4`}>
+        <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+        <p className="text-sm text-gray-600">Preparando chat...</p>
+      </div>
+    )
   }
 
   return (

@@ -149,17 +149,32 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                                                 .join(', ')
                                         }</div>
                                     )}
-                                    {data.inmueble?.direccion?.calle && (
-                                        <div><span className="font-medium">Dirección:</span> {
-                                            typeof data.inmueble.direccion === 'string'
-                                                ? data.inmueble.direccion
-                                                : (() => {
-                                                    const unidad = data.inmueble?.datos_catastrales?.unidad
-                                                    const base = `${data.inmueble.direccion.calle || ''} ${data.inmueble.direccion.numero || ''} ${data.inmueble.direccion.colonia || ''}`.trim()
-                                                    return unidad ? `Unidad ${unidad}, ${base}` : base
-                                                })()
-                                        }</div>
-                                    )}
+                                    {(() => {
+                                        const d = data.inmueble?.direccion
+                                        const dc = data.inmueble?.datos_catastrales
+                                        if (typeof d === 'string' && d.trim()) {
+                                            return <div><span className="font-medium">Dirección:</span> {d}</div>
+                                        }
+                                        const conCalle = d?.calle && `${(d.calle || '').trim()} ${(d.numero || '').trim()} ${(d.colonia || '').trim()}`.trim()
+                                        const conColoniaMunicipio = (d?.colonia || d?.municipio || d?.estado)
+                                            ? [d?.calle, d?.numero, d?.colonia, d?.municipio, d?.estado].filter(Boolean).join(', ')
+                                            : ''
+                                        const datosCat = dc && (dc.unidad || dc.condominio || dc.lote || dc.fraccionamiento || dc.manzana)
+                                            ? [
+                                                dc.unidad && `Unidad ${dc.unidad}`,
+                                                dc.condominio && `Condominio ${dc.condominio}`,
+                                                dc.lote && `Lote ${dc.lote}`,
+                                                dc.manzana && `Manzana ${dc.manzana}`,
+                                                dc.fraccionamiento
+                                            ].filter(Boolean).join(' – ')
+                                            : ''
+                                        const texto = conCalle || conColoniaMunicipio || datosCat
+                                            ? (datosCat && (conCalle || conColoniaMunicipio)
+                                                ? `${datosCat}, ${conCalle || conColoniaMunicipio}`
+                                                : (datosCat || conCalle || conColoniaMunicipio))
+                                            : null
+                                        return texto ? <div><span className="font-medium">Dirección:</span> {texto}</div> : null
+                                    })()}
                                     {data.inmueble?.superficie && (
                                         <div><span className="font-medium">Superficie:</span> {
                                             typeof data.inmueble.superficie === 'string'
@@ -419,7 +434,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                                             }
                                             return (
                                                 <>
-                                                    <div className="text-gray-400 italic">Pendiente: confirmar si la cancelación ya está inscrita (sí/no)</div>
+                                                    <div className="text-gray-400 italic">Pendiente: confirmar si la hipoteca se cancelará con esta operación o ya está inscrita la cancelación (sí/no)</div>
                                                     {acreedor}
                                                 </>
                                             )
