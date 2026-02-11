@@ -1460,6 +1460,29 @@ export class InputParser {
       }
     }
 
+    // Fallback para nombre de cónyuge: patrón flexible (acepta mayúsculas/minúsculas)
+    // cuando la regla estricta falla por formato (ej. "arminda ferra justo")
+    if (context?._last_question_intent === 'conyuge_name') {
+      const buyer = context?.compradores?.[0]
+      const buyerNombre = buyer?.persona_fisica?.nombre
+      const conyugeNombre = buyer?.persona_fisica?.conyuge?.nombre
+      if (buyerNombre && !conyugeNombre) {
+        // Nombre completo 2-7 palabras, cualquier capitalización
+        const nameMatch = normalizedInput.match(/^([A-Za-zÁÉÍÓÚÑáéíóúñ]+(?:\s+[A-Za-zÁÉÍÓÚÑáéíóúñ]+){1,6})\s*\.?$/)
+        if (nameMatch) {
+          const candidateName = nameMatch[1].trim()
+          if (ValidationService.isValidName(candidateName) &&
+              !ConyugeService.namesMatch(candidateName, buyerNombre)) {
+            addFallbackCommand('conyuge_name', {
+              buyerIndex: 0,
+              name: candidateName,
+              source: 'texto_manual'
+            })
+          }
+        }
+      }
+    }
+
     if (commands.length > 0) {
       // Si el input es largo (> 80 caracteres), es probable que contenga múltiples datos
       // o contexto complejo que las reglas regex no capturan completamente.

@@ -177,7 +177,26 @@ export class PreavisoTemplateRenderer {
     
     // Extraer primer vendedor y comprador para compatibilidad con templates
     const vendedor = data.vendedores?.[0] || null
-    const comprador = data.compradores?.[0] || null
+    const compradorRaw = data.compradores?.[0] || null
+    // Nombre del comprador (soporta estructura persona_fisica/moral o aplanada)
+    const compradorNombre = compradorRaw?.nombre || (compradorRaw as any)?.persona_fisica?.nombre || (compradorRaw as any)?.persona_moral?.denominacion_social || null
+    // Nombre del cónyuge cuando comprador está casado y cónyuge participa en la compra
+    // Fuentes: 1) persona_fisica.conyuge, 2) conyuge_nombre, 3) compradores[1],
+    // 4) coacreditado en creditos (por si solo se capturó en acreditado)
+    let conyugeNombre = (compradorRaw as any)?.persona_fisica?.conyuge?.nombre ||
+      (compradorRaw as any)?.conyuge_nombre ||
+      (((compradorRaw as any)?.persona_fisica?.estado_civil === 'casado' || (compradorRaw as any)?.estado_civil === 'casado') && data.compradores?.[1])
+        ? ((data.compradores[1] as any)?.nombre || (data.compradores[1] as any)?.persona_fisica?.nombre || (data.compradores[1] as any)?.persona_moral?.denominacion_social)
+        : (data.compradores?.length && data.compradores.length > 1 && (data.compradores[1] as any)?.nombre && (data.compradores[1] as any).nombre !== compradorNombre)
+          ? (data.compradores[1] as any).nombre
+          : null
+    const comprador = compradorRaw ? {
+      ...compradorRaw,
+      nombre: compradorNombre,
+      nombre_display: (compradorNombre && conyugeNombre)
+        ? `${compradorNombre} y ${conyugeNombre}`
+        : compradorNombre
+    } : null
     
     // Calcular numeración de actos jurídicos
     const actosNumerados: Array<{
@@ -274,9 +293,11 @@ export class PreavisoTemplateRenderer {
               return p
             }
             
-            // Buscar el nombre del cónyuge en el contexto
-            const comprador0 = data.compradores[0]
-            const conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre || null
+            // Buscar el nombre del cónyuge en el contexto (soporta PreavisoData y PreavisoSimplifiedJSON)
+            const comprador0 = data.compradores[0] as any
+            const conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre ||
+              comprador0?.conyuge_nombre ||
+              (data.compradores?.length > 1 ? (data.compradores[1] as any)?.nombre : null) || null
             
             if (conyugeNombre) {
               // Buscar si ya existe como comprador separado
@@ -319,8 +340,8 @@ export class PreavisoTemplateRenderer {
 
           // Fallback final: si sigue sin nombre y es acreditado principal, usar comprador[0]
           if (p.rol === 'acreditado') {
-            const c0 = data.compradores?.[0]
-            const c0Nombre = (c0 as any)?.nombre || (c0 as any)?.denominacion_social || c0?.persona_fisica?.nombre || c0?.persona_moral?.denominacion_social || null
+            const c0 = data.compradores?.[0] as any
+            const c0Nombre = c0?.nombre || c0?.denominacion_social || c0?.persona_fisica?.nombre || c0?.persona_moral?.denominacion_social || null
             if (c0Nombre) {
               return { ...p, nombre: c0Nombre }
             }
@@ -332,7 +353,7 @@ export class PreavisoTemplateRenderer {
         const hasAcreditado = participantesConNombres.some(p => p?.rol === 'acreditado')
         if (!hasAcreditado && data.compradores?.[0]) {
           const comprador0 = data.compradores[0]
-          const nombre = comprador0.nombre || comprador0.denominacion_social || null
+          const nombre = comprador0.nombre || (comprador0 as any)?.persona_fisica?.nombre || comprador0.denominacion_social || null
           if (nombre) {
             participantesConNombres = [
               {
@@ -350,6 +371,22 @@ export class PreavisoTemplateRenderer {
           participantes: participantesConNombres
         }
       })
+
+      // Si comprador no tiene nombre_display con cónyuge pero el coacreditado SÍ tiene nombre
+      // (ej. solo se capturó en acreditado), usar ese nombre para COMPRADOR también
+      if (comprador && comprador.nombre_display === comprador.nombre && comprador.nombre) {
+        for (const cred of creditosConParticipantes) {
+          const coacr = (cred.participantes || []).find((p: any) => p?.rol === 'coacreditado')
+          const nm = coacr?.nombre || (coacr as any)?.nombre || (coacr as any)?.name
+          if (nm && String(nm).trim().length >= 3) {
+            const n = String(nm).trim()
+            if (n.toLowerCase() !== String(comprador.nombre || '').toLowerCase()) {
+              comprador.nombre_display = `${comprador.nombre} y ${n}`
+              break
+            }
+          }
+        }
+      }
 
       actosNumerados.push({
         numero: actoNum,
@@ -411,18 +448,25 @@ export class PreavisoTemplateRenderer {
 
   /**
    * Renderiza el documento a Word (.docx) y devuelve URL de descarga
+   * @param data - Datos del preaviso (para validación y nombre de archivo)
+   * @param options - Si se pasa customRenderedText, se usa ese texto (p. ej. documento editado) en lugar del template
    */
-  static async renderToWord(data: PreavisoSimplifiedJSON): Promise<string> {
+  static async renderToWord(data: PreavisoSimplifiedJSON, options?: { customRenderedText?: string }): Promise<string> {
     try {
       // VALIDACIÓN FINAL (OBLIGATORIA)
       const validation = this.validateBeforeRender(data)
       if (!validation.isValid) {
         throw new Error(`No se puede generar el documento. Errores: ${validation.errors.join(', ')}`)
       }
-      
-      const templateData = this.prepareTemplateData(data)
-      const template = await this.loadTemplate('word')
-      const renderedText = template(templateData)
+
+      let renderedText: string
+      if (options?.customRenderedText != null && options.customRenderedText.trim() !== '') {
+        renderedText = options.customRenderedText
+      } else {
+        const templateData = this.prepareTemplateData(data)
+        const template = await this.loadTemplate('word')
+        renderedText = template(templateData)
+      }
 
       const DEFAULT_FONT = 'Tahoma'
       const DEFAULT_FONT_SIZE = 20
@@ -1050,9 +1094,10 @@ export class PreavisoTemplateRenderer {
 
   /**
    * Renderiza el documento a Word (.docx) y descarga directamente (método legacy)
+   * @param options.customRenderedText - Si se pasa, se exporta este texto (p. ej. documento editado) en lugar de regenerar desde el template
    */
-  static async renderToWordAndDownload(data: PreavisoSimplifiedJSON): Promise<void> {
-    const url = await this.renderToWord(data)
+  static async renderToWordAndDownload(data: PreavisoSimplifiedJSON, options?: { customRenderedText?: string }): Promise<void> {
+    const url = await this.renderToWord(data, options)
     const fileName = this.generateFileName(data, 'docx')
     const link = document.createElement('a')
     link.href = url
@@ -1235,13 +1280,10 @@ export class PreavisoTemplateRenderer {
    */
   static generateFileName(data: PreavisoSimplifiedJSON, extension: 'docx' | 'pdf' | 'txt'): string {
     const date = new Date().toISOString().split('T')[0]
-    const vendedorName = data.vendedores?.[0]?.nombre?.split(' ')[0] || 
-                         data.vendedores?.[0]?.denominacion_social?.split(' ')[0] || 
-                         'Vendedor'
     const compradorName = data.compradores?.[0]?.nombre?.split(' ')[0] || 
                           data.compradores?.[0]?.denominacion_social?.split(' ')[0] || 
                           'Comprador'
-    return `Pre-Aviso_${vendedorName}_${compradorName}_${date}.${extension}`
+    return `Pre-Aviso_COMPRADOR_${compradorName}_${date}.${extension}`
   }
 
   /**
@@ -1303,20 +1345,35 @@ export class PreavisoTemplateRenderer {
         institucionCredito: v.credito_vendedor?.institucion || null,
         numeroCredito: v.credito_vendedor?.numero_credito || null
       })) || [],
-      compradores: data.compradores?.map(c => ({
-        party_id: c.party_id || null,
-        nombre: c.persona_fisica?.nombre || c.persona_moral?.denominacion_social || null,
-        rfc: c.persona_fisica?.rfc || c.persona_moral?.rfc || null,
-        curp: c.persona_fisica?.curp || null,
-        tipoPersona: c.tipo_persona || null,
-        denominacion_social: c.persona_moral?.denominacion_social || null,
-        estado_civil: c.persona_fisica?.estado_civil || null,
-        necesitaCredito: tieneCreditos ? true : null,
-        // Nota: institucionCredito y montoCredito solo se usan para compatibilidad con formato antiguo
-        // Los créditos reales están en el array creditos[]
-        institucionCredito: data.creditos?.[0]?.institucion || null,
-        montoCredito: data.creditos?.[0]?.monto || null
-      })) || [],
+      compradores: (() => {
+        const mapped = data.compradores?.map(c => ({
+          party_id: c.party_id || null,
+          nombre: c.persona_fisica?.nombre || c.persona_moral?.denominacion_social || null,
+          conyuge_nombre: c.persona_fisica?.conyuge?.nombre || null,
+          rfc: c.persona_fisica?.rfc || c.persona_moral?.rfc || null,
+          curp: c.persona_fisica?.curp || null,
+          tipoPersona: c.tipo_persona || null,
+          denominacion_social: c.persona_moral?.denominacion_social || null,
+          estado_civil: c.persona_fisica?.estado_civil || null,
+          necesitaCredito: tieneCreditos ? true : null,
+          institucionCredito: data.creditos?.[0]?.institucion || null,
+          montoCredito: data.creditos?.[0]?.monto || null
+        })) || []
+        // Solo tratar al segundo comprador como cónyuge cuando: (1) esté especificado que es cónyuge
+        // (ya viene en conyuge_nombre del primero), o (2) el comprador principal sea casado y no se
+        // haya dicho lo contrario — es decir, cuando el chatbot preguntó por el cónyuge y el segundo
+        // comprador es quien se capturó. Si el principal no es casado, no asumir que el segundo es cónyuge.
+        const comprador0Casado = (data.compradores?.[0] as any)?.persona_fisica?.estado_civil?.toLowerCase?.() === 'casado'
+        const segundoEsConyuge = mapped.length > 1 &&
+          !mapped[0].conyuge_nombre &&
+          mapped[1].nombre &&
+          mapped[1].nombre !== mapped[0].nombre &&
+          comprador0Casado
+        if (segundoEsConyuge) {
+          mapped[0] = { ...mapped[0], conyuge_nombre: mapped[1].nombre }
+        }
+        return mapped
+      })(),
       creditos: data.creditos?.map(c => ({
         institucion: c.institucion || null,
         monto: c.monto || null,

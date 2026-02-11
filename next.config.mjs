@@ -1,3 +1,8 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typescript: {
@@ -11,6 +16,9 @@ const nextConfig = {
     config.resolve.alias.canvas = false;
     config.resolve.alias.encoding = false;
 
+    // Forzar resolución desde la raíz del proyecto (evita C:\Notary como contexto)
+    config.resolve.roots = [path.resolve(__dirname)];
+
     // Configuración específica para PDF.js
     config.resolve.fallback = {
       ...config.resolve.fallback,
@@ -20,12 +28,10 @@ const nextConfig = {
 
     return config;
   },
-  // Configuración de Turbopack vacía para silenciar el error cuando se usa Turbopack
-  // La funcionalidad de PDFs funciona en el cliente, así que esta config no afecta la conversión
   // Configuración de Turbopack
   turbopack: {
-    // Forzar el root del proyecto para evitar que escanee el home directory del usuario
-    root: process.cwd(),
+    // Usar ruta absoluta del proyecto para evitar resolución en C:\Notary (carpeta padre)
+    root: __dirname,
   },
 }
 

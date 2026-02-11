@@ -36,7 +36,7 @@ LIC. PEDRO CHÁVEZ SÁNCHEZ, Notario Adscrito a la Notaría No. 3 de esta ciudad
 {{#if ../vendedor.denominacion_social}}VENDEDOR: {{../vendedor.denominacion_social}}
 {{else}}VENDEDOR: {{../vendedor.nombre}}
 {{/if}}
-COMPRADOR: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}
+COMPRADOR: {{#if ../comprador.nombre_display}}{{../comprador.nombre_display}}{{else}}{{../comprador.nombre}}{{/if}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}
 {{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CREDITO SIMPLE CON INTERES Y GARANTÍA HIPOTECARIA.
 
 {{#if (hasItems this.creditos)}}{{#each this.creditos}}{{#if @first}}
