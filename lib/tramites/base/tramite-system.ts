@@ -249,9 +249,10 @@ export class TramiteSystem {
       }
     }
 
-    // 9. Obtener estados completados y faltantes
+    // 9. Obtener estados completados, faltantes y no aplicables
     const completed = this.stateMachine.getCompletedStates(plugin, updatedContext)
     const missing = this.stateMachine.getMissingStates(plugin, updatedContext)
+    const notApplicable = this.stateMachine.getNotApplicableStates(plugin, updatedContext)
 
     const contextDelta = diffContext(context || {}, updatedContext || {})
     const allowedToolsForState = plugin.allowedToolsForState(newState.id)
@@ -263,6 +264,7 @@ export class TramiteSystem {
         current: newState.id,
         completed,
         missing,
+        not_applicable: notApplicable,
         validation
       },
       commands: commands.map(c => c.type), // Para debugging

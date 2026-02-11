@@ -6,10 +6,10 @@ import { saveAs } from 'file-saver'
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
 import type { PreavisoSimplifiedJSON } from './types/preaviso-simplified'
-import type { PreavisoData } from '@/components/preaviso-chat'
+import type { PreavisoData } from '@/lib/tramites/shared/types/preaviso-types'
 
 // Helper para convertir número a romano
-Handlebars.registerHelper('toRoman', function(num: number) {
+Handlebars.registerHelper('toRoman', function (num: number) {
   const romanNumerals: { [key: number]: string } = {
     1: 'I', 2: 'II', 3: 'III', 4: 'IV', 5: 'V',
     6: 'VI', 7: 'VII', 8: 'VIII', 9: 'IX', 10: 'X'
@@ -18,7 +18,7 @@ Handlebars.registerHelper('toRoman', function(num: number) {
 })
 
 // Helper para comparar valores (expresión helper para usar en {{#if}})
-Handlebars.registerHelper('eq', function(a: any, b: any, options?: any) {
+Handlebars.registerHelper('eq', function (this: any, a: any, b: any, options?: any) {
   // Si se usa como bloque helper ({{#eq a b}}...{{/eq}})
   if (options && typeof options === 'object' && 'fn' in options) {
     return a === b ? options.fn(this) : options.inverse(this)
@@ -28,22 +28,22 @@ Handlebars.registerHelper('eq', function(a: any, b: any, options?: any) {
 })
 
 // Helper para verificar si un array tiene elementos
-Handlebars.registerHelper('hasItems', function(array: any) {
+Handlebars.registerHelper('hasItems', function (array: any) {
   return Array.isArray(array) && array.length > 0
 })
 
 // Helper para incrementar (útil para @index en templates)
-Handlebars.registerHelper('inc', function(value: any) {
+Handlebars.registerHelper('inc', function (value: any) {
   const n = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(n) ? n + 1 : value
 })
 
 // Helper para formatear fecha
-Handlebars.registerHelper('formatDate', function(date: Date, format: string) {
+Handlebars.registerHelper('formatDate', function (date: Date, format: string) {
   const day = date.getDate()
   const month = date.toLocaleDateString('es-MX', { month: 'long' })
   const year = date.getFullYear()
-  
+
   if (format === 'dia') return day.toString()
   if (format === 'mes') return month
   if (format === 'ano') return year.toString()
@@ -52,7 +52,7 @@ Handlebars.registerHelper('formatDate', function(date: Date, format: string) {
 
 export type DocumentFormat = 'word' | 'pdf'
 
-export interface PreavisoTemplateData extends PreavisoSimplifiedJSON {
+export interface PreavisoTemplateData extends Omit<PreavisoSimplifiedJSON, 'fecha'> {
   fecha: {
     dia: string
     mes: string
@@ -85,7 +85,7 @@ export class PreavisoTemplateRenderer {
     errors: string[]
   } {
     const errors: string[] = []
-    
+
     // Validar que existe al menos un vendedor
     if (!data.vendedores || data.vendedores.length === 0) {
       errors.push('Falta al menos un vendedor')
@@ -95,7 +95,7 @@ export class PreavisoTemplateRenderer {
         errors.push('El vendedor requiere nombre o denominación social')
       }
     }
-    
+
     // Validar que existe al menos un comprador
     if (!data.compradores || data.compradores.length === 0) {
       errors.push('Falta al menos un comprador')
@@ -105,7 +105,7 @@ export class PreavisoTemplateRenderer {
         errors.push('El comprador requiere nombre o denominación social')
       }
     }
-    
+
     // Validar que existe inmueble
     if (!data.inmueble) {
       errors.push('Falta información del inmueble')
@@ -114,7 +114,7 @@ export class PreavisoTemplateRenderer {
         errors.push('El inmueble requiere folio real o dirección')
       }
     }
-    
+
     // Validar que los actos tienen los datos necesarios
     if (data.actos.cancelacionHipoteca) {
       const gravamenesArr = data.gravamenes ?? []
@@ -124,7 +124,7 @@ export class PreavisoTemplateRenderer {
         errors.push('Acto de cancelación de hipoteca requiere que la cancelación esté pendiente (cancelacion_confirmada=false) en al menos un gravamen')
       }
     }
-    
+
     if (data.actos.aperturaCreditoComprador) {
       if (!data.creditos || data.creditos.length === 0) {
         errors.push('Acto de apertura de crédito requiere al menos un crédito')
@@ -137,7 +137,7 @@ export class PreavisoTemplateRenderer {
         })
       }
     }
-    
+
     const normalizePartida = (p: any): string | null => {
       if (typeof p === 'string') return p
       if (!p) return null
@@ -174,7 +174,7 @@ export class PreavisoTemplateRenderer {
     }>
   } {
     const now = new Date()
-    
+
     // Extraer primer vendedor y comprador para compatibilidad con templates
     const vendedor = data.vendedores?.[0] || null
     const compradorRaw = data.compradores?.[0] || null
@@ -186,18 +186,18 @@ export class PreavisoTemplateRenderer {
     let conyugeNombre = (compradorRaw as any)?.persona_fisica?.conyuge?.nombre ||
       (compradorRaw as any)?.conyuge_nombre ||
       (((compradorRaw as any)?.persona_fisica?.estado_civil === 'casado' || (compradorRaw as any)?.estado_civil === 'casado') && data.compradores?.[1])
-        ? ((data.compradores[1] as any)?.nombre || (data.compradores[1] as any)?.persona_fisica?.nombre || (data.compradores[1] as any)?.persona_moral?.denominacion_social)
-        : (data.compradores?.length && data.compradores.length > 1 && (data.compradores[1] as any)?.nombre && (data.compradores[1] as any).nombre !== compradorNombre)
-          ? (data.compradores[1] as any).nombre
-          : null
+      ? ((data.compradores[1] as any)?.nombre || (data.compradores[1] as any)?.persona_fisica?.nombre || (data.compradores[1] as any)?.persona_moral?.denominacion_social)
+      : (data.compradores?.length && data.compradores.length > 1 && (data.compradores[1] as any)?.nombre && (data.compradores[1] as any).nombre !== compradorNombre)
+        ? (data.compradores[1] as any).nombre
+        : null
     const comprador = compradorRaw ? {
       ...compradorRaw,
       nombre: compradorNombre,
       nombre_display: (compradorNombre && conyugeNombre)
-        ? `${compradorNombre} y ${conyugeNombre}`
+        ? `${compradorNombre} Y SU CONYUGUE ${conyugeNombre}`
         : compradorNombre
     } : null
-    
+
     // Calcular numeración de actos jurídicos
     const actosNumerados: Array<{
       numero: number
@@ -205,13 +205,13 @@ export class PreavisoTemplateRenderer {
       tipo: 'cancelacionHipoteca' | 'compraventa' | 'aperturaCreditoComprador'
       creditos?: Array<PreavisoSimplifiedJSON['creditos'][0]>
     }> = []
-    
+
     let actoNum = 1
     const romanNumerals: { [key: number]: string } = {
       1: 'I', 2: 'II', 3: 'III', 4: 'IV', 5: 'V',
       6: 'VI', 7: 'VII', 8: 'VIII', 9: 'IX', 10: 'X'
     }
-    
+
     // Acto 1: Cancelación de hipoteca (si aplica)
     if (data.actos.cancelacionHipoteca) {
       actosNumerados.push({
@@ -221,7 +221,7 @@ export class PreavisoTemplateRenderer {
       })
       actoNum++
     }
-    
+
     // Acto 2: Compraventa (siempre presente)
     if (data.actos.compraventa) {
       actosNumerados.push({
@@ -231,21 +231,22 @@ export class PreavisoTemplateRenderer {
       })
       actoNum++
     }
-    
+
+    const normalize = (s: string) =>
+      String(s || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+
     // Acto 3: Apertura de crédito (UN SOLO ACTO) con listado de créditos y participantes
     // Requisito: no generar múltiples actos, sino un solo contrato con varios créditos dentro.
     if (data.actos.aperturaCreditoComprador && data.creditos && data.creditos.length > 0) {
       const creditosConParticipantes = data.creditos.map(credito => {
         let participantesConNombres = (credito.participantes || []).map(p => {
           const rawNombre = (p as any)?.nombre ? String((p as any).nombre).trim() : ''
-          const normalize = (s: string) =>
-            String(s || '')
-              .normalize('NFD')
-              .replace(/[\u0300-\u036f]/g, '')
-              .toLowerCase()
-              .replace(/[^\w\s]/g, ' ')
-              .replace(/\s+/g, ' ')
-              .trim()
           const nNorm = normalize(rawNombre)
           const looksLikePlaceholder =
             nNorm === 'el comprador' ||
@@ -283,7 +284,7 @@ export class PreavisoTemplateRenderer {
               }
             }
           }
-          
+
           // Si no tiene party_id pero es coacreditado, buscar por nombre en compradores[0].persona_fisica.conyuge
           // o buscar en todos los compradores por nombre si ya existe
           // IMPORTANTE: También verificar si tiene party_id pero es coacreditado (puede ser cónyuge con party_id)
@@ -292,38 +293,38 @@ export class PreavisoTemplateRenderer {
             if ((p as any)?.nombre && String((p as any).nombre).trim().length >= 3) {
               return p
             }
-            
+
             // Buscar el nombre del cónyuge en el contexto (soporta PreavisoData y PreavisoSimplifiedJSON)
             const comprador0 = data.compradores[0] as any
-            const conyugeNombre = comprador0?.persona_fisica?.conyuge?.nombre ||
+            const conyugeNombreContext = comprador0?.persona_fisica?.conyuge?.nombre ||
               comprador0?.conyuge_nombre ||
               (data.compradores?.length > 1 ? (data.compradores[1] as any)?.nombre : null) || null
-            
-            if (conyugeNombre) {
+
+            if (conyugeNombreContext) {
               // Buscar si ya existe como comprador separado
               const conyugeComprador = data.compradores.find((c, idx) => {
                 if (idx === 0) return false
-                const nm = c.nombre || c.denominacion_social || null
-                return nm && nm.toLowerCase().trim() === conyugeNombre.toLowerCase().trim()
+                const nm = c.nombre || (c as any).denominacion_social || null
+                return nm && nm.toLowerCase().trim() === conyugeNombreContext.toLowerCase().trim()
               })
-              
+
               if (conyugeComprador) {
                 return {
                   ...p,
                   // Si ya tiene nombre, preservarlo; si no, usar el del cónyuge
-                  nombre: (p as any)?.nombre || conyugeComprador.nombre || conyugeComprador.denominacion_social || conyugeNombre
+                  nombre: (p as any)?.nombre || conyugeComprador.nombre || (conyugeComprador as any).denominacion_social || conyugeNombreContext
                 }
               }
-              
+
               // Si no existe como comprador separado, usar el nombre del cónyuge
               // CRÍTICO: Incluir nombre incluso si tiene party_id (para cónyuges que fueron creados como compradores)
               return {
                 ...p,
                 // Si ya tiene nombre, preservarlo; si no, usar el del contexto
-                nombre: (p as any)?.nombre || conyugeNombre
+                nombre: (p as any)?.nombre || conyugeNombreContext
               }
             }
-            
+
             // Si no hay nombre del cónyuge en el contexto pero el participante es coacreditado,
             // buscar en todos los compradores (puede ser que el cónyuge esté como segundo comprador)
             if (data.compradores.length > 1) {
@@ -346,24 +347,22 @@ export class PreavisoTemplateRenderer {
               return { ...p, nombre: c0Nombre }
             }
           }
-          
+
           return p
         })
-        // Guardrail: si no hay acreditado explícito, usar comprador principal
-        const hasAcreditado = participantesConNombres.some(p => p?.rol === 'acreditado')
-        if (!hasAcreditado && data.compradores?.[0]) {
-          const comprador0 = data.compradores[0]
-          const nombre = comprador0.nombre || (comprador0 as any)?.persona_fisica?.nombre || comprador0.denominacion_social || null
-          if (nombre) {
-            participantesConNombres = [
-              {
-                party_id: comprador0.party_id || null,
-                rol: 'acreditado',
-                nombre
-              },
-              ...participantesConNombres
-            ]
-          }
+
+        // REQUISITO NOTARIA 3: Si hay ACREDITADO y COACREDITADO que es el cónyuge, fusionar en una sola línea
+        // "ACREDITADO: [PRIMARIO] Y SU CONYUGUE [SPOUSE]"
+        const acreditado = participantesConNombres.find(p => p.rol === 'acreditado')
+        const coacreditado = participantesConNombres.find(p => p.rol === 'coacreditado')
+
+        if (acreditado && coacreditado && conyugeNombre &&
+          (normalize(String(coacreditado.nombre)) === normalize(conyugeNombre) ||
+            normalize(String(coacreditado.nombre)) === normalize(String((compradorRaw as any)?.persona_fisica?.conyuge?.nombre)))) {
+
+          acreditado.nombre = `${acreditado.nombre} Y SU CONYUGUE ${coacreditado.nombre}`
+          // Eliminar el coacreditado de la lista para que no se imprima en línea aparte
+          participantesConNombres = participantesConNombres.filter(p => p !== coacreditado)
         }
 
         return {
@@ -381,7 +380,7 @@ export class PreavisoTemplateRenderer {
           if (nm && String(nm).trim().length >= 3) {
             const n = String(nm).trim()
             if (n.toLowerCase() !== String(comprador.nombre || '').toLowerCase()) {
-              comprador.nombre_display = `${comprador.nombre} y ${n}`
+              comprador.nombre_display = `${comprador.nombre} Y SU CONYUGUE ${n}`
               break
             }
           }
@@ -397,11 +396,11 @@ export class PreavisoTemplateRenderer {
       actoNum++
     }
     // NOTA: No hay fallback - si no hay créditos en el array, no se muestra el acto
-    
+
     // Determinar si se incluye Artículo 139
     const includeArticle139 = data.inmueble?.all_registry_pages_confirmed === true || false
-    
-    return {
+
+    const templateData = {
       ...data,
       vendedor,
       comprador,
@@ -412,14 +411,36 @@ export class PreavisoTemplateRenderer {
         dia: now.getDate().toString(),
         mes: now.toLocaleDateString('es-MX', { month: 'long' }),
         ano: now.getFullYear().toString(),
-        completa: now.toLocaleDateString('es-MX', { 
-          year: 'numeric', 
-          month: 'long', 
-          day: 'numeric' 
+        completa: now.toLocaleDateString('es-MX', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
         })
       },
       notaria: this.NOTARIA
     }
+
+    // REQUISITO NOTARIA 3: Proporcionar helper para forzar mayúsculas en todo el objeto
+    const toUpperCaseRecursive = (obj: any): any => {
+      if (obj === null || obj === undefined) return obj
+      if (typeof obj === 'string') return obj.toUpperCase()
+      if (Array.isArray(obj)) return obj.map(toUpperCaseRecursive)
+      if (typeof obj === 'object') {
+        const result: any = {}
+        for (const key in obj) {
+          // No convertir a mayúsculas IDs internos o propiedades específicas que deban mantener su caso
+          if (key === 'party_id' || key === 'tipo' || key === 'rol' || key === 'numeroRomano' || key === 'numero') {
+            result[key] = obj[key]
+          } else {
+            result[key] = toUpperCaseRecursive(obj[key])
+          }
+        }
+        return result
+      }
+      return obj
+    }
+
+    return toUpperCaseRecursive(templateData)
   }
 
   /**
@@ -498,7 +519,7 @@ export class PreavisoTemplateRenderer {
         const line = lines[lineIndex]
         const trimmedLine = line.trim()
         const currentLineNumber = lineIndex + 1 // Línea 1, 2, 3, 4...
-        
+
         // Primeras 4 líneas del encabezado del notario
         // Línea 1: LIC. XAVIER IBAÑEZ VERAMENDI - 18pts, negrita, centrado
         if (currentLineNumber === 1 && trimmedLine.includes('LIC.')) {
@@ -518,7 +539,7 @@ export class PreavisoTemplateRenderer {
           )
           continue // Saltar al siguiente ciclo para no procesar esta línea en otros bloques
         }
-        
+
         // Línea 2: NOTARIO ADSCRITO... - 14pts, negrita, centrado
         if (currentLineNumber === 2 && trimmedLine.includes('NOTARIO ADSCRITO')) {
           paragraphs.push(
@@ -537,7 +558,7 @@ export class PreavisoTemplateRenderer {
           )
           continue // Saltar al siguiente ciclo
         }
-        
+
         // Línea 3: CALLE ANTONIO CASO... - 10pts, negrita, centrado
         if (currentLineNumber === 3 && trimmedLine.includes('CALLE ANTONIO CASO')) {
           paragraphs.push(
@@ -556,7 +577,7 @@ export class PreavisoTemplateRenderer {
           )
           continue // Saltar al siguiente ciclo
         }
-        
+
         // Línea 4: TEL:... - 10pts, negrita, centrado
         if (currentLineNumber === 4 && trimmedLine.startsWith('TEL:')) {
           paragraphs.push(
@@ -575,7 +596,7 @@ export class PreavisoTemplateRenderer {
           )
           continue // Saltar al siguiente ciclo
         }
-        
+
         // Línea "ANTECEDENTE REGISTRAL"
         if (trimmedLine.includes('ANTECEDENTE REGISTRAL')) {
           paragraphs.push(
@@ -594,7 +615,7 @@ export class PreavisoTemplateRenderer {
           )
           continue // Saltar al siguiente ciclo para no procesar esta línea en otros bloques
         }
-        
+
         // PARTIDA NO, SECCIÓN CIVIL, FOLIO REAL
         if (trimmedLine.startsWith('PARTIDA NO:') || trimmedLine.startsWith('SECCIÓN') || trimmedLine.startsWith('FOLIO REAL:')) {
           const sizeTwips = PARTIDA_SECCION_FOLIO_FONT_SIZE
@@ -628,7 +649,7 @@ export class PreavisoTemplateRenderer {
           )
           continue
         }
-        
+
         // Párrafo legal del notario (LICENCIADO... NOTARIO ADSCRITO...)
         // 10pt; LIC. y nombre en negrita; solo "NOTARIO ADSCRITO" subrayado; "NÚMERO X" en negrita; "siguientes actos jurídicos" en negrita; resto normal
         if (
@@ -687,7 +708,7 @@ export class PreavisoTemplateRenderer {
           )
           continue
         }
-        
+
         // Detectar títulos y encabezados centrados (para líneas que no son las primeras 4 ni ANTECEDENTE REGISTRAL ni PARTIDA/SECCIÓN/FOLIO)
         const isCenteredHeader =
           (currentLineNumber > 4 && trimmedLine.includes('LIC.')) ||
@@ -698,8 +719,8 @@ export class PreavisoTemplateRenderer {
           trimmedLine.includes('SOLICITUD DE CERTIFICADO')
 
         // Detectar títulos (OBJETO DE LA COMPRAVENTA se procesa más abajo en su propio bloque: justificado, 10pt, solo etiqueta en negrita)
-        if (trimmedLine.includes('SOLICITUD DE CERTIFICADO') || 
-            trimmedLine.includes('CERTIFICO:')) {
+        if (trimmedLine.includes('SOLICITUD DE CERTIFICADO') ||
+          trimmedLine.includes('CERTIFICO:')) {
           paragraphs.push(
             new Paragraph({
               children: [
@@ -1118,7 +1139,7 @@ export class PreavisoTemplateRenderer {
       if (!validation.isValid) {
         throw new Error(`No se puede generar el documento. Errores: ${validation.errors.join(', ')}`)
       }
-      
+
       const templateData = this.prepareTemplateData(data)
       const template = await this.loadTemplate('pdf')
       const renderedHTML = template(templateData)
@@ -1132,8 +1153,8 @@ export class PreavisoTemplateRenderer {
       iframe.style.width = '900px'
       iframe.style.height = '10px'
       iframe.style.border = '0'
-      // Aislar del CSS del sitio
-      ;(iframe as any).sandbox = 'allow-same-origin'
+        // Aislar del CSS del sitio
+        ; (iframe as any).sandbox = 'allow-same-origin'
       document.body.appendChild(iframe)
 
       const loadIframe = async () => {
@@ -1233,7 +1254,7 @@ export class PreavisoTemplateRenderer {
       if (!validation.isValid) {
         throw new Error(`No se puede generar el documento. Errores: ${validation.errors.join(', ')}`)
       }
-      
+
       const templateData = this.prepareTemplateData(data)
       const template = await this.loadTemplate('word') // Usar template de word para texto
       const renderedText = template(templateData)
@@ -1255,7 +1276,7 @@ export class PreavisoTemplateRenderer {
       if (!validation.isValid) {
         throw new Error(`No se puede generar el documento. Errores: ${validation.errors.join(', ')}`)
       }
-      
+
       const templateData = this.prepareTemplateData(data)
       const template = await this.loadTemplate('pdf') // Usar template de PDF para HTML
       const renderedHTML = template(templateData)
@@ -1280,9 +1301,9 @@ export class PreavisoTemplateRenderer {
    */
   static generateFileName(data: PreavisoSimplifiedJSON, extension: 'docx' | 'pdf' | 'txt'): string {
     const date = new Date().toISOString().split('T')[0]
-    const compradorName = data.compradores?.[0]?.nombre?.split(' ')[0] || 
-                          data.compradores?.[0]?.denominacion_social?.split(' ')[0] || 
-                          'Comprador'
+    const compradorName = data.compradores?.[0]?.nombre?.split(' ')[0] ||
+      data.compradores?.[0]?.denominacion_social?.split(' ')[0] ||
+      'Comprador'
     return `Pre-Aviso_COMPRADOR_${compradorName}_${date}.${extension}`
   }
 
@@ -1314,7 +1335,7 @@ export class PreavisoTemplateRenderer {
       gravamenesArr.length > 0 &&
       gravamenesArr.every((g: any) => g?.cancelacion_confirmada === true)
     const necesitaCancelacionHipoteca = tieneGravamen && !cancelacionYaInscrita
-    
+
     // Calcular actos notariales para el renderer (NO usar data.actosNotariales directo,
     // porque ese objeto legacy no incluye cancelacionHipoteca y causaba omitir el acto).
     const actos = {
@@ -1322,18 +1343,18 @@ export class PreavisoTemplateRenderer {
       aperturaCreditoComprador: !!tieneCreditos,
       cancelacionHipoteca: !!necesitaCancelacionHipoteca
     }
-    
+
     // Construir direccion como string
     const direccion = data.inmueble?.direccion
-    const direccionStr = typeof direccion === 'string' 
-      ? direccion 
-      : direccion?.calle 
+    const direccionStr = typeof direccion === 'string'
+      ? direccion
+      : direccion?.calle
         ? `${direccion.calle}${direccion.numero ? ' ' + direccion.numero : ''}${direccion.colonia ? ', ' + direccion.colonia : ''}${direccion.municipio ? ', ' + direccion.municipio : ''}${direccion.estado ? ', ' + direccion.estado : ''}`.trim()
         : null
-    
+
     return {
       tipoOperacion: data.tipoOperacion,
-      vendedores: data.vendedores?.map(v => ({
+      vendedores: data.vendedores?.map((v: any) => ({
         party_id: v.party_id || null,
         nombre: v.persona_fisica?.nombre || v.persona_moral?.denominacion_social || null,
         rfc: v.persona_fisica?.rfc || v.persona_moral?.rfc || null,
@@ -1346,7 +1367,7 @@ export class PreavisoTemplateRenderer {
         numeroCredito: v.credito_vendedor?.numero_credito || null
       })) || [],
       compradores: (() => {
-        const mapped = data.compradores?.map(c => ({
+        const mapped = data.compradores?.map((c: any) => ({
           party_id: c.party_id || null,
           nombre: c.persona_fisica?.nombre || c.persona_moral?.denominacion_social || null,
           conyuge_nombre: c.persona_fisica?.conyuge?.nombre || null,
@@ -1374,7 +1395,7 @@ export class PreavisoTemplateRenderer {
         }
         return mapped
       })(),
-      creditos: data.creditos?.map(c => ({
+      creditos: data.creditos?.map((c: any) => ({
         institucion: c.institucion || null,
         monto: c.monto || null,
         tipo_credito: c.tipo_credito || null,
@@ -1398,7 +1419,7 @@ export class PreavisoTemplateRenderer {
         municipio: data.inmueble.direccion?.municipio || null,
         all_registry_pages_confirmed: data.inmueble.all_registry_pages_confirmed || false
       } : null,
-      gravamenes: data.gravamenes?.map(g => ({
+      gravamenes: data.gravamenes?.map((g: any) => ({
         tipo: g.tipo || null,
         institucion: g.institucion || null,
         numero_credito: g.numero_credito || null,

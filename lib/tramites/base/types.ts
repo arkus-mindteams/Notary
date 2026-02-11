@@ -229,6 +229,7 @@ export interface TramiteResponse {
     current: string
     completed: string[]
     missing: string[]
+    not_applicable?: string[] // Opcional para retrocompatibilidad
     validation: ValidationResult
   }
   commands?: string[] // Para debugging

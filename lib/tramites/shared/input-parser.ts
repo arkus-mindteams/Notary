@@ -262,81 +262,49 @@ export class InputParser {
     // Handles: "1782484", "Folio 1782484", "Confirmar el 1782484", "Cual es la dirección del 1782484?"
     this.rules.push({
       name: 'folio_interaction',
-      pattern: /(?:\b(\d{6,8})\b|si|sí|correcto|confirmo|confirmado|usar este)/i,
+      pattern: /^(si|sí|correcto|confirmo|confirmado|usar este|ese|ese mero|la\s+1|la\s+2|opcion\s+1|opcion\s+2|1|2)$/i,
       condition: (input, context) => {
-        // Solo activo si hay candidatos o si ya hay un folio provisional
+        // Solo activo para confirmaciones de selección simple
         const folios = context.folios?.candidates || []
         const hasCandidates = folios.length > 0
         const hasSelection = !!context.folios?.selection?.selected_folio
 
-        // Si no hay nada con qué interactuar, esta regla no aplica
         if (!hasCandidates && !hasSelection) return false
 
-        // Debe contener un número de folio válido O ser una confirmación explícita
-        const hasNumber = /\b(\d{6,8})\b/.test(input)
+        // Evitar capturar números largos aquí, delegar a LLM si es un folio nuevo
+        const hasLongNumber = /\b(\d{6,8})\b/.test(input)
+        if (hasLongNumber && !/^(1|2)$/.test(input.trim())) return false
 
-        // Guardrail: Evitar confundir con precios ($1,234,567) o teléfonos (10 dígitos)
-        // Si tiene formato de moneda explícito o contexto de precio/valor, ignorar
-        if (input.includes('$') || /precio|valor|costo/i.test(input)) return false
-
-        const isConfirmation = /^(si|sí|correcto|confirmo|confirmado|usar este|ese|ese mero)$/i.test(input.trim())
-
-        return hasNumber || (isConfirmation && (hasSelection || folios.length === 1))
+        return /^(si|sí|correcto|confirmo|confirmado|usar este|ese|ese mero|la\s+1|la\s+2|opcion\s+1|opcion\s+2|1|2)$/i.test(input.trim())
       },
-      extract: (input, context, lastAssistantMessage) => {
+      extract: (input, context) => {
         const folios = context.folios?.candidates || []
+        const text = input.trim().toLowerCase()
 
-        // 1. Detectar Intención General
-        const isQuestion = input.includes('?') ||
-          /^(qu[eé]|cual|c[oó]mo|d[oó]nde|cu[aá]nto|dime|muestrame|ver|checar)/i.test(input)
+        let folio = context.folios?.selection?.selected_folio || null
 
-        const isExplicitSelection = /(usar|elegir|seleccionar|el|este)\s+(\d+|folio|es)/i.test(input) ||
-          /^(si|sí|correcto|confirmo|confirmado)$/i.test(input.trim())
-
-        // 2. Extraer Número de Folio
-        const numberMatch = input.match(/\b(\d{6,8})\b/)
-        let folio = numberMatch ? numberMatch[1] : null
-
-        // Si no hay número explícito, intentar inferir contexto (confirmación de "ese")
-        if (!folio) {
-          // Si hay un solo candidato, asumimos ese
-          if (folios.length === 1) folio = typeof folios[0] === 'string' ? folios[0] : folios[0].folio
-          // Si ya hay uno seleccionado (pero no confirmado), asumimos ese
-          else if (context.folios?.selection?.selected_folio) folio = context.folios.selection.selected_folio
+        // Mapeo simple de opciones 1/2
+        if (/^(1|la\s+1|opcion\s+1)$/.test(text) && folios[0]) {
+          folio = typeof folios[0] === 'string' ? folios[0] : folios[0].folio
+        } else if (/^(2|la\s+2|opcion\s+2)$/.test(text) && folios[1]) {
+          folio = typeof folios[1] === 'string' ? folios[1] : folios[1].folio
+        } else if (folios.length === 1) {
+          folio = typeof folios[0] === 'string' ? folios[0] : folios[0].folio
         }
 
-        if (!folio) return null // No pudimos resolver el folio target
-
-        // 3. Determinar INTENT final
-        let intent: 'SELECT' | 'FOCUS' | 'CONFIRM' = 'SELECT' // Default
-
-        if (isQuestion) {
-          intent = 'FOCUS'
-        } else if (isExplicitSelection) {
-          intent = 'CONFIRM' // Confirmación fuerte
-        } else {
-          // Si solo es el número ("1782484"), es SELECT (intención de elegir)
-          // Si hay ambigüedad, preferimos SELECT sobre FOCUS para avanzar rápido
-          intent = 'SELECT'
-        }
-
-        // 4. Validar existencia en candidatos (si aplica)
-        if (folios.length > 0) {
-          // Permisivos: Si es una pregunta (FOCUS), permitimos aunque no esté en lista
-          // Pero le pasamos el intent al handler
-        }
+        if (!folio) return null
 
         return {
           selectedFolio: folio,
-          intent: intent,
-          confirmedByUser: (intent === 'SELECT' || intent === 'CONFIRM')
+          intent: 'CONFIRM',
+          confirmedByUser: true
         }
       },
       handler: 'FolioSelectionHandler'
     })
 
-    // 4C. Captura manual de inmueble (texto libre con folio/dirección/partida)
-    // Ej: "FOLIO REAL:1782481 UNIDAD:2D CONJ. HABITACIONAL: ... MUNICIPIO:TIJUANA"
+    // 4C. Captura manual de inmueble (Deactivada - Delegada a LLM para interpretación semántica)
+    /*
     this.rules.push({
       name: 'inmueble_manual',
       pattern: /(folio\s+real|partida|municipio|manzana|lote|unidad|condominio|fraccionamiento)/i,
@@ -349,88 +317,19 @@ export class InputParser {
         return msg.includes('inscripción') || msg.includes('folio real') || msg.includes('partida') || msg.includes('inmueble')
       },
       extract: (input) => {
-        const text = String(input || '')
-
-        const folioMatch = text.match(/folio\s*real\s*[:#]?\s*(\d{6,8})/i)
-        const partidaMatch =
-          text.match(/partida[s]?\s*(?:no\.?|nº|n°)?\s*[:#]?\s*([0-9,\s]+)/i) ||
-          text.match(/\bpda\.?\s*(?:no\.?|nº|n°)?\s*[:#]?\s*([0-9,\s]+)/i)
-        const seccionMatch = text.match(/secci[oó]n\s*[:#]?\s*([A-ZÁÉÍÓÚÑ]+)/i)
-        const municipioMatch = text.match(/municipio\s*[:#]?\s*([A-ZÁÉÍÓÚÑ\s]+)/i)
-
-        const unidadMatch = text.match(/unidad\s*[:#]?\s*([A-Z0-9\-]+)/i)
-        const condominioMatch = text.match(/condominio\s*[:#]?\s*([A-Z0-9\-]+)/i)
-        const fraccMatch = text.match(/fraccionamiento\s*[:#]?\s*([A-ZÁÉÍÓÚÑ\s]+)/i) ||
-          text.match(/desarrollo\s+habitacional\s*[:#]?\s*([A-ZÁÉÍÓÚÑ\s]+)/i) ||
-          text.match(/conj\.?\s*habitacional\s*[:#]?\s*([A-ZÁÉÍÓÚÑ0-9\s\-]+)/i)
-        const loteMatch = text.match(/lote\s*[:#]?\s*(\d+)/i)
-        const manzanaMatch = text.match(/manzana\s*[:#]?\s*(\d+)/i)
-
-        const partidas = partidaMatch
-          ? partidaMatch[1]
-            .split(',')
-            .map(p => p.trim())
-            .filter(Boolean)
-          : []
-
-        // FIX: Extract partida from standalone number if 'partidas' list is empty but 'partidaMatch' failed
-        // This is safe because handler checks context.
-        // Wait, InmuebleManualHandler expects parsed object. 
-        // We handle standalone numbers in a separate rule 'partida_number_standalone' below.
-
-        // Dirección libre: quitar folio/partida/municipio para quedarnos con la descripción principal
-        let direccionRaw = text
-          .replace(/folio\s*real\s*[:#]?\s*\d{6,8}/ig, '')
-          .replace(/partida[s]?\s*[:#]?\s*[0-9,\s]+/ig, '')
-          .replace(/secci[oó]n\s*[:#]?\s*[A-ZÁÉÍÓÚÑ\s]+/ig, '')
-          .replace(/municipio\s*[:#]?\s*[A-ZÁÉÍÓÚÑ\s]+/ig, '')
-          .replace(/\s+/g, ' ')
-          .trim()
-        if (direccionRaw.length < 5) direccionRaw = ''
-
-        // Guardrail: evitar que "SECCION CIVIL" u otros metadatos se tomen como dirección
-        const addrKeywords = /(calle|colonia|fraccionamiento|condominio|conj|habitacional|unidad|lote|manzana|domicilio|ubicaci[oó]n|municipio)/i
-        if (direccionRaw && !addrKeywords.test(direccionRaw)) {
-          direccionRaw = ''
-        }
-
-        return {
-          folio_real: folioMatch ? folioMatch[1] : null,
-          partidas,
-          seccion: seccionMatch ? seccionMatch[1] : null,
-          direccion: {
-            calle: direccionRaw || null,
-            municipio: municipioMatch ? municipioMatch[1].trim() : null,
-          },
-          datos_catastrales: {
-            unidad: unidadMatch ? unidadMatch[1] : null,
-            condominio: condominioMatch ? condominioMatch[1] : null,
-            fraccionamiento: fraccMatch ? fraccMatch[1].trim() : null,
-            lote: loteMatch ? loteMatch[1] : null,
-            manzana: manzanaMatch ? manzanaMatch[1] : null,
-          }
-        }
+        ...
       },
       handler: 'InmuebleManualHandler'
     })
+    */
 
-    // 4D. Partida (standalone number)
+    // 4D. Partida (standalone number) - Deactivada (Delegada a LLM)
+    /*
     this.rules.push({
       name: 'partida_number_standalone',
-      pattern: /^[\d\s,-]+$/,
-      condition: (input, context, lastAssistantMessage?: string) => {
-        // Must be asking for partida/registration data
-        if (context?._last_question_intent === 'partidas') return true
-        const msg = String(lastAssistantMessage || '').toLowerCase()
-        return msg.includes('partida') && !msg.includes('folio') // Avoid confusion if asking for folio
-      },
-      extract: (input) => {
-        return {
-          partidas: input.split(/[\s,]+/).filter(x => x.trim().length > 0)
-        }
-      },
-      handler: 'InmuebleManualHandler'
+      ...
     })
+    */
 
     // 6. Institución de crédito (nombres comunes)
     // IMPORTANTE: Esta regla solo se activa si isCreditInstitutionContext() retorna true
@@ -1313,15 +1212,18 @@ export class InputParser {
       return { captured: false, needsLLM: false }
     }
 
-    // --- BYPASS DE REPARACIÓN CONVERSACIONAL ---
+    // --- BYPASS DE REPARACIÓN CONVERSACIONAL Y DATOS COMPLEJOS ---
     // Si el usuario empieza con negación, disculpa o corrección, es una señal fuerte de contexto complejo.
-    // Saltamos el parser determinista para que el LLM maneje el contexto semántico mediante sus herramientas.
+    // O si el input menciona folios o partidas, delegamos al LLM para interpretación semántica.
     const lowerInput = normalizedInput.toLowerCase()
     const isRepairSignal = /^(no|perdon|perd[oó]n|disculpa|corrijo|error|me\s+equivoque|no\s+era|es\s+con|sera\s+con|ser[aá]\s+con|cambio|cambiar|actualizar)\b/i.test(lowerInput) ||
       /\b(perdon|perd[oó]n|disculpa|equivoque|equivoqu[eé])\b/i.test(lowerInput) ||
       (/\b(credito|cr[eé]dito|redito|banco)\b/i.test(lowerInput) && !!context?.creditos?.[0]?.institucion && !this.isEncumbranceContext(context, lastAssistantMessage))
 
-    if (isRepairSignal) {
+    const isComplexPropertyData = /\b(folio|partida|pda|secc|municipio|lote|manzana|unidad|condominio|fraccionamiento|ubicaci[oó]n|calle)\b/i.test(lowerInput) ||
+      (lowerInput.length > 50 && /\b\d{6,8}\b/.test(lowerInput))
+
+    if (isRepairSignal || isComplexPropertyData) {
       return {
         captured: false,
         needsLLM: true
@@ -1472,7 +1374,7 @@ export class InputParser {
         if (nameMatch) {
           const candidateName = nameMatch[1].trim()
           if (ValidationService.isValidName(candidateName) &&
-              !ConyugeService.namesMatch(candidateName, buyerNombre)) {
+            !ConyugeService.namesMatch(candidateName, buyerNombre)) {
             addFallbackCommand('conyuge_name', {
               buyerIndex: 0,
               name: candidateName,

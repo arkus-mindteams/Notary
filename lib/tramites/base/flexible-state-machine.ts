@@ -128,6 +128,36 @@ export class FlexibleStateMachine {
   }
 
   /**
+   * Obtiene estados que no aplican
+   */
+  getNotApplicableStates(plugin: TramitePlugin, context: any): string[] {
+    const states = plugin.getStates(context)
+    const notApplicable: string[] = []
+
+    for (const state of states) {
+      if (state.id === 'ready') continue
+
+      const isRequired = typeof state.required === 'function'
+        ? state.required(context)
+        : state.required === true
+
+      const conditionMet = state.conditional && typeof state.conditional === 'function'
+        ? state.conditional(context)
+        : true
+
+      if (!isRequired || !conditionMet) {
+        // Si no es necesario O no cumple la condición, verificar si ya está "completado"
+        // (a veces un estado no es requerido pero el usuario lo llenó igual)
+        if (!this.isStateCompleted(state, context, plugin)) {
+          notApplicable.push(state.id)
+        }
+      }
+    }
+
+    return notApplicable
+  }
+
+  /**
    * Verifica si puede transicionar a un estado (FLEXIBLE)
    */
   canTransitionTo(

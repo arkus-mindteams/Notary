@@ -428,7 +428,7 @@ export class PreavisoPlugin implements TramitePlugin {
     if (stateId === 'ESTADO_1') {
       return 'Para avanzar necesito confirmar la forma de pago: ¿contado o crédito? Ejemplo: “Será crédito”.'
     }
-        if (stateId === 'ESTADO_4') {
+    if (stateId === 'ESTADO_4') {
       const buyer0 = context?.compradores?.[0]
       const casadoSinConyuge = buyer0?.persona_fisica?.estado_civil === 'casado' &&
         !buyer0?.persona_fisica?.conyuge?.nombre &&
@@ -542,6 +542,42 @@ export class PreavisoPlugin implements TramitePlugin {
   convertDataToCommands(data: any, context: any): Command[] {
     const commands: Command[] = []
 
+    // 1. Pago / Crédito
+    const hasCreditosArray = Array.isArray(data.creditos)
+    const isContado = hasCreditosArray && data.creditos.length === 0
+    const needsCredito = data.compradores?.[0]?.necesitaCredito
+
+    if (isContado || needsCredito === false) {
+      commands.push({
+        type: 'payment_method',
+        timestamp: new Date(),
+        source: 'llm',
+        payload: { method: 'contado' }
+      })
+    } else if (hasCreditosArray && data.creditos.length > 0) {
+      // Si hay créditos, registrar el método y luego los créditos individuales
+      commands.push({
+        type: 'payment_method',
+        timestamp: new Date(),
+        source: 'llm',
+        payload: { method: 'credito' }
+      })
+      for (const credito of data.creditos) {
+        if (credito.institucion) {
+          commands.push({
+            type: 'credit_institution',
+            timestamp: new Date(),
+            source: 'llm',
+            payload: {
+              creditIndex: 0,
+              institution: credito.institucion
+            }
+          })
+        }
+      }
+    }
+
+    // 2. Compradores
     if (data.compradores && Array.isArray(data.compradores)) {
       for (const comprador of data.compradores) {
         if (comprador.persona_fisica?.nombre) {
@@ -573,6 +609,7 @@ export class PreavisoPlugin implements TramitePlugin {
       }
     }
 
+    // 3. Vendedores
     if (data.vendedores && Array.isArray(data.vendedores)) {
       for (const vendedor of data.vendedores) {
         const nombre = vendedor.persona_fisica?.nombre || vendedor.persona_moral?.denominacion_social
@@ -591,22 +628,7 @@ export class PreavisoPlugin implements TramitePlugin {
       }
     }
 
-    if (data.creditos && Array.isArray(data.creditos)) {
-      for (const credito of data.creditos) {
-        if (credito.institucion) {
-          commands.push({
-            type: 'credit_institution',
-            timestamp: new Date(),
-            source: 'llm',
-            payload: {
-              creditIndex: 0,
-              institution: credito.institucion
-            }
-          })
-        }
-      }
-    }
-
+    // 4. Inmueble
     if (data.inmueble && typeof data.inmueble === 'object') {
       const inm = data.inmueble
       const hasInmuebleData = inm.folio_real || (Array.isArray(inm.partidas) && inm.partidas.length > 0) || (inm.direccion && Object.keys(inm.direccion || {}).length > 0)
@@ -615,6 +637,19 @@ export class PreavisoPlugin implements TramitePlugin {
         if (inm.folio_real) payload.folio_real = String(inm.folio_real)
         if (Array.isArray(inm.partidas) && inm.partidas.length > 0) payload.partidas = inm.partidas.map(String)
         if (inm.direccion && typeof inm.direccion === 'object') payload.direccion = inm.direccion
+        if (inm.seccion) payload.seccion = inm.seccion
+        if (inm.superficie) payload.superficie = inm.superficie
+        if (inm.valor) payload.valor = inm.valor
+
+        // Datos catastrales agrupados
+        const dc: any = {}
+        if (inm.lote) dc.lote = inm.lote
+        if (inm.manzana) dc.manzana = inm.manzana
+        if (inm.fraccionamiento) dc.fraccionamiento = inm.fraccionamiento
+        if (inm.condominio) dc.condominio = inm.condominio
+        if (inm.unidad) dc.unidad = inm.unidad
+        if (Object.keys(dc).length > 0) payload.datos_catastrales = dc
+
         commands.push({
           type: 'inmueble_manual',
           timestamp: new Date(),
@@ -622,30 +657,55 @@ export class PreavisoPlugin implements TramitePlugin {
           payload
         })
       }
+
+      if (inm.folio_real_confirmed === true) {
+        commands.push({
+          type: 'folio_selection',
+          timestamp: new Date(),
+          source: 'llm',
+          payload: {
+            selectedFolio: inm.folio_real,
+            confirmedByUser: true
+          }
+        })
+      }
     }
 
-    if (data.inmueble?.existe_hipoteca === true || data.inmueble?.existe_hipoteca === false) {
+    // 5. Gravámenes
+    const hasGravamenesArray = Array.isArray(data.gravamenes)
+    const isNoGravamen = (hasGravamenesArray && data.gravamenes.length === 0) || data.inmueble?.existe_hipoteca === false
+
+    if (isNoGravamen) {
+      commands.push({
+        type: 'encumbrance',
+        timestamp: new Date(),
+        source: 'llm',
+        payload: { exists: false }
+      })
+    } else if (data.inmueble?.existe_hipoteca === true || (hasGravamenesArray && data.gravamenes.length > 0)) {
       const cancelacion = data.gravamenes?.[0]?.cancelacion_confirmada
       commands.push({
         type: 'encumbrance',
         timestamp: new Date(),
         source: 'llm',
         payload: {
-          exists: Boolean(data.inmueble.existe_hipoteca),
+          exists: true,
           cancellationConfirmed: cancelacion !== undefined && cancelacion !== null ? Boolean(cancelacion) : undefined,
           tipo: 'hipoteca'
         }
       })
-    }
-    if (data.gravamenes?.[0]?.institucion) {
-      commands.push({
-        type: 'gravamen_acreedor',
-        timestamp: new Date(),
-        source: 'llm',
-        payload: { institucion: String(data.gravamenes[0].institucion) }
-      })
+
+      if (data.gravamenes?.[0]?.institucion) {
+        commands.push({
+          type: 'gravamen_acreedor',
+          timestamp: new Date(),
+          source: 'llm',
+          payload: { institucion: String(data.gravamenes[0].institucion) }
+        })
+      }
     }
 
+    // 6. Selección de folio (fallback)
     if (data.folio_selection) {
       commands.push({
         type: 'folio_selection',

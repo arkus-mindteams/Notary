@@ -215,6 +215,10 @@ export async function POST(req: Request) {
             acc[id] = 'incomplete'
             return acc
           }, {}),
+          ...(result.state.not_applicable || []).reduce((acc: any, id: string) => {
+            acc[id] = 'not_applicable'
+            return acc
+          }, {}),
           [result.state.current]: 'pending'
         },
         required_missing: result.state.missing,
