@@ -294,11 +294,27 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   // - Si hay candidatos y no está confirmado => folioReal = null (siempre pedir confirmación/selección)
   // - Si no hay candidatos => mantener null y pedir al usuario que lo indique
   const hasAnyCandidates = foliosRealesCandidates.length > 0
+  const inmuebleFolioConfirmed = inmueble?.folio_real_confirmed === true && inmueble?.folio_real
+  const inmuebleFolioInCandidates = inmuebleFolioConfirmed && foliosRealesCandidates.some((c: any) => {
+    const cd = normalizeDigits(c)
+    const id = normalizeDigits(String(inmueble.folio_real))
+    return cd && id ? cd === id : String(c) === String(inmueble.folio_real)
+  })
   // Folio efectivo:
-  // - Si hay candidatos (vienen típicamente de hoja de inscripción): exigir confirmación explícita del usuario.
-  // - Si NO hay candidatos (captura manual): aceptar `inmueble.folio_real` como fuente directa.
+  // - Si hay candidatos: aceptar si el usuario confirmó en folios.selection O si confirmó vía set_inmueble (inmueble.folio_real_confirmed)
+  // - NOVEDAD: Si hay exactamente UN candidato y el inmueble ya tiene ESE folio (aunque no diga explicitamente 'confirmed'), 
+  //   asumirlo como efectivo si ya pasamos de estado, para evitar loops infinitos de confirmacion.
   const folioReal = hasAnyCandidates
-    ? (folioConfirmed && folioInCandidates ? selectedFolio : null)
+    ? (folioConfirmed && folioInCandidates
+      ? selectedFolio
+      : (inmuebleFolioInCandidates || inmuebleFolioConfirmed
+        ? String(inmueble.folio_real)
+        : (foliosRealesCandidates.length === 1 && normalizeDigits(inmueble?.folio_real) === normalizeDigits(foliosRealesCandidates[0])
+          ? String(inmueble.folio_real)
+          : null
+        )
+      )
+    )
     : (inmueble?.folio_real ? String(inmueble.folio_real) : null)
 
   if (PREAVISO_DEBUG) {
@@ -326,10 +342,17 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   // La "sección" puede venir del documento, pero NO bloquea
   const seccion = inmueble?.seccion || infoInscripcion.seccion
   const direccionCompleta = inmueble?.direccion
-  const hasLoteManzana = !!inmueble?.datos_catastrales?.lote && !!inmueble?.datos_catastrales?.manzana
+  const dc = inmueble?.datos_catastrales
+  const hasLoteManzana = !!dc?.lote && !!dc?.manzana
+  const direccionDesdeColoniaMunicipio = (direccionCompleta?.colonia || direccionCompleta?.municipio || direccionCompleta?.estado)
+    ? [direccionCompleta?.calle, direccionCompleta?.numero, direccionCompleta?.colonia, direccionCompleta?.municipio, direccionCompleta?.estado].filter(Boolean).join(', ')
+    : null
+  const direccionDesdeDatosCatastrales = (dc?.unidad || dc?.condominio || dc?.lote || dc?.manzana || dc?.fraccionamiento)
+    ? [dc?.unidad && `Unidad ${dc.unidad}`, dc?.condominio && `Condominio ${dc.condominio}`, dc?.lote && `Lote ${dc.lote}`, dc?.manzana && `Manzana ${dc.manzana}`, dc?.fraccionamiento].filter(Boolean).join(', ')
+    : null
   const direccion = direccionCompleta?.calle
     ? `${direccionCompleta.calle} ${direccionCompleta.numero || ''} ${direccionCompleta.colonia || ''}`.trim()
-    : inmueble?.direccion?.calle || (hasLoteManzana ? `Lote ${inmueble.datos_catastrales.lote} Mza ${inmueble.datos_catastrales.manzana} ${inmueble.datos_catastrales.fraccionamiento || ''}`.trim() : null) || infoInscripcion.ubicacion || infoInscripcion.direccion
+    : inmueble?.direccion?.calle || (hasLoteManzana ? `Lote ${inmueble.datos_catastrales.lote} Mza ${inmueble.datos_catastrales.manzana} ${inmueble.datos_catastrales.fraccionamiento || ''}`.trim() : null) || direccionDesdeColoniaMunicipio || direccionDesdeDatosCatastrales || infoInscripcion.ubicacion || infoInscripcion.direccion
   const superficie = inmueble?.superficie || infoInscripcion.superficie
   const valor = inmueble?.valor || infoInscripcion.valor
 
@@ -464,15 +487,19 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
         : (registroIndicaGravamen || hayGravamenesCapturados ? true : null)
 
   if (existeHipoteca === true) {
-    // No marcar "completo" solo porque el vendedor dijo que sí hay hipoteca.
-    // Se completa cuando ya sabemos "cómo se cancelará" (cancelacion_confirmada true/false) para cada gravamen capturado.
-    // Si aún no hay gravámenes capturados, queda INCOMPLETE (porque aplica pero falta capturar).
+    // No marcar "completo" solo porque el usuario dijo "sí tiene gravamen".
+    // Se completa solo cuando para cada gravamen tengamos:
+    // 1) institución acreedora (nombre explícito, no genérico), y
+    // 2) si se cancelará con la operación (cancelacion_confirmada true/false).
     if (!hayGravamenesCapturados) {
       stateStatus.ESTADO_6 = 'incomplete'
     } else {
+      const institucionValida = (inst: any) =>
+        typeof inst === 'string' && inst.trim().length > 0 &&
+        !/^(por\s+confirmar|desconocido|pendiente|acreedor\s+desconocido|n\/a|na)$/i.test(inst.trim())
       const gravamenesCompletos = gravamenes.every((g: any) =>
         (g.cancelacion_confirmada === true || g.cancelacion_confirmada === false) &&
-        !!g.institucion
+        institucionValida(g.institucion)
       )
       stateStatus.ESTADO_6 = gravamenesCompletos ? 'completed' : 'incomplete'
     }
@@ -641,6 +668,9 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
       requiredMissing.push('gravamenes[]')
     } else if (gravamenes.length > 0) {
       gravamenes.forEach((gravamen: any, index: number) => {
+        if (!gravamen.institucion) {
+          requiredMissing.push(`gravamenes[${index}].institucion`)
+        }
         if (gravamen.cancelacion_confirmada !== true && gravamen.cancelacion_confirmada !== false) {
           requiredMissing.push(`gravamenes[${index}].cancelacion_confirmada`)
         }

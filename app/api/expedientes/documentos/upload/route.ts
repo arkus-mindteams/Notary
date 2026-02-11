@@ -150,16 +150,11 @@ export async function POST(req: Request) {
       }).catch(console.error)
     }
 
-    // Si hay texto OCR (previo o nuevo), procesarlo para RAG
+    // Si hay texto OCR (previo o nuevo), procesarlo para RAG (ligado al trámite)
     if (ocrText && tramiteId) {
-      // Ejecutar en background para no bloquear respuesta
       (async () => {
         try {
-          await DocumentoService.processAndSaveText(
-            documento.id,
-            tramiteId,
-            ocrText
-          )
+          await DocumentoService.processAndSaveText(documento.id, ocrText, 1, { tramiteId })
         } catch (err) {
           console.error('[upload] Error processing RAG text:', err)
         }

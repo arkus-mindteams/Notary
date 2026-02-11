@@ -6,6 +6,11 @@ import { NextResponse } from 'next/server'
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
 import { ActivityLogService } from '@/lib/services/activity-log-service'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
+import { DocumentoService } from '@/lib/services/documento-service'
+import {
+  DocumentExtractionTextBuilder,
+  RAG_CHUNK_MAX_CHARS
+} from '@/lib/services/document-extraction-text-builder'
 
 export async function POST(req: Request) {
   // Import createServerClient here, as it's only used in the fallback logic
@@ -111,13 +116,15 @@ export async function POST(req: Request) {
       context = { _userId: authUserId }
     }
 
-    // DEBUG: Verificar que el backend reciba _document_intent y el comprador/cónyuge en el contexto
+    // DEBUG: Verificar que el backend reciba conversation_id, tramiteId y contexto
     try {
+      const conversationIdIncoming = context?.conversation_id || null
       console.log('[preaviso-process-document] incoming', {
         documentType,
         fileName: file?.name || null,
         pluginId,
         userId: authUserId,
+        conversation_id: conversationIdIncoming,
         tramiteId: context?.tramiteId || null,
         _document_intent: context?._document_intent ?? null,
         comprador0: context?.compradores?.[0]?.persona_fisica?.nombre || context?.compradores?.[0]?.persona_moral?.denominacion_social || null,
@@ -143,9 +150,13 @@ export async function POST(req: Request) {
       const tramiteId = context?.tramiteId || null
       const supabase = createServerClient()
 
-      const isArtifact = context?.is_processing_artifact === true
-
-      if (conversationId && result.extractedData && !isArtifact) {
+      // No usar is_processing_artifact para omitir guardado/RAG: las páginas extraídas de un PDF
+      // (marcadas como artifact en el front) son contenido real y deben persistirse e indexarse.
+      if (!conversationId) {
+        console.warn('[preaviso-process-document] No conversation_id in context: document and RAG will not be saved. Frontend must send context.conversation_id.')
+      }
+      if (conversationId && result.extractedData) {
+        console.log('[preaviso-process-document] Saving document and RAG', { conversationId, hasExtractedData: !!result.extractedData })
         // 1. Guardar documento en tabla 'documentos'
         const { data: documento, error: docError } = await supabase
           .from('documentos')
@@ -195,6 +206,53 @@ export async function POST(req: Request) {
             fileSize: file.size,
             mimeType: file.type || 'application/pdf'
           }).catch(console.error)
+
+          // 4. Indexar documento en RAG (documento_text_chunks) ligado a la sesión de chat
+          // para recuperar contexto al reabrir la conversación (session_id) y opcionalmente al trámite (tramite_id)
+          const conversationIdForRag = conversationId || context?.conversation_id || null
+          if (result.extractedData && (conversationIdForRag || tramiteId)) {
+            try {
+              // Preferir transcripción completa del documento (textoCompleto) si el extractor la devolvió; si no, usar JSON completo
+              const rawFullText =
+                typeof result.extractedData.textoCompleto === 'string' && result.extractedData.textoCompleto.trim()
+                  ? result.extractedData.textoCompleto.trim()
+                  : DocumentExtractionTextBuilder.buildFullTextFromExtractedData(result.extractedData)
+              const chunks = DocumentExtractionTextBuilder.splitIntoChunks(rawFullText, RAG_CHUNK_MAX_CHARS)
+
+              if (chunks.length > 0) {
+                console.log('[preaviso-process-document] Indexing full document for RAG (chunks)', {
+                  documentoId: documento.id,
+                  sessionId: conversationIdForRag,
+                  tramiteId: tramiteId || null,
+                  fullTextLength: rawFullText.length,
+                  chunkCount: chunks.length,
+                  source: typeof result.extractedData.textoCompleto === 'string' && result.extractedData.textoCompleto.trim() ? 'textoCompleto' : 'json'
+                })
+                try {
+                  await DocumentoService.processAndSaveTextChunks(documento.id, chunks, 1, {
+                    sessionId: conversationIdForRag,
+                    tramiteId: tramiteId || null
+                  })
+                  console.log('[preaviso-process-document] RAG index saved successfully', { documentoId: documento.id, chunkCount: chunks.length })
+                } catch (ragErr) {
+                  console.error('[preaviso-process-document] Error indexing document for RAG:', ragErr)
+                }
+              } else {
+                console.warn('[preaviso-process-document] No text to index from extractedData:', {
+                  documentoId: documento.id,
+                  documentType,
+                  extractedDataKeys: Object.keys(result.extractedData || {})
+                })
+              }
+            } catch (indexError) {
+              console.error('[preaviso-process-document] Error building text for RAG indexing:', indexError)
+            }
+          } else if (!conversationIdForRag && !tramiteId) {
+            console.warn('[preaviso-process-document] Skipping RAG indexing: no conversation_id nor tramiteId', {
+              documentoId: documento?.id,
+              documentType
+            })
+          }
         }
       }
     } catch (e) {

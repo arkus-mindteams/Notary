@@ -5,7 +5,7 @@ const tools: ToolDefinition[] = [
     id: 'payment_method',
     commandType: 'payment_method',
     description: 'Confirmar forma de pago (contado/crédito).',
-    allowedStates: ['ESTADO_1'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { method: 'contado|credito' },
     outputSchema: { creditos: '[]|[credito]' }
   },
@@ -13,7 +13,7 @@ const tools: ToolDefinition[] = [
     id: 'credit_institution',
     commandType: 'credit_institution',
     description: 'Capturar institución del crédito.',
-    allowedStates: ['ESTADO_1', 'ESTADO_5'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { creditIndex: 'number', institution: 'string' },
     outputSchema: { creditos: '...institucion' }
   },
@@ -21,7 +21,7 @@ const tools: ToolDefinition[] = [
     id: 'credit_participant',
     commandType: 'credit_participant',
     description: 'Capturar participantes del crédito.',
-    allowedStates: ['ESTADO_5'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { creditIndex: 'number', participant: '{partyId|name, role}' },
     outputSchema: { creditos: '...participantes[]' }
   },
@@ -29,7 +29,7 @@ const tools: ToolDefinition[] = [
     id: 'buyer_name',
     commandType: 'buyer_name',
     description: 'Capturar nombre del comprador.',
-    allowedStates: ['ESTADO_4'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { buyerIndex: 'number', name: 'string' },
     outputSchema: { compradores: '...persona_fisica|persona_moral.nombre' }
   },
@@ -53,7 +53,7 @@ const tools: ToolDefinition[] = [
     id: 'estado_civil',
     commandType: 'estado_civil',
     description: 'Capturar estado civil del comprador.',
-    allowedStates: ['ESTADO_4'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { buyerIndex: 'number', estadoCivil: 'soltero|casado|divorciado|viudo' },
     outputSchema: { compradores: '...persona_fisica.estado_civil' }
   },
@@ -61,7 +61,7 @@ const tools: ToolDefinition[] = [
     id: 'conyuge_name',
     commandType: 'conyuge_name',
     description: 'Capturar nombre del cónyuge.',
-    allowedStates: ['ESTADO_4B'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { buyerIndex: 'number', name: 'string' },
     outputSchema: { compradores: '...persona_fisica.conyuge.nombre' }
   },
@@ -77,7 +77,7 @@ const tools: ToolDefinition[] = [
     id: 'titular_registral',
     commandType: 'titular_registral',
     description: 'Capturar titular registral / vendedor.',
-    allowedStates: ['ESTADO_3'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { name: 'string', inferredTipoPersona: 'persona_fisica|persona_moral' },
     outputSchema: { vendedores: '...persona_fisica|persona_moral.nombre' }
   },
@@ -85,7 +85,7 @@ const tools: ToolDefinition[] = [
     id: 'inmueble_manual',
     commandType: 'inmueble_manual',
     description: 'Capturar datos de inmueble en texto libre.',
-    allowedStates: ['ESTADO_2'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { folio_real: 'string', partidas: 'string[]', direccion: 'object' },
     outputSchema: { inmueble: 'folio_real/partidas/direccion' }
   },
@@ -93,7 +93,7 @@ const tools: ToolDefinition[] = [
     id: 'folio_selection',
     commandType: 'folio_selection',
     description: 'Seleccionar folio real detectado.',
-    allowedStates: ['ESTADO_2'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { selectedFolio: 'string', confirmedByUser: 'boolean' },
     outputSchema: { inmueble: 'folio_real_confirmed' }
   },
@@ -101,7 +101,7 @@ const tools: ToolDefinition[] = [
     id: 'multiple_folios_detected',
     commandType: 'multiple_folios_detected',
     description: 'Registrar folios detectados desde documento para selección.',
-    allowedStates: ['ESTADO_2'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { folios: 'string[]', foliosConInfo: 'array', scope: 'object' },
     outputSchema: { folios: '...candidates[]' }
   },
@@ -109,7 +109,7 @@ const tools: ToolDefinition[] = [
     id: 'encumbrance',
     commandType: 'encumbrance',
     description: 'Confirmar gravamen/hipoteca.',
-    allowedStates: ['ESTADO_6', 'ESTADO_6B'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { exists: 'boolean' },
     outputSchema: { inmueble: 'existe_hipoteca' }
   },
@@ -117,7 +117,7 @@ const tools: ToolDefinition[] = [
     id: 'gravamen_acreedor',
     commandType: 'gravamen_acreedor',
     description: 'Capturar institución acreedora del gravamen.',
-    allowedStates: ['ESTADO_6'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { institucion: 'string' },
     outputSchema: { gravamenes: '...institucion' }
   },
@@ -125,7 +125,7 @@ const tools: ToolDefinition[] = [
     id: 'encumbrance_cancellation',
     commandType: 'encumbrance_cancellation',
     description: 'Confirmar si se cancelará el gravamen.',
-    allowedStates: ['ESTADO_6B'],
+    allowedStates: ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_4B', 'ESTADO_5', 'ESTADO_6', 'ESTADO_6B', 'ESTADO_8'],
     inputSchema: { cancellationConfirmed: 'boolean' },
     outputSchema: { gravamenes: '...cancelacion_confirmada' }
   }
@@ -137,4 +137,5 @@ export const getPreavisoAllowedToolIdsForState = (stateId: string): string[] =>
   tools.filter((t) => t.allowedStates.includes(stateId)).map((t) => t.id)
 
 export const getPreavisoToolByCommandType = (commandType: string): ToolDefinition | null =>
-  tools.find((t) => t.commandType === commandType) || null
+  tools.find((t) => t.commandType === commandType) ||
+  (commandType === 'credit_participants_only_buyer' ? tools.find((t) => t.commandType === 'credit_participant') ?? null : null)

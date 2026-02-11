@@ -107,12 +107,12 @@ export async function POST(req: Request) {
       tramiteId: tramiteIdFromBody || context?.tramiteId || null
     }
 
-    // Procesar mensaje
+    // Procesar mensaje (últimos 20 mensajes = ~10 intercambios para contexto de todo el chat)
     const result = await tramiteSystem.process(
       pluginId,
       lastUserMessage,
       processingContext,
-      messages.slice(-10) // Últimos 10 mensajes para contexto
+      messages.slice(-20)
     )
 
     // Logging (DB): guardar historial en modelo normalizado
@@ -213,6 +213,10 @@ export async function POST(req: Request) {
           }, {}),
           ...result.state.missing.reduce((acc: any, id: string) => {
             acc[id] = 'incomplete'
+            return acc
+          }, {}),
+          ...(result.state.not_applicable || []).reduce((acc: any, id: string) => {
+            acc[id] = 'not_applicable'
             return acc
           }, {}),
           [result.state.current]: 'pending'

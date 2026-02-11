@@ -10,8 +10,8 @@ export class DefaultHandler implements PreavisoDocumentTypeHandler {
     }
     getPrompts(): { systemPrompt: string; userPrompt: string } {
         return {
-            systemPrompt: 'Extrae información relevante del documento en formato JSON.',
-            userPrompt: 'Analiza este documento y extrae la información relevante.'
+            systemPrompt: `Extrae información relevante del documento en formato JSON. Incluye siempre un campo "textoCompleto" con la transcripción literal de TODO el texto visible en el documento, en orden de lectura, conservando saltos de línea.`,
+            userPrompt: 'Analiza este documento y extrae la información relevante. Incluye en textoCompleto todo el texto que puedas leer.'
         }
     }
     process(_extracted: any, _context: any): Command[] {

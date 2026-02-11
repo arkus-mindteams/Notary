@@ -12,7 +12,8 @@ SOLICITUD DE CERTIFICADO CON EFECTO DE PRE-AVISO
 
 {{! 3. ANTECEDENTE REGISTRAL }}
 ANTECEDENTE REGISTRAL
-{{#if inmueble.partidas}}PARTIDA NO: {{#each inmueble.partidas}}{{#if @first}}{{this}}{{else}}, {{this}}{{/if}}{{/each}}{{/if}}
+{{#if inmueble.partidas}}PARTIDA NO: {{#each inmueble.partidas}}{{#if @first}}{{this}}{{else}},
+{{this}}{{/if}}{{/each}}{{/if}}
 {{#if inmueble.seccion}}SECCIÓN {{inmueble.seccion}}{{/if}}
 FOLIO REAL: {{inmueble.folioReal}}
 
@@ -21,7 +22,10 @@ DE LA PROPIEDAD Y DEL COMERCIO.
 P R E S E N T E.
 
 {{! 4. Párrafo legal del art. 2885 }}
-LIC. PEDRO CHÁVEZ SÁNCHEZ, Notario Adscrito a la Notaría No. 3 de esta ciudad, cuyo Titular el Lic. XAVIER IBÁÑEZ VERAMENDI, para los efectos de lo dispuesto por el artículo 2,885 del Código Civil del Estado, hace de su conocimiento que ante mi fe se pretenden otorgar LOS SIGUIENTES ACTOS JURIDICOS cuyas características enseguida se detallan:
+LICENCIADO PEDRO CHÁVEZ SÁNCHEZ, NOTARIO ADSCRITO A LA NOTARÍA NÚMERO 3 DE ESTA CIUDAD, CUYO TITULAR EL LIC. XAVIER
+IBÁÑEZ VERAMENDI, PARA LOS EFECTOS DE LO DISPUESTO POR EL ARTÍCULO 2,885 DEL CÓDIGO CIVIL DEL ESTADO, HACE DE SU
+CONOCIMIENTO QUE ANTE MI FE SE PRETENDEN OTORGAR LOS SIGUIENTES ACTOS JURIDICOS CUYAS CARACTERÍSTICAS ENSEGUIDA SE
+DETALLAN:
 
 {{! 5. Actos jurídicos numerados (romanos con guión) }}
 {{#each actosNumerados}}
@@ -36,12 +40,15 @@ LIC. PEDRO CHÁVEZ SÁNCHEZ, Notario Adscrito a la Notaría No. 3 de esta ciudad
 {{#if ../vendedor.denominacion_social}}VENDEDOR: {{../vendedor.denominacion_social}}
 {{else}}VENDEDOR: {{../vendedor.nombre}}
 {{/if}}
-COMPRADOR: {{#if ../comprador.nombre_display}}{{../comprador.nombre_display}}{{else}}{{../comprador.nombre}}{{/if}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}
-{{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CREDITO SIMPLE CON INTERES Y GARANTÍA HIPOTECARIA.
+COMPRADOR: {{#if ../comprador.nombre_display}}{{../comprador.nombre_display}}{{else}}{{../comprador.nombre}}{{/if}}{{#if
+../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}
+{{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CREDITO SIMPLE CON INTERES Y GARANTÍA
+HIPOTECARIA.
 
 {{#if (hasItems this.creditos)}}{{#each this.creditos}}{{#if @first}}
 {{#if this.institucion}}ACREDITANTE: {{this.institucion}}{{/if}}
-{{#if this.participantes}}{{#each this.participantes}}{{#if this.nombre}}{{#if (eq this.rol 'acreditado')}}ACREDITADO: {{this.nombre}}
+{{#if this.participantes}}{{#each this.participantes}}{{#if this.nombre}}{{#if (eq this.rol 'acreditado')}}ACREDITADO:
+{{this.nombre}}
 {{else}}{{#if (eq this.rol 'coacreditado')}}COACREDITADO: {{this.nombre}}
 {{/if}}{{/if}}{{/if}}{{/each}}{{/if}}
 {{/if}}{{/each}}{{/if}}
@@ -50,10 +57,22 @@ COMPRADOR: {{#if ../comprador.nombre_display}}{{../comprador.nombre_display}}{{e
 {{/each}}
 
 {{! 6. Artículo 139 (siempre incluido) }}
-Asimismo, en los términos del Artículo 139 de la Ley de Desarrollo Urbano para el Estado, solicitó la certificación de inscripción de existencia o inexistencia de declaratorias de uso o destino, avisos, manifestaciones o reservas del inmueble materia de (los) acto (s) antes referido (s).
+ASIMISMO, EN LOS TÉRMINOS DEL ARTÍCULO 139 DE LA LEY DE DESARROLLO URBANO PARA EL ESTADO, SOLICITÓ LA CERTIFICACIÓN DE
+INSCRIPCIÓN DE EXISTENCIA O INEXISTENCIA DE DECLARATORIAS DE USO O DESTINO, AVISOS, MANIFESTACIONES O RESERVAS DEL
+INMUEBLE MATERIA DE (LOS) ACTO (S) ANTES REFERIDO (S).
 
-{{! 7. OBJETO DE LA COMPRAVENTA Y GARANTÍA HIPOTECARIA + descripción (una sola línea = un solo párrafo en Word, como el punto 4) }}
-OBJETO DE LA COMPRAVENTA Y GARANTIA HIPOTECARIA: FOLIO REAL: {{inmueble.folioReal}} {{#if inmueble.unidad}}UNIDAD: {{inmueble.unidad}}{{#if inmueble.condominio}} CONJ. HABITACIONAL: {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}} CONSTRUIDO EN EL LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}} DE {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.{{else}}{{#if inmueble.direccion}}{{inmueble.direccion}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.{{else}}INMUEBLE UBICADO EN {{inmueble.colonia}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.{{/if}}{{/if}}{{#if inmueble.municipio}} MUNICIPIO: {{inmueble.municipio}}{{/if}}
+{{! 7. OBJETO DE LA COMPRAVENTA Y GARANTÍA HIPOTECARIA + descripción (una sola línea = un solo párrafo en Word, como el
+punto 4) }}
+OBJETO DE LA COMPRAVENTA Y GARANTIA HIPOTECARIA: FOLIO REAL: {{inmueble.folioReal}} {{#if inmueble.unidad}}UNIDAD:
+{{inmueble.unidad}}{{#if inmueble.condominio}} CONJ. HABITACIONAL: {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}}
+CONSTRUIDO EN EL LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if
+inmueble.fraccionamiento}} DE {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.{{else}}{{#if
+inmueble.direccion}}{{inmueble.direccion}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}},
+MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA
+CIUDAD.{{else}}INMUEBLE UBICADO EN {{inmueble.colonia}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if
+inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}},
+{{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.{{/if}}{{/if}}{{#if inmueble.municipio}} MUNICIPIO:
+{{inmueble.municipio}}{{/if}}
 
 
 {{! 8. Cierre }}
@@ -62,4 +81,3 @@ TIJUANA, B. C. AL MOMENTO DE SU PRESENTACION
 
 {{! 9. Firma del notario }}
 LIC. PEDRO CHÁVEZ SÁNCHEZ
-

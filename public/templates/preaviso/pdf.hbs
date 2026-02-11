@@ -3,6 +3,7 @@
 
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,6 +13,7 @@
       size: letter;
       margin: 2.5cm;
     }
+
     body {
       font-family: 'Times New Roman', serif;
       font-size: 12pt;
@@ -20,14 +22,17 @@
       margin: 0;
       padding: 0;
     }
+
     .header {
       text-align: center;
       margin-bottom: 30px;
     }
+
     .notary-info {
       font-weight: bold;
       margin-bottom: 10px;
     }
+
     .title {
       font-size: 16pt;
       font-weight: bold;
@@ -35,52 +40,65 @@
       margin: 20px 0;
       text-decoration: underline;
     }
+
     .date {
       margin: 20px 0;
     }
+
     .addressee {
       text-align: center;
       margin: 30px 0;
       font-weight: bold;
     }
+
     .legal-basis {
       margin: 20px 0;
       text-align: justify;
     }
+
     .acts {
       margin: 20px 0;
     }
+
     .act-item {
       margin: 15px 0;
       padding-left: 20px;
     }
+
     .act-number {
       font-weight: bold;
     }
+
     .property-object {
       margin: 20px 0;
     }
+
     .property-item {
       margin: 10px 0;
     }
+
     .closing {
       text-align: center;
       margin: 30px 0;
       font-weight: bold;
     }
+
     .signature {
       margin-top: 50px;
     }
+
     .signature-line {
       border-top: 1px solid #000;
       width: 300px;
       margin: 40px 0 10px 0;
     }
+
     .signature-name {
       font-weight: bold;
     }
   </style>
 </head>
+
 <body>
   {{! 1. Encabezado del notario }}
   <div class="header">
@@ -100,7 +118,8 @@
   {{! 3. ANTECEDENTE REGISTRAL }}
   <div class="date">
     <strong>ANTECEDENTE REGISTRAL</strong><br>
-    {{#if inmueble.partidas}}PARTIDA NO: {{#each inmueble.partidas}}{{#if @first}}{{this}}{{else}}, {{this}}{{/if}}{{/each}}<br>{{/if}}
+    {{#if inmueble.partidas}}PARTIDA NO: {{#each inmueble.partidas}}{{#if @first}}{{this}}{{else}},
+    {{this}}{{/if}}{{/each}}<br>{{/if}}
     {{#if inmueble.seccion}}SECCIÓN {{inmueble.seccion}}<br>{{/if}}
     FOLIO REAL: {{inmueble.folioReal}}
   </div>
@@ -111,16 +130,19 @@
     P R E S E N T E.
   </div>
 
-  {{! 4. Párrafo legal del art. 2885 }}
   <div class="legal-basis">
-    LIC. PEDRO CHÁVEZ SÁNCHEZ, Notario Adscrito a la Notaría No. 3 de esta ciudad, cuyo Titular el Lic. XAVIER IBÁÑEZ VERAMENDI, para los efectos de lo dispuesto por el artículo 2,885 del Código Civil del Estado, hace de su conocimiento que ante mi fe se pretenden otorgar LOS SIGUIENTES ACTOS JURIDICOS cuyas características enseguida se detallan:
+    LICENCIADO PEDRO CHÁVEZ SÁNCHEZ, NOTARIO ADSCRITO A LA NOTARÍA NÚMERO 3 DE ESTA CIUDAD, CUYO TITULAR EL LIC. XAVIER
+    IBÁÑEZ VERAMENDI, PARA LOS EFECTOS DE LO DISPUESTO POR EL ARTÍCULO 2,885 DEL CÓDIGO CIVIL DEL ESTADO, HACE DE SU
+    CONOCIMIENTO QUE ANTE MI FE SE PRETENDEN OTORGAR LOS SIGUIENTES ACTOS JURIDICOS CUYAS CARACTERÍSTICAS ENSEGUIDA SE
+    DETALLAN:
   </div>
 
   {{! 5. Actos jurídicos numerados (romanos con guión) }}
   <div class="acts">
     {{#each actosNumerados}}
     <div class="act-item">
-      <span class="act-number">{{this.numeroRomano}}.-</span> {{#if (eq this.tipo 'cancelacionHipoteca')}}CANCELACION DE HIPOTECA:<br><br>
+      <span class="act-number">{{this.numeroRomano}}.-</span> {{#if (eq this.tipo 'cancelacionHipoteca')}}CANCELACION DE
+      HIPOTECA:<br><br>
       {{#if ../gravamenPrincipal.institucion}}ACREEDOR: {{../gravamenPrincipal.institucion}}<br>{{/if}}
       {{#if ../vendedor.denominacion_social}}DEUDOR: {{../vendedor.denominacion_social}}<br>
       {{else}}DEUDOR: {{../vendedor.nombre}}<br>
@@ -128,12 +150,16 @@
       {{else}}{{#if (eq this.tipo 'compraventa')}}CONTRATO DE COMPRAVENTA:<br><br>
       {{#if ../vendedor.denominacion_social}}VENDEDOR: {{../vendedor.denominacion_social}}<br>
       {{else}}VENDEDOR: {{../vendedor.nombre}}<br>
-    {{/if}}
-      COMPRADOR: {{../comprador.nombre}}{{#if ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}<br>
-      {{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CREDITO SIMPLE CON INTERES Y GARANTÍA HIPOTECARIA.<br><br>
+      {{/if}}
+      COMPRADOR: {{#if
+      ../comprador.nombre_display}}{{../comprador.nombre_display}}{{else}}{{../comprador.nombre}}{{/if}}{{#if
+      ../comprador.denominacion_social}}, {{../comprador.denominacion_social}}{{/if}}<br>
+      {{else}}{{#if (eq this.tipo 'aperturaCreditoComprador')}}CONTRATO DE APERTURA DE CREDITO SIMPLE CON INTERES Y
+      GARANTÍA HIPOTECARIA.<br><br>
       {{#if (hasItems this.creditos)}}{{#each this.creditos}}{{#if @first}}
       {{#if this.institucion}}ACREDITANTE: {{this.institucion}}<br>{{/if}}
-      {{#if this.participantes}}{{#each this.participantes}}{{#if this.nombre}}{{#if (eq this.rol 'acreditado')}}ACREDITADO: {{this.nombre}}<br>
+      {{#if this.participantes}}{{#each this.participantes}}{{#if this.nombre}}{{#if (eq this.rol
+      'acreditado')}}ACREDITADO: {{this.nombre}}<br>
       {{else}}{{#if (eq this.rol 'coacreditado')}}COACREDITADO: {{this.nombre}}<br>
       {{/if}}{{/if}}{{/if}}{{/each}}{{/if}}
       {{/if}}{{/each}}{{/if}}
@@ -150,16 +176,25 @@
 
     {{! 7. Descripción del inmueble (formato específico) }}
     <p>
-      {{#if inmueble.unidad}}UNIDAD: {{inmueble.unidad}}{{#if inmueble.condominio}} CONJ. HABITACIONAL: {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}} CONSTRUIDO EN EL LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}} DE {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
-      {{else}}{{#if inmueble.direccion}}{{inmueble.direccion}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
-      {{else}}INMUEBLE UBICADO EN {{inmueble.colonia}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}}, {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
+      {{#if inmueble.unidad}}UNIDAD: {{inmueble.unidad}}{{#if inmueble.condominio}} CONJ. HABITACIONAL:
+      {{inmueble.condominio}}{{/if}}{{#if inmueble.lote}} CONSTRUIDO EN EL LOTE {{inmueble.lote}}{{/if}}{{#if
+      inmueble.manzana}}, DE LA MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}} DE
+      {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
+      {{else}}{{#if inmueble.direccion}}{{inmueble.direccion}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if
+      inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}},
+      {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
+      {{else}}INMUEBLE UBICADO EN {{inmueble.colonia}}{{#if inmueble.lote}}, LOTE {{inmueble.lote}}{{/if}}{{#if
+      inmueble.manzana}}, MANZANA {{inmueble.manzana}}{{/if}}{{#if inmueble.fraccionamiento}},
+      {{inmueble.fraccionamiento}}{{/if}}, DE ESTA CIUDAD.
       {{/if}}{{/if}}
     </p>
     {{#if inmueble.municipio}}<p>MUNICIPIO: {{inmueble.municipio}}</p>{{/if}}
 
     {{! 8. Artículo 139 (condicional) }}
     {{#if include_urban_dev_article_139}}
-    <p>Asimismo, en los términos del Artículo 139 de la Ley de Desarrollo Urbano para el Estado, solicitó la certificación de inscripción de existencia o inexistencia de declaratorias de uso o destino, avisos, manifestaciones o reservas del inmueble materia de (los) acto (s) antes referido (s).</p>
+    <p>ASIMISMO, EN LOS TÉRMINOS DEL ARTÍCULO 139 DE LA LEY DE DESARROLLO URBANO PARA EL ESTADO, SOLICITÓ LA
+      CERTIFICACIÓN DE INSCRIPCIÓN DE EXISTENCIA O INEXISTENCIA DE DECLARATORIAS DE USO O DESTINO, AVISOS,
+      MANIFESTACIONES O RESERVAS DEL INMUEBLE MATERIA DE (LOS) ACTO (S) ANTES REFERIDO (S).</p>
     {{/if}}
   </div>
 
@@ -175,5 +210,5 @@
     </div>
   </div>
 </body>
-</html>
 
+</html>
