@@ -3204,7 +3204,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               : inmuebleBase.datos_catastrales
           }
 
-          // Compatibilidad: si viene en formato antiguo, convertir
           if (jsonData.inmueble.folioReal) {
             inmuebleUpdates.folio_real = jsonData.inmueble.folioReal
           }
@@ -3212,7 +3211,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             inmuebleUpdates.partidas = [...inmuebleUpdates.partidas, jsonData.inmueble.partida]
           }
           if (jsonData.inmueble.direccion && typeof jsonData.inmueble.direccion === 'string') {
-            // Si viene como string, intentar usar como calle si es objeto, o sobreescribir si es string
             if (typeof inmuebleUpdates.direccion === 'object') {
               inmuebleUpdates.direccion = { ...inmuebleUpdates.direccion, calle: jsonData.inmueble.direccion }
             } else {
@@ -3771,19 +3769,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
 
-    // Detectar nombres (patrones comunes) - v1.4
+
     const nombrePattern = /(?:nombre|vendedor|comprador)[:\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)+)/gi
     const nombres = [...userInput.matchAll(nombrePattern)]
 
-    // Detectar RFC
+
     const rfcPattern = /RFC[:\s]+([A-Z]{3,4}\d{6}[A-Z0-9]{3})/gi
     const rfcMatch = userInput.match(rfcPattern)
 
-    // Detectar CURP
+
     const curpPattern = /CURP[:\s]+([A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d)/gi
     const curpMatch = userInput.match(curpPattern)
 
-    // Actualizar datos si se encuentran (v1.4 - arrays)
+
     const primerVendedor = currentData.vendedores?.[0]
     const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
 

@@ -29,7 +29,7 @@ interface DocumentSidebarProps {
 export function DocumentSidebar({ data, serverState, isVisible, onClose }: DocumentSidebarProps) {
     if (!isVisible) return null
 
-    // Calcular progreso
+
     const progress = (() => {
         if (!serverState?.state_status) return { completed: 0, total: 6, percentage: 0 }
         const statuses = Object.values(serverState.state_status)
@@ -42,7 +42,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
         }
     })()
 
-    // Función auxiliar para normalizar nombres
+
     const normalizeName = (str: string | null | undefined): string => {
         if (!str) return ''
         return str.toLowerCase().trim().replace(/\s+/g, ' ')
