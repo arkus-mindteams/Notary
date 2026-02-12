@@ -202,7 +202,6 @@ export async function POST(req: Request) {
     // Retornar respuesta (formato compatible con frontend)
     const transitionRules = pluginId === 'preaviso' ? getPreavisoTransitionRules() : []
 
-    // Fuente de verdad para estado de wizard/chat: cálculo determinista del dominio.
     const computed = computePreavisoState(result.data)
     const stateStatus = computed.state.state_status
 

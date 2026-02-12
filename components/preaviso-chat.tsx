@@ -464,7 +464,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           console.log('[PreavisoChat] Restaurando contexto:', json.session.last_context)
           setData(json.session.last_context)
 
-          // Fuente de verdad: pedir snapshot del wizard al backend.
           try {
             const { data: { session: stateSession } } = await supabase.auth.getSession()
             const stateHeaders: HeadersInit = { 'Content-Type': 'application/json' }
