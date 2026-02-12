@@ -52,6 +52,20 @@ UI (Next) → API (routes) → Domain Service → AI Service → Data Layer (Sup
 
 ---
 
+## Ownership por carpeta (matriz rápida)
+| Ruta / Capa | Dueño principal | Puede tocar | No debe decidir |
+|---|---|---|---|
+| `app/**`, `components/**` | FrontendAgent | UI, navegación, validaciones UX, wiring con API | Reglas legales, state machine, prompts completos |
+| `app/api/**` o `src/api/**` | BackendAgent | Endpoints, validación de entrada/salida, authz | Lógica de pantalla/UX |
+| `src/domain/**` | BackendAgent | Reglas de negocio, state machine, invariantes | Render/UI, detalles de proveedor IA |
+| `src/ai/**` | BackendAgent | Orquestación IA, retries, parse/validate JSON, logs IA | Mutar estado de trámite sin Domain Service |
+| `supabase/migrations/**`, `src/data/**` | BackendAgent | Esquema, repositorios, auditoría/versionado | Reglas de UI o prompts |
+| `tests/**` | TestAgent | Unit/integration/e2e, fixtures, regresiones | Cambios de arquitectura fuera de alcance |
+
+> Si una tarea cruza varias rutas, dividir en commits/PRs por fase y mantener un único objetivo verificable.
+
+---
+
 ## Estrategia de trabajo (para no saturar la IA)
 - PR por fase / slice pequeño.
 - Evitar PRs “gigantes” con cambios cruzados de UI + dominio + IA.
@@ -84,6 +98,19 @@ Criterio de éxito:
 - UI se mantiene casi igual, pero deja de decidir reglas de negocio.
 - No hay regressions visibles en wizard/doc generation.
 - Parity: mismo output/UX (salvo diferencias no semánticas); solo cambia dónde vive la lógica.
+
+Definición operativa de "Parity" (obligatoria):
+- Mismos pasos del wizard, mismo orden y mismas validaciones visibles para usuario.
+- Misma estructura de documento de salida (diferencias permitidas: metadata no visible, ids, timestamps).
+- Mismos errores de negocio esperables para entradas inválidas (aunque cambie el origen FE→BE).
+- Estado persistido por paso y recuperable tras refresh/reingreso.
+- Sin lógica legal en frontend para mutaciones de trámite.
+
+Suite mínima de parity tests (Fase 1):
+- Caso feliz end-to-end: expediente → preaviso → guardado por pasos → generación documento versionado.
+- Caso inválido de negocio: transición no permitida por state machine.
+- Caso de persistencia: retomar wizard desde estado guardado.
+- Caso de auditoría: documento generado con `usuario`, `timestamp`, `version`.
 
 ### Fase 2 — Knowledge Chunks + Prompt Minimization
 Objetivo:
@@ -125,6 +152,50 @@ Reglas:
 
 ---
 
+## Definition of Done por fase (obligatorio)
+### Fase 0
+- Métricas baseline de tokens/latencia documentadas con fecha y comando/script de reproducción.
+- Diagrama o descripción de flujo actual wizard/chat/doc generation.
+- Riesgos iniciales y gaps de observabilidad listados.
+
+### Fase 1
+- Todas las mutaciones de trámite pasan por Domain Service.
+- Endpoints de create/select expediente, create preaviso, patch por paso, generate+version operativos.
+- Parity tests mínimos implementados y pasando.
+- Sin regressions visibles en UX del wizard.
+
+### Fase 2
+- Knowledge chunks versionados e integrados en context building.
+- Prompts reducidos y sin reglas de negocio hardcodeadas innecesarias.
+- Snapshot de knowledge utilizado persistido por generación.
+
+### Fase 3
+- ExtractionAgent implementado con contrato JSON validado por schema.
+- Reintentos y manejo de salida inválida cubiertos.
+- Logs de extracción con éxito/error y causa.
+
+### Fase 4
+- Pipeline de chunks de documento (`documento_text_chunks`) funcionando.
+- Estrategia text-first con fallback OCR/Vision implementada.
+- Embeddings persistidos y recuperables para retrieval.
+
+### Fase 5
+- RetrievalResponseAgent usa estado + topK doc chunks + topK knowledge + últimos N mensajes.
+- Context Builder explícito y testeable.
+- Evidencia de reducción de prompt bloat vs baseline.
+
+### Fase 6
+- Router multiagente decide agente por intención/caso y registra decisiones.
+- Logs de routing + outputs disponibles para auditoría.
+- Casos ambiguos con fallback definido y testeado.
+
+### Fase 7
+- Interfaz de plugin documentada (schemas, reglas, hooks).
+- Nuevo trámite se integra sin duplicar core de agentes.
+- Tests de compatibilidad entre plugins (contratos comunes).
+
+---
+
 ## Normas de BD / auditoría
 - Todas las tablas nuevas deben venir con migración.
 - Guardar:
@@ -142,6 +213,35 @@ Reglas:
 - Separar parser (estructura) vs reglas legales (decisión).
 - Validar estrictamente JSON de IA; retries en caso inválido.
 - Mantener UI contract estable mientras se migra al backend.
+
+---
+
+## Contrato de errores API (v1)
+Formato de error estándar para todos los endpoints:
+
+```json
+{
+  "error": {
+    "code": "DOMAIN_RULE_VIOLATION",
+    "message": "Descripción legible para UI/logs",
+    "details": {},
+    "trace_id": "uuid-opcional"
+  }
+}
+```
+
+Códigos mínimos sugeridos:
+- `VALIDATION_ERROR` (400)
+- `UNAUTHORIZED` (401)
+- `FORBIDDEN` (403)
+- `NOT_FOUND` (404)
+- `CONFLICT` (409)
+- `DOMAIN_RULE_VIOLATION` (422)
+- `AI_OUTPUT_INVALID` (502/422 según origen)
+- `INTERNAL_ERROR` (500)
+
+Regla:
+- No filtrar secretos ni stack traces en `message`/`details`.
 
 ---
 
@@ -199,3 +299,9 @@ En cada PR, seguir este orden:
 - [ ] Migraciones incluidas si aplica
 - [ ] Tests / verificación / ejemplo reproducible
 - [ ] Nota breve si cambian contratos (API/DB)
+
+## Evidencia mínima por PR (obligatorio)
+- Comandos ejecutados (`lint`, `test`, `build`, e2e o equivalente).
+- Resultado esperado vs resultado obtenido (breve, 3-6 líneas).
+- Si cambia API/DB: ejemplo de request/response o diff de migración.
+- Si afecta paridad UX: capturas o pasos de reproducción.
