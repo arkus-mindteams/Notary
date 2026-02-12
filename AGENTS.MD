@@ -58,7 +58,7 @@ UI (Next) → API (routes) → Domain Service → AI Service → Data Layer (Sup
 | `app/**`, `components/**` | FrontendAgent | UI, navegación, validaciones UX, wiring con API | Reglas legales, state machine, prompts completos |
 | `app/api/**` o `src/api/**` | BackendAgent | Endpoints, validación de entrada/salida, authz | Lógica de pantalla/UX |
 | `src/domain/**` | BackendAgent | Reglas de negocio, state machine, invariantes | Render/UI, detalles de proveedor IA |
-| `src/ai/**` | BackendAgent | Orquestación IA, retries, parse/validate JSON, logs IA | Mutar estado de trámite sin Domain Service |
+| `src/ai/**` | BackendAgent | Orquestación IA, context builder, retries, parse/validate JSON, logs IA | Decisiones de negocio (usar Domain Service) |
 | `supabase/migrations/**`, `src/data/**` | BackendAgent | Esquema, repositorios, auditoría/versionado | Reglas de UI o prompts |
 | `tests/**` | TestAgent | Unit/integration/e2e, fixtures, regresiones | Cambios de arquitectura fuera de alcance |
 
@@ -73,6 +73,10 @@ UI (Next) → API (routes) → Domain Service → AI Service → Data Layer (Sup
   - objetivo claro
   - criterio verificable (test, endpoint, métrica, migración, ejemplo)
   - notas de diseño si cambia contratos/DB
+
+### Stop Condition (anti-refactor masivo)
+Si una tarea requiere modificar más de 3 capas (UI + API + Domain + AI + Data),
+el agente debe detenerse y proponer dividir el trabajo en múltiples PRs.
 
 ---
 
@@ -242,6 +246,14 @@ Códigos mínimos sugeridos:
 
 Regla:
 - No filtrar secretos ni stack traces en `message`/`details`.
+
+---
+
+## Execution Priority (obligatorio)
+- DEFAULT ROLE: `BackendAgent`.
+- Toda tarea inicia como `BackendAgent`.
+- `FrontendAgent` solo actúa cuando existan endpoints backend definidos (o contrato API explícito).
+- `TestAgent` y `ReviewAgent` siempre se ejecutan al final.
 
 ---
 
