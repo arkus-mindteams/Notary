@@ -63,6 +63,7 @@ UI (Next) → API (routes) → Domain Service → AI Service → Data Layer (Sup
 | `tests/**` | TestAgent | Unit/integration/e2e, fixtures, regresiones | Cambios de arquitectura fuera de alcance |
 
 > Si una tarea cruza varias rutas, dividir en commits/PRs por fase y mantener un único objetivo verificable.
+> Compatibilidad de rutas: si el repositorio usa `lib/**` en lugar de `src/**`, aplicar la misma separación lógica en `lib/` sin crear una reestructuración masiva.
 
 ---
 
@@ -217,6 +218,9 @@ Reglas:
 - Separar parser (estructura) vs reglas legales (decisión).
 - Validar estrictamente JSON de IA; retries en caso inválido.
 - Mantener UI contract estable mientras se migra al backend.
+- No reorganizar estructura física de carpetas en Fase 1.
+- Si el repo usa `lib/**`, implementar Domain/AI/Data dentro de `lib/` respetando separación lógica.
+- Posponer reorganización de rutas físicas (`src/*`, etc.) a un PR dedicado.
 
 ---
 
