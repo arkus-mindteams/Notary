@@ -1342,8 +1342,17 @@ export class InputParser {
     }
 
     if (context?._last_question_intent === 'encumbrance_cancellation') {
+      const deniesEncumbrance =
+        (/\b(no|sin|libre)\b/.test(normalizedForFallback) &&
+          /\b(gravamen|hipoteca|embargo)\b/.test(normalizedForFallback)) ||
+        /\bno\s+existe\b/.test(normalizedForFallback)
+
+      if (deniesEncumbrance) {
+        addFallbackCommand('encumbrance', { exists: false })
+      }
+
       const saysNoCancel = /\bno\b.*\bcancel/.test(normalizedForFallback) || /\bno\s+se\s+cancel/.test(normalizedForFallback)
-      if (/\bcancel/.test(normalizedForFallback)) {
+      if (!deniesEncumbrance && /\bcancel/.test(normalizedForFallback)) {
         addFallbackCommand('encumbrance', { exists: true, cancellationConfirmed: saysNoCancel ? true : false })
       }
     }

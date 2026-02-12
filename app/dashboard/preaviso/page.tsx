@@ -7,12 +7,11 @@ import { PreavisoChat, type PreavisoData } from '@/components/preaviso-chat'
 import type { PreavisoDocument } from '@/lib/preaviso-generator'
 import { PreavisoTemplateRenderer } from '@/lib/preaviso-template-renderer'
 import { PreavisoExportOptions } from '@/components/preaviso-export-options'
+import { WordLikeEditor } from '@/components/preaviso/word-like-editor'
 import { createBrowserClient } from '@/lib/supabase'
 import { useMemo } from 'react'
-import { useAuth } from '@/lib/auth-context'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import {
   FileText,
@@ -21,7 +20,6 @@ import {
   CheckCircle2,
   ArrowLeft,
   Save,
-  File,
   FileText as FileTextIcon,
   ChevronDown
 } from 'lucide-react'
@@ -51,13 +49,63 @@ import {
 
 type AppState = 'chat' | 'document' | 'editing'
 
+function extractBodyHtml(fullHtml: string, textFallback: string): string {
+  const bodyMatch = fullHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
+  if (bodyMatch?.[1]) {
+    return bodyMatch[1]
+  }
+  return textFallback
+    .split('\n')
+    .map((line) => `<p>${line || '&nbsp;'}</p>`)
+    .join('')
+}
+
+function buildWordLikeHtml(bodyHtml: string): string {
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body { background: #f5f5f5; margin: 0; padding: 24px; }
+    .page {
+      background: #fff;
+      max-width: 816px;
+      margin: 0 auto;
+      min-height: 1056px;
+      padding: 72px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.12);
+      color: #111827;
+      font-family: "Times New Roman", serif;
+      font-size: 14pt;
+      line-height: 1.55;
+    }
+    p { margin: 0 0 12px; }
+    h1, h2, h3 { margin: 0 0 16px; }
+  </style>
+</head>
+<body>
+  <div class="page">${bodyHtml}</div>
+</body>
+</html>`
+}
+
+function htmlToPlainText(html: string): string {
+  if (typeof window === 'undefined') {
+    return html.replace(/<[^>]+>/g, '').trim()
+  }
+  const temp = window.document.createElement('div')
+  temp.innerHTML = html
+  return (temp.innerText || temp.textContent || '').trim()
+}
+
 export default function PreavisoPage() {
   const supabase = useMemo(() => createBrowserClient(), [])
-  const { user: authUser } = useAuth()
   const [appState, setAppState] = useState<AppState>('chat')
   const [preavisoData, setPreavisoData] = useState<PreavisoData | null>(null)
   const [document, setDocument] = useState<PreavisoDocument | null>(null)
   const [editedDocument, setEditedDocument] = useState<string>('')
+  const [editedDocumentText, setEditedDocumentText] = useState<string>('')
   const [showExportButtons, setShowExportButtons] = useState(false)
   const [exportData, setExportData] = useState<PreavisoData | null>(null)
   const [showNewPreavisoDialog, setShowNewPreavisoDialog] = useState(false)
@@ -93,7 +141,8 @@ export default function PreavisoPage() {
       }
 
       setDocument(generatedDoc)
-      setEditedDocument(text)
+      setEditedDocument(extractBodyHtml(html, text))
+      setEditedDocumentText(text)
       setAppState('document')
 
       // Guardar en expedientes (async, no bloquea la UI)
@@ -112,254 +161,39 @@ export default function PreavisoPage() {
   const savePreavisoToExpedientes = async (
     data: PreavisoData,
     doc: PreavisoDocument,
-    uploadedDocuments?: any[],
+    _uploadedDocuments?: any[],
     existingTramiteId?: string | null
   ) => {
-    // 1. Buscar o crear comprador usando findOrCreate
-    let comprador
-    try {
-      // Intentar crear primero
-      // Obtener token de la sesión
-      const { data: { session } } = await supabase.auth.getSession()
-      const headers: HeadersInit = { 'Content-Type': 'application/json' }
-      if (session?.access_token) {
-        headers['Authorization'] = `Bearer ${session.access_token}`
-      }
-
-      // Validar que tengamos al menos nombre o CURP para crear/buscar comprador (v1.4)
-      const primerComprador = data.compradores?.[0]
-      const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
-      const compradorCurp = primerComprador?.persona_fisica?.curp
-      const compradorRfc = primerComprador?.persona_fisica?.rfc || primerComprador?.persona_moral?.rfc
-
-      if (!compradorNombre && !compradorCurp) {
-        throw new Error('No se puede crear/buscar comprador sin nombre o CURP')
-      }
-
-      const createResponse = await fetch('/api/expedientes/compradores', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          nombre: compradorNombre || '',
-          rfc: compradorRfc || null,
-          curp: compradorCurp || '',
-        }),
-      })
-
-      if (createResponse.ok) {
-        comprador = await createResponse.json()
-      } else if (createResponse.status === 409) {
-        // Ya existe, buscarlo por CURP o nombre
-        const { data: { session: searchSession } } = await supabase.auth.getSession()
-        const searchHeaders: HeadersInit = {}
-        if (searchSession?.access_token) {
-          searchHeaders['Authorization'] = `Bearer ${searchSession.access_token}`
-        }
-
-        // Intentar buscar por CURP primero, luego por RFC, luego por nombre
-        let searchResponse
-        if (compradorCurp) {
-          searchResponse = await fetch(`/api/expedientes/compradores?curp=${encodeURIComponent(compradorCurp)}`, {
-            headers: searchHeaders,
-          })
-        } else if (compradorRfc) {
-          searchResponse = await fetch(`/api/expedientes/compradores?rfc=${encodeURIComponent(compradorRfc)}`, {
-            headers: searchHeaders,
-          })
-        } else if (compradorNombre) {
-          searchResponse = await fetch(`/api/expedientes/compradores?nombre=${encodeURIComponent(compradorNombre)}`, {
-            headers: searchHeaders,
-          })
-        }
-
-        if (searchResponse && searchResponse.ok) {
-          comprador = await searchResponse.json()
-        } else {
-          throw new Error('No se pudo obtener el comprador existente')
-        }
-      } else {
-        const errorText = await createResponse.text()
-        // Caso conocido (mientras no se aplique la migración que hace RFC nullable en Supabase):
-        // Evitar que la vista previa falle/ensucie consola si el RFC aún es NOT NULL en la BD.
-        if (
-          createResponse.status >= 500 &&
-          /violates not-null constraint/i.test(errorText) &&
-          /column\s+\\"rfc\\"/i.test(errorText)
-        ) {
-          console.warn('[preaviso] No se pudo crear comprador porque RFC aún es NOT NULL en BD. Omitiendo guardado en expedientes para no bloquear vista previa.')
-          return
-        }
-
-        console.error('Error creando comprador:', createResponse.status, errorText)
-        throw new Error(`Error creando/buscando comprador: ${createResponse.status} - ${errorText}`)
-      }
-    } catch (error) {
-      console.error('Error en comprador:', error)
-      throw error
+    const { data: { session } } = await supabase.auth.getSession()
+    const headers: HeadersInit = { 'Content-Type': 'application/json' }
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`
     }
 
-    // 2. Si hay trámite existente, actualizarlo; si no, crear uno nuevo
-    let tramite
-    if (existingTramiteId) {
-      // Actualizar trámite existente con comprador y datos finales
-      // Obtener token para actualizar trámite
-      const { data: { session: updateSession } } = await supabase.auth.getSession()
-      const updateHeaders: HeadersInit = { 'Content-Type': 'application/json' }
-      if (updateSession?.access_token) {
-        updateHeaders['Authorization'] = `Bearer ${updateSession.access_token}`
-      }
+    const response = await fetch('/api/expedientes/preaviso/finalize', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        preavisoData: data,
+        tramiteId: existingTramiteId || null,
+        generatedDocument: {
+          formato: 'docx',
+          titulo: doc.title,
+        },
+      }),
+    })
 
-      const updateResponse = await fetch(`/api/expedientes/tramites?id=${existingTramiteId}`, {
-        method: 'PUT',
-        headers: updateHeaders,
-        body: JSON.stringify({
-          compradorId: comprador.id,
-          datos: {
-            tipoOperacion: data.tipoOperacion,
-            vendedores: data.vendedores,
-            compradores: data.compradores,
-            creditos: data.creditos,
-            gravamenes: data.gravamenes,
-            inmueble: data.inmueble,
-            actosNotariales: data.actosNotariales,
-          },
-          estado: 'completado',
-        }),
-      })
-
-      if (!updateResponse.ok) {
-        throw new Error('Error actualizando trámite')
-      }
-
-      tramite = await updateResponse.json()
-    } else {
-      // Crear nuevo trámite
-      // Obtener token para crear trámite
-      const { data: { session: tramiteSession } } = await supabase.auth.getSession()
-      const tramiteHeaders: HeadersInit = { 'Content-Type': 'application/json' }
-      if (tramiteSession?.access_token) {
-        tramiteHeaders['Authorization'] = `Bearer ${tramiteSession.access_token}`
-      }
-
-      const tramiteResponse = await fetch('/api/expedientes/tramites', {
-        method: 'POST',
-        headers: tramiteHeaders,
-        body: JSON.stringify({
-          compradorId: comprador.id,
-          tipo: 'preaviso',
-          datos: {
-            tipoOperacion: data.tipoOperacion,
-            vendedores: data.vendedores,
-            compradores: data.compradores,
-            creditos: data.creditos,
-            gravamenes: data.gravamenes,
-            inmueble: data.inmueble,
-            actosNotariales: data.actosNotariales,
-          },
-          estado: 'completado',
-        }),
-      })
-
-      if (!tramiteResponse.ok) {
-        throw new Error('Error creando trámite')
-      }
-
-      tramite = await tramiteResponse.json()
-    }
-
-    // 3. Actualizar comprador_id de documentos que fueron subidos durante el borrador
-    if (existingTramiteId) {
-      try {
-        const { DocumentoService } = await import('@/lib/services/documento-service')
-        await DocumentoService.updateDocumentosCompradorId(tramite.id, comprador.id)
-      } catch (error) {
-        console.error('Error actualizando comprador_id de documentos:', error)
-        // Continuar aunque falle
-      }
-    }
-
-    // 4. Subir documentos si existen (solo los que no fueron subidos durante el borrador)
-    if (uploadedDocuments && uploadedDocuments.length > 0) {
-      for (const uploadedDoc of uploadedDocuments) {
-        if (uploadedDoc.file && uploadedDoc.processed) {
-          try {
-            // Determinar tipo de documento
-            const detectDocumentType = (fileName: string): string => {
-              const name = fileName.toLowerCase()
-              if (name.includes('escritura') || name.includes('titulo') || name.includes('propiedad')) return 'escritura'
-              if (name.includes('plano') || name.includes('croquis') || name.includes('catastral')) return 'plano'
-              if (name.includes('ine') || name.includes('ife') || name.includes('identificacion')) {
-                // Determinar si es vendedor o comprador basado en el contexto
-                return 'ine_comprador' // Por defecto comprador, se puede mejorar
-              }
-              return 'escritura'
-            }
-
-            const docType = detectDocumentType(uploadedDoc.name)
-
-            // Subir documento (si no fue subido durante el borrador)
-            // Los documentos ya subidos durante el borrador solo necesitan actualizar comprador_id
-            const formData = new FormData()
-            formData.append('file', uploadedDoc.file)
-            formData.append('compradorId', comprador.id)
-            formData.append('tipo', docType)
-            formData.append('tramiteId', tramite.id)
-
-            const uploadResponse = await fetch('/api/expedientes/documentos/upload', {
-              method: 'POST',
-              body: formData,
-            })
-
-            if (uploadResponse.ok) {
-              const documento = await uploadResponse.json()
-
-              // Asociar documento al trámite
-              // Obtener token para asociar documento
-              const { data: { session: associateSession } } = await supabase.auth.getSession()
-              const associateHeaders: HeadersInit = { 'Content-Type': 'application/json' }
-              if (associateSession?.access_token) {
-                associateHeaders['Authorization'] = `Bearer ${associateSession.access_token}`
-              }
-
-              await fetch(`/api/expedientes/tramites/${tramite.id}/documentos`, {
-                method: 'POST',
-                headers: associateHeaders,
-                body: JSON.stringify({
-                  documentoId: documento.id,
-                }),
-              })
-            }
-          } catch (error) {
-            console.error(`Error subiendo documento ${uploadedDoc.name}:`, error)
-            // Continuar con los demás documentos
-          }
-        }
-      }
-    }
-
-    // 4. Guardar referencia del documento generado
-    if (doc) {
-      // Obtener token para actualizar documento generado
-      const { data: { session: docSession } } = await supabase.auth.getSession()
-      const docHeaders: HeadersInit = { 'Content-Type': 'application/json' }
-      if (docSession?.access_token) {
-        docHeaders['Authorization'] = `Bearer ${docSession.access_token}`
-      }
-
-      await fetch(`/api/expedientes/tramites?id=${tramite.id}`, {
-        method: 'PUT',
-        headers: docHeaders,
-        body: JSON.stringify({
-          documento_generado: {
-            formato: 'docx',
-            // URL se generará cuando se descargue
-          },
-        }),
-      })
+    if (!response.ok) {
+      const errorBody = await response.text()
+      throw new Error(`Error finalizando preaviso: ${response.status} - ${errorBody}`)
     }
   }
 
   const handleEdit = () => {
+    if (document?.html) {
+      setEditedDocument(extractBodyHtml(document.html, document.text || ''))
+      setEditedDocumentText(document.text || '')
+    }
     setAppState('editing')
   }
 
@@ -368,8 +202,8 @@ export default function PreavisoPage() {
       // Actualizar el documento con el texto editado
       const updatedDocument: PreavisoDocument = {
         ...document,
-        text: editedDocument,
-        html: editedDocument.replace(/\n/g, '<br>')
+        text: editedDocumentText || htmlToPlainText(editedDocument),
+        html: buildWordLikeHtml(editedDocument)
       }
       setDocument(updatedDocument)
       setAppState('document')
@@ -409,6 +243,7 @@ export default function PreavisoPage() {
     setPreavisoData(null)
     setDocument(null)
     setEditedDocument('')
+    setEditedDocumentText('')
   }
 
   // Estado: Chat
@@ -607,8 +442,12 @@ export default function PreavisoPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="bg-white border rounded-lg p-6 font-serif text-sm leading-relaxed whitespace-pre-wrap">
-                  {document.text}
+                <div className="rounded-lg border bg-muted/20 p-2">
+                  <iframe
+                    title="Vista previa del documento"
+                    srcDoc={document.html}
+                    className="h-[900px] w-full rounded-md border bg-white"
+                  />
                 </div>
               </CardContent>
             </Card>
@@ -646,15 +485,16 @@ export default function PreavisoPage() {
               <CardHeader>
                 <CardTitle>Contenido del Documento</CardTitle>
                 <CardDescription>
-                  Edita el texto directamente. Los cambios se guardarán en el documento.
+                  Editor enriquecido estilo Word para ajustar formato y contenido.
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <Textarea
-                  value={editedDocument}
-                  onChange={(e) => setEditedDocument(e.target.value)}
-                  className="min-h-[600px] font-mono text-sm"
-                  placeholder="Contenido del documento..."
+                <WordLikeEditor
+                  initialHtml={editedDocument}
+                  onChange={(html, plainText) => {
+                    setEditedDocument(html)
+                    setEditedDocumentText(plainText)
+                  }}
                 />
               </CardContent>
             </Card>
@@ -666,3 +506,4 @@ export default function PreavisoPage() {
 
   return null
 }
+

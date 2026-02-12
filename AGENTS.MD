@@ -168,6 +168,7 @@ Reglas:
 - Endpoints de create/select expediente, create preaviso, patch por paso, generate+version operativos.
 - Parity tests mínimos implementados y pasando.
 - Sin regressions visibles en UX del wizard.
+- El cálculo de pasos/estado del wizard debe salir del backend (Domain Service) y ser consistente para chat + UI
 
 ### Fase 2
 - Knowledge chunks versionados e integrados en context building.

@@ -8,6 +8,8 @@ import { getPreavisoTransitionRules } from '@/lib/tramites/plugins/preaviso/prea
 import { createServerClient } from '@/lib/supabase'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import { ActivityLogService } from '@/lib/services/activity-log-service'
+import { PreavisoWizardStateService } from '@/lib/services/preaviso-wizard-state-service'
+import { computePreavisoState } from '@/lib/preaviso-state'
 
 export async function POST(req: Request) {
   try {
@@ -200,32 +202,30 @@ export async function POST(req: Request) {
     // Retornar respuesta (formato compatible con frontend)
     const transitionRules = pluginId === 'preaviso' ? getPreavisoTransitionRules() : []
 
+    // Fuente de verdad para estado de wizard/chat: cálculo determinista del dominio.
+    const computed = computePreavisoState(result.data)
+    const stateStatus = computed.state.state_status
+
+    const wizardState = PreavisoWizardStateService.fromSnapshot(
+      computed.state.current_state,
+      stateStatus,
+      computed.state.required_missing,
+      computed.state.blocking_reasons
+    )
+
     return NextResponse.json({
       message: result.message,
       messages: [result.message],
       data: result.data,
       state: {
-        current_state: result.state.current,
-        state_status: {
-          ...result.state.completed.reduce((acc: any, id: string) => {
-            acc[id] = 'completed'
-            return acc
-          }, {}),
-          ...result.state.missing.reduce((acc: any, id: string) => {
-            acc[id] = 'incomplete'
-            return acc
-          }, {}),
-          ...(result.state.not_applicable || []).reduce((acc: any, id: string) => {
-            acc[id] = 'not_applicable'
-            return acc
-          }, {}),
-          [result.state.current]: 'pending'
-        },
-        required_missing: result.state.missing,
-        blocking_reasons: result.state.validation.errors,
+        current_state: computed.state.current_state,
+        state_status: stateStatus,
+        required_missing: computed.state.required_missing,
+        blocking_reasons: computed.state.blocking_reasons,
         allowed_actions: result.meta?.allowed_tools || [],
         transition_info: result.meta?.transition || null,
-        transition_rules: transitionRules
+        transition_rules: transitionRules,
+        wizard_state: wizardState,
       },
       commands: result.commands,
       meta: result.meta || null
