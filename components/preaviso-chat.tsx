@@ -34,7 +34,6 @@ import {
   Square,
   Trash2
 } from 'lucide-react'
-import { PreavisoStateSnapshot, computePreavisoState } from '@/lib/preaviso-state'
 import { PreavisoExportOptions } from './preaviso-export-options'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useIsTablet } from '@/hooks/use-tablet'
@@ -465,14 +464,23 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           console.log('[PreavisoChat] Restaurando contexto:', json.session.last_context)
           setData(json.session.last_context)
 
-          // FIX: Recalcular estado del servidor (pasos completados) basado en datos cargados
           try {
-            const computed = computePreavisoState(json.session.last_context)
-            if (computed && computed.state) {
-              setServerState(computed.state)
+            const { data: { session: stateSession } } = await supabase.auth.getSession()
+            const stateHeaders: HeadersInit = { 'Content-Type': 'application/json' }
+            if (stateSession?.access_token) {
+              stateHeaders['Authorization'] = `Bearer ${stateSession.access_token}`
+            }
+            const stateResp = await fetch('/api/expedientes/preaviso/wizard-state', {
+              method: 'POST',
+              headers: stateHeaders,
+              body: JSON.stringify({ context: json.session.last_context }),
+            })
+            if (stateResp.ok) {
+              const stateJson = await stateResp.json()
+              setServerState(stateJson as ServerStateSnapshot)
             }
           } catch (err) {
-            console.error('[PreavisoChat] Error recalculando estado inicial:', err)
+            console.error('[PreavisoChat] Error cargando estado inicial desde backend:', err)
           }
         }
 
@@ -880,6 +888,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   // Back-end es la fuente de verdad para "completo"
   const isCompleteByServer = useMemo(() => {
     if (!serverState) return false
+    if (serverState.wizard_state) return serverState.wizard_state.can_finalize
     if (serverState.current_state === 'ESTADO_8') return true
     const ss = serverState.state_status || {}
     const ok = (k: string) => ss[k] === 'completed' || ss[k] === 'not_applicable'
@@ -888,6 +897,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
   // Calcular progreso basado en datos completados (v1.4 - arrays)
   const progress = useMemo(() => {
+    if (serverState?.wizard_state) {
+      const total = serverState.wizard_state.total_steps
+      const completed = serverState.wizard_state.steps.filter((s) => s.status === 'completed').length
+      return {
+        completed,
+        total,
+        percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
+      }
+    }
+
     const total = 6
     const ss = serverState?.state_status || {}
     const ok = (k: string) => ss[k] === 'completed' || ss[k] === 'not_applicable'
