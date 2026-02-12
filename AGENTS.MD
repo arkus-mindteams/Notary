@@ -40,6 +40,7 @@ Evolucionar el proyecto a una arquitectura donde:
 - El frontend NO construye prompts completos (no concatena documentos + chat history).
 - El chat NO modifica el estado del trámite directamente sin pasar por el Domain Service.
 - Evitar “big-bang refactor”: siempre PRs pequeños y verificables.
+- NO introducir RAG/embeddings (Fase 4/5) antes de completar Fase 1 (Backend Parity).
 
 ---
 
@@ -61,7 +62,7 @@ UI (Next) → API (routes) → Domain Service → AI Service → Data Layer (Sup
 
 ---
 
-## Plan de ejecución (7 fases)
+## Plan de ejecución (8 fases: 0–7)
 ### Fase 0 — Baseline (observabilidad y documentación)
 Objetivo:
 - Medir tokens/latencia actuales.
@@ -82,6 +83,7 @@ Alcance:
 Criterio de éxito:
 - UI se mantiene casi igual, pero deja de decidir reglas de negocio.
 - No hay regressions visibles en wizard/doc generation.
+- Parity: mismo output/UX (salvo diferencias no semánticas); solo cambia dónde vive la lógica.
 
 ### Fase 2 — Knowledge Chunks + Prompt Minimization
 Objetivo:
@@ -131,6 +133,7 @@ Reglas:
   - logs de IA (tipo operación, timestamp, éxito/error)
 - Nunca persistir API keys/tokens.
 - Snapshot/versionado de knowledge/rules usados al generar un documento.
+  - Guardar: knowledge_chunk_ids, document_chunk_ids (si aplica), model, prompt_version/hash, timestamp, usuario.
 
 ---
 
@@ -139,6 +142,54 @@ Reglas:
 - Separar parser (estructura) vs reglas legales (decisión).
 - Validar estrictamente JSON de IA; retries en caso inválido.
 - Mantener UI contract estable mientras se migra al backend.
+
+---
+
+## Agent Roles (Simulation Mode — para trabajar como “equipo”)
+Al ejecutar cualquier tarea, la IA debe dividir el trabajo en roles internos y reportar resultados por rol.
+NO son procesos paralelos, pero se deben seguir estas responsabilidades para evitar mezclar capas.
+
+### BackendAgent
+Responsabilidades:
+- Implementar Domain Service y API routes backend-driven.
+- Mover lógica de negocio desde frontend al backend.
+- Mantener contratos y persistencia (Supabase) + migraciones.
+Prohibido:
+- Cambiar estilos/UI salvo lo mínimo para consumir endpoints.
+- Construir prompts completos desde frontend.
+
+### FrontendAgent
+Responsabilidades:
+- Mantener UX/UI igual y adaptar la UI a consumir endpoints del backend.
+- Validaciones visuales/UX, navegación wizard, previews.
+Prohibido:
+- Implementar reglas legales o state machine en UI.
+- Concatenar documentos + chat history para prompts.
+
+### TestAgent
+Responsabilidades:
+- Añadir/actualizar tests/regresiones.
+- Ejecutar lint/build/tests (o documentar comandos y resultados).
+- Proponer casos límite.
+Prohibido:
+- Refactor de arquitectura fuera del alcance del PR.
+
+### ReviewAgent
+Responsabilidades:
+- Revisar el diff y detectar violaciones a este AGENTS.md.
+- Detectar prompt bloat, acoplamiento chat→dominio, y leakage de lógica al frontend.
+- Confirmar que el PR corresponde a una sola fase.
+Prohibido:
+- Introducir features nuevas no solicitadas.
+
+---
+
+## Workflow recomendado por PR (para evitar saturación)
+En cada PR, seguir este orden:
+1) BackendAgent: implementar cambios core de la fase (mínimos, backend-first).
+2) FrontendAgent: adaptar UI a consumir backend sin cambiar comportamiento.
+3) TestAgent: agregar verificación (tests o pasos reproducibles).
+4) ReviewAgent: revisión final del diff + checklist.
 
 ---
 
