@@ -1,10 +1,37 @@
-import { Command } from '../../base/types'
+﻿import { Command } from '../../base/types'
 import { createHash } from 'crypto'
 import { DocumentoService } from '../../../services/documento-service'
 import { getHandler } from './document-processor/handlers/registry'
 import { ActivityLogService } from '../../../services/activity-log-service'
 
 export class PreavisoDocumentProcessor {
+  private shouldRunSecondPassForInscripcion(extracted: any): { run: boolean; reason: string } {
+    const folios = Array.isArray(extracted?.foliosReales)
+      ? extracted.foliosReales.filter(Boolean).map((x: any) => String(x))
+      : []
+    const foliosConInfo = Array.isArray(extracted?.foliosConInfo)
+      ? extracted.foliosConInfo.map((x: any) => String(x?.folio || '').trim()).filter(Boolean)
+      : []
+    const foliosUnidades = Array.isArray(extracted?.foliosRealesUnidades)
+      ? extracted.foliosRealesUnidades.filter(Boolean).map((x: any) => String(x))
+      : []
+    const textoCompleto = typeof extracted?.textoCompleto === 'string' ? extracted.textoCompleto.trim() : ''
+
+    const foliosSet = new Set(folios)
+    const infoSet = new Set(foliosConInfo)
+    const coveredFolios = Array.from(foliosSet).filter((f) => infoSet.has(f)).length
+    const coverageRatio = foliosSet.size > 0 ? coveredFolios / foliosSet.size : 0
+
+    if (foliosSet.size <= 1) return { run: true, reason: 'single_or_zero_folios' }
+    if (coverageRatio < 0.8) return { run: true, reason: 'low_folios_info_coverage' }
+    if (textoCompleto.length < 1200) return { run: true, reason: 'short_transcription' }
+    if (foliosUnidades.length > 0 && foliosUnidades.length < foliosSet.size) {
+      return { run: true, reason: 'partial_units_detection' }
+    }
+
+    return { run: false, reason: 'first_pass_has_good_coverage' }
+  }
+
   /**
    * Procesa documento y genera comandos
    */
@@ -25,7 +52,7 @@ export class PreavisoDocumentProcessor {
       if (!forceReprocess) {
         const cachedExtraction = await DocumentoService.findExtractionData(fileHash)
         if (cachedExtraction) {
-        // Validación de versión de caché para inscripciones
+        // ValidaciÃ³n de versiÃ³n de cachÃ© para inscripciones
         let isValidCache = true
         if (documentType === 'inscripcion') {
           if ((cachedExtraction._v || 0) < 2) {
@@ -50,9 +77,11 @@ export class PreavisoDocumentProcessor {
     }
 
     // 1. Llamar a OpenAI Vision API (usando prompts del handler)
+    const firstPassStartedAt = Date.now()
     const { extracted, usage: firstPassUsage } = await this.extractWithOpenAI(file, documentType)
+    const firstPassMs = Date.now() - firstPassStartedAt
 
-    // ✅ LOGGING: 1er pase
+    // âœ… LOGGING: 1er pase
     if (context._userId && firstPassUsage) {
       try {
         await ActivityLogService.logAIUsage({
@@ -68,7 +97,8 @@ export class PreavisoDocumentProcessor {
             file_name: file.name,
             file_hash: fileHash,
             pass: 'first',
-            from_cache: false
+            from_cache: false,
+            duration_ms: firstPassMs
           }
         })
       } catch (logError) {
@@ -76,36 +106,50 @@ export class PreavisoDocumentProcessor {
       }
     }
 
-    // 2. Segundo pase para folios (solo inscripción)
+    // 2. Segundo pase para folios (solo inscripcion, adaptativo)
     let secondPassSuccess = false
     if (documentType === 'inscripcion') {
-      const { result, success, usage: secondPassUsage } = await this.ensureAllFoliosOnPage(file, extracted, context)
-      extracted._v = 2
-      secondPassSuccess = success
+      const decision = this.shouldRunSecondPassForInscripcion(extracted)
+      if (decision.run) {
+        const secondPassStartedAt = Date.now()
+        const { result, success, usage: secondPassUsage } = await this.ensureAllFoliosOnPage(file, extracted, context)
+        const secondPassMs = Date.now() - secondPassStartedAt
+        extracted._v = 2
+        secondPassSuccess = success
 
-      // ✅ LOGGING: 2do pase (solo si se ejecutó)
-      if (context._userId && secondPassUsage) {
-        try {
-          await ActivityLogService.logAIUsage({
-            userId: context._userId,
-            sessionId: context.conversation_id,
-            tramiteId: context.tramiteId,
-            model: process.env.OPENAI_MODEL || 'gpt-4o',
-            tokensInput: secondPassUsage.prompt_tokens || 0,
-            tokensOutput: secondPassUsage.completion_tokens || 0,
-            actionType: 'extract_document_folios',
-            metadata: {
-              document_type: 'inscripcion',
-              file_name: file.name,
-              file_hash: fileHash,
-              pass: 'second',
-              folios_detected: result.foliosReales?.length || 0,
-              from_cache: false
-            }
-          })
-        } catch (logError) {
-          console.error('[PreavisoDocumentProcessor] Error logging second pass:', logError)
+        if (context._userId && secondPassUsage) {
+          try {
+            await ActivityLogService.logAIUsage({
+              userId: context._userId,
+              sessionId: context.conversation_id,
+              tramiteId: context.tramiteId,
+              model: process.env.OPENAI_MODEL || 'gpt-4o',
+              tokensInput: secondPassUsage.prompt_tokens || 0,
+              tokensOutput: secondPassUsage.completion_tokens || 0,
+              actionType: 'extract_document_folios',
+              metadata: {
+                document_type: 'inscripcion',
+                file_name: file.name,
+                file_hash: fileHash,
+                pass: 'second',
+                folios_detected: result.foliosReales?.length || 0,
+                from_cache: false,
+                duration_ms: secondPassMs,
+                trigger_reason: decision.reason
+              }
+            })
+          } catch (logError) {
+            console.error('[PreavisoDocumentProcessor] Error logging second pass:', logError)
+          }
         }
+      } else {
+        extracted._v = 2
+        secondPassSuccess = true
+        console.log('[PreavisoDocumentProcessor] Skipping second pass for inscripcion', {
+          file: file.name,
+          reason: decision.reason,
+          firstPassFolios: Array.isArray(extracted?.foliosReales) ? extracted.foliosReales.length : 0
+        })
       }
     } else {
       extracted._v = 2
@@ -143,8 +187,8 @@ export class PreavisoDocumentProcessor {
       current.foliosRealesInmueblesAfectados.length > 0
 
     // SIEMPRE ejecutar segundo pase para inscripciones para asegurar que capturamos TODOS los folios
-    // El LLM a veces omite folios que están en diferentes secciones de la misma página
-    // El segundo pase es más agresivo y específico para folios
+    // El LLM a veces omite folios que estÃ¡n en diferentes secciones de la misma pÃ¡gina
+    // El segundo pase es mÃ¡s agresivo y especÃ­fico para folios
 
     // Si tenemos 0-1 folios, hacer segundo pase dedicado
     try {
@@ -158,38 +202,38 @@ export class PreavisoDocumentProcessor {
       const base64 = Buffer.from(arrayBuffer).toString('base64')
       const mimeType = file.type || 'image/jpeg'
 
-      const folioScanSystem = `Eres un extractor especializado. Tu ÚNICA tarea es:
+      const folioScanSystem = `Eres un extractor especializado. Tu ÃšNICA tarea es:
 1) encontrar TODOS los "FOLIO REAL:" en esta imagen y
-2) extraer, si está visible cerca de cada folio, datos básicos (unidad y/o superficie y/o ubicación).
+2) extraer, si estÃ¡ visible cerca de cada folio, datos bÃ¡sicos (unidad y/o superficie y/o ubicaciÃ³n).
 
 Devuelve SOLO este JSON:
 {
   "folios": [
     {
-      "folio": "número de folio real (string)",
+      "folio": "nÃºmero de folio real (string)",
       "unidad": "unidad si aplica (string o null)",
       "condominio": "condominio/conjunto si aplica (string o null)",
-      "ubicacion": "ubicación/dirección si aplica (string o null)",
+      "ubicacion": "ubicaciÃ³n/direcciÃ³n si aplica (string o null)",
       "superficie": "superficie si aplica (string con unidad) o null"
     }
   ],
   "foliosReales": ["lista de TODOS los folios reales detectados como strings, sin omitir ninguno. Si no encuentras ninguno, []"],
   "foliosRealesUnidades": ["lista de folios reales detectados en secciones de UNIDADES (p.ej. 'DEPARTAMENTO/LOCAL/ESTACIONAMIENTO', 'UNIDAD', 'CONJ. HABITACIONAL'). Si no hay, []"],
-  "foliosRealesInmueblesAfectados": ["lista de folios reales detectados específicamente bajo el encabezado 'INMUEBLE(S) AFECTADO(S)'. Si no hay, []"]
+  "foliosRealesInmueblesAfectados": ["lista de folios reales detectados especÃ­ficamente bajo el encabezado 'INMUEBLE(S) AFECTADO(S)'. Si no hay, []"]
 }
 
-REGLAS CRÍTICAS:
+REGLAS CRÃTICAS:
 - Escanea TODA la imagen METICULOSAMENTE (arriba, en medio, abajo, izquierda, derecha). No te quedes con el primero.
-- Busca el patrón "FOLIO REAL:" en TODA la imagen, no solo en una sección.
+- Busca el patrÃ³n "FOLIO REAL:" en TODA la imagen, no solo en una secciÃ³n.
 - Incluye TODOS los folios, incluso si aparecen en distintas secciones:
   * Secciones de UNIDADES (DEPARTAMENTO, LOCAL, ESTACIONAMIENTO, etc.)
-  * Sección "INMUEBLE(S) AFECTADO(S)" o "INMUEBLES AFECTADOS"
-  * Sección "ANTECEDENTES" o "ANTECEDENTES REGISTRALES"
-  * Cualquier otra sección donde aparezca "FOLIO REAL:"
+  * SecciÃ³n "INMUEBLE(S) AFECTADO(S)" o "INMUEBLES AFECTADOS"
+  * SecciÃ³n "ANTECEDENTES" o "ANTECEDENTES REGISTRALES"
+  * Cualquier otra secciÃ³n donde aparezca "FOLIO REAL:"
 - Si hay varios folios (incluso si son consecutivos como 1782480, 1782481, 1782482, 1782483, 1782484, 1782485, 1782486), deben ir TODOS en el array.
-- NO omitas ningún folio, incluso si son números consecutivos.
-- Clasifica los folios según su sección: unidades vs inmuebles afectados.
-- Si un folio aparece en la sección "INMUEBLE(S) AFECTADO(S)", debe ir en foliosRealesInmueblesAfectados[].
+- NO omitas ningÃºn folio, incluso si son nÃºmeros consecutivos.
+- Clasifica los folios segÃºn su secciÃ³n: unidades vs inmuebles afectados.
+- Si un folio aparece en la secciÃ³n "INMUEBLE(S) AFECTADO(S)", debe ir en foliosRealesInmueblesAfectados[].
 - NO inventes datos: si no se ve claro, usa null.`
 
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -205,7 +249,7 @@ REGLAS CRÍTICAS:
             {
               role: 'user',
               content: [
-                { type: 'text', text: 'Encuentra TODOS los folios reales en esta imagen. Busca METICULOSAMENTE en TODA la imagen, incluyendo: secciones de UNIDADES, sección "INMUEBLE(S) AFECTADO(S)", y cualquier otra sección. NO omitas ningún folio, incluso si son números consecutivos. Incluye TODOS los folios que encuentres.' },
+                { type: 'text', text: 'Encuentra TODOS los folios reales en esta imagen. Busca METICULOSAMENTE en TODA la imagen, incluyendo: secciones de UNIDADES, secciÃ³n "INMUEBLE(S) AFECTADO(S)", y cualquier otra secciÃ³n. NO omitas ningÃºn folio, incluso si son nÃºmeros consecutivos. Incluye TODOS los folios que encuentres.' },
                 { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } }
               ]
             }
@@ -229,7 +273,7 @@ REGLAS CRÍTICAS:
 
       const data = await response.json()
       const content = data.choices[0]?.message?.content || '{}'
-      const usage = data.usage || null // ✅ Capturar usage del segundo pase
+      const usage = data.usage || null // âœ… Capturar usage del segundo pase
 
       let parsed: any = null
       try {
@@ -256,7 +300,7 @@ REGLAS CRÍTICAS:
       const scannedAll = [...scanned, ...scannedFromObjects]
       if (scannedAll.length === 0) return { result: current, success: true, usage: usage }
 
-      // Merge (dedupe por dígitos)
+      // Merge (dedupe por dÃ­gitos)
       const norm = (v: any) => {
         const digits = String(v || '').replace(/\D/g, '')
         return digits || String(v || '').trim()
@@ -269,7 +313,7 @@ REGLAS CRÍTICAS:
       }
 
       const mergedFolios = Array.from(map.values())
-      console.log('[DocumentProcessor.ensureAllFoliosOnPage] Folios después del segundo pase:', {
+      console.log('[DocumentProcessor.ensureAllFoliosOnPage] Folios despuÃ©s del segundo pase:', {
         foliosIniciales: folios,
         foliosConInfoIniciales: foliosConInfoFolios,
         foliosEscaneados: scannedAll,
@@ -279,7 +323,7 @@ REGLAS CRÍTICAS:
 
       const next = { ...(current || {}) }
       next.foliosReales = mergedFolios
-      // Si hay múltiples, folioReal debe ser null (evita autoselección)
+      // Si hay mÃºltiples, folioReal debe ser null (evita autoselecciÃ³n)
       if (mergedFolios.length > 1) next.folioReal = null
 
       // Actualizar foliosRealesUnidades e inmueblesAfectados del segundo pase
@@ -340,7 +384,7 @@ REGLAS CRÍTICAS:
   }
 
   /**
-   * Extrae información con OpenAI Vision API
+   * Extrae informaciÃ³n con OpenAI Vision API
    */
   private async extractWithOpenAI(file: File, documentType: string): Promise<{ extracted: any; usage: any }> {
     const apiKey = process.env.OPENAI_API_KEY
@@ -356,7 +400,7 @@ REGLAS CRÍTICAS:
 
     const base64 = Buffer.from(arrayBuffer).toString('base64')
 
-    // Obtener prompt según el handler
+    // Obtener prompt segÃºn el handler
     const handler = getHandler(documentType)
     const { systemPrompt, userPrompt } = handler.getPrompts()
 
@@ -396,7 +440,7 @@ REGLAS CRÍTICAS:
           response_format: { type: 'json_object' }
         }),
         // gpt-4o, gpt-5.x, o1, o3 use max_completion_tokens; gpt-3.5-turbo uses max_tokens
-        // 8000 permite incluir textoCompleto (transcripción de toda la página) además del JSON estructurado
+        // 8000 permite incluir textoCompleto (transcripciÃ³n de toda la pÃ¡gina) ademÃ¡s del JSON estructurado
         ...(model.includes("gpt-4") || model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
           ? { max_completion_tokens: 8000 }
           : { max_tokens: 8000 }
@@ -412,7 +456,7 @@ REGLAS CRÍTICAS:
 
     const data = await response.json()
     const content = data.choices[0]?.message?.content || '{}'
-    const usage = data.usage || null // ✅ Capturar usage
+    const usage = data.usage || null // âœ… Capturar usage
 
     try {
       return {
