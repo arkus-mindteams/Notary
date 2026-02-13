@@ -8,10 +8,7 @@ import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
 import { ActivityLogService } from '@/lib/services/activity-log-service'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import { DocumentoService } from '@/lib/services/documento-service'
-import {
-  DocumentExtractionTextBuilder,
-  RAG_CHUNK_MAX_CHARS
-} from '@/lib/services/document-extraction-text-builder'
+import { DocumentIndexingService } from '@/lib/services/document-indexing-service'
 
 type DeferredPostProcessInput = {
   traceId: string
@@ -150,23 +147,44 @@ async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<
       mimeType: input.file.type || 'application/pdf'
     })
 
-    if (input.extractedData && (input.conversationId || input.tramiteId)) {
-      const alreadyIndexed = await DocumentoService.hasIndexedChunks(documento.id)
-      if (!alreadyIndexed) {
-        const rawFullText =
-          typeof input.extractedData.textoCompleto === 'string' && input.extractedData.textoCompleto.trim()
-            ? input.extractedData.textoCompleto.trim()
-            : DocumentExtractionTextBuilder.buildFullTextFromExtractedData(input.extractedData)
-
-        const chunks = DocumentExtractionTextBuilder.splitIntoChunks(rawFullText, RAG_CHUNK_MAX_CHARS)
-        if (chunks.length > 0) {
-          await DocumentoService.processAndSaveTextChunks(documento.id, chunks, 1, {
-            sessionId: input.conversationId,
-            tramiteId: input.tramiteId || null
-          })
-        }
-      }
+    let indexingStatus: string | null = null
+    let chunksCreated = 0
+    let embeddingsCreated = 0
+    let indexingExtractionSource: string | null = null
+    let indexingNeedsOcrReason: string | null = null
+    try {
+      const indexingService = new DocumentIndexingService()
+      const indexingResult = await indexingService.indexDocument({
+        documentoId: documento.id,
+        forceReindex: false,
+        traceId: input.traceId,
+        userId: userIdForLogs
+      })
+      indexingStatus = indexingResult.status
+      chunksCreated = indexingResult.chunks_created
+      embeddingsCreated = indexingResult.embeddings_created
+      indexingExtractionSource = indexingResult.extraction_source || null
+      indexingNeedsOcrReason = indexingResult.needs_ocr_reason || null
+    } catch (indexError) {
+      const safeIndexError = toSafeError(indexError)
+      indexingStatus = 'error'
+      console.error('[preaviso-process-document] indexing error', {
+        trace_id: input.traceId,
+        documento_id: documento.id,
+        code: safeIndexError.code,
+        message: safeIndexError.message
+      })
     }
+
+    console.info('[preaviso-process-document] indexing debug', {
+      trace_id: input.traceId,
+      documento_id: documento.id,
+      status: indexingStatus,
+      extraction_source: indexingExtractionSource,
+      needs_ocr_reason: indexingNeedsOcrReason,
+      chunks_created: chunksCreated,
+      embeddings_created: embeddingsCreated,
+    })
 
     const postprocessAsyncMs = Date.now() - asyncStartedAt
     
@@ -180,7 +198,12 @@ async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<
       status: 'success',
       durationMs: postprocessAsyncMs,
       metadata: {
-        document_type: input.documentType
+        document_type: input.documentType,
+        indexing_status: indexingStatus,
+        indexing_extraction_source: indexingExtractionSource,
+        indexing_needs_ocr_reason: indexingNeedsOcrReason,
+        chunks_created: chunksCreated,
+        embeddings_created: embeddingsCreated
       }
     })
   } catch (error) {

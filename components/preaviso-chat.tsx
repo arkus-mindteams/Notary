@@ -2509,34 +2509,41 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                           : ''
                       const rawTextForExtraction = rawTextFromExtraction || rawTextFromOcr || rawTextFromJson
                       const tramiteIdForExtraction = effectiveTramiteId
-                                            if (tramiteIdForExtraction && rawTextForExtraction) {
-                        const extractResp = await postJsonWithTimeout(
-                          `/api/expedientes/tramites/${tramiteIdForExtraction}/extract`,
-                          {
-                            documentId: docId,
-                            tramiteType: 'preaviso',
-                            rawText: rawTextForExtraction,
-                            fileMeta: {
-                              source: 'preaviso-chat',
-                              docType: item.docType,
-                              fileName: item.originalFile.name,
-                            },
-                          },
-                          30000
-                        )
+                      if (tramiteIdForExtraction && rawTextForExtraction) {
+                        // No bloquear el batch por extracción estructurada adicional.
+                        void (async () => {
+                          try {
+                            const extractResp = await postJsonWithTimeout(
+                              `/api/expedientes/tramites/${tramiteIdForExtraction}/extract`,
+                              {
+                                documentId: docId,
+                                tramiteType: 'preaviso',
+                                rawText: rawTextForExtraction,
+                                fileMeta: {
+                                  source: 'preaviso-chat',
+                                  docType: item.docType,
+                                  fileName: item.originalFile.name,
+                                },
+                              },
+                              30000
+                            )
 
-                        if (extractResp.ok) {
-                          const extractJson = await extractResp.json()
-                          processResult.structuredExtraction = extractJson?.structured || null
-                          processResult.structuredExtractionWarnings = extractJson?.warnings || []
-                          processResult.structuredExtractionTraceId = extractJson?.trace_id || null
-                        } else {
-                          const errText = await extractResp.text().catch(() => '')
-                          console.warn('[PreavisoChat] /extract non-ok', {
-                            status: extractResp.status,
-                            body: errText?.slice(0, 250),
-                          })
-                        }
+                            if (extractResp.ok) {
+                              const extractJson = await extractResp.json()
+                              processResult.structuredExtraction = extractJson?.structured || null
+                              processResult.structuredExtractionWarnings = extractJson?.warnings || []
+                              processResult.structuredExtractionTraceId = extractJson?.trace_id || null
+                            } else {
+                              const errText = await extractResp.text().catch(() => '')
+                              console.warn('[PreavisoChat] /extract non-ok', {
+                                status: extractResp.status,
+                                body: errText?.slice(0, 250),
+                              })
+                            }
+                          } catch (extractError) {
+                            console.warn('[PreavisoChat] Error calling /extract', extractError)
+                          }
+                        })()
                       }
                     } catch (extractError) {
                       console.warn('[PreavisoChat] Error calling /extract', extractError)
@@ -2653,6 +2660,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         formData.append('context', JSON.stringify({
           conversation_id: conversationIdRef.current,
           is_processing_artifact: item.isArtifact,
+          _bulk_fast_mode: totalFiles > 1,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
           _document_people_pending: (workingData as any)._document_people_pending ?? null,
