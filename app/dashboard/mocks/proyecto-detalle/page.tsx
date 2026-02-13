@@ -216,6 +216,257 @@ export default function ExpedienteHubPage() {
         setIsPdfOpen(true)
     }
 
+    const renderResumenContent = () => {
+        const isCapturaComplete = isStageComplete('captura')
+        const isDeslindeComplete = isStageComplete('deslinde')
+        const isValidacionComplete = isStageComplete('validacion')
+        const isRedaccionComplete = isStageComplete('redaccion')
+
+        if (!isCapturaComplete) {
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div className="space-y-6">
+                        <Card className="border-none shadow-sm ring-1 ring-gray-100">
+                            <CardHeader className="pb-2">
+                                <CardTitle className="text-sm font-bold flex items-center text-gray-500">
+                                    <ClipboardCheck className="h-4 w-4 mr-2" />
+                                    Documentación Pendiente
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-2">
+                                <div className="flex items-center p-2 rounded bg-gray-50 border border-gray-100">
+                                    <div className="h-4 w-4 border-2 border-gray-300 rounded mr-3" />
+                                    <span className="text-sm text-gray-600">Título de Propiedad (Escritura Anterior)</span>
+                                </div>
+                                <div className="flex items-center p-2 rounded bg-gray-50 border border-gray-100">
+                                    <div className="h-4 w-4 border-2 border-gray-300 rounded mr-3" />
+                                    <span className="text-sm text-gray-600">Identificaciones Oficiales (INE/Pasaporte)</span>
+                                </div>
+                                <div className="flex items-center p-2 rounded bg-gray-50 border border-gray-100">
+                                    <div className="h-4 w-4 border-2 border-gray-300 rounded mr-3" />
+                                    <span className="text-sm text-gray-600">Boleta Predial Vigente</span>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    </div>
+                    <div className="space-y-6">
+                        <div className="p-6 rounded-2xl bg-gradient-to-br from-gray-700 to-gray-800 text-white shadow-xl">
+                            <h3 className="text-lg font-bold mb-2 flex items-center">
+                                <MessageSquare className="h-5 w-5 mr-2" />
+                                Iniciar Captura
+                            </h3>
+                            <p className="text-sm text-gray-300 leading-relaxed mb-6">
+                                El expediente está en fase inicial. Utiliza el Asistente IA para capturar los datos generales y recibir los documentos preliminares.
+                            </p>
+                            <Link href="/dashboard/mocks/chat-asistente">
+                                <Button className="w-full bg-white text-gray-900 hover:bg-gray-100 font-bold border-none shadow-lg">
+                                    IR AL CHAT ASISTENTE
+                                </Button>
+                            </Link>
+                        </div>
+                    </div>
+                </div>
+            )
+        }
+
+        if (isCapturaComplete && !isDeslindeComplete) {
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div className="space-y-6">
+                        <Card className="border-none shadow-sm ring-1 ring-gray-100">
+                            <CardHeader className="pb-2">
+                                <CardTitle className="text-sm font-bold flex items-center text-blue-600">
+                                    <Users className="h-4 w-4 mr-2" />
+                                    Datos Capturados (Pre-Aviso)
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-2">
+                                <div className="flex justify-between items-center p-2 border-b border-gray-50">
+                                    <span className="text-xs text-gray-500 uppercase font-bold">Vendedor</span>
+                                    <span className="text-sm font-medium">Juan Pérez Maldonado</span>
+                                </div>
+                                <div className="flex justify-between items-center p-2 border-b border-gray-50">
+                                    <span className="text-xs text-gray-500 uppercase font-bold">Comprador</span>
+                                    <span className="text-sm font-medium">Roberto Sánchez García</span>
+                                </div>
+                                <div className="flex justify-between items-center p-2 border-b border-gray-50">
+                                    <span className="text-xs text-gray-500 uppercase font-bold">Precio</span>
+                                    <span className="text-sm font-bold text-green-600">$2,500,000.00</span>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    </div>
+                    <div className="space-y-6">
+                        <div className="p-6 rounded-2xl bg-gradient-to-br from-indigo-600 to-purple-700 text-white shadow-xl">
+                            <h3 className="text-lg font-bold mb-2 flex items-center">
+                                <Building className="h-5 w-5 mr-2" />
+                                Requiere Deslinde
+                            </h3>
+                            <p className="text-sm text-indigo-100 leading-relaxed mb-6">
+                                La captura inicial está completa. El siguiente paso es procesar los planos arquitectónicos para obtener las medidas y colindancias exactas.
+                            </p>
+                            <Link href="/dashboard/mocks/deslinde">
+                                <Button className="w-full bg-white text-indigo-700 hover:bg-indigo-50 font-bold border-none shadow-lg">
+                                    REALIZAR DESLINDE
+                                </Button>
+                            </Link>
+                        </div>
+                    </div>
+                </div>
+            )
+        }
+
+        if (isDeslindeComplete && !isValidacionComplete) {
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div className="space-y-6">
+                        <Card className="border-none shadow-sm ring-1 ring-gray-100">
+                            <CardHeader className="pb-2">
+                                <CardTitle className="text-sm font-bold flex items-center">
+                                    <AlertCircle className="h-4 w-4 mr-2 text-orange-500" />
+                                    Alertas de Validación (Cotejo)
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <div className="p-3 rounded-lg bg-orange-50 border border-orange-100 flex items-start space-x-3">
+                                    <div className="h-5 w-5 rounded-full bg-orange-200 flex items-center justify-center mt-0.5 shrink-0">
+                                        <Activity className="h-3 w-3 text-orange-700" />
+                                    </div>
+                                    <div className="flex-1">
+                                        <p className="text-xs font-bold text-orange-800">Inconsistencia en Folio Real</p>
+                                        <p className="text-xs text-orange-600 mt-0.5 leading-relaxed">
+                                            La superficie en la Hoja de Inscripción (85.5 m²) difiere del Avalúo (86.0 m²). Requiere revisión manual.
+                                        </p>
+                                    </div>
+                                    <Button variant="ghost" size="sm" className="h-7 text-xs text-orange-700 font-bold hover:bg-orange-100">REVISAR</Button>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    </div>
+                    <div className="space-y-6">
+                        <div className="p-6 rounded-2xl bg-gradient-to-br from-orange-500 to-red-500 text-white shadow-xl">
+                            <h3 className="text-lg font-bold mb-2 flex items-center">
+                                <ShieldCheck className="h-5 w-5 mr-2" />
+                                Validación Pendiente
+                            </h3>
+                            <p className="text-sm text-orange-50 leading-relaxed mb-6">
+                                Se han detectado discrepancias entre los documentos fuente. Es necesario validar la información antes de generar la escritura.
+                            </p>
+                            <Link href="/dashboard/mocks/direct-review">
+                                <Button className="w-full bg-white text-orange-600 hover:bg-orange-50 font-bold border-none shadow-lg">
+                                    RESOLVER DISCREPANCIAS
+                                </Button>
+                            </Link>
+                        </div>
+                    </div>
+                </div>
+            )
+        }
+
+        // Ready for Drafting (Validacion Complete)
+        return (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Summary & Alerts */}
+                <div className="space-y-6">
+                    <Card className="border-none shadow-sm ring-1 ring-gray-100">
+                        <CardHeader className="pb-2">
+                            <CardTitle className="text-sm font-bold flex items-center">
+                                <CheckCircle2 className="h-4 w-4 mr-2 text-green-600" />
+                                Estado de Validación
+                            </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            <div className="p-3 rounded-lg bg-green-50 border border-green-100 flex items-start space-x-3">
+                                <div className="h-5 w-5 rounded-full bg-green-200 flex items-center justify-center mt-0.5 shrink-0">
+                                    <CheckCircle2 className="h-3 w-3 text-green-700" />
+                                </div>
+                                <div className="flex-1">
+                                    <p className="text-xs font-bold text-green-800">Expediente Validado</p>
+                                    <p className="text-xs text-green-600 mt-0.5 leading-relaxed">
+                                        Todas las discrepancias han sido resueltas. Identidad y Propiedad confirmadas.
+                                    </p>
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    <Card className="border-none shadow-sm ring-1 ring-gray-100">
+                        <CardHeader className="pb-2">
+                            <CardTitle className="text-sm font-bold flex items-center">
+                                <Users className="h-4 w-4 mr-2 text-blue-600" />
+                                Partes Involucradas (Generado por IA)
+                            </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                            <div className="flex items-center justify-between p-3 rounded-xl border border-gray-100 bg-gray-50/30">
+                                <div className="flex items-center space-x-3">
+                                    <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 text-xs font-bold">JP</div>
+                                    <div>
+                                        <p className="text-xs font-bold text-gray-900">Juan Pérez Maldonado</p>
+                                        <p className="text-xs text-gray-500 uppercase">Enajenante (Vendedor)</p>
+                                    </div>
+                                </div>
+                                <Badge variant="outline" className="bg-white text-[10px] text-green-600">VALIDADO</Badge>
+                            </div>
+                            <div className="flex items-center justify-between p-3 rounded-xl border border-gray-100 bg-gray-50/30">
+                                <div className="flex items-center space-x-3">
+                                    <div className="h-8 w-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 text-xs font-bold">RS</div>
+                                    <div>
+                                        <p className="text-xs font-bold text-gray-900">Roberto Sánchez García</p>
+                                        <p className="text-xs text-gray-500 uppercase">Adquirente (Comprador)</p>
+                                    </div>
+                                </div>
+                                <Badge variant="outline" className="bg-white text-[10px] text-green-600">VALIDADO</Badge>
+                            </div>
+                        </CardContent>
+                    </Card>
+                </div>
+
+                {/* Timeline & Actions */}
+                <div className="space-y-6">
+                    <div className="p-6 rounded-2xl bg-gradient-to-br from-blue-600 to-blue-700 text-white shadow-xl shadow-blue-100">
+                        <h3 className="text-lg font-bold mb-2 flex items-center">
+                            <Zap className="h-5 w-5 mr-2" />
+                            Próxima Acción IA
+                        </h3>
+                        <p className="text-sm text-blue-50 leading-relaxed mb-6">
+                            Todos los datos del pre-aviso han sido capturados. Ya puedes iniciar la redacción automatizada del proyecto de escritura basándote en la plantilla de Compraventa Residencial.
+                        </p>
+                        <Link href="/dashboard/mocks/escrituracion-nueva">
+                            <Button className="w-full bg-white text-blue-600 hover:bg-blue-50 font-bold border-none shadow-lg">
+                                GENERAR PROYECTO DE ESCRITURA
+                            </Button>
+                        </Link>
+                    </div>
+
+                    <div className="p-4 space-y-4">
+                        <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center">
+                            <Clock className="h-3 w-3 mr-2" />
+                            Actividad Reciente
+                        </h3>
+                        <div className="space-y-4">
+                            {[
+                                { user: 'IA Assistant', action: 'Extracción de datos completada', time: 'Hace 2 horas', icon: Zap, color: 'text-purple-500 bg-purple-50' },
+                                { user: 'Carlos (Abogado)', action: 'Subió Hoja de Inscripción RPP', time: 'Ayer, 4:30 PM', icon: Folder, color: 'text-blue-500 bg-blue-50' },
+                                { user: preavisoType.toUpperCase(), action: 'Expediente Iniciado', time: 'Hace 3 días', icon: ClipboardCheck, color: 'text-green-500 bg-green-50' },
+                            ].map((log, i) => (
+                                <div key={i} className="flex items-start space-x-3">
+                                    <div className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${log.color}`}>
+                                        <log.icon className="h-4 w-4" />
+                                    </div>
+                                    <div>
+                                        <p className="text-xs font-bold text-gray-900">{log.action}</p>
+                                        <p className="text-xs text-gray-500">{log.user} • {log.time}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )
+    }
+
     return (
         <div className="flex flex-col h-full bg-white">
             {/* Detail Header */}
@@ -318,117 +569,7 @@ export default function ExpedienteHubPage() {
                         </TabsList>
 
                         <TabsContent value="resumen" className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                                {/* Summary & Alerts */}
-                                <div className="space-y-6">
-                                    <Card className="border-none shadow-sm ring-1 ring-gray-100">
-                                        <CardHeader className="pb-2">
-                                            <CardTitle className="text-sm font-bold flex items-center">
-                                                <AlertCircle className="h-4 w-4 mr-2 text-orange-500" />
-                                                Alertas de Validación (Cotejo)
-                                            </CardTitle>
-                                        </CardHeader>
-                                        <CardContent className="space-y-4">
-                                            <div className="p-3 rounded-lg bg-orange-50 border border-orange-100 flex items-start space-x-3">
-                                                <div className="h-5 w-5 rounded-full bg-orange-200 flex items-center justify-center mt-0.5 shrink-0">
-                                                    <Activity className="h-3 w-3 text-orange-700" />
-                                                </div>
-                                                <div className="flex-1">
-                                                    <p className="text-xs font-bold text-orange-800">Inconsistencia en Folio Real</p>
-                                                    <p className="text-xs text-orange-600 mt-0.5 leading-relaxed">
-                                                        La superficie en la Hoja de Inscripción (85.5 m²) difiere del Avalúo (86.0 m²). Requiere revisión manual.
-                                                    </p>
-                                                </div>
-                                                <Button variant="ghost" size="sm" className="h-7 text-xs text-orange-700 font-bold hover:bg-orange-100">REVISAR</Button>
-                                            </div>
-                                            <div className="p-3 rounded-lg bg-green-50 border border-green-100 flex items-start space-x-3">
-                                                <div className="h-5 w-5 rounded-full bg-green-200 flex items-center justify-center mt-0.5 shrink-0">
-                                                    <CheckCircle2 className="h-3 w-3 text-green-700" />
-                                                </div>
-                                                <div className="flex-1">
-                                                    <p className="text-xs font-bold text-green-800">Identificaciones Validadas</p>
-                                                    <p className="text-xs text-green-600 mt-0.5 leading-relaxed">
-                                                        Matching del 98% en CURP y vigencia de INE (Vendedor).
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        </CardContent>
-                                    </Card>
-
-                                    <Card className="border-none shadow-sm ring-1 ring-gray-100">
-                                        <CardHeader className="pb-2">
-                                            <CardTitle className="text-sm font-bold flex items-center">
-                                                <Users className="h-4 w-4 mr-2 text-blue-600" />
-                                                Partes Involucradas (Generado por IA)
-                                            </CardTitle>
-                                        </CardHeader>
-                                        <CardContent className="space-y-3">
-                                            <div className="flex items-center justify-between p-3 rounded-xl border border-gray-100 bg-gray-50/30">
-                                                <div className="flex items-center space-x-3">
-                                                    <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 text-xs font-bold">JP</div>
-                                                    <div>
-                                                        <p className="text-xs font-bold text-gray-900">Juan Pérez Maldonado</p>
-                                                        <p className="text-xs text-gray-500 uppercase">Enajenante (Vendedor)</p>
-                                                    </div>
-                                                </div>
-                                                <Badge variant="outline" className="bg-white text-[10px] text-green-600">VALIDADO</Badge>
-                                            </div>
-                                            <div className="flex items-center justify-between p-3 rounded-xl border border-gray-100 bg-gray-50/30">
-                                                <div className="flex items-center space-x-3">
-                                                    <div className="h-8 w-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 text-xs font-bold">RS</div>
-                                                    <div>
-                                                        <p className="text-xs font-bold text-gray-900">Roberto Sánchez García</p>
-                                                        <p className="text-xs text-gray-500 uppercase">Adquirente (Comprador)</p>
-                                                    </div>
-                                                </div>
-                                                <Badge variant="outline" className="bg-white text-[10px] text-orange-600">POR CONFIRMAR</Badge>
-                                            </div>
-                                        </CardContent>
-                                    </Card>
-                                </div>
-
-                                {/* Timeline & Actions */}
-                                <div className="space-y-6">
-                                    <div className="p-6 rounded-2xl bg-gradient-to-br from-blue-600 to-blue-700 text-white shadow-xl shadow-blue-100">
-                                        <h3 className="text-lg font-bold mb-2 flex items-center">
-                                            <Zap className="h-5 w-5 mr-2" />
-                                            Próxima Acción IA
-                                        </h3>
-                                        <p className="text-sm text-blue-50 leading-relaxed mb-6">
-                                            Todos los datos del pre-aviso han sido capturados. Ya puedes iniciar la redacción automatizada del proyecto de escritura basándote en la plantilla de Compraventa Residencial.
-                                        </p>
-                                        <Link href="/dashboard/mocks/escrituracion-nueva">
-                                            <Button className="w-full bg-white text-blue-600 hover:bg-blue-50 font-bold border-none shadow-lg">
-                                                GENERAR PROYECTO DE ESCRITURA
-                                            </Button>
-                                        </Link>
-                                    </div>
-
-                                    <div className="p-4 space-y-4">
-                                        <h3 className="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center">
-                                            <Clock className="h-3 w-3 mr-2" />
-                                            Actividad Reciente
-                                        </h3>
-                                        <div className="space-y-4">
-                                            {[
-                                                { user: 'IA Assistant', action: 'Extracción de datos completada', time: 'Hace 2 horas', icon: Zap, color: 'text-purple-500 bg-purple-50' },
-                                                { user: 'Carlos (Abogado)', action: 'Subió Hoja de Inscripción RPP', time: 'Ayer, 4:30 PM', icon: Folder, color: 'text-blue-500 bg-blue-50' },
-                                                { user: preavisoType.toUpperCase(), action: 'Expediente Iniciado', time: 'Hace 3 días', icon: ClipboardCheck, color: 'text-green-500 bg-green-50' },
-                                            ].map((log, i) => (
-                                                <div key={i} className="flex items-start space-x-3">
-                                                    <div className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 ${log.color}`}>
-                                                        <log.icon className="h-4 w-4" />
-                                                    </div>
-                                                    <div>
-                                                        <p className="text-xs font-bold text-gray-900">{log.action}</p>
-                                                        <p className="text-xs text-gray-500">{log.user} • {log.time}</p>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
+                            {renderResumenContent()}
                         </TabsContent>
 
                         <TabsContent value="captura" className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">

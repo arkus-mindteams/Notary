@@ -8,7 +8,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Mail, Lock, Eye, EyeOff } from 'lucide-react'
+import { Mail, Lock as LockIcon, Eye, EyeOff } from 'lucide-react'
+import Link from 'next/link'
 import Image from 'next/image'
 
 export default function LoginPage() {
@@ -18,7 +19,7 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [loginSuccess, setLoginSuccess] = useState(false)
-  
+
   const { login, user, session, isLoading: authLoading } = useAuth()
   const router = useRouter()
 
@@ -127,7 +128,7 @@ export default function LoginPage() {
           <CardHeader className="text-center p-0">
             {/* Logo */}
             <div className="w-full h-32 sm:h-40 md:h-48 relative items-center justify-center flex mt-6 sm:mt-8 md:mt-10">
-             <Image
+              <Image
                 src="/notaria-logo-black.png"
                 alt="Logo Notaría"
                 width={400}
@@ -173,7 +174,7 @@ export default function LoginPage() {
                   Contraseña
                 </Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <LockIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                   <Input
                     id="password"
                     type={showPassword ? 'text' : 'password'}
@@ -208,10 +209,21 @@ export default function LoginPage() {
               >
                 {isLoading ? 'Iniciando sesión...' : 'Iniciar Sesión'}
               </Button>
+
+              <div className="pt-2 flex flex-col items-center space-y-4">
+                <div className="w-full h-px bg-gray-100 relative">
+                  <span className="absolute left-1/2 -top-2 -translate-x-1/2 bg-white px-2 text-[10px] text-gray-400 font-bold uppercase tracking-widest">O</span>
+                </div>
+                <Link href="/dashboard/mocks" className="w-full">
+                  <Button variant="outline" className="w-full h-11 border-blue-100 text-blue-600 hover:bg-blue-50 font-bold">
+                    Acceder a la Demo (Mockups)
+                  </Button>
+                </Link>
+              </div>
             </form>
 
             {/* Enlace de recuperación */}
-             {/* <div className="text-center">
+            {/* <div className="text-center">
               <a
                 href="#"
                 className="text-sm text-gray-800 hover:text-gray-900 hover:underline"

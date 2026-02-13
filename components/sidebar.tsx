@@ -36,12 +36,16 @@ interface SidebarProps {
   onToggle: () => void
   onNavigate?: () => void
   isMobile?: boolean
+  isMock?: boolean
 }
 
-export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }: SidebarProps) {
+export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false, isMock = false }: SidebarProps) {
   const { user, logout } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
+
+  // Detect if we are in mock mode from either prop or pathname
+  const inMockMode = isMock || pathname.startsWith('/dashboard/mocks')
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [showLogoutDialog, setShowLogoutDialog] = useState(false)
   const [configMenuExpanded, setConfigMenuExpanded] = useState(false)
@@ -175,24 +179,24 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
         <Button
           variant="ghost"
           className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
-            } ${pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde'
+            } ${pathname === (inMockMode ? '/dashboard/mocks/deslinde' : '/dashboard/deslinde')
               ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
               : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
             }`}
-          onClick={() => handleNavigation('/dashboard/deslinde?reset=1')}
+          onClick={() => handleNavigation(inMockMode ? '/dashboard/mocks/deslinde' : '/dashboard/deslinde?reset=1')}
         >
           <FileText className="h-4 w-4 flex-shrink-0" />
-          {!isCollapsed && <span className="ml-3 truncate text-sm">Lectura de Plantas Arquitectónicas</span>}
+          {!isCollapsed && <span className="ml-3 truncate text-sm">Lectura de Plantas Arq.</span>}
         </Button>
 
         <Button
           variant="ghost"
           className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
-            } ${pathname === '/dashboard/preaviso'
+            } ${pathname === (inMockMode ? '/dashboard/mocks/chat-asistente' : '/dashboard/preaviso')
               ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
               : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
             }`}
-          onClick={() => handleNavigation('/dashboard/preaviso')}
+          onClick={() => handleNavigation(inMockMode ? '/dashboard/mocks/chat-asistente' : '/dashboard/preaviso')}
         >
           <MessageSquare className="h-4 w-4 flex-shrink-0" />
           {!isCollapsed && <span className="ml-3 truncate text-sm">Pre-Aviso</span>}
@@ -201,15 +205,45 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
         <Button
           variant="ghost"
           className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
-            } ${pathname === '/dashboard/expedientes'
+            } ${pathname === (inMockMode ? '/dashboard/mocks/kanban' : '/dashboard/expedientes')
               ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
               : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
             }`}
-          onClick={() => handleNavigation('/dashboard/expedientes')}
+          onClick={() => handleNavigation(inMockMode ? '/dashboard/mocks/kanban' : '/dashboard/expedientes')}
         >
           <FolderOpen className="h-4 w-4 flex-shrink-0" />
           {!isCollapsed && <span className="ml-3 truncate text-sm">Expedientes</span>}
         </Button>
+
+        {inMockMode && (
+          <>
+            <Button
+              variant="ghost"
+              className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
+                } ${pathname === '/dashboard/mocks/escrituracion-nueva' || pathname === '/dashboard/mocks/escrituracion-editor'
+                  ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                }`}
+              onClick={() => handleNavigation('/dashboard/mocks/escrituracion-nueva')}
+            >
+              <FileCode className="h-4 w-4 flex-shrink-0" />
+              {!isCollapsed && <span className="ml-3 truncate text-sm">Redacción</span>}
+            </Button>
+
+            <Button
+              variant="ghost"
+              className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
+                } ${pathname === '/dashboard/mocks/cotejamiento-revision'
+                  ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                }`}
+              onClick={() => handleNavigation('/dashboard/mocks/cotejamiento-revision')}
+            >
+              <Activity className="h-4 w-4 flex-shrink-0" />
+              {!isCollapsed && <span className="ml-3 truncate text-sm">Cotejamiento</span>}
+            </Button>
+          </>
+        )}
 
 
         {/* Separator and Configuración (expandible inline) - Superadmin Only */}
@@ -256,7 +290,7 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
                     className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/settings'
                       ? 'bg-gray-700 text-gray-200'
                       : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                    }`}
+                      }`}
                     onClick={() => handleNavigation('/dashboard/settings')}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2 flex-shrink-0 inline-block" />
@@ -273,7 +307,7 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
                     className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/usuarios'
                       ? 'bg-gray-700 text-gray-200'
                       : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                    }`}
+                      }`}
                     onClick={() => handleNavigation('/dashboard/admin/usuarios')}
                   >
                     <Users className="h-4 w-4 mr-2 flex-shrink-0" />
@@ -284,7 +318,7 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
                     className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/preaviso-config'
                       ? 'bg-gray-700 text-gray-200'
                       : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                    }`}
+                      }`}
                     onClick={() => handleNavigation('/dashboard/admin/preaviso-config')}
                   >
                     <FileCode className="h-4 w-4 mr-2 flex-shrink-0" />
@@ -295,7 +329,7 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
                     className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/usage'
                       ? 'bg-gray-700 text-gray-200'
                       : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                    }`}
+                      }`}
                     onClick={() => handleNavigation('/dashboard/admin/usage')}
                   >
                     <Activity className="h-4 w-4 mr-2 flex-shrink-0" />
