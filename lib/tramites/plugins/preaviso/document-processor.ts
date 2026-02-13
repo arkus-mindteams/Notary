@@ -56,14 +56,12 @@ export class PreavisoDocumentProcessor {
         let isValidCache = true
         if (documentType === 'inscripcion') {
           if ((cachedExtraction._v || 0) < 2) {
-            console.log(`[PreavisoDocumentProcessor] Cache hit but OUTDATED version (${cachedExtraction._v || 0}) for inscripcion. Forcing re-process.`)
-            isValidCache = false
+                        isValidCache = false
           }
         }
 
         if (isValidCache) {
-          console.log(`[PreavisoDocumentProcessor] Intelligent Processing: Reusing global extraction for hash ${fileHash}`)
-          let commands = handler.process(cachedExtraction, context)
+                    let commands = handler.process(cachedExtraction, context)
 
           return {
             commands,
@@ -145,12 +143,7 @@ export class PreavisoDocumentProcessor {
       } else {
         extracted._v = 2
         secondPassSuccess = true
-        console.log('[PreavisoDocumentProcessor] Skipping second pass for inscripcion', {
-          file: file.name,
-          reason: decision.reason,
-          firstPassFolios: Array.isArray(extracted?.foliosReales) ? extracted.foliosReales.length : 0
-        })
-      }
+              }
     } else {
       extracted._v = 2
       secondPassSuccess = true
@@ -313,14 +306,7 @@ REGLAS CRÃTICAS:
       }
 
       const mergedFolios = Array.from(map.values())
-      console.log('[DocumentProcessor.ensureAllFoliosOnPage] Folios despuÃ©s del segundo pase:', {
-        foliosIniciales: folios,
-        foliosConInfoIniciales: foliosConInfoFolios,
-        foliosEscaneados: scannedAll,
-        foliosMergeados: mergedFolios,
-        totalDetectados: mergedFolios.length
-      })
-
+      
       const next = { ...(current || {}) }
       next.foliosReales = mergedFolios
       // Si hay mÃºltiples, folioReal debe ser null (evita autoselecciÃ³n)

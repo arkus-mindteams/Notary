@@ -109,8 +109,7 @@ export class DocumentoService {
 
     if (existingDocumento) {
       // Documento duplicado encontrado - reutilizar el existente
-      console.log(`[DocumentoService] Documento duplicado detectado, reutilizando: ${existingDocumento.id}`)
-
+      
       // Si hay un trámite, asociar el documento existente al trámite
       if (tramiteId) {
         // Verificar si ya está asociado

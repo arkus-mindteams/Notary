@@ -169,12 +169,7 @@ async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<
     }
 
     const postprocessAsyncMs = Date.now() - asyncStartedAt
-    console.log('[preaviso-process-document] deferred postprocess success', {
-      trace_id: input.traceId,
-      documento_id: documento.id,
-      postprocess_async_ms: postprocessAsyncMs
-    })
-
+    
     await ActivityLogService.logDocumentProcessingStage({
       userId: userIdForLogs,
       sessionId: input.conversationId || undefined,
@@ -314,20 +309,7 @@ export async function POST(req: Request) {
 
     try {
       const conversationIdIncoming = context?.conversation_id || null
-      console.log('[preaviso-process-document] incoming', {
-        trace_id: traceId,
-        documentType,
-        fileName: file?.name || null,
-        pluginId,
-        userId: authUserId,
-        conversation_id: conversationIdIncoming,
-        tramiteId: context?.tramiteId || null,
-        _document_intent: context?._document_intent ?? null,
-        comprador0: context?.compradores?.[0]?.persona_fisica?.nombre || context?.compradores?.[0]?.persona_moral?.denominacion_social || null,
-        comprador0EstadoCivil: context?.compradores?.[0]?.persona_fisica?.estado_civil || null,
-        conyuge: context?.compradores?.[0]?.persona_fisica?.conyuge?.nombre || null,
-      })
-    } catch {
+          } catch {
       // ignore debug logging issues
     }
 
@@ -345,11 +327,7 @@ export async function POST(req: Request) {
     const tramiteId = context?.tramiteId || null
     const userIdForLogs = authUserId || 'system'
 
-    console.log('[preaviso-process-document] extract completed', {
-      trace_id: traceId,
-      extract_sync_ms: extractSyncMs
-    })
-
+    
     await ActivityLogService.logDocumentProcessingStage({
       userId: userIdForLogs,
       sessionId: conversationId || undefined,
@@ -392,8 +370,7 @@ export async function POST(req: Request) {
 
     if (needOcr === '1') {
       try {
-        console.log('[preaviso-process-document] OCR is handled in frontend by page')
-      } catch (error) {
+              } catch (error) {
         console.error('[preaviso-process-document] OCR logging error', {
           trace_id: traceId,
           ...toSafeError(error)
