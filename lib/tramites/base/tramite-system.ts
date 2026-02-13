@@ -205,6 +205,7 @@ export class TramiteSystem {
 
     // 8. Generar respuesta (FLEXIBLE - LLM genera pregunta natural)
     let response = await plugin.generateQuestion(newState, updatedContext, conversationHistory)
+    const knowledgeSnapshot = plugin.getLastKnowledgeSnapshot?.() || null
 
     // 8.1. Inferir intención de documento del mensaje del asistente
     const documentIntentUpdate = plugin.inferDocumentIntent(response)
@@ -273,6 +274,7 @@ export class TramiteSystem {
         command_errors: commandExecution.errors,
         context_diff: contextDelta,
         allowed_tools: allowedToolsForState,
+        knowledge_snapshot: knowledgeSnapshot,
         tool_context: {
           state_meta: updatedContext?._state_meta || null,
           transition_info: transitionInfo,

@@ -127,6 +127,8 @@ export async function POST(req: Request) {
         null
 
       if (conversationId) {
+        const knowledgeSnapshot = result.meta?.knowledge_snapshot || null
+
         // 1. Guardar mensaje del usuario
         const { error: userMsgError } = await supabase.from('chat_messages').insert({
           session_id: conversationId,
@@ -151,7 +153,8 @@ export async function POST(req: Request) {
             content: lastAssistantMessage,
             metadata: {
               processing_time: null,
-              tokens: result.meta?.usage || null
+              tokens: result.meta?.usage || null,
+              knowledge_snapshot: knowledgeSnapshot
             }
           })
           if (assistantMsgError) console.error('[preaviso-chat] Error saving assistant message:', assistantMsgError)
@@ -192,6 +195,16 @@ export async function POST(req: Request) {
               category: 'preaviso',
               plugin_id: pluginId
             }
+          }).catch(console.error)
+        }
+
+        if (authUserId && knowledgeSnapshot) {
+          ActivityLogService.logKnowledgeSnapshot({
+            userId: authUserId,
+            sessionId: conversationId,
+            tramiteId: (tramiteIdFromBody as string) || undefined,
+            snapshot: knowledgeSnapshot,
+            actionType: 'generate_question_knowledge_snapshot'
           }).catch(console.error)
         }
       }

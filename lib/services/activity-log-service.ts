@@ -27,6 +27,16 @@ interface LogUserEventParams {
     userId: string
     eventType: string
     metadata?: Record<string, any>
+    sessionId?: string
+    tramiteId?: string
+}
+
+interface LogKnowledgeSnapshotParams {
+    userId: string
+    sessionId?: string
+    tramiteId?: string
+    snapshot: Record<string, any>
+    actionType?: string
 }
 
 interface GetStatsOptions {
@@ -142,6 +152,8 @@ export class ActivityLogService {
                 .from('activity_logs')
                 .insert({
                     user_id: params.userId,
+                    session_id: params.sessionId || null,
+                    tramite_id: params.tramiteId || null,
                     category: 'user_event',
                     event_type: params.eventType,
                     data: params.metadata || {}
@@ -157,6 +169,39 @@ export class ActivityLogService {
             return data.id
         } catch (error) {
             console.error('[ActivityLogService] Unexpected error in logUserEvent:', error)
+            return null
+        }
+    }
+
+    /**
+     * Log knowledge snapshot used by AI generation for reproducibility
+     */
+    static async logKnowledgeSnapshot(params: LogKnowledgeSnapshotParams): Promise<string | null> {
+        try {
+            const { data, error } = await this.supabase
+                .from('activity_logs')
+                .insert({
+                    user_id: params.userId,
+                    session_id: params.sessionId || null,
+                    tramite_id: params.tramiteId || null,
+                    category: 'ai_usage',
+                    event_type: params.actionType || 'knowledge_snapshot',
+                    data: {
+                        model: params.snapshot?.model || process.env.OPENAI_MODEL || 'gpt-4o',
+                        knowledge_snapshot: params.snapshot
+                    }
+                })
+                .select('id')
+                .single()
+
+            if (error) {
+                console.error('[ActivityLogService] Error logging knowledge snapshot:', error)
+                return null
+            }
+
+            return data.id
+        } catch (error) {
+            console.error('[ActivityLogService] Unexpected error in logKnowledgeSnapshot:', error)
             return null
         }
     }
