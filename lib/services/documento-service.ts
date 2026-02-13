@@ -109,8 +109,7 @@ export class DocumentoService {
 
     if (existingDocumento) {
       // Documento duplicado encontrado - reutilizar el existente
-      console.log(`[DocumentoService] Documento duplicado detectado, reutilizando: ${existingDocumento.id}`)
-
+      
       // Si hay un trámite, asociar el documento existente al trámite
       if (tramiteId) {
         // Verificar si ya está asociado
@@ -535,5 +534,46 @@ export class DocumentoService {
     if (error) {
       console.error('[DocumentoService] Error saving extraction data:', error)
     }
+  }
+
+  /**
+   * Busca un documento por huella de procesamiento para evitar dobles inserciones obvias por reintentos.
+   */
+  static async findDocumentoByProcessingFingerprint(processingFingerprint: string): Promise<Documento | null> {
+    if (!processingFingerprint?.trim()) return null
+    const supabase = createServerClient()
+
+    const { data, error } = await supabase
+      .from('documentos')
+      .select('*')
+      .eq('metadata->>processing_fingerprint', processingFingerprint)
+      .order('uploaded_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (error) {
+      console.error('[DocumentoService.findDocumentoByProcessingFingerprint] Error:', error)
+      return null
+    }
+
+    return (data || null) as Documento | null
+  }
+
+  /**
+   * Verifica si un documento ya tiene chunks indexados (idempotencia básica del postproceso).
+   */
+  static async hasIndexedChunks(documentoId: string): Promise<boolean> {
+    const supabase = createServerClient()
+    const { count, error } = await supabase
+      .from('documento_text_chunks')
+      .select('id', { count: 'exact', head: true })
+      .eq('documento_id', documentoId)
+
+    if (error) {
+      console.error('[DocumentoService.hasIndexedChunks] Error checking chunks:', error)
+      return false
+    }
+
+    return (count || 0) > 0
   }
 }
