@@ -2039,6 +2039,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       // Upload S3: marcar "in-flight" para evitar duplicados en concurrencia
       const uploadedOriginalFilesThisBatch = new Set<string>()
+      const extractedOriginalFilesThisBatch = new Set<string>()
       // OCR/RAG: mapear originalKey -> documentoId para persistir texto por página
       const documentoIdByOriginalKey = new Map<string, string>()
       // OCR pendiente cuando aún no existe documentoId (ej. primeras páginas antes del upload)
@@ -2090,6 +2091,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
         if (processResult?.state) setServerState(processResult.state as ServerStateSnapshot)
         if (processResult?.expedienteExistente) setExpedienteExistente(processResult.expedienteExistente)
+        const effectiveTramiteId = batchTramiteIdRef.current ?? activeTramiteId
 
         const postJsonWithTimeout = async (input: string, body: any, timeoutMs: number) => {
           const controller = new AbortController()
@@ -2141,6 +2143,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             const mergedData = {
               ...prevData,
               ...nextData,
+              structuredExtraction: processResult.structuredExtraction || prevData.structuredExtraction || null,
+              structuredExtractionWarnings: processResult.structuredExtractionWarnings || prevData.structuredExtractionWarnings || [],
+              structuredExtractionTraceId: processResult.structuredExtractionTraceId || prevData.structuredExtractionTraceId || null,
               // Arrays críticos que deben acumularse
               foliosReales: mergeUnique(prevData.foliosReales, nextData.foliosReales),
               foliosRealesUnidades: mergeUnique(prevData.foliosRealesUnidades, nextData.foliosRealesUnidades),
@@ -2441,7 +2446,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         // S3 upload (solo 1 por archivo original)
-        if (activeTramiteId && !uploadedOriginalFilesThisBatch.has(item.originalKey)) {
+        if (effectiveTramiteId && !uploadedOriginalFilesThisBatch.has(item.originalKey)) {
           // marcar antes para evitar carreras
           uploadedOriginalFilesThisBatch.add(item.originalKey)
           try {
@@ -2482,7 +2487,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             uploadFormData.append('file', item.originalFile)
             uploadFormData.append('compradorId', '')
             uploadFormData.append('tipo', expedienteTipo)
-            uploadFormData.append('tramiteId', activeTramiteId || '')
+            uploadFormData.append('tramiteId', effectiveTramiteId || '')
             uploadFormData.append('sessionId', conversationIdRef.current || '')
             uploadFormData.append('metadata', JSON.stringify({
               preaviso_subtype: item.docType,
@@ -2502,13 +2507,67 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 if (uploadedDoc?.id) {
                   const docId = String(uploadedDoc.id)
                   documentoIdByOriginalKey.set(item.originalKey, docId)
+
+                  // Fase 3: llamar ExtractionAgent backend-driven una sola vez por archivo original.
+                  if (!extractedOriginalFilesThisBatch.has(item.originalKey)) {
+                    extractedOriginalFilesThisBatch.add(item.originalKey)
+                    try {
+                      const rawTextFromExtraction =
+                        typeof processResult?.extractedData?.textoCompleto === 'string'
+                          ? processResult.extractedData.textoCompleto.trim()
+                          : ''
+                      const rawTextFromOcr =
+                        typeof processResult?.ocrText === 'string'
+                          ? processResult.ocrText.trim()
+                          : ''
+                      const rawTextFromJson =
+                        processResult?.extractedData && typeof processResult.extractedData === 'object'
+                          ? JSON.stringify(processResult.extractedData)
+                          : ''
+                      const rawTextForExtraction = rawTextFromExtraction || rawTextFromOcr || rawTextFromJson
+                      const tramiteIdForExtraction = effectiveTramiteId
+
+                      if (tramiteIdForExtraction && rawTextForExtraction) {
+                        const extractResp = await postJsonWithTimeout(
+                          `/api/expedientes/tramites/${tramiteIdForExtraction}/extract`,
+                          {
+                            documentId: docId,
+                            tramiteType: 'preaviso',
+                            rawText: rawTextForExtraction,
+                            fileMeta: {
+                              source: 'preaviso-chat',
+                              docType: item.docType,
+                              fileName: item.originalFile.name,
+                            },
+                          },
+                          30000
+                        )
+
+                        if (extractResp.ok) {
+                          const extractJson = await extractResp.json()
+                          processResult.structuredExtraction = extractJson?.structured || null
+                          processResult.structuredExtractionWarnings = extractJson?.warnings || []
+                          processResult.structuredExtractionTraceId = extractJson?.trace_id || null
+                        } else {
+                          const errText = await extractResp.text().catch(() => '')
+                          console.warn('[PreavisoChat] /extract non-ok', {
+                            status: extractResp.status,
+                            body: errText?.slice(0, 250),
+                          })
+                        }
+                      }
+                    } catch (extractError) {
+                      console.warn('[PreavisoChat] Error calling /extract', extractError)
+                    }
+                  }
+
                   // flush OCR pendiente
                   const pend = pendingOcrByOriginalKey.get(item.originalKey) || []
                   if (pend.length > 0) {
                     for (const p of pend) {
                       try {
                         await postJsonWithTimeout('/api/ai/preaviso-ocr-cache/upsert', {
-                          tramiteId: activeTramiteId,
+                          tramiteId: effectiveTramiteId,
                           docName: item.originalFile.name,
                           docSubtype: item.docType,
                           docRole: null,
@@ -2531,7 +2590,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         try {
-          if (activeTramiteId && processResult?.ocrText && typeof processResult.ocrText === 'string') {
+          if (effectiveTramiteId && processResult?.ocrText && typeof processResult.ocrText === 'string') {
             const text = processResult.ocrText.trim()
             if (text) {
               const inferPageNumber = (): number => {
@@ -2548,7 +2607,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               if (docId) {
                 try {
                   await postJsonWithTimeout('/api/ai/preaviso-ocr-cache/upsert', {
-                    tramiteId: activeTramiteId,
+                    tramiteId: effectiveTramiteId,
                     docName: item.originalFile.name,
                     docSubtype: item.docType,
                     docRole: null,
