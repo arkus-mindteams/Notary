@@ -29,12 +29,33 @@ interface DocumentSidebarProps {
 export function DocumentSidebar({ data, serverState, isVisible, onClose }: DocumentSidebarProps) {
     if (!isVisible) return null
 
-    // Calcular progreso
+    const getStepStatus = (stateId: string): 'pending' | 'completed' | 'blocked' => {
+        const wizardStep = serverState?.wizard_state?.steps?.find((s) => s.state_id === stateId)
+        if (wizardStep) return wizardStep.status
+
+        const raw = serverState?.state_status?.[stateId]
+        if (raw === 'completed' || raw === 'not_applicable') return 'completed'
+        if (raw === 'incomplete') return 'blocked'
+        return 'pending'
+    }
+
     const progress = (() => {
-        if (!serverState?.state_status) return { completed: 0, total: 6, percentage: 0 }
-        const statuses = Object.values(serverState.state_status)
-        const completed = statuses.filter(s => s === 'completed' || s === 'not_applicable').length
+        if (serverState?.wizard_state) {
+            const total = serverState.wizard_state.total_steps
+            const completed = serverState.wizard_state.steps.filter((s) => s.status === 'completed').length
+            return {
+                completed,
+                total,
+                percentage: total > 0 ? (completed / total) * 100 : 0
+            }
+        }
+
         const total = 6
+        const stateIds = ['ESTADO_1', 'ESTADO_2', 'ESTADO_3', 'ESTADO_4', 'ESTADO_5', 'ESTADO_6']
+        const completed = stateIds.filter((id) => {
+            const v = serverState?.state_status?.[id]
+            return v === 'completed' || v === 'not_applicable'
+        }).length
         return {
             completed,
             total,
@@ -42,7 +63,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
         }
     })()
 
-    // Función auxiliar para normalizar nombres
+
     const normalizeName = (str: string | null | undefined): string => {
         if (!str) return ''
         return str.toLowerCase().trim().replace(/\s+/g, ' ')
@@ -88,7 +109,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                             {/* PASO 1 – OPERACIÓN Y FORMA DE PAGO */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
-                                    {serverState?.state_status?.ESTADO_1 === 'completed' ? (
+                                    {getStepStatus('ESTADO_1') === 'completed' ? (
                                         <CheckCircle2 className="h-4 w-4 text-green-500" />
                                     ) : (
                                         <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -102,7 +123,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                                     {data.tipoOperacion ? (
                                         <>
                                             <div><span className="font-medium">Tipo de operación:</span> {data.tipoOperacion}</div>
-                                            {serverState?.state_status?.ESTADO_1 === 'completed' ? (
+                                            {getStepStatus('ESTADO_1') === 'completed' ? (
                                                 data.creditos !== undefined && data.creditos.length > 0 ? (
                                                     <div><span className="font-medium">Forma de pago:</span> Crédito</div>
                                                 ) : data.creditos !== undefined && data.creditos.length === 0 ? (
@@ -123,7 +144,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                             {/* PASO 2 – INMUEBLE Y REGISTRO (CONSOLIDADO) */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
-                                    {serverState?.state_status?.ESTADO_2 === 'completed' ? (
+                                    {getStepStatus('ESTADO_2') === 'completed' ? (
                                         <CheckCircle2 className="h-4 w-4 text-green-500" />
                                     ) : (
                                         <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -149,17 +170,32 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                                                 .join(', ')
                                         }</div>
                                     )}
-                                    {data.inmueble?.direccion?.calle && (
-                                        <div><span className="font-medium">Dirección:</span> {
-                                            typeof data.inmueble.direccion === 'string'
-                                                ? data.inmueble.direccion
-                                                : (() => {
-                                                    const unidad = data.inmueble?.datos_catastrales?.unidad
-                                                    const base = `${data.inmueble.direccion.calle || ''} ${data.inmueble.direccion.numero || ''} ${data.inmueble.direccion.colonia || ''}`.trim()
-                                                    return unidad ? `Unidad ${unidad}, ${base}` : base
-                                                })()
-                                        }</div>
-                                    )}
+                                    {(() => {
+                                        const d = data.inmueble?.direccion
+                                        const dc = data.inmueble?.datos_catastrales
+                                        if (typeof d === 'string' && d.trim()) {
+                                            return <div><span className="font-medium">Objeto de compraventa:</span> {d}</div>
+                                        }
+                                        const conCalle = typeof d === 'object' && d?.calle && `${(d.calle || '').trim()} ${(d.numero || '').trim()} ${(d.colonia || '').trim()}`.trim()
+                                        const conColoniaMunicipio = typeof d === 'object' && (d?.colonia || d?.municipio || d?.estado)
+                                            ? [d?.calle, d?.numero, d?.colonia, d?.municipio, d?.estado].filter(Boolean).join(', ')
+                                            : ''
+                                        const datosCat = dc && (dc.unidad || dc.condominio || dc.lote || dc.fraccionamiento || dc.manzana)
+                                            ? [
+                                                dc.unidad && `Unidad ${dc.unidad}`,
+                                                dc.condominio && `Condominio ${dc.condominio}`,
+                                                dc.lote && `Lote ${dc.lote}`,
+                                                dc.manzana && `Manzana ${dc.manzana}`,
+                                                dc.fraccionamiento
+                                            ].filter(Boolean).join(' – ')
+                                            : ''
+                                        const texto = conCalle || conColoniaMunicipio || datosCat
+                                            ? (datosCat && (conCalle || conColoniaMunicipio)
+                                                ? `${datosCat}, ${conCalle || conColoniaMunicipio}`
+                                                : (datosCat || conCalle || conColoniaMunicipio))
+                                            : null
+                                        return texto ? <div><span className="font-medium">Objeto de compraventa:</span> {texto}</div> : null
+                                    })()}
                                     {data.inmueble?.superficie && (
                                         <div><span className="font-medium">Superficie:</span> {
                                             typeof data.inmueble.superficie === 'string'
@@ -183,7 +219,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                             {/* PASO 3 – VENDEDOR(ES) */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
-                                    {serverState?.state_status?.ESTADO_3 === 'completed' ? (
+                                    {getStepStatus('ESTADO_3') === 'completed' ? (
                                         <CheckCircle2 className="h-4 w-4 text-green-500" />
                                     ) : (
                                         <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -237,7 +273,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                             {/* PASO 4 – COMPRADOR(ES) */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
-                                    {serverState?.state_status?.ESTADO_4 === 'completed' ? (
+                                    {getStepStatus('ESTADO_4') === 'completed' ? (
                                         <CheckCircle2 className="h-4 w-4 text-green-500" />
                                     ) : (
                                         <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -331,9 +367,9 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                             {/* PASO 5 – CRÉDITO DEL COMPRADOR */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
-                                    {serverState?.state_status?.ESTADO_5 === 'completed' || serverState?.state_status?.ESTADO_5 === 'not_applicable' ? (
+                                    {getStepStatus('ESTADO_5') === 'completed' ? (
                                         <CheckCircle2 className="h-4 w-4 text-green-500" />
-                                    ) : serverState?.state_status?.ESTADO_5 === 'incomplete' ? (
+                                    ) : getStepStatus('ESTADO_5') === 'blocked' ? (
                                         <AlertCircle className="h-4 w-4 text-yellow-500" />
                                     ) : (
                                         <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -345,7 +381,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                                 </div>
                                 <div className={`ml-6 ${onClose ? 'space-y-0.5 mt-1' : 'space-y-1 mt-1.5'} ${onClose ? 'text-[11px]' : 'text-xs'} text-gray-600`}>
                                     {data.tipoOperacion ? (
-                                        serverState?.state_status?.ESTADO_5 === 'pending' ? (
+                                        getStepStatus('ESTADO_5') === 'pending' ? (
                                             <div className="text-gray-400 italic">Pendiente: aún no se ha confirmado si será crédito o contado</div>
                                         ) : data.creditos && data.creditos.length > 0 ? (
                                             <>
@@ -380,9 +416,9 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                             {/* PASO 6 – CANCELACIÓN DE HIPOTECA */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
-                                    {serverState?.state_status?.ESTADO_6 === 'completed' || serverState?.state_status?.ESTADO_6 === 'not_applicable' ? (
+                                    {getStepStatus('ESTADO_6') === 'completed' ? (
                                         <CheckCircle2 className="h-4 w-4 text-green-500" />
-                                    ) : serverState?.state_status?.ESTADO_6 === 'incomplete' ? (
+                                    ) : getStepStatus('ESTADO_6') === 'blocked' ? (
                                         <AlertCircle className="h-4 w-4 text-yellow-500" />
                                     ) : (
                                         <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -419,7 +455,7 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                                             }
                                             return (
                                                 <>
-                                                    <div className="text-gray-400 italic">Pendiente: confirmar si la cancelación ya está inscrita (sí/no)</div>
+                                                    <div className="text-gray-400 italic">Pendiente: confirmar si la hipoteca se cancelará con esta operación o ya está inscrita la cancelación (sí/no)</div>
                                                     {acreedor}
                                                 </>
                                             )
@@ -437,3 +473,4 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
         </Card>
     )
 }
+

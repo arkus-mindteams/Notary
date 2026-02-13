@@ -72,4 +72,10 @@ export interface TramitePlugin {
 
   // Merge de datos extraídos de documentos al contexto (opcional)
   mergeDocumentData?(context: any, extractedData: any, documentType: string): any
+
+  // Block tools (OpenAI function calling): un tool por bloque de datos (opcional)
+  getBlockToolsOpenAI?(): any[]
+
+  // Convertir una llamada a block tool en comandos del trámite (opcional)
+  convertBlockToolToCommands?(toolName: string, args: Record<string, unknown>, context: any): Command[]
 }

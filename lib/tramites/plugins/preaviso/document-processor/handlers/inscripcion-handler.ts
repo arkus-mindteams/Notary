@@ -68,7 +68,8 @@ export class InscripcionHandler implements PreavisoDocumentTypeHandler {
   "superficie": "superficie del inmueble si está disponible (para folio único, con unidad: m², m2, metros, etc.)",
   "valor": "valor del inmueble si está disponible",
   "gravamenes": "Array de objetos con detalles de gravámenes si existen, EJEMPLO: [{ acreedor: 'BANCO...', monto: '...', moneda: 'MXN' }]. Si el documento dice explícitamente 'LIBRE DE GRAVAMEN', 'SIN GRAVAMEN' o 'NO SE REPORTAN GRAVÁMENES', retorna el string exacto 'LIBRE'. Si no hay información, retornar null",
-  "numeroExpediente": "número de expediente registral si está visible"
+  "numeroExpediente": "número de expediente registral si está visible",
+  "textoCompleto": "Transcripción literal de TODO el texto visible en el documento, en orden de lectura (arriba a abajo). Incluye encabezados, tablas, sellos legibles, notas al pie y cualquier texto. Conserva saltos de línea entre párrafos. No omitas nada de lo que se pueda leer. Si hay varias secciones, transcríbelas en orden."
 }
 
 INSTRUCCIONES CRÍTICAS:
@@ -95,7 +96,8 @@ INSTRUCCIONES CRÍTICAS:
    - En partidas[] incluye TODAS las partidas detectadas, pero asegúrate de incluir las de partidasTitulo[] si existen.
 5. Para dirección: si está disponible como objeto estructurado, usa direccion{}. Si solo está como texto, usa ubicacion.
 6. NO extraigas ni infieras forma de pago o institución de crédito desde la inscripción (eso se confirma con el usuario en el chat).
-7. Si algún campo no está disponible o no es legible, usa null (no inventes valores).`,
+7. Si algún campo no está disponible o no es legible, usa null (no inventes valores).
+8. textoCompleto (OBLIGATORIO): Transcribe TODO el texto que puedas leer en el documento, sin resumir. Es para conservar el contenido completo; inclúyelo siempre que haya texto visible.`,
             userPrompt: 'Analiza este documento de inscripción registral METICULOSAMENTE. Extrae TODA la información que puedas leer claramente. IMPORTANTE: Busca TODOS los folios reales en TODAS las secciones del documento (UNIDADES, INMUEBLE(S) AFECTADO(S), y cualquier otra). NO omitas ningún folio, incluso si son números consecutivos. Incluye también: partidas registrales (todas si hay múltiples), sección, dirección completa del inmueble, datos catastrales (lote, manzana, fraccionamiento, condominio, unidad), superficie, propietario/titular registral, y cualquier gravamen o hipoteca visible. Si hay múltiples folios, intenta asociar la información del inmueble a cada folio según cómo aparezca en el documento.'
         }
     }

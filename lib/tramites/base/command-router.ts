@@ -15,6 +15,7 @@ import { TitularRegistralHandler } from '../plugins/preaviso/handlers/titular-re
 import { PaymentMethodHandler } from '../plugins/preaviso/handlers/payment-method-handler'
 import { CreditInstitutionHandler } from '../plugins/preaviso/handlers/credit-institution-handler'
 import { CreditParticipantHandler } from '../plugins/preaviso/handlers/credit-participant-handler'
+import { CreditParticipantsOnlyBuyerHandler } from '../plugins/preaviso/handlers/credit-participants-only-buyer-handler'
 import { EncumbranceHandler } from '../plugins/preaviso/handlers/encumbrance-handler'
 import { InmuebleManualHandler } from '../plugins/preaviso/handlers/inmueble-manual-handler'
 import { GravamenAcreedorHandler } from '../plugins/preaviso/handlers/gravamen-acreedor-handler'
@@ -36,6 +37,7 @@ export class CommandRouter {
     this.handlers.set('payment_method', PaymentMethodHandler)
     this.handlers.set('credit_institution', CreditInstitutionHandler)
     this.handlers.set('credit_participant', CreditParticipantHandler)
+    this.handlers.set('credit_participants_only_buyer', CreditParticipantsOnlyBuyerHandler)
     this.handlers.set('encumbrance', EncumbranceHandler)
     this.handlers.set('encumbrance_cancellation', EncumbranceHandler)
     this.handlers.set('buyer_conyuge_swap', BuyerConyugeSwapHandler)

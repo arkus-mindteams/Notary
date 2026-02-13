@@ -93,7 +93,7 @@ export interface InmuebleV14 {
     seccion?: string | null;
     numero_expediente?: string | null;
     all_registry_pages_confirmed: boolean;
-    direccion: DireccionInmueble;
+    direccion: string | DireccionInmueble;
     superficie: string | null;
     valor: string | null;
     datos_catastrales: DatosCatastrales;
@@ -176,6 +176,16 @@ export interface ServerStateSnapshot {
     required_missing: string[];
     blocking_reasons: string[];
     allowed_actions: string[];
+    wizard_state?: {
+        current_step: number;
+        total_steps: number;
+        can_finalize: boolean;
+        steps: Array<{
+            id: string;
+            state_id: string;
+            status: 'pending' | 'completed' | 'blocked';
+        }>;
+    };
 }
 
 export interface UploadedDocument {

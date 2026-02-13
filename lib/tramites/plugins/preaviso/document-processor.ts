@@ -15,14 +15,16 @@ export class PreavisoDocumentProcessor {
   ): Promise<{ commands: Command[]; extractedData: any }> {
     const handler = getHandler(documentType)
 
-    // 0. Intelligent Processing: Check if we already extracted this file globally
+    // 0. Intelligent Processing: Check if we already extracted this file globally (salvo forceReprocess)
     let fileHash = ''
+    const forceReprocess = context?.forceReprocess === true
     try {
       const buffer = Buffer.from(await file.arrayBuffer())
       fileHash = createHash('md5').update(buffer).digest('hex')
 
-      const cachedExtraction = await DocumentoService.findExtractionData(fileHash)
-      if (cachedExtraction) {
+      if (!forceReprocess) {
+        const cachedExtraction = await DocumentoService.findExtractionData(fileHash)
+        if (cachedExtraction) {
         // Validación de versión de caché para inscripciones
         let isValidCache = true
         if (documentType === 'inscripcion') {
@@ -41,6 +43,7 @@ export class PreavisoDocumentProcessor {
             extractedData: cachedExtraction
           }
         }
+      }
       }
     } catch (e) {
       console.error('[PreavisoDocumentProcessor] Error checking cache:', e)
@@ -393,9 +396,10 @@ REGLAS CRÍTICAS:
           response_format: { type: 'json_object' }
         }),
         // gpt-4o, gpt-5.x, o1, o3 use max_completion_tokens; gpt-3.5-turbo uses max_tokens
+        // 8000 permite incluir textoCompleto (transcripción de toda la página) además del JSON estructurado
         ...(model.includes("gpt-4") || model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
-          ? { max_completion_tokens: 2000 }
-          : { max_tokens: 2000 }
+          ? { max_completion_tokens: 8000 }
+          : { max_tokens: 8000 }
         )
       })
     })

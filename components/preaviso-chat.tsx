@@ -34,7 +34,6 @@ import {
   Square,
   Trash2
 } from 'lucide-react'
-import { PreavisoStateSnapshot, computePreavisoState } from '@/lib/preaviso-state'
 import { PreavisoExportOptions } from './preaviso-export-options'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useIsTablet } from '@/hooks/use-tablet'
@@ -183,6 +182,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const messageIdCounterRef = useRef(0)
   const conversationIdRef = useRef<string | null>(null)
   const documentProcessCacheRef = useRef<Map<string, any>>(new Map())
+  /** Para documentos ya en caché: siempre reprocesar (forceReprocess en backend) */
+  const earlyAlreadyProcessedRef = useRef<{ choice: 'use' | 'reprocess'; fileNames: string[] } | null>(null)
 
   // Función helper para generar IDs únicos para mensajes
   const generateMessageId = (prefix: string = 'msg'): string => {
@@ -196,6 +197,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const isManualResetRef = useRef(false)
   const isSubmittingRef = useRef(false) // Lock para prevenir doble envío
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
+  /** TramiteId recién creado en este batch; evita race donde processOne usa activeTramiteId aún null */
+  const batchTramiteIdRef = useRef<string | null>(null)
   const [expedienteExistente, setExpedienteExistente] = useState<{
     compradorId: string
     compradorNombre: string
@@ -275,7 +278,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const chatId = searchParams.get('chatId')
   const isNew = searchParams.get('new')
 
-  const createNewSession = async () => {
+  /** true cuando hay chatId en URL o ya tenemos sesión creada; evita usar el chat sin id */
+  const [sessionReady, setSessionReady] = useState(!!chatId)
+
+  const createNewSession = async (): Promise<string | null> => {
     console.log('[PreavisoChat] Creando nueva sesión...')
     try {
       const { data: { session: currentSession } } = await supabase.auth.getSession()
@@ -285,13 +291,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
 
       // Evitar duplicados por Strict Mode
-      if (isCreatingSessionRef.current) return
+      if (isCreatingSessionRef.current) return null
       isCreatingSessionRef.current = true
 
       const res = await fetch('/api/chat/sessions', { method: 'POST', headers })
       if (res.ok) {
         const json = await res.json()
-        const newId = json.session.id
+        const newId = json.session?.id ?? null
+        if (!newId) return null
         conversationIdRef.current = newId
         console.log('[PreavisoChat] Nueva sesión creada:', newId)
 
@@ -385,10 +392,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         setProcessingProgress(0)
         setIsProcessingDocument(false)
 
+        setSessionReady(true)
         router.push(`/dashboard/preaviso?chatId=${newId}`)
+        return newId
       }
+      return null
     } catch (e) {
       console.error('Error creating session', e)
+      return null
     } finally {
       isCreatingSessionRef.current = false
     }
@@ -453,14 +464,23 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           console.log('[PreavisoChat] Restaurando contexto:', json.session.last_context)
           setData(json.session.last_context)
 
-          // FIX: Recalcular estado del servidor (pasos completados) basado en datos cargados
           try {
-            const computed = computePreavisoState(json.session.last_context)
-            if (computed && computed.state) {
-              setServerState(computed.state)
+            const { data: { session: stateSession } } = await supabase.auth.getSession()
+            const stateHeaders: HeadersInit = { 'Content-Type': 'application/json' }
+            if (stateSession?.access_token) {
+              stateHeaders['Authorization'] = `Bearer ${stateSession.access_token}`
+            }
+            const stateResp = await fetch('/api/expedientes/preaviso/wizard-state', {
+              method: 'POST',
+              headers: stateHeaders,
+              body: JSON.stringify({ context: json.session.last_context }),
+            })
+            if (stateResp.ok) {
+              const stateJson = await stateResp.json()
+              setServerState(stateJson as ServerStateSnapshot)
             }
           } catch (err) {
-            console.error('[PreavisoChat] Error recalculando estado inicial:', err)
+            console.error('[PreavisoChat] Error cargando estado inicial desde backend:', err)
           }
         }
 
@@ -474,22 +494,21 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
 
     if (chatId) {
-      // Cargar existente
+      setSessionReady(true)
       if (conversationIdRef.current !== chatId) {
         loadSession(chatId)
       }
     } else {
-      // Nueva sesión (si no tenemos una ya en memoria o si es explícito new)
+      // Nueva sesión: crear primero para que el chat tenga siempre chatId
       if (!conversationIdRef.current || isNew) {
-        // Resetear estado visual
+        setSessionReady(false)
         setMessages([])
         setInitialMessagesSent(false)
         initializationRef.current = false
-        // Crear sesión en backend
         createNewSession()
       }
     }
-  }, [chatId, isNew]) // Dependencies specific to what we use
+  }, [chatId, isNew])
 
   // Enviar mensajes iniciales y crear nuevo trámite al iniciar
   useEffect(() => {
@@ -769,7 +788,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       const primerComprador = data.compradores?.[0]
       const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
       const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
-      const direccion = data.inmueble?.direccion?.calle || (data.inmueble?.direccion as any)
+      const direccion = typeof data.inmueble?.direccion === 'string' ? data.inmueble.direccion : data.inmueble?.direccion?.calle || ''
 
       if (!session?.access_token || (!vendedorNombre && !direccion && !compradorNombre)) {
         return
@@ -869,6 +888,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   // Back-end es la fuente de verdad para "completo"
   const isCompleteByServer = useMemo(() => {
     if (!serverState) return false
+    if (serverState.wizard_state) return serverState.wizard_state.can_finalize
     if (serverState.current_state === 'ESTADO_8') return true
     const ss = serverState.state_status || {}
     const ok = (k: string) => ss[k] === 'completed' || ss[k] === 'not_applicable'
@@ -877,6 +897,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
   // Calcular progreso basado en datos completados (v1.4 - arrays)
   const progress = useMemo(() => {
+    if (serverState?.wizard_state) {
+      const total = serverState.wizard_state.total_steps
+      const completed = serverState.wizard_state.steps.filter((s) => s.status === 'completed').length
+      return {
+        completed,
+        total,
+        percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
+      }
+    }
+
     const total = 6
     const ss = serverState?.state_status || {}
     const ok = (k: string) => ss[k] === 'completed' || ss[k] === 'not_applicable'
@@ -1624,7 +1654,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
 
-    // ... (keep existing logic for creating initial trámite if needed) ...
+    // Sin sesión no se puede guardar documento ni indexar RAG; evitar procesar
+    if (!conversationIdRef.current) {
+      console.error('[PreavisoChat] No hay conversation_id tras esperar sesión; no se guardará el documento en BD ni RAG.')
+      setIsProcessingDocument(false)
+      setProcessingProgress(0)
+      setMessages(prev => [...prev, {
+        id: generateMessageId('error'),
+        role: 'assistant',
+        content: 'No se pudo iniciar la sesión de chat. Por favor, recarga la página e intenta de nuevo.',
+        timestamp: new Date()
+      }])
+      return
+    }
+
     // Verificar que activeTramiteId esté establecido antes de procesar
     if (!activeTramiteId && user?.id) {
       // ... (omitted for brevity, keep existing code until line 1771) ...
@@ -1694,6 +1737,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (response.ok) {
           const tramite = await response.json()
           setActiveTramiteId(tramite.id)
+          batchTramiteIdRef.current = tramite.id
         } else {
           console.error('Error creando trámite para carga de archivo')
           setIsProcessingDocument(false)
@@ -1720,6 +1764,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
 
+    // Limpiar tramiteId de batch anterior para no reutilizarlo en otra sesión
+    batchTramiteIdRef.current = null
     // Siempre establecer isProcessingDocument para mostrar la barra de progreso
     setIsProcessingDocument(true)
     setProcessingProgress(0)
@@ -1745,8 +1791,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       setProcessingProgress(0)
       return
     }
-
-
 
     const pdfFiles = newFiles.filter(
       file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
@@ -2570,13 +2614,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         formData.append('file', item.imageFile)
         formData.append('documentType', item.docType)
         formData.append('needOcr', '1')
+        const effectiveTramiteId = batchTramiteIdRef.current ?? activeTramiteId
+        const forceReprocess =
+          earlyAlreadyProcessedRef.current?.choice === 'reprocess' &&
+          earlyAlreadyProcessedRef.current.fileNames.includes(item.originalFile.name)
         formData.append('context', JSON.stringify({
           conversation_id: conversationIdRef.current,
           is_processing_artifact: item.isArtifact,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
           _document_people_pending: (workingData as any)._document_people_pending ?? null,
-          tramiteId: activeTramiteId,
+          tramiteId: effectiveTramiteId,
+          forceReprocess: forceReprocess || undefined,
           vendedores: workingData.vendedores || [],
           compradores: workingData.compradores || [],
           creditos: workingData.creditos,
@@ -2673,13 +2722,50 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         await Promise.all(workers)
       }
 
+      // Documentos ya procesados: comprobar GLOBAL (API) + conversación actual
+      let checkResults: { fileName: string; fileHash: string; alreadyProcessed: boolean }[] = []
+      try {
+        const checkForm = new FormData()
+        items.forEach((it: ImgItem) => checkForm.append('files', it.imageFile))
+        const { data: { session } } = await supabase.auth.getSession()
+        const checkRes = await fetch('/api/ai/preaviso-check-document', {
+          method: 'POST',
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          body: checkForm
+        })
+        if (checkRes.ok) {
+          const body = await checkRes.json()
+          checkResults = body.results || []
+        }
+      } catch (e) {
+        console.warn('[PreavisoChat] Check API error:', e)
+      }
+
+      const cacheableTypesSet = new Set(['inscripcion', 'escritura', 'plano'])
+      const alreadyProcessedItems = items.filter((item: ImgItem, j: number) => {
+        const fromApi = checkResults[j]?.alreadyProcessed === true
+        const cacheKey = `${item.originalKey}:${item.imageFile.name}:${item.docType}`
+        const fromCache = cacheableTypesSet.has(item.docType) && documentProcessCacheRef.current.get(cacheKey) && !documentProcessCacheRef.current.get(cacheKey)?.__error
+        const fromConversation = !!uploadedDocumentsRef.current.find(
+          d => d.name === item.originalFile.name && d.processed && d.extractedData
+        )
+        return fromApi || fromCache || fromConversation
+      })
+
+      const uniqueAlreadyProcessedNames = [...new Set(alreadyProcessedItems.map((i: ImgItem) => i.originalFile.name))]
+
+      // Siempre reprocesar: no mostrar modal; forzar reproceso para los que ya estaban en caché
+      if (alreadyProcessedItems.length > 0) {
+        earlyAlreadyProcessedRef.current = { choice: 'reprocess', fileNames: uniqueAlreadyProcessedNames }
+      }
+
       // Identificaciones: secuencial (context-sensitive). PDFs: concurrencia=2.
-      const idItems = items.filter(it => it.docType === 'identificacion')
-      const otherItems = items.filter(it => it.docType !== 'identificacion')
+      const idItems = items.filter((it: ImgItem) => it.docType === 'identificacion')
+      const otherItems = items.filter((it: ImgItem) => it.docType !== 'identificacion')
 
       // Inscripción/Escritura: secuencial para garantizar acumulación de `documentosProcesados` página a página.
-      const sequentialItems = otherItems.filter(it => it.docType === 'inscripcion' || it.docType === 'escritura')
-      const parallelItems = otherItems.filter(it => it.docType !== 'inscripcion' && it.docType !== 'escritura')
+      const sequentialItems = otherItems.filter((it: ImgItem) => it.docType === 'inscripcion' || it.docType === 'escritura')
+      const parallelItems = otherItems.filter((it: ImgItem) => it.docType !== 'inscripcion' && it.docType !== 'escritura')
 
       if (parallelItems.length > 0) {
         await runPool(parallelItems, 2)
@@ -2766,7 +2852,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           if (extracted.rfc) info += `RFC: ${extracted.rfc}\n`
           if (extracted.curp) info += `CURP: ${extracted.curp}\n`
           if (extracted.folioReal) info += `Folio Real: ${extracted.folioReal}\n`
-          if (extracted.direccion || extracted.ubicacion) info += `Dirección: ${extracted.direccion || extracted.ubicacion}\n`
+          if (extracted.direccion || extracted.ubicacion) info += `Objeto de compraventa: ${extracted.direccion || extracted.ubicacion}\n`
           if (extracted.tipoDocumento) info += `Tipo: ${extracted.tipoDocumento}\n`
           return info.trim()
         })
@@ -3120,7 +3206,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               ? jsonData.inmueble.all_registry_pages_confirmed
               : inmuebleBase.all_registry_pages_confirmed,
             direccion: jsonData.inmueble.direccion
-              ? { ...inmuebleBase.direccion, ...jsonData.inmueble.direccion }
+              ? (typeof jsonData.inmueble.direccion === 'string'
+                ? jsonData.inmueble.direccion
+                : (typeof inmuebleBase.direccion === 'object'
+                  ? { ...inmuebleBase.direccion, ...jsonData.inmueble.direccion }
+                  : jsonData.inmueble.direccion))
               : inmuebleBase.direccion,
             superficie: jsonData.inmueble.superficie !== undefined
               ? (typeof jsonData.inmueble.superficie === 'string' ? jsonData.inmueble.superficie : String(jsonData.inmueble.superficie))
@@ -3133,7 +3223,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               : inmuebleBase.datos_catastrales
           }
 
-          // Compatibilidad: si viene en formato antiguo, convertir
           if (jsonData.inmueble.folioReal) {
             inmuebleUpdates.folio_real = jsonData.inmueble.folioReal
           }
@@ -3141,8 +3230,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             inmuebleUpdates.partidas = [...inmuebleUpdates.partidas, jsonData.inmueble.partida]
           }
           if (jsonData.inmueble.direccion && typeof jsonData.inmueble.direccion === 'string') {
-            // Si viene como string, intentar parsear o usar como calle
-            inmuebleUpdates.direccion.calle = jsonData.inmueble.direccion
+            if (typeof inmuebleUpdates.direccion === 'object') {
+              inmuebleUpdates.direccion = { ...inmuebleUpdates.direccion, calle: jsonData.inmueble.direccion }
+            } else {
+              inmuebleUpdates.direccion = jsonData.inmueble.direccion
+            }
           }
           if (jsonData.inmueble.lote) inmuebleUpdates.datos_catastrales.lote = jsonData.inmueble.lote
           if (jsonData.inmueble.manzana) inmuebleUpdates.datos_catastrales.manzana = jsonData.inmueble.manzana
@@ -3150,7 +3242,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           if (jsonData.inmueble.condominio) inmuebleUpdates.datos_catastrales.condominio = jsonData.inmueble.condominio
           if (jsonData.inmueble.unidad) inmuebleUpdates.datos_catastrales.unidad = jsonData.inmueble.unidad
           if (jsonData.inmueble.modulo) inmuebleUpdates.datos_catastrales.modulo = jsonData.inmueble.modulo
-          if (jsonData.inmueble.colonia) inmuebleUpdates.direccion.colonia = jsonData.inmueble.colonia
+          if (jsonData.inmueble.colonia && typeof inmuebleUpdates.direccion === 'object') {
+            inmuebleUpdates.direccion.colonia = jsonData.inmueble.colonia
+          }
 
           updates.inmueble = inmuebleUpdates
           hasUpdates = true
@@ -3694,19 +3788,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
 
-    // Detectar nombres (patrones comunes) - v1.4
+
     const nombrePattern = /(?:nombre|vendedor|comprador)[:\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)+)/gi
     const nombres = [...userInput.matchAll(nombrePattern)]
 
-    // Detectar RFC
+
     const rfcPattern = /RFC[:\s]+([A-Z]{3,4}\d{6}[A-Z0-9]{3})/gi
     const rfcMatch = userInput.match(rfcPattern)
 
-    // Detectar CURP
+
     const curpPattern = /CURP[:\s]+([A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d)/gi
     const curpMatch = userInput.match(curpPattern)
 
-    // Actualizar datos si se encuentran (v1.4 - arrays)
+
     const primerVendedor = currentData.vendedores?.[0]
     const vendedorNombre = primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social
 
@@ -3795,6 +3889,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     }
 
     return hasUpdates ? updates : null
+  }
+
+  if (!sessionReady) {
+    return (
+      <div className={`${(isMobile || isTablet) ? 'min-h-screen' : 'h-full'} flex flex-col items-center justify-center gap-4`}>
+        <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+        <p className="text-sm text-gray-600">Preparando chat...</p>
+      </div>
+    )
   }
 
   return (

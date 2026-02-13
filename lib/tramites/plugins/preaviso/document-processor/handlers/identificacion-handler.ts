@@ -14,7 +14,8 @@ export class IdentificacionHandler implements PreavisoDocumentTypeHandler {
 {
   "nombre": "nombre completo tal como aparece en el documento (ej: "WU, JINWEI" o "QIAOZHEN ZHANG")",
   "rfc": "RFC si está visible",
-  "curp": "CURP si está visible"
+  "curp": "CURP si está visible",
+  "textoCompleto": "Transcripción literal de TODO el texto visible en el documento (frontal y reverso si aplica), en orden de lectura. Incluye encabezados, campos, sellos. Conserva saltos de línea. No omitas nada legible."
 }
 
 IMPORTANTE:

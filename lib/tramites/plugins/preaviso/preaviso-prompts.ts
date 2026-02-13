@@ -4,55 +4,65 @@ import { computePreavisoState } from '../../../preaviso-state'
 import { DocumentoService } from '@/lib/services/documento-service'
 
 export class PreavisoPrompts {
-    /**
-     * Genera el prompt del sistema para el asistente de Preaviso
-     */
-    static async generateSystemPrompts(
-        context: any,
-        pluginName: string,
-        state: StateDefinition,
-        missingNow: string[],
-        systemDiagnostic: string
-    ): Promise<string[]> {
-        // RAG: Buscar contexto relevante si hay campos faltantes
-        let ragContext = ''
-        try {
-            if (state.id !== 'ESTADO_8') {
-                let query = ''
-                const missing = missingNow
+  /**
+   * Genera el prompt del sistema para el asistente de Preaviso
+   */
+  static async generateSystemPrompts(
+    context: any,
+    pluginName: string,
+    state: StateDefinition,
+    missingNow: string[],
+    systemDiagnostic: string
+  ): Promise<string[]> {
+    // RAG: Buscar contexto relevante si hay campos faltantes
+    let ragContext = ''
+    try {
+      if (state.id !== 'ESTADO_8') {
+        let query = ''
+        const missing = missingNow
 
-                if (missing.some(f => f.includes('folio_real') || f.includes('partidas') || f.includes('direccion'))) {
-                    query = 'antecedentes propiedad folio real partidas dirección ubicación inmueble'
-                } else if (missing.some(f => f.includes('vendedores'))) {
-                    query = 'vendedor titular registral propietario'
-                } else if (missing.some(f => f.includes('compradores'))) {
-                    query = 'comprador adquirente generales identificación' // generales = nombre, estado civil, etc
-                } else if (missing.some(f => f.includes('estado_civil'))) {
-                    query = 'estado civil matrimonio soltero casado'
-                } else if (missing.some(f => f.includes('creditos'))) {
-                    query = 'precio forma de pago crédito institución bancaria'
-                } else if (missing.some(f => f.includes('hipoteca') || f.includes('gravamen'))) {
-                    query = 'gravamen hipoteca certificado libertad gravamen'
-                }
-
-                if (query) {
-                    const chunks = await DocumentoService.searchSimilarChunks(query, context.tramiteId, 0.5, 3)
-                    if (chunks && chunks.length > 0) {
-                        ragContext = `
-             INFORMACIÓN EXTRAÍDA DE DOCUMENTOS (RAG):
-             Los siguientes fragmentos de texto fueron encontrados en los documentos del expediente y pueden ser útiles para formular la pregunta o entender el contexto (NO inventes información que no esté aquí):
-             ${chunks.map(c => `- "${c.content}" (Doc: ${c.documento?.tipo || 'Desconocido'})`).join('\n')}
-             `
-                    }
-                }
-            }
-        } catch (err) {
-            console.error('[PreavisoPrompts] RAG Error:', err)
-            // Continue without RAG
+        if (missing.some(f => f.includes('folio_real') || f.includes('partidas') || f.includes('direccion'))) {
+          query = 'antecedentes propiedad folio real partidas dirección ubicación inmueble'
+        } else if (missing.some(f => f.includes('vendedores'))) {
+          query = 'vendedor titular registral propietario'
+        } else if (missing.some(f => f.includes('compradores'))) {
+          query = 'comprador adquirente generales identificación' // generales = nombre, estado civil, etc
+        } else if (missing.some(f => f.includes('estado_civil'))) {
+          query = 'estado civil matrimonio soltero casado'
+        } else if (missing.some(f => f.includes('creditos'))) {
+          query = 'precio forma de pago crédito institución bancaria'
+        } else if (missing.some(f => f.includes('hipoteca') || f.includes('gravamen'))) {
+          query = 'gravamen hipoteca certificado libertad gravamen'
         }
 
-        return [
-            `Eres un ABOGADO NOTARIAL DE CONFIANZA, cálido, profesional y humano, ayudando con un ${pluginName}.
+        if (query) {
+          // Prioridad: buscar por sesión de chat (conversation_id) para tener contexto al reabrir el chat
+          const sessionId = context.conversation_id || null
+          const tramiteId = context.tramiteId || null
+          const chunks = await DocumentoService.searchSimilarChunks(
+            query,
+            tramiteId,
+            0.5,
+            3,
+            sessionId
+          )
+          if (chunks && chunks.length > 0) {
+            const textFrom = (c: { text?: string; content?: string }) => c.text ?? c.content ?? ''
+            ragContext = `
+             INFORMACIÓN EXTRAÍDA DE DOCUMENTOS (RAG):
+             Los siguientes fragmentos de texto fueron encontrados en los documentos del expediente y pueden ser útiles para formular la pregunta o entender el contexto (NO inventes información que no esté aquí):
+             ${chunks.map(c => `- "${textFrom(c)}"`).join('\n')}
+             `
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[PreavisoPrompts] RAG Error:', err)
+      // Continue without RAG
+    }
+
+    return [
+      `Eres un ABOGADO NOTARIAL DE CONFIANZA, cálido, profesional y humano, ayudando con un ${pluginName}.
        TU MISIÓN: Guiar al cliente en el proceso, capturar la información necesaria y ASESORARLO si tiene dudas.
 
       ${ragContext}
@@ -144,30 +154,46 @@ export class PreavisoPrompts {
       - Solo pregunta por documentos adicionales si es necesario para completar información faltante específica(ej: si falta el folio real, pregunta por la hoja de inscripción).
       - ORDEN DEL FLUJO: Hoja de inscripción → seleccionar folio → comprador → estado civil → cónyuge(si aplica) → forma de pago.NO vuelvas atrás a preguntar por documentos de inscripción.
       
-      Genera UNA respuesta natural en español.`
-        ]
-    }
+      REGLA MAESTRA DE HERRAMIENTAS Y PERSISTENCIA (CRÍTICO):
+      1. Si el usuario proporciona o CORRIGE la institución de crédito (Paso 5), DEBES usar la herramienta set_credito.
+      2. NUNCA incluyas el campo o array 'creditos' dentro de un bloque <DATA_UPDATE> si estás llamando a la herramienta set_credito. La herramienta tiene prioridad para la persistencia.
+      3. Extrae únicamente el nombre limpio de la institución (ej. "BANJICO", "SANTANDER"). Ignora frases como "perdon", "era con", "el credito es con", etc.
+      4. Si el usuario corrige un dato previo, confirma brevemente "Entendido, ya corregí el banco a [Institución]" y procede al siguiente paso.
+      
+      5. CONFIRMACIÓN DE FOLIO REAL (CRÍTICO):
+         - Si el usuario dice "sí", "es correcto", "es ese" o similares para CONFIRMAR el folio real (Paso 2):
+           DEBES usar la herramienta set_inmueble pasando el folio real y el campo 'folio_real_confirmed': true. 
+           EJEMPLO: set_inmueble({ folio_real: "1782486", folio_real_confirmed: true })
+         - Esto es vital para detener el loop de preguntas sobre el folio.
 
-    /**
-     * Genera el prompt para el usuario
-     */
-    static generateUserPrompt(
-        context: any,
-        conversationHistory: any[],
-        missingNow: string[],
-        isGreeting: boolean,
-        hasMultipleFolios: boolean,
-        folioCandidates: any[]
-    ): string {
-        // Si es saludo, forzar al LLM a que solo salude y pregunte lo siguiente amablemente
-        const userInstruction = isGreeting ?
-            `El usuario acaba de saludar (${conversationHistory[conversationHistory.length - 1]?.content}).
+      6. INSTITUCIÓN DEL GRAVAMEN (CRÍTICO):
+         - Si el sistema indica que falta 'gravamenes[0].institucion', DEBES preguntar específicamente por el nombre del banco o institución que tiene la hipoteca.
+         - NO saltes esta pregunta.
+      
+      Genera UNA respuesta natural en español.`
+    ]
+  }
+
+  /**
+   * Genera el prompt para el usuario
+   */
+  static generateUserPrompt(
+    context: any,
+    conversationHistory: any[],
+    missingNow: string[],
+    isGreeting: boolean,
+    hasMultipleFolios: boolean,
+    folioCandidates: any[]
+  ): string {
+    // Si es saludo, forzar al LLM a que solo salude y pregunte lo siguiente amablemente
+    const userInstruction = isGreeting ?
+      `El usuario acaba de saludar (${conversationHistory[conversationHistory.length - 1]?.content}).
         TU OBJETIVO: Devuelve el saludo con cortesía y profesionalismo, y LUEGO, de forma fluida, invita a continuar con el trámite preguntando por el dato faltante: ${missingNow[0] || 'lo siguiente'}.
         NO seas seco. Sé amable. Sugiere subir documento si aplica. NO uses negritas (**).`
-            :
-            `Último mensaje del usuario: "${conversationHistory[conversationHistory.length - 1]?.content || ''}"`
+      :
+      `Último mensaje del usuario: "${conversationHistory[conversationHistory.length - 1]?.content || ''}"`
 
-        return `
+    return `
       Contexto actual:
       ${JSON.stringify(context, null, 2)}
 
@@ -180,7 +206,7 @@ export class PreavisoPrompts {
       IMPORTANTE: Se detectaron múltiples folios reales en el documento. Debes preguntar al usuario cuál folio va a utilizar.
       Folios detectados: ${folioCandidates.map((f: any) => typeof f === 'string' ? f : f.folio).join(', ')}
       ` : ''
-            }
+      }
       
       INFORMACIÓN YA DETECTADA:
     - Folio real seleccionado: ${context.folios?.selection?.selected_folio || context.inmueble?.folio_real || 'No detectado'}
@@ -266,5 +292,5 @@ export class PreavisoPrompts {
       
       Genera UNA pregunta natural, CORTES Y AMABLE en español.ra obtener la información faltante del estado "${missingNow[0] || 'siguiente'}".
     `
-    }
+  }
 }

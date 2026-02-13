@@ -26,14 +26,17 @@ export class InputParser {
       name: 'payment_method_with_institution',
       pattern: /\b(credito|cr[eé]dito)\b[\s\S]{0,40}\b([A-ZÁÉÍÓÚÑ0-9][A-ZÁÉÍÓÚÑ0-9\s.&'-]{1,40})\b/i,
       condition: (input, context) => {
-        // Solo si aún no está confirmada la forma de pago o falta institución
         const creditos = context?.creditos
         const noConfirmedPayment = creditos === undefined
         const missingInstitution =
           Array.isArray(creditos) &&
           creditos.length > 0 &&
           !creditos[0]?.institucion
-        return noConfirmedPayment || missingInstitution
+
+        // CORRECCIÓN: Permitir si el usuario usa palabras de corrección
+        const isCorrection = /\b(no|corrijo|error|equivoque|me\s+equivoque|no\s+era|es\s+con|cambiar|no\s+es)\b/i.test(input)
+
+        return noConfirmedPayment || missingInstitution || isCorrection
       },
       extract: (input, context) => {
         const text = String(input || '')
@@ -120,22 +123,43 @@ export class InputParser {
       handler: 'BuyerNameHandler'
     })
 
-    // 2. Tipo persona (moral/física)
+    // 2. Opción A, B, C o 1, 2, 3 (Multichoice)
+    // Se activa cuando el asistente presenta opciones al usuario.
     this.rules.push({
-      name: 'tipo_persona',
-      pattern: /^(moral|fisica|física|persona\s+moral|persona\s+fisica|persona\s+física)$/i,
-      condition: (input, context) => {
-        // Solo si estamos esperando tipo persona
-        const buyer = context.compradores?.[0]
-        const seller = context.vendedores?.[0]
-        return !buyer?.tipo_persona && !seller?.tipo_persona
+      name: 'option_selection_abc',
+      pattern: /^(a|b|c|d|1|2|3|4|la\s+[abcd]|opci[oó]n\s+[abcd1234])$/i,
+      condition: (input, context, lastAssistantMessage?: string) => {
+        // Solo si el asistente realmente preguntó con opciones
+        const msg = String(lastAssistantMessage || '').toLowerCase()
+        const hasOptions = /\ba\)\s|1\)\s|\ba\.\s|1\.\s/.test(msg)
+        return hasOptions
       },
-      extract: (input) => {
-        const tipo = /moral/i.test(input) ? 'persona_moral' : 'persona_fisica'
-        return { tipoPersona: tipo }
+      extract: (input, context, lastAssistantMessage?: string) => {
+        const text = String(input || '').toLowerCase().trim()
+        const option = text.match(/[abcd1234]/i)?.[0]
+        if (!option) return null
+
+        const intent = context?._last_question_intent
+
+        // --- Casos de uso específicos ---
+
+        // 1. Cancelación de hipoteca (PASO 6)
+        if (intent === 'encumbrance_cancellation' || this.isEncumbranceCancellationContext(lastAssistantMessage)) {
+          // a) / 1) -> ya está liquidada / se canceló antes
+          // b) / 2) -> se cancela con este acto
+          const matchesA = option === 'a' || option === '1'
+          const matchesB = option === 'b' || option === '2'
+
+          if (matchesA) return { exists: true, cancellationConfirmed: true }
+          if (matchesB) return { exists: true, cancellationConfirmed: false }
+        }
+
+        return null
       },
-      handler: 'TipoPersonaHandler'
+      handler: 'EncumbranceHandler' // Se ajustará dinámicamente en interpret() si es necesario
     })
+
+    // 2B. Tipo persona (moral/física)
 
 
 
@@ -238,81 +262,49 @@ export class InputParser {
     // Handles: "1782484", "Folio 1782484", "Confirmar el 1782484", "Cual es la dirección del 1782484?"
     this.rules.push({
       name: 'folio_interaction',
-      pattern: /(?:\b(\d{6,8})\b|si|sí|correcto|confirmo|confirmado|usar este)/i,
+      pattern: /^(si|sí|correcto|confirmo|confirmado|usar este|ese|ese mero|la\s+1|la\s+2|opcion\s+1|opcion\s+2|1|2)$/i,
       condition: (input, context) => {
-        // Solo activo si hay candidatos o si ya hay un folio provisional
+        // Solo activo para confirmaciones de selección simple
         const folios = context.folios?.candidates || []
         const hasCandidates = folios.length > 0
         const hasSelection = !!context.folios?.selection?.selected_folio
 
-        // Si no hay nada con qué interactuar, esta regla no aplica
         if (!hasCandidates && !hasSelection) return false
 
-        // Debe contener un número de folio válido O ser una confirmación explícita
-        const hasNumber = /\b(\d{6,8})\b/.test(input)
+        // Evitar capturar números largos aquí, delegar a LLM si es un folio nuevo
+        const hasLongNumber = /\b(\d{6,8})\b/.test(input)
+        if (hasLongNumber && !/^(1|2)$/.test(input.trim())) return false
 
-        // Guardrail: Evitar confundir con precios ($1,234,567) o teléfonos (10 dígitos)
-        // Si tiene formato de moneda explícito o contexto de precio/valor, ignorar
-        if (input.includes('$') || /precio|valor|costo/i.test(input)) return false
-
-        const isConfirmation = /^(si|sí|correcto|confirmo|confirmado|usar este|ese|ese mero)$/i.test(input.trim())
-
-        return hasNumber || (isConfirmation && (hasSelection || folios.length === 1))
+        return /^(si|sí|correcto|confirmo|confirmado|usar este|ese|ese mero|la\s+1|la\s+2|opcion\s+1|opcion\s+2|1|2)$/i.test(input.trim())
       },
-      extract: (input, context, lastAssistantMessage) => {
+      extract: (input, context) => {
         const folios = context.folios?.candidates || []
+        const text = input.trim().toLowerCase()
 
-        // 1. Detectar Intención General
-        const isQuestion = input.includes('?') ||
-          /^(qu[eé]|cual|c[oó]mo|d[oó]nde|cu[aá]nto|dime|muestrame|ver|checar)/i.test(input)
+        let folio = context.folios?.selection?.selected_folio || null
 
-        const isExplicitSelection = /(usar|elegir|seleccionar|el|este)\s+(\d+|folio|es)/i.test(input) ||
-          /^(si|sí|correcto|confirmo|confirmado)$/i.test(input.trim())
-
-        // 2. Extraer Número de Folio
-        const numberMatch = input.match(/\b(\d{6,8})\b/)
-        let folio = numberMatch ? numberMatch[1] : null
-
-        // Si no hay número explícito, intentar inferir contexto (confirmación de "ese")
-        if (!folio) {
-          // Si hay un solo candidato, asumimos ese
-          if (folios.length === 1) folio = typeof folios[0] === 'string' ? folios[0] : folios[0].folio
-          // Si ya hay uno seleccionado (pero no confirmado), asumimos ese
-          else if (context.folios?.selection?.selected_folio) folio = context.folios.selection.selected_folio
+        // Mapeo simple de opciones 1/2
+        if (/^(1|la\s+1|opcion\s+1)$/.test(text) && folios[0]) {
+          folio = typeof folios[0] === 'string' ? folios[0] : folios[0].folio
+        } else if (/^(2|la\s+2|opcion\s+2)$/.test(text) && folios[1]) {
+          folio = typeof folios[1] === 'string' ? folios[1] : folios[1].folio
+        } else if (folios.length === 1) {
+          folio = typeof folios[0] === 'string' ? folios[0] : folios[0].folio
         }
 
-        if (!folio) return null // No pudimos resolver el folio target
-
-        // 3. Determinar INTENT final
-        let intent: 'SELECT' | 'FOCUS' | 'CONFIRM' = 'SELECT' // Default
-
-        if (isQuestion) {
-          intent = 'FOCUS'
-        } else if (isExplicitSelection) {
-          intent = 'CONFIRM' // Confirmación fuerte
-        } else {
-          // Si solo es el número ("1782484"), es SELECT (intención de elegir)
-          // Si hay ambigüedad, preferimos SELECT sobre FOCUS para avanzar rápido
-          intent = 'SELECT'
-        }
-
-        // 4. Validar existencia en candidatos (si aplica)
-        if (folios.length > 0) {
-          // Permisivos: Si es una pregunta (FOCUS), permitimos aunque no esté en lista
-          // Pero le pasamos el intent al handler
-        }
+        if (!folio) return null
 
         return {
           selectedFolio: folio,
-          intent: intent,
-          confirmedByUser: (intent === 'SELECT' || intent === 'CONFIRM')
+          intent: 'CONFIRM',
+          confirmedByUser: true
         }
       },
       handler: 'FolioSelectionHandler'
     })
 
-    // 4C. Captura manual de inmueble (texto libre con folio/dirección/partida)
-    // Ej: "FOLIO REAL:1782481 UNIDAD:2D CONJ. HABITACIONAL: ... MUNICIPIO:TIJUANA"
+    // 4C. Captura manual de inmueble (Deactivada - Delegada a LLM para interpretación semántica)
+    /*
     this.rules.push({
       name: 'inmueble_manual',
       pattern: /(folio\s+real|partida|municipio|manzana|lote|unidad|condominio|fraccionamiento)/i,
@@ -325,88 +317,19 @@ export class InputParser {
         return msg.includes('inscripción') || msg.includes('folio real') || msg.includes('partida') || msg.includes('inmueble')
       },
       extract: (input) => {
-        const text = String(input || '')
-
-        const folioMatch = text.match(/folio\s*real\s*[:#]?\s*(\d{6,8})/i)
-        const partidaMatch =
-          text.match(/partida[s]?\s*(?:no\.?|nº|n°)?\s*[:#]?\s*([0-9,\s]+)/i) ||
-          text.match(/\bpda\.?\s*(?:no\.?|nº|n°)?\s*[:#]?\s*([0-9,\s]+)/i)
-        const seccionMatch = text.match(/secci[oó]n\s*[:#]?\s*([A-ZÁÉÍÓÚÑ]+)/i)
-        const municipioMatch = text.match(/municipio\s*[:#]?\s*([A-ZÁÉÍÓÚÑ\s]+)/i)
-
-        const unidadMatch = text.match(/unidad\s*[:#]?\s*([A-Z0-9\-]+)/i)
-        const condominioMatch = text.match(/condominio\s*[:#]?\s*([A-Z0-9\-]+)/i)
-        const fraccMatch = text.match(/fraccionamiento\s*[:#]?\s*([A-ZÁÉÍÓÚÑ\s]+)/i) ||
-          text.match(/desarrollo\s+habitacional\s*[:#]?\s*([A-ZÁÉÍÓÚÑ\s]+)/i) ||
-          text.match(/conj\.?\s*habitacional\s*[:#]?\s*([A-ZÁÉÍÓÚÑ0-9\s\-]+)/i)
-        const loteMatch = text.match(/lote\s*[:#]?\s*(\d+)/i)
-        const manzanaMatch = text.match(/manzana\s*[:#]?\s*(\d+)/i)
-
-        const partidas = partidaMatch
-          ? partidaMatch[1]
-            .split(',')
-            .map(p => p.trim())
-            .filter(Boolean)
-          : []
-
-        // FIX: Extract partida from standalone number if 'partidas' list is empty but 'partidaMatch' failed
-        // This is safe because handler checks context.
-        // Wait, InmuebleManualHandler expects parsed object. 
-        // We handle standalone numbers in a separate rule 'partida_number_standalone' below.
-
-        // Dirección libre: quitar folio/partida/municipio para quedarnos con la descripción principal
-        let direccionRaw = text
-          .replace(/folio\s*real\s*[:#]?\s*\d{6,8}/ig, '')
-          .replace(/partida[s]?\s*[:#]?\s*[0-9,\s]+/ig, '')
-          .replace(/secci[oó]n\s*[:#]?\s*[A-ZÁÉÍÓÚÑ\s]+/ig, '')
-          .replace(/municipio\s*[:#]?\s*[A-ZÁÉÍÓÚÑ\s]+/ig, '')
-          .replace(/\s+/g, ' ')
-          .trim()
-        if (direccionRaw.length < 5) direccionRaw = ''
-
-        // Guardrail: evitar que "SECCION CIVIL" u otros metadatos se tomen como dirección
-        const addrKeywords = /(calle|colonia|fraccionamiento|condominio|conj|habitacional|unidad|lote|manzana|domicilio|ubicaci[oó]n|municipio)/i
-        if (direccionRaw && !addrKeywords.test(direccionRaw)) {
-          direccionRaw = ''
-        }
-
-        return {
-          folio_real: folioMatch ? folioMatch[1] : null,
-          partidas,
-          seccion: seccionMatch ? seccionMatch[1] : null,
-          direccion: {
-            calle: direccionRaw || null,
-            municipio: municipioMatch ? municipioMatch[1].trim() : null,
-          },
-          datos_catastrales: {
-            unidad: unidadMatch ? unidadMatch[1] : null,
-            condominio: condominioMatch ? condominioMatch[1] : null,
-            fraccionamiento: fraccMatch ? fraccMatch[1].trim() : null,
-            lote: loteMatch ? loteMatch[1] : null,
-            manzana: manzanaMatch ? manzanaMatch[1] : null,
-          }
-        }
+        ...
       },
       handler: 'InmuebleManualHandler'
     })
+    */
 
-    // 4D. Partida (standalone number)
+    // 4D. Partida (standalone number) - Deactivada (Delegada a LLM)
+    /*
     this.rules.push({
       name: 'partida_number_standalone',
-      pattern: /^[\d\s,-]+$/,
-      condition: (input, context, lastAssistantMessage?: string) => {
-        // Must be asking for partida/registration data
-        if (context?._last_question_intent === 'partidas') return true
-        const msg = String(lastAssistantMessage || '').toLowerCase()
-        return msg.includes('partida') && !msg.includes('folio') // Avoid confusion if asking for folio
-      },
-      extract: (input) => {
-        return {
-          partidas: input.split(/[\s,]+/).filter(x => x.trim().length > 0)
-        }
-      },
-      handler: 'InmuebleManualHandler'
+      ...
     })
+    */
 
     // 6. Institución de crédito (nombres comunes)
     // IMPORTANTE: Esta regla solo se activa si isCreditInstitutionContext() retorna true
@@ -415,21 +338,18 @@ export class InputParser {
       name: 'credit_institution',
       // Patrón más flexible: acepta instituciones en cualquier formato (mayúsculas, minúsculas, con espacios)
       pattern: /\b(bbva|santander|banorte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar)\b/i,
-      condition: (input, context) => {
-        // Esta condición es una verificación adicional (la principal está en isCreditInstitutionContext)
-        // Verificar que hay créditos confirmados
+      condition: (input, context, lastAssistantMessage) => {
+        // Esta condición es una verificación adicional
         const creditos = context.creditos || []
-        if (creditos.length === 0) {
-          return false // No hay créditos confirmados
-        }
+        if (creditos.length === 0) return false
 
-        // Verificar que el primer crédito no tiene institución
+        // CORRECCIÓN: Si el usuario está corrigiendo, permitir aunque ya tenga institución
+        const isCorrection = /\b(no|corrijo|error|equivoque|me\s+equivoque|no\s+era|es\s+con|cambiar|no\s+es)\b/i.test(input)
+
         const credito0 = creditos[0]
-        if (credito0?.institucion) {
-          return false // Ya tiene institución
-        }
+        if (credito0?.institucion && !isCorrection) return false
 
-        return true // Falta institución y hay créditos confirmados
+        return this.isCreditInstitutionContext(input, context, lastAssistantMessage)
       },
       extract: (input) => {
         // Extraer la institución del texto (puede estar en cualquier parte)
@@ -459,7 +379,8 @@ export class InputParser {
       // Respuesta corta/mediana (pero permite razón social completa)
       pattern: /^[\p{L}\d\s.&'"\-(),]{2,200}$/u,
       condition: (input, context, lastAssistantMessage?: string) => {
-        if (!this.isCreditInstitutionContext(context, lastAssistantMessage)) return false
+        const isCorrection = /\b(no|corrijo|error|equivoque|me\s+equivoque|no\s+era|es\s+con|sera\s+con|ser[aá]\s+con|cambiar|no\s+es|perdon|perd[oó]n|disculpa|redito)\b/i.test(input)
+        if (!this.isCreditInstitutionContext(input, context, lastAssistantMessage) && !isCorrection) return false
         // Evitar yes/no o respuestas que claramente no son institución
         const t = this.normalizeCommonTypos(input).trim()
         if (/^(si|sí|no|confirmo|confirmado|ok|okay|correcto|afirmativo|de acuerdo)$/i.test(t)) return false
@@ -1116,8 +1037,8 @@ export class InputParser {
         let buyerIndex: number | null = null
         let otherIndex: number | null = null
 
-        const persona1 = /\bpersona\s*1\b|\bpersona\s*uno\b|\bprimera\s+persona\b/i.test(text)
-        const persona2 = /\bpersona\s*2\b|\bpersona\s*dos\b|\bsegunda\s+persona\b/i.test(text)
+        const persona1 = /\bpersona\s*1\b|\bpersona\s*uno\b|\bprimera\s+persona\b|^(1|uno)$/i.test(text)
+        const persona2 = /\bpersona\s*2\b|\bpersona\s*dos\b|\bsegunda\s+persona\b|^(2|dos)$/i.test(text)
         if (persona1) buyerIndex = 0
         if (persona2) buyerIndex = 1
 
@@ -1283,11 +1204,30 @@ export class InputParser {
     context: any,
     lastAssistantMessage?: string
   ): Promise<InterpretationResult> {
-    const normalizedInput = input.trim()
+    const rawInput = input.trim()
+    const normalizedInput = this.normalizeCommonTypos(rawInput)
 
     // Filtrar mensajes auto-generados
     if (/\bhe\s+subido\s+el\s+siguiente\s+documento\b/i.test(normalizedInput)) {
       return { captured: false, needsLLM: false }
+    }
+
+    // --- BYPASS DE REPARACIÓN CONVERSACIONAL Y DATOS COMPLEJOS ---
+    // Si el usuario empieza con negación, disculpa o corrección, es una señal fuerte de contexto complejo.
+    // O si el input menciona folios o partidas, delegamos al LLM para interpretación semántica.
+    const lowerInput = normalizedInput.toLowerCase()
+    const isRepairSignal = /^(no|perdon|perd[oó]n|disculpa|corrijo|error|me\s+equivoque|no\s+era|es\s+con|sera\s+con|ser[aá]\s+con|cambio|cambiar|actualizar)\b/i.test(lowerInput) ||
+      /\b(perdon|perd[oó]n|disculpa|equivoque|equivoqu[eé])\b/i.test(lowerInput) ||
+      (/\b(credito|cr[eé]dito|redito|banco)\b/i.test(lowerInput) && !!context?.creditos?.[0]?.institucion && !this.isEncumbranceContext(context, lastAssistantMessage))
+
+    const isComplexPropertyData = /\b(folio|partida|pda|secc|municipio|lote|manzana|unidad|condominio|fraccionamiento|ubicaci[oó]n|calle)\b/i.test(lowerInput) ||
+      (lowerInput.length > 50 && /\b\d{6,8}\b/.test(lowerInput))
+
+    if (isRepairSignal || isComplexPropertyData) {
+      return {
+        captured: false,
+        needsLLM: true
+      }
     }
 
     // Intentar captura determinista (MULTI-INTENT):
@@ -1323,9 +1263,11 @@ export class InputParser {
       if (!rule.pattern.test(normalizedInput)) continue
 
       // Para reglas de crédito, verificar contexto adicional
-      if (rule.name === 'credit_institution') {
-        if (!this.isCreditInstitutionContext(context, lastAssistantMessage)) {
-          continue
+      if (rule.name === 'credit_institution' || rule.name === 'credit_institution_freeform') {
+        if (!this.isCreditInstitutionContext(normalizedInput, context, lastAssistantMessage)) {
+          // Si no es contexto normal, ver si es una corrección explícita
+          const isCorrection = /\b(no|corrijo|error|equivoque|me\s+equivoque|no\s+era|es\s+con|cambiar|no\s+es)\b/i.test(normalizedInput)
+          if (!isCorrection) continue
         }
       }
 
@@ -1400,8 +1342,17 @@ export class InputParser {
     }
 
     if (context?._last_question_intent === 'encumbrance_cancellation') {
+      const deniesEncumbrance =
+        (/\b(no|sin|libre)\b/.test(normalizedForFallback) &&
+          /\b(gravamen|hipoteca|embargo)\b/.test(normalizedForFallback)) ||
+        /\bno\s+existe\b/.test(normalizedForFallback)
+
+      if (deniesEncumbrance) {
+        addFallbackCommand('encumbrance', { exists: false })
+      }
+
       const saysNoCancel = /\bno\b.*\bcancel/.test(normalizedForFallback) || /\bno\s+se\s+cancel/.test(normalizedForFallback)
-      if (/\bcancel/.test(normalizedForFallback)) {
+      if (!deniesEncumbrance && /\bcancel/.test(normalizedForFallback)) {
         addFallbackCommand('encumbrance', { exists: true, cancellationConfirmed: saysNoCancel ? true : false })
       }
     }
@@ -1417,6 +1368,29 @@ export class InputParser {
       const inst = this.extractInstitutionFreeform(normalizedInput)
       if (inst) {
         addFallbackCommand('gravamen_acreedor', { institucion: inst })
+      }
+    }
+
+    // Fallback para nombre de cónyuge: patrón flexible (acepta mayúsculas/minúsculas)
+    // cuando la regla estricta falla por formato (ej. "arminda ferra justo")
+    if (context?._last_question_intent === 'conyuge_name') {
+      const buyer = context?.compradores?.[0]
+      const buyerNombre = buyer?.persona_fisica?.nombre
+      const conyugeNombre = buyer?.persona_fisica?.conyuge?.nombre
+      if (buyerNombre && !conyugeNombre) {
+        // Nombre completo 2-7 palabras, cualquier capitalización
+        const nameMatch = normalizedInput.match(/^([A-Za-zÁÉÍÓÚÑáéíóúñ]+(?:\s+[A-Za-zÁÉÍÓÚÑáéíóúñ]+){1,6})\s*\.?$/)
+        if (nameMatch) {
+          const candidateName = nameMatch[1].trim()
+          if (ValidationService.isValidName(candidateName) &&
+            !ConyugeService.namesMatch(candidateName, buyerNombre)) {
+            addFallbackCommand('conyuge_name', {
+              buyerIndex: 0,
+              name: candidateName,
+              source: 'texto_manual'
+            })
+          }
+        }
       }
     }
 
@@ -1445,7 +1419,7 @@ export class InputParser {
   /**
    * Verifica si estamos en contexto de preguntar por institución de crédito
    */
-  private isCreditInstitutionContext(context: any, lastAssistantMessage?: string): boolean {
+  private isCreditInstitutionContext(input: string, context: any, lastAssistantMessage?: string): boolean {
     // Si el sistema marcó explícitamente la intención de la última pregunta, usarla.
     if (context?._last_question_intent === 'credit_institution') {
       // Requiere que haya créditos confirmados y falte institución
@@ -1460,11 +1434,13 @@ export class InputParser {
       return false
     }
 
-    // 2. Verificar que el primer crédito no tiene institución ya
+    // 1. Verificar si es una corrección explícita detectada por palabras clave
+    const isCorrection = /\b(no|corrijo|error|equivoque|me\s+equivoque|no\s+era|es\s+con|sera\s+con|ser[aá]\s+con|cambiar|no\s+es|perdon|perd[oó]n|disculpa|redito)\b/i.test(input)
+
     const credito0 = creditos[0]
     if (credito0?.institucion) {
-      // Ya tiene institución, no deberíamos estar preguntando por ella
-      return false
+      // Si ya tiene institución, solo permitir si es una corrección
+      if (!isCorrection) return false
     }
 
     // 3. Verificar que el último mensaje del asistente está preguntando por institución de crédito
@@ -1586,6 +1562,10 @@ export class InputParser {
       .replace(/\bgravmen\b/g, 'gravamen')
       .replace(/\bgravamenes\b/g, 'gravamenes')
       .replace(/\bhipotcea\b/g, 'hipoteca')
+      // crédito / corrección
+      .replace(/\bredito\b/g, 'credito')
+      .replace(/\bperdon\b/g, 'corrijo')
+      .replace(/\bdisculpa\b/g, 'corrijo')
   }
 
   /**
@@ -1603,7 +1583,8 @@ export class InputParser {
       'infonavit': 'INFONAVIT',
       'fovissste': 'FOVISSSTE',
       'banco azteca': 'Banco Azteca',
-      'banco del bienestar': 'Banco del Bienestar'
+      'banco del bienestar': 'Banco del Bienestar',
+      'banjico': 'BANJICO'
     }
 
     if (mapping[normalized]) {
@@ -1636,6 +1617,16 @@ export class InputParser {
       cleaned.match(/(?:con\s+(?:el\s+)?)?(?:banco\s+)?([^\n,;.]+)$/i)
 
     const candidate = (m && m[1]) ? String(m[1]).trim() : cleaned
+
+    // --- Guardrail: Si el candidato es demasiado largo y no parece una institución conocida,
+    // es probable que sea una frase de corrección ruidosa.
+    const isCommon = /\b(bbva|santander|banorte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar|coppel|banregio|scotiabank|banbajio)\b/i.test(candidate)
+
+    // Si la frase es larga y contiene palabras sospechosas, retornar null para que el LLM lo maneje
+    if (candidate.length > 30 && !isCommon && /\b(no|error|equivoque|pero|era|con|el|la)\b/i.test(candidate)) {
+      return null
+    }
+
     // Quitar palabras de relleno comunes al inicio (sin quitar "banco" si viene como nombre oficial)
     const candidate2 = candidate
       .replace(/^(ser(a|á)|es|con|con el|con la|instituci(o|ó)n)\s+/i, '')
@@ -1644,6 +1635,12 @@ export class InputParser {
     // Debe parecer nombre de institución (no números solos, no vacío)
     if (/^\d+$/.test(candidate2)) return null
     if (candidate2.length < 2) return null
+
+    // Si capturó algo que empieza con "no me equivoque" o similar, es basura
+    if (/\b(no|corrijo|error|equivoque|pero|era|perdon|perd[oó]n|disculpa)\b/i.test(candidate2.split(' ')[0])) {
+      return null
+    }
+
     // Preservar tal como fue escrito
     return candidate2
   }
