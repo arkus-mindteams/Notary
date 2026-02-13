@@ -20,6 +20,7 @@ import {
 import { getPreavisoBlockToolsOpenAI, blockToolCallToCommands } from './preaviso-block-tools'
 import { getPreavisoStates } from './preaviso-state-definitions'
 import { PreavisoPrompts } from './preaviso-prompts'
+import { KnowledgeSnapshot } from '@/lib/services/knowledge-chunk-service'
 
 export class PreavisoPlugin implements TramitePlugin {
   id = 'preaviso'
@@ -29,6 +30,7 @@ export class PreavisoPlugin implements TramitePlugin {
   private inputParser: InputParser
   private llmService: LLMService
   private documentProcessor: PreavisoDocumentProcessor
+  private lastKnowledgeSnapshot: KnowledgeSnapshot | null = null
 
   constructor() {
     this.inputParser = new InputParser()
@@ -174,6 +176,7 @@ export class PreavisoPlugin implements TramitePlugin {
     context: any,
     conversationHistory: any[] = []
   ): Promise<string> {
+    this.lastKnowledgeSnapshot = null
     // 1. ANÁLISIS DE INTENCIÓN DEL USUARIO
     const lastUserMsg = conversationHistory.length > 0 ? conversationHistory[conversationHistory.length - 1].content : ''
     const isQuestion = lastUserMsg.includes('?') ||
@@ -261,7 +264,7 @@ export class PreavisoPlugin implements TramitePlugin {
       .join('\n')
 
     // USAR NUEVO SERVICIO DE PROMPTS
-    const systemPrompts = await PreavisoPrompts.generateSystemPrompts(
+    const promptPackage = await PreavisoPrompts.generateSystemPrompts(
       context,
       this.name,
       state,
@@ -281,13 +284,14 @@ export class PreavisoPlugin implements TramitePlugin {
     try {
       const response = await this.llmService.call(
         prompt,
-        systemPrompts,
+        promptPackage.systemPrompts,
         context?._userId,
         'generate_question',
         'preaviso', // category
         context?.conversation_id, // sessionId
         context?.tramiteId
       )
+      this.lastKnowledgeSnapshot = promptPackage.knowledgeSnapshot
       return response.trim()
     } catch (error: any) {
       console.error('[PreavisoPlugin] Error generando pregunta:', error)
@@ -403,6 +407,10 @@ export class PreavisoPlugin implements TramitePlugin {
       captured: false,
       needsLLM: true
     }
+  }
+
+  getLastKnowledgeSnapshot(): KnowledgeSnapshot | null {
+    return this.lastKnowledgeSnapshot
   }
 
   /**

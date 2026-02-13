@@ -6,6 +6,8 @@
     "build": "next build --turbopack",
     "dev": "next dev --turbopack",
     "lint": "eslint .",
+    "test": "tsx --test tests/**/*.test.ts",
+    "test:watch": "tsx --test --watch tests/**/*.test.ts",
     "start": "next start",
     "verify:s3": "npx tsx scripts/verify-s3.ts",
     "verify:supabase": "npx tsx scripts/verify-supabase.ts",
