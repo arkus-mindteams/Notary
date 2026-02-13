@@ -2,6 +2,7 @@
 export class EmbeddingsService {
     private static readonly OPENAI_API_URL = 'https://api.openai.com/v1/embeddings'
     private static readonly MODEL = 'text-embedding-3-small'
+    private static readonly DIMENSIONS = 1536
 
     /**
      * Genera un embedding vectorial para el texto dado usando OpenAI.
@@ -68,5 +69,13 @@ export class EmbeddingsService {
             normB += b[i] * b[i]
         }
         return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
+    }
+
+    static getModelName(): string {
+        return this.MODEL
+    }
+
+    static getModelDimensions(): number {
+        return this.DIMENSIONS
     }
 }

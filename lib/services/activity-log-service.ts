@@ -47,6 +47,17 @@ interface LogDocumentProcessingStageParams {
     metadata?: Record<string, any>
 }
 
+interface LogDocumentIndexingParams {
+    userId: string
+    traceId: string
+    documentoId: string
+    tramiteId?: string
+    stage: string
+    status: 'start' | 'success' | 'error' | 'skipped' | 'needs_ocr'
+    durationMs?: number
+    metadata?: Record<string, any>
+}
+
 interface LogUserEventParams {
     userId: string
     eventType: string
@@ -228,6 +239,37 @@ export class ActivityLogService {
             }
         } catch (error) {
             console.error('[ActivityLogService] Unexpected error in logDocumentProcessingStage:', error)
+        }
+    }
+
+    /**
+     * Log document indexing stages (Fase 4: text chunks + embeddings)
+     */
+    static async logDocumentIndexing(params: LogDocumentIndexingParams) {
+        try {
+            const { error } = await this.supabase
+                .from('activity_logs')
+                .insert({
+                    user_id: params.userId,
+                    session_id: null,
+                    tramite_id: params.tramiteId || null,
+                    category: 'document_processing',
+                    event_type: 'document_indexing',
+                    data: {
+                        documento_id: params.documentoId,
+                        trace_id: params.traceId,
+                        stage: params.stage,
+                        status: params.status,
+                        duration_ms: params.durationMs ?? null,
+                        ...(params.metadata || {})
+                    }
+                })
+
+            if (error) {
+                console.error('[ActivityLogService] Error logging document indexing:', error)
+            }
+        } catch (error) {
+            console.error('[ActivityLogService] Unexpected error in logDocumentIndexing:', error)
         }
     }
 
