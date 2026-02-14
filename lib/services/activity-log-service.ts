@@ -23,6 +23,30 @@ interface LogDocumentUploadParams {
     mimeType: string
 }
 
+interface LogDocumentExtractionParams {
+    userId: string
+    tramiteId?: string
+    documentoId: string
+    traceId: string
+    status: 'retry' | 'success' | 'error'
+    attempt: number
+    reason?: string
+    actionType?: string
+    metadata?: Record<string, any>
+}
+
+interface LogDocumentProcessingStageParams {
+    userId: string
+    sessionId?: string
+    tramiteId?: string
+    documentoId?: string
+    traceId: string
+    stage: 'extract_sync' | 'postprocess_async'
+    status: 'queued' | 'success' | 'error' | 'skipped'
+    durationMs?: number
+    metadata?: Record<string, any>
+}
+
 interface LogUserEventParams {
     userId: string
     eventType: string
@@ -54,7 +78,9 @@ interface GetStatsOptions {
  * Replaces: AgentUsageService, StatsService (partially), and conversation logging
  */
 export class ActivityLogService {
-    private static supabase = createServerClient()
+    private static get supabase() {
+        return createServerClient()
+    }
 
     // Pricing per 1M tokens (USD)
     private static readonly PRICING: Record<string, { input: number; output: number }> = {
@@ -140,6 +166,68 @@ export class ActivityLogService {
             }
         } catch (error) {
             console.error('[ActivityLogService] Unexpected error in logDocumentUpload:', error)
+        }
+    }
+
+    /**
+     * Log extraction attempts/results for auditability
+     */
+    static async logDocumentExtraction(params: LogDocumentExtractionParams) {
+        try {
+            const { error } = await this.supabase
+                .from('activity_logs')
+                .insert({
+                    user_id: params.userId,
+                    session_id: null,
+                    tramite_id: params.tramiteId || null,
+                    category: 'document_processing',
+                    event_type: params.actionType || 'document_extraction',
+                    data: {
+                        documento_id: params.documentoId,
+                        trace_id: params.traceId,
+                        status: params.status,
+                        attempt: params.attempt,
+                        reason: params.reason || null,
+                        ...(params.metadata || {})
+                    }
+                })
+
+            if (error) {
+                console.error('[ActivityLogService] Error logging document extraction:', error)
+            }
+        } catch (error) {
+            console.error('[ActivityLogService] Unexpected error in logDocumentExtraction:', error)
+        }
+    }
+
+    /**
+     * Log processing stages for end-to-end document pipeline latency auditing
+     */
+    static async logDocumentProcessingStage(params: LogDocumentProcessingStageParams) {
+        try {
+            const { error } = await this.supabase
+                .from('activity_logs')
+                .insert({
+                    user_id: params.userId,
+                    session_id: params.sessionId || null,
+                    tramite_id: params.tramiteId || null,
+                    category: 'document_processing',
+                    event_type: 'document_processing_stage',
+                    data: {
+                        documento_id: params.documentoId || null,
+                        trace_id: params.traceId,
+                        stage: params.stage,
+                        status: params.status,
+                        duration_ms: params.durationMs ?? null,
+                        ...(params.metadata || {})
+                    }
+                })
+
+            if (error) {
+                console.error('[ActivityLogService] Error logging document processing stage:', error)
+            }
+        } catch (error) {
+            console.error('[ActivityLogService] Unexpected error in logDocumentProcessingStage:', error)
         }
     }
 
