@@ -1207,6 +1207,87 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     setMessages(prev => [...prev, cancelMessage])
   }
 
+  const ensureActiveTramiteId = async (): Promise<string | null> => {
+    const existing = activeTramiteId || batchTramiteIdRef.current
+    if (existing) return existing
+    if (!user?.id) return null
+
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      if (currentSession?.access_token) {
+        headers['Authorization'] = `Bearer ${currentSession.access_token}`
+      }
+
+      const response = await fetch('/api/expedientes/tramites', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          compradorId: null,
+          userId: user.id,
+          tipo: 'preaviso',
+          datos: {
+            tipoOperacion: 'compraventa',
+            vendedores: [],
+            compradores: [],
+            creditos: undefined,
+            gravamenes: [],
+            inmueble: {
+              folio_real: null,
+              partidas: [],
+              all_registry_pages_confirmed: false,
+              direccion: {
+                calle: null,
+                numero: null,
+                colonia: null,
+                municipio: null,
+                estado: null,
+                codigo_postal: null
+              },
+              superficie: null,
+              valor: null,
+              datos_catastrales: {
+                lote: null,
+                manzana: null,
+                fraccionamiento: null,
+                condominio: null,
+                unidad: null,
+                modulo: null
+              }
+            },
+            control_impresion: {
+              imprimir_conyuges: false,
+              imprimir_coacreditados: false,
+              imprimir_creditos: false
+            },
+            validaciones: {
+              expediente_existente: false,
+              datos_completos: false,
+              bloqueado: true
+            },
+            actosNotariales: {
+              cancelacionCreditoVendedor: false,
+              compraventa: false,
+              aperturaCreditoComprador: false
+            }
+          },
+          estado: 'en_proceso',
+        }),
+      })
+
+      if (!response.ok) return null
+      const tramite = await response.json()
+      const resolvedId = String(tramite?.id || '')
+      if (!resolvedId) return null
+      setActiveTramiteId(resolvedId)
+      batchTramiteIdRef.current = resolvedId
+      return resolvedId
+    } catch (error) {
+      console.error('Error creating tramite for RAG chat:', error)
+      return null
+    }
+  }
+
   const handleSend = async () => {
     // Ocultar paneles inmediatamente cuando se envía un mensaje
     setHidePanelsAfterMessage(true)
@@ -1362,6 +1443,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       messageAbortRef.current = messageAbort
 
       try {
+        const effectiveTramiteId = await ensureActiveTramiteId()
+        if (!effectiveTramiteId) {
+          throw new Error('No se pudo resolver tramiteId para chat RAG')
+        }
+
         // Llamar al agente de IA (usando Plugin System V2)
         // Asegurarse de tener el token actualizado
         const { data: { session: currentSession } } = await supabase.auth.getSession()
@@ -1382,16 +1468,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               { role: 'user' as const, content: currentInput }
             ],
             context: {
-              // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
-              // Esto permite que el backend detecte correctamente qué información ya está capturada
               conversation_id: conversationIdRef.current,
               _document_intent: (data as any)._document_intent ?? null,
               _document_people_pending: (data as any)._document_people_pending ?? null,
               _last_question_intent: (freshData as any)._last_question_intent ?? null,
-              tramiteId: activeTramiteId,
+              tramiteId: effectiveTramiteId,
               vendedores: freshData.vendedores || [],
               compradores: freshData.compradores || [],
-              // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
               creditos: freshData.creditos,
               gravamenes: freshData.gravamenes || [],
               inmueble: freshData.inmueble,
@@ -1406,7 +1489,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 })),
               expedienteExistente: expedienteExistente || undefined
             },
-            tramiteId: activeTramiteId
+            tramiteId: effectiveTramiteId
           })
         })
 
@@ -1415,7 +1498,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         const result = await response.json()
-        const messagesToAdd = result.messages || [result.message]
+        const ragAnswer = typeof result?.answer === 'string' ? result.answer : null
+        const legacyMessage = typeof result?.message === 'string' ? result.message : null
+        const messagesToAdd = Array.isArray(result?.messages)
+          ? result.messages
+          : [ragAnswer || legacyMessage || 'No encontré suficiente evidencia para responder con certeza.']
         if (result?.state) {
           setServerState(result.state as ServerStateSnapshot)
         }
@@ -2956,14 +3043,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             }
           ],
           context: {
-            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
             _document_intent: (workingData as any)._document_intent ?? null,
             _document_people_pending: (workingData as any)._document_people_pending ?? null,
             _last_question_intent: (workingData as any)._last_question_intent ?? null,
             tramiteId: batchTramiteIdRef.current ?? activeTramiteId ?? null,
             vendedores: workingData.vendedores || [],
             compradores: workingData.compradores || [],
-            // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
             creditos: workingData.creditos,
             gravamenes: workingData.gravamenes || [],
             inmueble: workingData.inmueble,
@@ -3032,7 +3117,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             return nextData
           })
         }
-        const messagesToAdd = result.messages || [result.message]
+        const ragAnswer = typeof result?.answer === 'string' ? result.answer : null
+        const legacyMessage = typeof result?.message === 'string' ? result.message : null
+        const messagesToAdd = Array.isArray(result?.messages)
+          ? result.messages
+          : [ragAnswer || legacyMessage || 'No encontré suficiente evidencia para responder con certeza.']
 
         // Remover mensaje de procesamiento y agregar respuesta del agente
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
