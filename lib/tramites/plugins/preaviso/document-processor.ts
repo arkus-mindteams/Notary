@@ -5,6 +5,142 @@ import { getHandler } from './document-processor/handlers/registry'
 import { ActivityLogService } from '../../../services/activity-log-service'
 
 export class PreavisoDocumentProcessor {
+  private decodeJsQuotedLiteral(literal: string): string {
+    if (!literal || literal.length < 2) return literal
+    const quote = literal[0]
+    const inner = literal.slice(1, -1)
+    if (quote === '"') {
+      try {
+        return JSON.parse(literal)
+      } catch {
+        return inner
+      }
+    }
+    // single-quoted JS literal fallback
+    return inner
+      .replace(/\\\\/g, '\\')
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t')
+      .replace(/\\'/g, "'")
+      .replace(/\\"/g, '"')
+  }
+
+  private rebuildFromJsConcatenation(raw: string): string | null {
+    const text = String(raw || '').trim()
+    if (!text.includes('+')) return null
+    const matches = text.match(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g)
+    if (!matches || matches.length === 0) return null
+    const rebuilt = matches.map((m) => this.decodeJsQuotedLiteral(m)).join('')
+    return rebuilt.trim() || null
+  }
+
+  private countDetectedFolios(extracted: any): number {
+    const single = extracted?.folioReal ? [String(extracted.folioReal)] : []
+    const main = Array.isArray(extracted?.foliosReales)
+      ? extracted.foliosReales.filter(Boolean).map((x: any) => String(x))
+      : []
+    const info = Array.isArray(extracted?.foliosConInfo)
+      ? extracted.foliosConInfo.map((x: any) => String(x?.folio || '')).filter(Boolean)
+      : []
+    const unidades = Array.isArray(extracted?.foliosRealesUnidades)
+      ? extracted.foliosRealesUnidades.filter(Boolean).map((x: any) => String(x))
+      : []
+    const afectados = Array.isArray(extracted?.foliosRealesInmueblesAfectados)
+      ? extracted.foliosRealesInmueblesAfectados.filter(Boolean).map((x: any) => String(x))
+      : []
+    return new Set([...single, ...main, ...info, ...unidades, ...afectados]).size
+  }
+
+  private hasMeaningfulExtraction(documentType: string, extracted: any): boolean {
+    if (!extracted || typeof extracted !== 'object') return false
+
+    if (documentType === 'inscripcion') {
+      if (this.countDetectedFolios(extracted) > 0) return true
+      const fullText = typeof extracted?.textoCompleto === 'string' ? extracted.textoCompleto.trim() : ''
+      if (fullText.length >= 200) return true
+      return false
+    }
+
+    const keys = Object.keys(extracted).filter((k) => !['_v', '_parse_recovered'].includes(k))
+    return keys.length > 0
+  }
+
+  private safeParseJsonObject(raw: string): any | null {
+    const text = String(raw || '').trim()
+    if (!text) return null
+
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
+    const unfenced = (fenceMatch?.[1] || text).trim()
+    const reconstructed = this.rebuildFromJsConcatenation(unfenced)
+    const parseInput = (reconstructed || unfenced).trim()
+
+    const firstBrace = parseInput.indexOf('{')
+    const lastBrace = parseInput.lastIndexOf('}')
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+      return null
+    }
+
+    const candidate = parseInput.slice(firstBrace, lastBrace + 1).trim()
+
+    try {
+      return JSON.parse(candidate)
+    } catch {
+      // Recovery strategy: try progressively earlier closing braces.
+      for (let i = candidate.length - 1; i >= 0; i--) {
+        if (candidate[i] !== '}') continue
+        const partial = candidate.slice(0, i + 1)
+        try {
+          return JSON.parse(partial)
+        } catch {
+          // continue
+        }
+      }
+      return null
+    }
+  }
+
+  private extractFoliosFromRawText(raw: string): string[] {
+    const text = String(raw || '')
+    if (!text) return []
+
+    const found = new Set<string>()
+    const pushDigits = (value: string) => {
+      const digits = String(value || '').replace(/\D/g, '')
+      if (digits.length >= 6 && digits.length <= 9) found.add(digits)
+    }
+
+    // Prefer explicit folio arrays when present.
+    const arrayKeyPattern = /"?(foliosReales(?:Unidades|InmueblesAfectados)?)"?\s*:\s*\[([\s\S]*?)\]/gi
+    let arrayMatch: RegExpExecArray | null
+    while ((arrayMatch = arrayKeyPattern.exec(text)) !== null) {
+      const arrayBody = arrayMatch[2] || ''
+      const numPattern = /["']?(\d{6,9})["']?/g
+      let numMatch: RegExpExecArray | null
+      while ((numMatch = numPattern.exec(arrayBody)) !== null) {
+        pushDigits(numMatch[1])
+      }
+    }
+
+    // Also recover folios listed as objects: { "folio": "1234567" }.
+    const folioObjectPattern = /"folio"\s*:\s*["']?(\d{6,9})["']?/gi
+    let folioObjMatch: RegExpExecArray | null
+    while ((folioObjMatch = folioObjectPattern.exec(text)) !== null) {
+      pushDigits(folioObjMatch[1])
+    }
+
+    // Last resort: folio-like mentions in plain text.
+    if (found.size === 0) {
+      const plainPattern = /folio[^\n\r]{0,80}?(\d{6,9})/gi
+      let plainMatch: RegExpExecArray | null
+      while ((plainMatch = plainPattern.exec(text)) !== null) {
+        pushDigits(plainMatch[1])
+      }
+    }
+
+    return Array.from(found)
+  }
+
   private shouldRunSecondPassForInscripcion(extracted: any): { run: boolean; reason: string } {
     const folios = Array.isArray(extracted?.foliosReales)
       ? extracted.foliosReales.filter(Boolean).map((x: any) => String(x))
@@ -41,6 +177,7 @@ export class PreavisoDocumentProcessor {
     context: any
   ): Promise<{ commands: Command[]; extractedData: any }> {
     const handler = getHandler(documentType)
+    const bulkFastMode = context?._bulk_fast_mode === true
 
     // 0. Intelligent Processing: Check if we already extracted this file globally (salvo forceReprocess)
     let fileHash = ''
@@ -56,18 +193,41 @@ export class PreavisoDocumentProcessor {
         let isValidCache = true
         if (documentType === 'inscripcion') {
           if ((cachedExtraction._v || 0) < 2) {
-                        isValidCache = false
+            isValidCache = false
+          }
+          if (!this.hasMeaningfulExtraction(documentType, cachedExtraction)) {
+            isValidCache = false
           }
         }
 
         if (isValidCache) {
-                    let commands = handler.process(cachedExtraction, context)
+          console.info('[PreavisoDocumentProcessor] cache_hit', {
+            document_type: documentType,
+            file_name: file?.name,
+            file_hash: fileHash,
+            folios_detected: this.countDetectedFolios(cachedExtraction)
+          })
+          let commands = handler.process(cachedExtraction, context)
 
           return {
             commands,
             extractedData: cachedExtraction
           }
+        } else {
+          console.warn('[PreavisoDocumentProcessor] cache_invalid_ignored', {
+            document_type: documentType,
+            file_name: file?.name,
+            file_hash: fileHash,
+            cache_version: cachedExtraction?._v || 0,
+            folios_detected: this.countDetectedFolios(cachedExtraction)
+          })
         }
+      } else {
+        console.info('[PreavisoDocumentProcessor] cache_miss', {
+          document_type: documentType,
+          file_name: file?.name,
+          file_hash: fileHash
+        })
       }
       }
     } catch (e) {
@@ -76,7 +236,21 @@ export class PreavisoDocumentProcessor {
 
     // 1. Llamar a OpenAI Vision API (usando prompts del handler)
     const firstPassStartedAt = Date.now()
-    const { extracted, usage: firstPassUsage } = await this.extractWithOpenAI(file, documentType)
+    let extracted: any = {}
+    let firstPassUsage: any = null
+    try {
+      const firstPassResult = await this.extractWithOpenAI(file, documentType, context)
+      extracted = firstPassResult.extracted || {}
+      firstPassUsage = firstPassResult.usage || null
+    } catch (error: any) {
+      console.error('[PreavisoDocumentProcessor] first_pass_failed', {
+        document_type: documentType,
+        file_name: file?.name,
+        message: String(error?.message || error)
+      })
+      extracted = {}
+      firstPassUsage = null
+    }
     const firstPassMs = Date.now() - firstPassStartedAt
 
     // âœ… LOGGING: 1er pase
@@ -106,14 +280,26 @@ export class PreavisoDocumentProcessor {
 
     // 2. Segundo pase para folios (solo inscripcion, adaptativo)
     let secondPassSuccess = false
+    let secondPassExecuted = false
     if (documentType === 'inscripcion') {
       const decision = this.shouldRunSecondPassForInscripcion(extracted)
-      if (decision.run) {
+      const detectedFolios = this.countDetectedFolios(extracted)
+      const mustRecoverFolios = bulkFastMode && detectedFolios === 0
+      const firstPassEmpty = Object.keys(extracted || {}).length === 0
+      // Si el primer pase viene vacío/truncado, forzar segundo pase para no perder folios.
+      const shouldRunSecondPass = firstPassEmpty || (!bulkFastMode ? decision.run : mustRecoverFolios)
+
+      if (shouldRunSecondPass) {
+        secondPassExecuted = true
         const secondPassStartedAt = Date.now()
         const { result, success, usage: secondPassUsage } = await this.ensureAllFoliosOnPage(file, extracted, context)
         const secondPassMs = Date.now() - secondPassStartedAt
+        // Si el segundo pase devuelve algo útil, reemplazar; si no, conservar lo previo.
+        if (result && typeof result === 'object' && Object.keys(result).length > 0) {
+          extracted = result
+        }
         extracted._v = 2
-        secondPassSuccess = success
+        secondPassSuccess = success || this.countDetectedFolios(extracted) > 0
 
         if (context._userId && secondPassUsage) {
           try {
@@ -133,7 +319,9 @@ export class PreavisoDocumentProcessor {
                 folios_detected: result.foliosReales?.length || 0,
                 from_cache: false,
                 duration_ms: secondPassMs,
-                trigger_reason: decision.reason
+                trigger_reason: firstPassEmpty
+                  ? 'first_pass_empty_or_parse_failed'
+                  : (mustRecoverFolios ? 'bulk_fast_missing_folios' : decision.reason)
               }
             })
           } catch (logError) {
@@ -149,10 +337,26 @@ export class PreavisoDocumentProcessor {
       secondPassSuccess = true
     }
 
+    console.info('[PreavisoDocumentProcessor] processDocument timing', {
+      document_type: documentType,
+      bulk_fast_mode: bulkFastMode,
+      first_pass_ms: firstPassMs,
+      second_pass_enabled: documentType === 'inscripcion',
+      second_pass_executed: secondPassExecuted
+    })
+
     // 2.5. Cache the result for future global reuse
-    if (fileHash && extracted && Object.keys(extracted).length > 0 && secondPassSuccess) {
+    if (fileHash && this.hasMeaningfulExtraction(documentType, extracted) && secondPassSuccess) {
       DocumentoService.saveExtractionData(fileHash, extracted).catch((err: any) => {
         console.error('[PreavisoDocumentProcessor] Error saving cache:', err)
+      })
+    } else {
+      console.warn('[PreavisoDocumentProcessor] cache_skip_save_non_meaningful', {
+        document_type: documentType,
+        file_name: file?.name,
+        file_hash: fileHash || null,
+        second_pass_success: secondPassSuccess,
+        folios_detected: this.countDetectedFolios(extracted)
       })
     }
 
@@ -268,29 +472,21 @@ REGLAS CRÃTICAS:
       const content = data.choices[0]?.message?.content || '{}'
       const usage = data.usage || null // âœ… Capturar usage del segundo pase
 
-      let parsed: any = null
-      try {
-        let jt = String(content || '').trim()
-        if (jt.startsWith('```')) {
-          const m = jt.match(/```(?:json)?\n([\s\S]*?)\n```/)
-          if (m) jt = m[1]
-        }
-        parsed = JSON.parse(jt)
-      } catch {
-        parsed = null
-      }
-
-      if (!parsed) return { result: current, success: false, usage: usage }
-
-      const scanned = Array.isArray(parsed?.foliosReales) ? parsed.foliosReales.filter(Boolean).map((x: any) => String(x)) : []
+      const parsed: any = this.safeParseJsonObject(content)
+      const scanned = Array.isArray(parsed?.foliosReales)
+        ? parsed.foliosReales.filter(Boolean).map((x: any) => String(x))
+        : []
       const scannedFolios = Array.isArray(parsed?.folios) ? parsed.folios : []
-      if (scanned.length === 0 && scannedFolios.length === 0) return { result: current, success: true, usage: usage } // Success but no new info is technically a success
+      const recoveredFromRaw = this.extractFoliosFromRawText(content)
+      if (scanned.length === 0 && scannedFolios.length === 0 && recoveredFromRaw.length === 0) {
+        return { result: current, success: true, usage: usage } // Success but no new info is technically a success
+      }
 
       const scannedFromObjects = scannedFolios
         .map((f: any) => f?.folio)
         .filter(Boolean)
         .map((x: any) => String(x))
-      const scannedAll = [...scanned, ...scannedFromObjects]
+      const scannedAll = [...scanned, ...scannedFromObjects, ...recoveredFromRaw]
       if (scannedAll.length === 0) return { result: current, success: true, usage: usage }
 
       // Merge (dedupe por dÃ­gitos)
@@ -321,15 +517,6 @@ REGLAS CRÃTICAS:
       }
 
       // Mergear foliosConInfo del segundo pase con los existentes
-      const scannedFoliosInfo = scannedFolios.map((f: any) => ({
-        folio: String(f?.folio || ''),
-        unidad: f?.unidad || null,
-        condominio: f?.condominio || null,
-        ubicacion: f?.ubicacion || null,
-        direccion: f?.direccion || null,
-        superficie: f?.superficie || null
-      })).filter((f: any) => f.folio)
-
       // Mergear con foliosConInfo existentes
       const existingKeys = new Set(foliosConInfoFolios.map((x: any) => norm(x)))
       const nextFoliosConInfo = Array.isArray(next.foliosConInfo) ? [...next.foliosConInfo] : []
@@ -372,67 +559,84 @@ REGLAS CRÃTICAS:
   /**
    * Extrae informaciÃ³n con OpenAI Vision API
    */
-  private async extractWithOpenAI(file: File, documentType: string): Promise<{ extracted: any; usage: any }> {
+  private async extractWithOpenAI(file: File, documentType: string, context?: any): Promise<{ extracted: any; usage: any }> {
     const apiKey = process.env.OPENAI_API_KEY
-    const model = process.env.OPENAI_MODEL || 'gpt-4o'
+    const bulkFastMode = context?._bulk_fast_mode === true
+    const model = (bulkFastMode ? process.env.OPENAI_DOC_MODEL_BULK : process.env.OPENAI_DOC_MODEL) || process.env.OPENAI_MODEL || 'gpt-4o'
 
     if (!apiKey) {
       throw new Error('OPENAI_API_KEY no configurada')
     }
 
-    // Convertir archivo a base64
     const arrayBuffer = await file.arrayBuffer()
     const mimeType = file.type || 'image/jpeg'
 
     const base64 = Buffer.from(arrayBuffer).toString('base64')
 
-    // Obtener prompt segÃºn el handler
     const handler = getHandler(documentType)
     const { systemPrompt, userPrompt } = handler.getPrompts()
+    const outputTokenCap = bulkFastMode
+      ? Number(process.env.OPENAI_DOC_MAX_TOKENS_BULK || 1800)
+      : Number(process.env.OPENAI_DOC_MAX_TOKENS || 5000)
+    const timeoutMs = bulkFastMode
+      ? Number(process.env.OPENAI_DOC_TIMEOUT_BULK_MS || 18000)
+      : Number(process.env.OPENAI_DOC_TIMEOUT_MS || 30000)
+    const timeoutController = new AbortController()
+    const timeoutHandle = setTimeout(() => timeoutController.abort(), timeoutMs)
+    const fastModeHint = bulkFastMode
+      ? '\nModo bulk_fast activo: prioriza datos estructurados. Si no cabe, textoCompleto puede venir truncado.'
+      : ''
 
-    // Llamar a OpenAI Vision API
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt
-          },
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: userPrompt
-              },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:${mimeType};base64,${base64}`
+    let response: Response
+    try {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        signal: timeoutController.signal,
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'system',
+              content: systemPrompt
+            },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: `${userPrompt}${fastModeHint}`
+                },
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:${mimeType};base64,${base64}`
+                  }
                 }
-              }
-            ]
-          }
-        ],
-        // o1 models don't support temperature or response_format
-        ...(model.includes("o1") || model.includes("o3") ? {} : {
-          temperature: 0.1,
-          response_format: { type: 'json_object' }
-        }),
-        // gpt-4o, gpt-5.x, o1, o3 use max_completion_tokens; gpt-3.5-turbo uses max_tokens
-        // 8000 permite incluir textoCompleto (transcripciÃ³n de toda la pÃ¡gina) ademÃ¡s del JSON estructurado
-        ...(model.includes("gpt-4") || model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
-          ? { max_completion_tokens: 8000 }
-          : { max_tokens: 8000 }
-        )
+              ]
+            }
+          ],
+          ...(model.includes("o1") || model.includes("o3") ? {} : {
+            temperature: 0.1,
+            response_format: { type: 'json_object' }
+          }),
+          ...(model.includes("gpt-4") || model.includes("gpt-5") || model.includes("o1") || model.includes("o3")
+            ? { max_completion_tokens: outputTokenCap }
+            : { max_tokens: outputTokenCap }
+          )
+        })
       })
-    })
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        throw new Error(`OpenAI API timeout after ${timeoutMs}ms`)
+      }
+      throw error
+    } finally {
+      clearTimeout(timeoutHandle)
+    }
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
@@ -444,17 +648,47 @@ REGLAS CRÃTICAS:
     const content = data.choices[0]?.message?.content || '{}'
     const usage = data.usage || null // âœ… Capturar usage
 
-    try {
+    const parsed = this.safeParseJsonObject(content)
+    if (parsed && typeof parsed === 'object') {
+      console.info('[DocumentProcessor] parse_mode=json_ok', {
+        document_type: documentType,
+        file_name: file?.name,
+        content_length: String(content || '').length,
+        folios_detected: this.countDetectedFolios(parsed)
+      })
       return {
-        extracted: JSON.parse(content),
+        extracted: parsed,
         usage: usage
       }
-    } catch (error) {
-      console.error('[DocumentProcessor] Error parsing OpenAI response:', error)
+    }
+
+    const recoveredFolios = this.extractFoliosFromRawText(content)
+    if (recoveredFolios.length > 0) {
+      console.warn('[DocumentProcessor] OpenAI JSON truncated, recovered folios via regex fallback', {
+        document_type: documentType,
+        file_name: file?.name,
+        recovered_folios: recoveredFolios.length,
+        content_length: String(content || '').length
+      })
       return {
-        extracted: {},
+        extracted: {
+          folioReal: recoveredFolios.length === 1 ? recoveredFolios[0] : null,
+          foliosReales: recoveredFolios,
+          _parse_recovered: 'regex_folio_fallback'
+        },
         usage: usage
       }
+    }
+
+    console.error('[DocumentProcessor] Error parsing OpenAI response: invalid_or_truncated_json', {
+      document_type: documentType,
+      file_name: file?.name,
+      content_length: String(content || '').length,
+      content_preview: String(content || '').slice(0, 300)
+    })
+    return {
+      extracted: {},
+      usage: usage
     }
   }
 

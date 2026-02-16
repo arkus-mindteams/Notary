@@ -108,6 +108,16 @@ export async function POST(req: Request) {
       conversation_id: conversationId, // System-reserved field for session tracking
       tramiteId: tramiteIdFromBody || context?.tramiteId || null
     }
+    console.info('[preaviso-chat] incoming_context_summary', {
+      conversation_id: conversationId,
+      tramite_id: processingContext?.tramiteId || null,
+      folio_real: processingContext?.inmueble?.folio_real ?? null,
+      partidas_count: Array.isArray(processingContext?.inmueble?.partidas)
+        ? processingContext.inmueble.partidas.length
+        : 0,
+      vendedores_count: Array.isArray(processingContext?.vendedores) ? processingContext.vendedores.length : 0,
+      documentos_count: Array.isArray(processingContext?.documentos) ? processingContext.documentos.length : 0,
+    })
 
     // Procesar mensaje (últimos 20 mensajes = ~10 intercambios para contexto de todo el chat)
     const result = await tramiteSystem.process(

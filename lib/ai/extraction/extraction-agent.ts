@@ -12,6 +12,14 @@ import type {
 } from '@/lib/ai/extraction/types'
 
 const MAX_ATTEMPTS = 3
+const EXTRACTION_DEBUG = process.env.EXTRACTION_DEBUG === '1'
+const EXTRACTION_DEBUG_MAX_CHARS = Number(process.env.EXTRACTION_DEBUG_MAX_CHARS || 12000)
+
+function clipForDebug(value: string): string {
+  const text = String(value || '')
+  if (text.length <= EXTRACTION_DEBUG_MAX_CHARS) return text
+  return `${text.slice(0, EXTRACTION_DEBUG_MAX_CHARS)}\n...[truncated ${text.length - EXTRACTION_DEBUG_MAX_CHARS} chars]`
+}
 
 class OpenAIExtractionClient implements ExtractionLLMClient {
   private readonly apiKey: string
@@ -166,11 +174,35 @@ export class ExtractionAgent {
         })
         : plugin.buildUserPrompt(input)
 
+      if (EXTRACTION_DEBUG) {
+        console.log('[ExtractionAgent][request]', {
+          trace_id: traceId,
+          document_id: input.documentId,
+          attempt,
+          is_repair: isRepair,
+          model: process.env.OPENAI_MODEL || 'gpt-4o',
+          text_length: rawText.length,
+          system_prompt: clipForDebug(systemPrompt),
+          user_prompt: clipForDebug(userPrompt),
+        })
+      }
+
       const llmResult = await this.llmClient.complete({
         systemPrompt,
         userPrompt,
         maxTokens: 3000,
       })
+
+      if (EXTRACTION_DEBUG) {
+        console.log('[ExtractionAgent][response]', {
+          trace_id: traceId,
+          document_id: input.documentId,
+          attempt,
+          model: llmResult.model || process.env.OPENAI_MODEL || 'gpt-4o',
+          usage: llmResult.usage || null,
+          content: clipForDebug(llmResult.content),
+        })
+      }
 
       lastModelOutput = llmResult.content
       const parsed = this.parseJson(llmResult.content)

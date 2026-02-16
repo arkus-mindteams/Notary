@@ -326,7 +326,7 @@ export class TramiteSystem {
       const commandErrors: any[] = []
       for (const command of filteredCommands) {
         try {
-          console.log(`[TramiteSystem] Ejecutando comando: ${command.type}`, command.payload)
+          //console.log(`[TramiteSystem] Ejecutando comando: ${command.type}`, command.payload)
           const handlerResult = await this.commandRouter.route(command, updatedContext)
           // Merge profundo del contexto actualizado
           // CRÍTICO: Preservar arrays existentes si el handler no los actualiza explícitamente
@@ -396,10 +396,7 @@ export class TramiteSystem {
               ? handlerResult.updatedContext.folios
               : updatedContext.folios
           }
-          console.log(`[TramiteSystem] Contexto después de ${command.type}:`, {
-            vendedores: updatedContext.vendedores,
-            compradores: updatedContext.compradores
-          })
+
         } catch (error: any) {
           console.error(`[TramiteSystem] Error procesando comando ${command.type}:`, error)
           commandErrors.push({
