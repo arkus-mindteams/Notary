@@ -153,6 +153,7 @@ export function createDocumentIndexRouteHandler(deps: RouteDeps = defaultDeps) {
         chunks_created: result.chunks_created,
         embeddings_created: result.embeddings_created,
         status: result.status,
+        needs_ocr: result.status === 'needs_ocr',
         extraction_source: result.extraction_source || null,
         needs_ocr_reason: result.needs_ocr_reason || null,
         trace_id: result.trace_id,

@@ -64,6 +64,13 @@ type IndexingDeps = {
     needs_ocr: boolean
     reason?: string
   }>
+  updateDocumentIndexingState: (params: {
+    documentoId: string
+    status: 'PENDING' | 'OK' | 'NO_TEXT' | 'ERROR'
+    needsOcr: boolean
+    documentHash?: string | null
+    metadata?: Record<string, any>
+  }) => Promise<void>
   logEvent: (params: {
     userId: string
     traceId: string
@@ -135,7 +142,21 @@ const defaultDeps: IndexingDeps = {
   generateEmbedding: async (text) => EmbeddingsService.generateEmbedding(text),
   extractText: async (documento) => {
     const extractor = new DocumentTextExtractor()
-    return extractor.extract(documento)
+    return extractor.extract(documento, { allowOcrFallback: false })
+  },
+  updateDocumentIndexingState: async (params) => {
+    const supabase = createServerClient()
+    const { error } = await supabase
+      .from('documentos')
+      .update({
+        text_extraction_status: params.status,
+        needs_ocr: params.needsOcr,
+        document_hash: params.documentHash || null,
+        indexing_metadata: params.metadata || {},
+        indexed_at: new Date().toISOString(),
+      })
+      .eq('id', params.documentoId)
+    if (error) throw new Error(`document_state_update_failed:${error.message}`)
   },
   logEvent: async (params) => {
     await ActivityLogService.logDocumentIndexing({
@@ -197,6 +218,18 @@ export class DocumentIndexingService {
       const extraction = await this.deps.extractText(documento)
       const extractDurationMs = Date.now() - extractStartedAt
       if (extraction.needs_ocr || !extraction.text.trim()) {
+        await this.deps.updateDocumentIndexingState({
+          documentoId: params.documentoId,
+          status: 'NO_TEXT',
+          needsOcr: true,
+          documentHash: null,
+          metadata: {
+            extraction_source: extraction.source,
+            needs_ocr_reason: extraction.reason || 'text_not_usable',
+            chunking_version: DocumentIndexingService.CHUNKING_VERSION,
+            embedding_model: embeddingModel,
+          },
+        })
         await this.deps.logEvent({
           userId: params.userId,
           traceId: params.traceId,
@@ -240,6 +273,18 @@ export class DocumentIndexingService {
       })
 
       if (alreadyIndexed && !forceReindex) {
+        await this.deps.updateDocumentIndexingState({
+          documentoId: params.documentoId,
+          status: 'OK',
+          needsOcr: false,
+          documentHash,
+          metadata: {
+            extraction_source: extraction.source,
+            chunking_version: DocumentIndexingService.CHUNKING_VERSION,
+            embedding_model: embeddingModel,
+            idempotent_skip: true,
+          },
+        })
         await this.deps.logEvent({
           userId: params.userId,
           traceId: params.traceId,
@@ -338,6 +383,20 @@ export class DocumentIndexingService {
       await this.deps.upsertChunks(rows)
       const persistDurationMs = Date.now() - persistStartedAt
 
+      await this.deps.updateDocumentIndexingState({
+        documentoId: params.documentoId,
+        status: 'OK',
+        needsOcr: false,
+        documentHash,
+        metadata: {
+          extraction_source: extraction.source,
+          chunk_count: rows.length,
+          embedding_model: embeddingModel,
+          embedding_dimensions: embeddingDimensions,
+          chunking_version: DocumentIndexingService.CHUNKING_VERSION,
+        },
+      })
+
       await this.deps.logEvent({
         userId: params.userId,
         traceId: params.traceId,
@@ -375,6 +434,21 @@ export class DocumentIndexingService {
         extraction_source: extraction.source,
       }
     } catch (error) {
+      try {
+        await this.deps.updateDocumentIndexingState({
+          documentoId: params.documentoId,
+          status: 'ERROR',
+          needsOcr: false,
+          documentHash: null,
+          metadata: {
+            error_message: String((error as any)?.message || 'indexing_error'),
+            chunking_version: DocumentIndexingService.CHUNKING_VERSION,
+            embedding_model: embeddingModel,
+          },
+        })
+      } catch {
+        // evitar enmascarar error principal de indexacion
+      }
       await this.deps.logEvent({
         userId: params.userId,
         traceId: params.traceId,

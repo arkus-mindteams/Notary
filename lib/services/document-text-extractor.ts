@@ -1,4 +1,6 @@
 import { DetectDocumentTextCommand, TextractClient } from '@aws-sdk/client-textract'
+import path from 'path'
+import { pathToFileURL } from 'url'
 import { S3Service } from '@/lib/services/s3-service'
 
 type DocumentoRecord = {
@@ -86,6 +88,36 @@ const defaultDeps: ExtractorDeps = {
 }
 
 const DOCUMENT_INDEX_DEBUG = process.env.DOCUMENT_INDEX_DEBUG === '1'
+const DOCUMENT_TEXT_DEBUG = process.env.DOCUMENT_TEXT_DEBUG === '1'
+let pdfWorkerConfigured = false
+
+function configurePdfWorker(pdfjs: any) {
+  if (pdfWorkerConfigured) return
+  try {
+    const workerPath = path.join(
+      process.cwd(),
+      'node_modules',
+      'pdfjs-dist',
+      'legacy',
+      'build',
+      'pdf.worker.mjs'
+    )
+    pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href
+    if (DOCUMENT_TEXT_DEBUG) {
+      console.info('[DocumentTextExtractor] pdf_worker_configured', {
+        worker_src: pdfjs.GlobalWorkerOptions.workerSrc,
+      })
+    }
+  } catch (error: any) {
+    if (DOCUMENT_TEXT_DEBUG) {
+      console.warn('[DocumentTextExtractor] pdf_worker_config_failed', {
+        message: String(error?.message || error),
+      })
+    }
+  } finally {
+    pdfWorkerConfigured = true
+  }
+}
 
 function decodeXmlEntities(input: string): string {
   return input
@@ -132,7 +164,7 @@ export class DocumentTextExtractor {
 
   static isUsableText(text: string): boolean {
     const normalized = String(text || '').trim()
-    if (normalized.length < 80) return false
+    if (normalized.length < 200) return false
 
     const alphaNum = (normalized.match(/[A-Za-z0-9\u00C0-\u017F]/g) || []).length
     const ratio = alphaNum / Math.max(1, normalized.length)
@@ -146,7 +178,11 @@ export class DocumentTextExtractor {
     return { length: normalized.length, alnumRatio: ratio }
   }
 
-  async extract(documento: DocumentoRecord): Promise<TextExtractionResult> {
+  async extract(
+    documento: DocumentoRecord,
+    opts?: { allowOcrFallback?: boolean }
+  ): Promise<TextExtractionResult> {
+    const allowOcrFallback = opts?.allowOcrFallback === true
     const mime = String(documento.mime_type || '').toLowerCase()
 
     const fromMetadata = getMetadataText(documento.metadata)
@@ -285,7 +321,21 @@ export class DocumentTextExtractor {
       }
     }
 
-    const ocrResult = await this.deps.ocrFallback(documento, bytes)
+    if (!allowOcrFallback && mime.startsWith('image/')) {
+      return {
+        text: '',
+        source: 'none',
+        needs_ocr: true,
+        reason: 'image_requires_ocr',
+        debug: {
+          text_length: 0,
+          alnum_ratio: 0,
+          mime_type: mime,
+        },
+      }
+    }
+
+    const ocrResult = allowOcrFallback ? await this.deps.ocrFallback(documento, bytes) : null
     if (ocrResult && DocumentTextExtractor.isUsableText(ocrResult.text)) {
       const quality = DocumentTextExtractor.getTextQuality(ocrResult.text)
       if (DOCUMENT_INDEX_DEBUG) {
@@ -328,7 +378,11 @@ export class DocumentTextExtractor {
     }
   }
 
-  async extractFromFile(file: File): Promise<TextExtractionResult> {
+  async extractFromFile(
+    file: File,
+    opts?: { allowOcrFallback?: boolean }
+  ): Promise<TextExtractionResult> {
+    const allowOcrFallback = opts?.allowOcrFallback === true
     const mime = String(file.type || '').toLowerCase()
     const bytes = new Uint8Array(await file.arrayBuffer())
     if (!bytes || bytes.length === 0) {
@@ -404,7 +458,21 @@ export class DocumentTextExtractor {
       }
     }
 
-    const ocrResult = await this.deps.ocrFallbackFromFile(file, bytes)
+    if (!allowOcrFallback && mime.startsWith('image/')) {
+      return {
+        text: '',
+        source: 'none',
+        needs_ocr: true,
+        reason: 'image_requires_ocr',
+        debug: {
+          text_length: 0,
+          alnum_ratio: 0,
+          mime_type: mime,
+        },
+      }
+    }
+
+    const ocrResult = allowOcrFallback ? await this.deps.ocrFallbackFromFile(file, bytes) : null
     if (ocrResult && DocumentTextExtractor.isUsableText(ocrResult.text)) {
       const quality = DocumentTextExtractor.getTextQuality(ocrResult.text)
       return {
@@ -435,9 +503,11 @@ export class DocumentTextExtractor {
   private async extractPdfText(bytes: Uint8Array): Promise<string> {
     try {
       const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+      configurePdfWorker(pdfjs)
       const task = pdfjs.getDocument({
         data: bytes,
-        disableWorker: true,
+        disableWorker: false,
+        useWorkerFetch: false,
       } as any)
       const document = await task.promise
       const pages: string[] = []
@@ -452,7 +522,13 @@ export class DocumentTextExtractor {
         if (text) pages.push(text)
       }
       return pages.join('\n\n').trim()
-    } catch {
+    } catch (error: any) {
+      if (DOCUMENT_TEXT_DEBUG) {
+        console.error('[DocumentTextExtractor] pdf_text_extraction_failed', {
+          message: String(error?.message || error),
+          stack: String(error?.stack || '').slice(0, 1200),
+        })
+      }
       return ''
     }
   }

@@ -1747,8 +1747,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
 
-    // Limpiar tramiteId de batch anterior para no reutilizarlo en otra sesión
-    batchTramiteIdRef.current = null
+    const effectiveBatchTramiteId = batchTramiteIdRef.current ?? activeTramiteId ?? null
+    if (!effectiveBatchTramiteId) {
+      setIsProcessingDocument(false)
+      setProcessingProgress(0)
+      setMessages(prev => [...prev, {
+        id: generateMessageId('error'),
+        role: 'assistant',
+        content: 'No se pudo resolver el trámite activo para procesar documentos.',
+        timestamp: new Date()
+      }])
+      return
+    }
+    batchTramiteIdRef.current = effectiveBatchTramiteId
     // Siempre establecer isProcessingDocument para mostrar la barra de progreso
     setIsProcessingDocument(true)
     setProcessingProgress(0)
@@ -1774,11 +1785,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       setProcessingProgress(0)
       return
     }
-
-    const pdfFiles = newFiles.filter(
-      file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-    )
-    const imageFiles = newFiles.filter(file => !pdfFiles.includes(file))
 
     const originalDocs: UploadedDocument[] = newFiles.map(file => ({
       id: generateMessageId('doc'),
@@ -1853,45 +1859,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       return
     }
 
-    // Convertir PDFs a imágenes en segundo plano
-    let allImageFiles: File[] = [...imageFiles]
-    if (pdfFiles.length > 0) {
-      try {
-        const { convertPdfToImages } = await import('@/lib/ocr-client')
-        let totalPages = 0
-        let convertedPages = 0
-
-        // Contar páginas totales
-        for (const pdfFile of pdfFiles) {
-          if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-          setProcessingFileName(pdfFile.name)
-          const images = await convertPdfToImages(pdfFile, 0, (current, total) => {
-            if (batchAbort.signal.aborted) return
-            convertedPages++
-            if (totalPages === 0) totalPages = total
-            const progress = Math.min(50, (convertedPages / (totalPages || 1)) * 50) // 0-50% para conversión
-            setProcessingProgress(progress)
-          })
-          if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-          allImageFiles = [...allImageFiles, ...images]
-        }
-      } catch (error) {
-        console.error('Error convirtiendo PDFs:', error)
-        setIsProcessingDocument(false)
-        setProcessingProgress(0)
-        setProcessingFileName(null)
-        const errorMessage: ChatMessage = {
-          id: generateMessageId('pdf-error'),
-          role: 'assistant',
-          content: 'Error al convertir PDFs a imágenes. Por favor, intente con imágenes directamente.',
-          timestamp: new Date()
-        }
-        setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([errorMessage]))
-        return
-      }
-    }
-
-    setProcessingProgress(50) // 50% después de conversión
+    setProcessingProgress(10)
     const newDocuments = [...(data.documentos || []), ...fileNames]
     setData(prev => ({ ...prev, documentos: newDocuments }))
 
@@ -1975,7 +1943,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return 'escritura' // default
       }
 
-      // Preparar items (imagen → docType) antes de procesar
+      // Preparar items (archivo original -> docType) antes de procesar
       type ImgItem = {
         index: number
         imageFile: File
@@ -1986,16 +1954,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
 
       const items: ImgItem[] = []
-      const userImageCount = imageFiles.length // Las primeras N imágenes son archivos directos del usuario
-
-      for (let i = 0; i < allImageFiles.length; i++) {
+      for (let i = 0; i < newFiles.length; i++) {
         if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-        const imageFile = allImageFiles[i]
-        const isArtifact = i >= userImageCount // Si el índice es mayor al conteo de imágenes iniciales, es una página extraída de un PDF
-
-        const originalFile = filesArray.find(f =>
-          imageFile.name.includes(f.name.replace(/\.[^.]+$/, ''))
-        ) || filesArray[0]
+        const imageFile = newFiles[i]
+        const isArtifact = false
+        const originalFile = newFiles[i]
         const docType = await detectDocumentType(originalFile.name, originalFile)
         const originalKey = `${originalFile.name}:${originalFile.size}:${(originalFile as any).lastModified || ''}`
         items.push({ index: i, imageFile, originalFile, docType, originalKey, isArtifact })
@@ -2009,7 +1972,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
           id: generateMessageId('no-pages'),
           role: 'assistant',
-          content: 'No se pudieron extraer páginas del PDF. Intenta con otro archivo o conviértelo a imágenes.',
+          content: 'No se detectaron archivos procesables en la carga.',
           timestamp: new Date()
         }]))
         return
@@ -2031,6 +1994,85 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Aplicar resultados en orden, aunque se procesen en paralelo
       const pending = new Map<number, any>()
       let nextToApply = 0
+      const pendingStructuredExtractionTasks: Promise<void>[] = []
+
+      const mergeStructuredExtractionIntoData = (base: PreavisoData, structured: any): PreavisoData => {
+        if (!structured || typeof structured !== 'object') return base
+        const next: PreavisoData = { ...base }
+        const inmueble = structured?.inmueble || {}
+        const direccion = inmueble?.direccion || {}
+        const datosCatastrales = inmueble?.datos_catastrales || {}
+
+        next.inmueble = {
+          ...(next.inmueble || {
+            folio_real: null,
+            partidas: [],
+            all_registry_pages_confirmed: false,
+            direccion: {
+              calle: null,
+              numero: null,
+              colonia: null,
+              municipio: null,
+              estado: null,
+              codigo_postal: null
+            },
+            superficie: null,
+            valor: null,
+            datos_catastrales: {
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          }),
+          folio_real: inmueble?.folio_real ?? next?.inmueble?.folio_real ?? null,
+          partidas: Array.isArray(inmueble?.partidas) && inmueble.partidas.length > 0
+            ? inmueble.partidas
+            : (next?.inmueble?.partidas || []),
+          seccion: inmueble?.seccion ?? (next as any)?.inmueble?.seccion ?? null,
+          numero_expediente: inmueble?.numero_expediente ?? (next as any)?.inmueble?.numero_expediente ?? null,
+          direccion: {
+            ...(next?.inmueble?.direccion || {}),
+            calle: direccion?.calle ?? next?.inmueble?.direccion?.calle ?? null,
+            numero: direccion?.numero ?? next?.inmueble?.direccion?.numero ?? null,
+            colonia: direccion?.colonia ?? next?.inmueble?.direccion?.colonia ?? null,
+            municipio: direccion?.municipio ?? next?.inmueble?.direccion?.municipio ?? null,
+            estado: direccion?.estado ?? next?.inmueble?.direccion?.estado ?? null,
+            codigo_postal: direccion?.codigo_postal ?? next?.inmueble?.direccion?.codigo_postal ?? null
+          },
+          superficie: inmueble?.superficie ?? next?.inmueble?.superficie ?? null,
+          valor: inmueble?.valor ?? next?.inmueble?.valor ?? null,
+          datos_catastrales: {
+            ...(next?.inmueble?.datos_catastrales || {}),
+            lote: datosCatastrales?.lote ?? next?.inmueble?.datos_catastrales?.lote ?? null,
+            manzana: datosCatastrales?.manzana ?? next?.inmueble?.datos_catastrales?.manzana ?? null,
+            fraccionamiento: datosCatastrales?.fraccionamiento ?? next?.inmueble?.datos_catastrales?.fraccionamiento ?? null,
+            condominio: datosCatastrales?.condominio ?? next?.inmueble?.datos_catastrales?.condominio ?? null,
+            unidad: datosCatastrales?.unidad ?? next?.inmueble?.datos_catastrales?.unidad ?? null,
+            modulo: datosCatastrales?.modulo ?? next?.inmueble?.datos_catastrales?.modulo ?? null
+          }
+        } as any
+
+        if (structured?.titular_registral?.nombre) {
+          const vendedor = {
+            party_id: 'vendedor_1',
+            tipo_persona: 'persona_fisica',
+            persona_fisica: {
+              nombre: structured.titular_registral.nombre,
+              rfc: structured?.titular_registral?.rfc ?? null,
+              curp: structured?.titular_registral?.curp ?? null,
+              estado_civil: null
+            },
+            titular_registral_confirmado: true
+          } as any
+          const existing = Array.isArray(next.vendedores) ? next.vendedores : []
+          next.vendedores = existing.length > 0 ? [{ ...existing[0], ...vendedor }] : [vendedor]
+        }
+
+        return next
+      }
 
       let sessionExpired = false
       let errorCount = 0
@@ -2499,19 +2541,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                         typeof processResult?.extractedData?.textoCompleto === 'string'
                           ? processResult.extractedData.textoCompleto.trim()
                           : ''
+                      const requiresOcrFallback = processResult?.extractedData?._requires_ocr === true
                       const rawTextFromOcr =
                         typeof processResult?.ocrText === 'string'
                           ? processResult.ocrText.trim()
                           : ''
-                      const rawTextFromJson =
-                        processResult?.extractedData && typeof processResult.extractedData === 'object'
-                          ? JSON.stringify(processResult.extractedData)
-                          : ''
-                      const rawTextForExtraction = rawTextFromExtraction || rawTextFromOcr || rawTextFromJson
+                      const rawTextForExtraction = rawTextFromExtraction || rawTextFromOcr
                       const tramiteIdForExtraction = effectiveTramiteId
-                      if (tramiteIdForExtraction && rawTextForExtraction) {
-                        // No bloquear el batch por extracción estructurada adicional.
-                        void (async () => {
+                      if (tramiteIdForExtraction && rawTextForExtraction && !requiresOcrFallback) {
+                        const extractionTask = (async () => {
                           try {
                             const extractResp = await postJsonWithTimeout(
                               `/api/expedientes/tramites/${tramiteIdForExtraction}/extract`,
@@ -2533,6 +2571,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                               processResult.structuredExtraction = extractJson?.structured || null
                               processResult.structuredExtractionWarnings = extractJson?.warnings || []
                               processResult.structuredExtractionTraceId = extractJson?.trace_id || null
+                              if (extractJson?.structured) {
+                                setData(prev => {
+                                  const merged = mergeStructuredExtractionIntoData(prev, extractJson.structured)
+                                  workingData = merged
+                                  dataRef.current = merged
+                                  return merged
+                                })
+                              }
                             } else {
                               const errText = await extractResp.text().catch(() => '')
                               console.warn('[PreavisoChat] /extract non-ok', {
@@ -2544,6 +2590,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                             console.warn('[PreavisoChat] Error calling /extract', extractError)
                           }
                         })()
+                        pendingStructuredExtractionTasks.push(extractionTask)
                       }
                     } catch (extractError) {
                       console.warn('[PreavisoChat] Error calling /extract', extractError)
@@ -2858,6 +2905,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return
       }
 
+      if (pendingStructuredExtractionTasks.length > 0) {
+        await Promise.allSettled(pendingStructuredExtractionTasks)
+      }
+
       if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
       setProcessingProgress(90) // 90% después de procesar todos los archivos
 
@@ -2909,7 +2960,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             _document_intent: (workingData as any)._document_intent ?? null,
             _document_people_pending: (workingData as any)._document_people_pending ?? null,
             _last_question_intent: (workingData as any)._last_question_intent ?? null,
-            tramiteId: activeTramiteId,
+            tramiteId: batchTramiteIdRef.current ?? activeTramiteId ?? null,
             vendedores: workingData.vendedores || [],
             compradores: workingData.compradores || [],
             // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
@@ -2926,9 +2977,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 informacionExtraida: d.extractedData
               }))
           },
-          tramiteId: activeTramiteId,
+          tramiteId: batchTramiteIdRef.current ?? activeTramiteId ?? null,
           conversation_id: conversationIdRef.current
         })
+      })
+      console.info('[PreavisoChat] outgoing_context_summary', {
+        conversation_id: conversationIdRef.current || null,
+        tramite_id: batchTramiteIdRef.current ?? activeTramiteId ?? null,
+        folio_real: workingData?.inmueble?.folio_real ?? null,
+        partidas_count: Array.isArray(workingData?.inmueble?.partidas) ? workingData.inmueble.partidas.length : 0,
+        vendedores_count: Array.isArray(workingData?.vendedores) ? workingData.vendedores.length : 0,
+        documentos_count: Array.isArray(newDocuments) ? newDocuments.length : 0,
       })
 
       setProcessingProgress(100) // 100% completado

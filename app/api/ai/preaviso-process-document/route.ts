@@ -9,6 +9,8 @@ import { ActivityLogService } from '@/lib/services/activity-log-service'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import { DocumentoService } from '@/lib/services/documento-service'
 import { DocumentIndexingService } from '@/lib/services/document-indexing-service'
+import { DocumentTextExtractor } from '@/lib/services/document-text-extractor'
+import { ExtractionAgent } from '@/lib/ai/extraction/extraction-agent'
 
 type DeferredPostProcessInput = {
   traceId: string
@@ -53,6 +55,115 @@ function buildProcessingFingerprint(params: {
       extractedHash
     ].join('|'))
     .digest('hex')
+}
+
+function mergeExtractedIntoContext(context: any, structured: any): any {
+  const next = { ...(context || {}) }
+  const inmueble = structured?.inmueble || {}
+  const direccion = inmueble?.direccion || {}
+  const datosCatastrales = inmueble?.datos_catastrales || {}
+
+  next.inmueble = {
+    ...(next.inmueble || {}),
+    folio_real: inmueble?.folio_real ?? next?.inmueble?.folio_real ?? null,
+    partidas: Array.isArray(inmueble?.partidas) && inmueble.partidas.length > 0
+      ? inmueble.partidas
+      : (next?.inmueble?.partidas || []),
+    seccion: inmueble?.seccion ?? next?.inmueble?.seccion ?? null,
+    numero_expediente: inmueble?.numero_expediente ?? next?.inmueble?.numero_expediente ?? null,
+    direccion: {
+      ...(next?.inmueble?.direccion || {}),
+      calle: direccion?.calle ?? next?.inmueble?.direccion?.calle ?? null,
+      numero: direccion?.numero ?? next?.inmueble?.direccion?.numero ?? null,
+      colonia: direccion?.colonia ?? next?.inmueble?.direccion?.colonia ?? null,
+      municipio: direccion?.municipio ?? next?.inmueble?.direccion?.municipio ?? null,
+      estado: direccion?.estado ?? next?.inmueble?.direccion?.estado ?? null,
+      codigo_postal: direccion?.codigo_postal ?? next?.inmueble?.direccion?.codigo_postal ?? null,
+    },
+    superficie: inmueble?.superficie ?? next?.inmueble?.superficie ?? null,
+    valor: inmueble?.valor ?? next?.inmueble?.valor ?? null,
+    datos_catastrales: {
+      ...(next?.inmueble?.datos_catastrales || {}),
+      lote: datosCatastrales?.lote ?? next?.inmueble?.datos_catastrales?.lote ?? null,
+      manzana: datosCatastrales?.manzana ?? next?.inmueble?.datos_catastrales?.manzana ?? null,
+      fraccionamiento: datosCatastrales?.fraccionamiento ?? next?.inmueble?.datos_catastrales?.fraccionamiento ?? null,
+      condominio: datosCatastrales?.condominio ?? next?.inmueble?.datos_catastrales?.condominio ?? null,
+      unidad: datosCatastrales?.unidad ?? next?.inmueble?.datos_catastrales?.unidad ?? null,
+      modulo: datosCatastrales?.modulo ?? next?.inmueble?.datos_catastrales?.modulo ?? null,
+    }
+  }
+
+  if (structured?.titular_registral?.nombre) {
+    const vendedor = {
+      party_id: 'vendedor_1',
+      persona_fisica: {
+        nombre: structured.titular_registral.nombre,
+        rfc: structured?.titular_registral?.rfc ?? null,
+        curp: structured?.titular_registral?.curp ?? null,
+      },
+      titular_registral_confirmado: true,
+    }
+    const existing = Array.isArray(next.vendedores) ? next.vendedores : []
+    next.vendedores = existing.length > 0 ? [{ ...existing[0], ...vendedor }] : [vendedor]
+  }
+
+  const compradoresDetectados = Array.isArray(structured?.compradores_detectados)
+    ? structured.compradores_detectados.filter((p: any) => p?.nombre)
+    : []
+  if (compradoresDetectados.length > 0) {
+    const existing = Array.isArray(next.compradores) ? next.compradores : []
+    const merged = [...existing]
+    for (let i = 0; i < compradoresDetectados.length; i++) {
+      const buyer = compradoresDetectados[i]
+      const prev = merged[i] || {}
+      merged[i] = {
+        ...prev,
+        party_id: prev.party_id || `comprador_${i + 1}`,
+        persona_fisica: {
+          ...(prev.persona_fisica || {}),
+          nombre: buyer?.nombre ?? prev?.persona_fisica?.nombre ?? null,
+          rfc: buyer?.rfc ?? prev?.persona_fisica?.rfc ?? null,
+          curp: buyer?.curp ?? prev?.persona_fisica?.curp ?? null,
+        }
+      }
+    }
+    next.compradores = merged
+  }
+
+  if (structured?.gravamenes === 'LIBRE') {
+    next.gravamenes = []
+    next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: false }
+  } else if (Array.isArray(structured?.gravamenes) && structured.gravamenes.length > 0) {
+    next.gravamenes = structured.gravamenes
+    next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
+  }
+
+  return next
+}
+
+function isImageLikeFile(file: File): boolean {
+  const mime = String(file.type || '').toLowerCase()
+  if (mime.startsWith('image/')) return true
+  const name = String(file.name || '').toLowerCase()
+  return /\.(png|jpe?g|webp|gif|bmp|tiff?)$/.test(name)
+}
+
+function detectFoliosFromText(rawText: string): string[] {
+  const text = String(rawText || '')
+  if (!text) return []
+  const patterns = [
+    /\bfolio\s*real\s*[:#-]?\s*([0-9]{5,})\b/gi,
+    /\bfolio\s*[:#-]?\s*([0-9]{5,})\b/gi,
+    /\bmatr[ií]cula\s*[:#-]?\s*([0-9]{5,})\b/gi,
+  ]
+  const found = new Set<string>()
+  for (const re of patterns) {
+    for (const match of text.matchAll(re)) {
+      const folio = String(match?.[1] || '').trim()
+      if (folio) found.add(folio)
+    }
+  }
+  return Array.from(found)
 }
 
 async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<void> {
@@ -337,13 +448,105 @@ export async function POST(req: Request) {
     }
 
     const tramiteSystem = getTramiteSystem()
+    const textExtractor = new DocumentTextExtractor()
+    const extractionAgent = new ExtractionAgent()
     const extractStartedAt = Date.now()
-    const result = await tramiteSystem.processDocument(
-      pluginId,
-      file,
-      documentType,
-      context || {}
-    )
+    let result: { data: any; commands: any[]; extractedData?: any; meta?: any }
+    const textResult = await textExtractor.extractFromFile(file, { allowOcrFallback: false })
+    console.info('[preaviso-process-document] text_first_probe', {
+      trace_id: traceId,
+      file_name: file.name,
+      mime_type: file.type || 'unknown',
+      source: textResult.source,
+      needs_ocr: textResult.needs_ocr,
+      reason: textResult.reason || null,
+      text_length: String(textResult.text || '').length,
+      text_debug: textResult.debug || null,
+    })
+
+    if (!textResult.needs_ocr && textResult.text?.trim()) {
+      const regexFolios = detectFoliosFromText(textResult.text)
+      console.info('[preaviso-process-document] text_first_folio_probe', {
+        trace_id: traceId,
+        file_name: file.name,
+        regex_folios_detected: regexFolios.length,
+        regex_folios_sample: regexFolios.slice(0, 10),
+      })
+
+      const extraction = await extractionAgent.extract({
+        tramiteType: 'preaviso',
+        documentId: `adhoc:${traceId}:${file.name}`,
+        rawText: textResult.text,
+        fileMeta: {
+          file_name: file.name,
+          mime_type: file.type || 'application/octet-stream',
+          source_document_type: documentType,
+          source_extraction: textResult.source,
+        },
+        auditContext: {
+          userId: authUserId || null,
+          tramiteId: context?.tramiteId || null,
+          traceId,
+        },
+      })
+
+      console.info('[preaviso-process-document] text_first_extraction_summary', {
+        trace_id: traceId,
+        file_name: file.name,
+        folio_real: extraction?.structured?.inmueble?.folio_real ?? null,
+        partidas_count: Array.isArray(extraction?.structured?.inmueble?.partidas)
+          ? extraction.structured.inmueble.partidas.length
+          : 0,
+        source_refs_count: Array.isArray(extraction?.source_refs) ? extraction.source_refs.length : 0,
+        warnings_count: Array.isArray(extraction?.warnings) ? extraction.warnings.length : 0,
+      })
+
+      result = {
+        data: mergeExtractedIntoContext(context || {}, extraction.structured),
+        commands: [],
+        extractedData: {
+          ...(extraction.structured || {}),
+          textoCompleto: textResult.text,
+          _source_extraction: textResult.source,
+          _trace_id: extraction.trace_id,
+        },
+        meta: {
+          text_first: true,
+          extraction_source: textResult.source,
+          text_debug: textResult.debug || null,
+          warnings: extraction.warnings || [],
+        }
+      }
+    } else {
+      if (isImageLikeFile(file)) {
+        result = await tramiteSystem.processDocument(
+          pluginId,
+          file,
+          documentType,
+          context || {}
+        )
+      } else {
+        // No enviar PDFs/DOCX sin texto utilizable a Vision (espera imagen MIME).
+        result = {
+          data: context || {},
+          commands: [],
+          extractedData: {
+            textoCompleto: '',
+            _source_extraction: textResult.source,
+            _needs_ocr_reason: textResult.reason || 'text_not_usable',
+            _requires_ocr: true,
+            _text_debug: textResult.debug || null,
+          },
+          meta: {
+            text_first: false,
+            requires_ocr: true,
+            extraction_source: textResult.source,
+            needs_ocr_reason: textResult.reason || 'text_not_usable',
+            text_debug: textResult.debug || null,
+          }
+        }
+      }
+    }
     const extractSyncMs = Date.now() - extractStartedAt
 
     const conversationId = context?.conversation_id || null
@@ -402,6 +605,15 @@ export async function POST(req: Request) {
     }
 
     const requestLatencyMs = Date.now() - requestStartedAt
+    console.info('[preaviso-process-document] response_summary', {
+      trace_id: traceId,
+      file_name: file.name,
+      folio_real: result?.data?.inmueble?.folio_real ?? null,
+      partidas_count: Array.isArray(result?.data?.inmueble?.partidas) ? result.data.inmueble.partidas.length : 0,
+      tramite_id: result?.data?.tramiteId ?? context?.tramiteId ?? null,
+      text_first: result?.meta?.text_first === true,
+      extraction_source: result?.meta?.extraction_source || null,
+    })
 
     return NextResponse.json({
       data: result.data,

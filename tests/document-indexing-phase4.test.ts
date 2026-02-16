@@ -46,6 +46,7 @@ test('DocumentIndexingService evita duplicados cuando ya existe la firma de inde
       source: 'metadata',
       needs_ocr: false,
     }),
+    updateDocumentIndexingState: async () => {},
     logEvent: async () => {},
   }
 
@@ -89,6 +90,7 @@ test('DocumentIndexingService retorna needs_ocr cuando no hay texto usable y no 
       needs_ocr: true,
       reason: 'pdf_text_not_usable',
     }),
+    updateDocumentIndexingState: async () => {},
     logEvent: async () => {},
   }
 
@@ -104,4 +106,3 @@ test('DocumentIndexingService retorna needs_ocr cuando no hay texto usable y no 
   assert.equal(result.chunks_created, 0)
   assert.equal(result.embeddings_created, 0)
 })
-
