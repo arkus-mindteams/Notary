@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { ProtectedRoute } from '@/components/protected-route'
 import { PreavisoChat, type PreavisoData } from '@/components/preaviso-chat'
@@ -20,7 +21,8 @@ import {
   ArrowLeft,
   Save,
   FileText as FileTextIcon,
-  ChevronDown
+  ChevronDown,
+  MessageSquare
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -98,7 +100,18 @@ function htmlToPlainText(html: string): string {
   return (temp.innerText || temp.textContent || '').trim()
 }
 
+function buildPreavisoUrl(params: { action?: string; chatId?: string | null; new?: string | null }) {
+  const search = new URLSearchParams()
+  if (params.chatId) search.set('chatId', params.chatId)
+  if (params.new) search.set('new', params.new)
+  if (params.action) search.set('action', params.action)
+  const qs = search.toString()
+  return `/dashboard/preaviso${qs ? `?${qs}` : ''}`
+}
+
 export default function PreavisoPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const supabase = useMemo(() => createBrowserClient(), [])
   const [appState, setAppState] = useState<AppState>('chat')
   const [preavisoData, setPreavisoData] = useState<PreavisoData | null>(null)
@@ -108,6 +121,16 @@ export default function PreavisoPage() {
   const [showExportButtons, setShowExportButtons] = useState(false)
   const [exportData, setExportData] = useState<PreavisoData | null>(null)
   const [showNewPreavisoDialog, setShowNewPreavisoDialog] = useState(false)
+
+  // Tras refresh con ?action=view_document o ?action=edit_document, estamos en chat (sin documento en memoria): sincronizar URL quitando action
+  useEffect(() => {
+    const action = searchParams.get('action')
+    if (appState === 'chat' && (action === 'view_document' || action === 'edit_document')) {
+      router.replace(
+        buildPreavisoUrl({ chatId: searchParams.get('chatId'), new: searchParams.get('new') })
+      )
+    }
+  }, [appState, searchParams])
 
   const handleDataComplete = (data: PreavisoData) => {
     setPreavisoData(data)
@@ -143,6 +166,13 @@ export default function PreavisoPage() {
       setEditedDocument(extractBodyHtml(html, text))
       setEditedDocumentText(text)
       setAppState('document')
+      router.replace(
+        buildPreavisoUrl({
+          action: 'view_document',
+          chatId: searchParams.get('chatId'),
+          new: searchParams.get('new'),
+        })
+      )
 
       // Guardar en expedientes (async, no bloquea la UI)
       try {
@@ -194,6 +224,31 @@ export default function PreavisoPage() {
       setEditedDocumentText(document.text || '')
     }
     setAppState('editing')
+    router.replace(
+      buildPreavisoUrl({
+        action: 'edit_document',
+        chatId: searchParams.get('chatId'),
+        new: searchParams.get('new'),
+      })
+    )
+  }
+
+  const handleCancelEdit = () => {
+    setAppState('document')
+    router.replace(
+      buildPreavisoUrl({
+        action: 'view_document',
+        chatId: searchParams.get('chatId'),
+        new: searchParams.get('new'),
+      })
+    )
+  }
+
+  const handleBackToChat = () => {
+    setAppState('chat')
+    router.replace(
+      buildPreavisoUrl({ chatId: searchParams.get('chatId'), new: searchParams.get('new') })
+    )
   }
 
   const handleSaveEdit = () => {
@@ -206,6 +261,13 @@ export default function PreavisoPage() {
       }
       setDocument(updatedDocument)
       setAppState('document')
+      router.replace(
+        buildPreavisoUrl({
+          action: 'view_document',
+          chatId: searchParams.get('chatId'),
+          new: searchParams.get('new'),
+        })
+      )
     }
   }
 
@@ -243,6 +305,8 @@ export default function PreavisoPage() {
     setDocument(null)
     setEditedDocument('')
     setEditedDocumentText('')
+    // Navegar a nuevo chat (sin chatId, con new=true) para que PreavisoChat inicie una sesión nueva
+    router.push('/dashboard/preaviso?new=true')
   }
 
   // Estado: Chat
@@ -338,10 +402,14 @@ export default function PreavisoPage() {
                   Revisa el documento y descárgalo en el formato que prefieras
                 </p>
               </div>
-              <div className="flex space-x-2">
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={handleBackToChat}>
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                  Regresar al Chat
+                </Button>
                 <Button variant="outline" onClick={() => setShowNewPreavisoDialog(true)}>
-                  <ArrowLeft className="h-4 w-4 mr-2" />
-                  Nuevo Pre-Aviso
+                  <MessageSquare className="h-4 w-4 mr-2" />
+                  Nuevo Chat
                 </Button>
                 <Dialog open={showNewPreavisoDialog} onOpenChange={setShowNewPreavisoDialog}>
                   <DialogContent>
@@ -458,8 +526,12 @@ export default function PreavisoPage() {
                   Modifica el contenido del documento según sea necesario
                 </p>
               </div>
-              <div className="flex space-x-2">
-                <Button variant="outline" onClick={() => setAppState('document')}>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={handleBackToChat}>
+                  <ArrowLeft className="h-4 w-4 mr-2" />
+                  Regresar al chat
+                </Button>
+                <Button variant="outline" onClick={handleCancelEdit}>
                   Cancelar
                 </Button>
                 <Button onClick={handleSaveEdit}>
