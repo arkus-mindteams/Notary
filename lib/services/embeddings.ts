@@ -21,7 +21,9 @@ export class EmbeddingsService {
                 return null
             }
 
-            const response = await fetch(this.OPENAI_API_URL, {
+            // Importante: usar referencia de clase (no `this`) porque esta funcion
+            // se pasa como callback y puede perder contexto.
+            const response = await fetch(EmbeddingsService.OPENAI_API_URL, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -29,7 +31,7 @@ export class EmbeddingsService {
                 },
                 body: JSON.stringify({
                     input: cleanText,
-                    model: this.MODEL,
+                    model: EmbeddingsService.MODEL,
                     encoding_format: 'float'
                 })
             })

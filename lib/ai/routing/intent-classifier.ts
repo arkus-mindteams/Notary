@@ -114,8 +114,30 @@ export class IntentClassifier {
     const wantsStateUpdate =
       includesAny(uiAction, ['save_step', 'patch_step', 'update_state', 'update_field']) ||
       /\b(actualiza|actualizar|cambia|cambiar|corrige|corregir|modifica|modificar|agrega|agregar|quita|elimina|guardar)\b/.test(normalized) ||
-      /\b(mi rfc es|mi curp es|mi nombre es|folio real es|domicilio es|direccion es|dirección es)\b/.test(normalized)
+      /\b(mi rfc es|mi curp es|mi nombre es|folio real es|domicilio es|direccion es|dirección es)\b/.test(normalized) ||
+      /\b(es con credito|es con crédito|pago de contado|sin gravamen|con gravamen|sin hipoteca|con hipoteca|estado civil|casado|soltero|divorciado)\b/.test(normalized)
     if (wantsStateUpdate) hits.add('UPDATE_STATE')
+
+    const hasRichDomainDataInMessage =
+      message.length >= 80 &&
+      /\b(folio|partida|lote|manzana|condominio|direccion|dirección|vendedor|comprador|credito|crédito|gravamen|hipoteca)\b/.test(normalized)
+
+    if (
+      wantsGeneration &&
+      hasRichDomainDataInMessage &&
+      !includesAny(uiAction, ['generate_document', 'finalize', 'finalize_preaviso'])
+    ) {
+      return 'UPDATE_STATE'
+    }
+
+    const hasShortDomainUpdateStatement =
+      !asksQuestion &&
+      /\b(credito|crédito|contado|gravamen|hipoteca|folio|partida|direccion|dirección|comprador|vendedor)\b/.test(normalized) &&
+      /\b(es|son|sin|con|confirmo|indico|indica)\b/.test(normalized)
+
+    if (hasShortDomainUpdateStatement) {
+      return 'UPDATE_STATE'
+    }
 
     if (hits.size === 1) return [...hits][0]
     if (hits.size > 1 && hits.has('EXTRACT_DOCUMENT') && input.hasDocument) return 'EXTRACT_DOCUMENT'
