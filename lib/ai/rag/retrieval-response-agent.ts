@@ -129,6 +129,11 @@ export class RetrievalResponseAgent {
     citations: string[]
     suggested_updates?: Record<string, unknown>[]
     trace_id: string
+    audit?: {
+      retrieved_document_chunk_ids: string[]
+      retrieved_knowledge_chunk_ids: string[]
+      latencies: { totalMs: number; retrievalMs: number; llmMs: number }
+    }
   }> {
     const startedAt = Date.now()
 
@@ -208,6 +213,15 @@ export class RetrievalResponseAgent {
       citations,
       suggested_updates: parsed.suggested_updates || [],
       trace_id: traceId,
+      audit: {
+        retrieved_document_chunk_ids: context.retrieved_document_chunks.map((x) => x.id),
+        retrieved_knowledge_chunk_ids: context.retrieved_knowledge_chunks.map((x) => x.id),
+        latencies: {
+          totalMs: Date.now() - startedAt,
+          retrievalMs,
+          llmMs,
+        },
+      },
     }
   }
 
