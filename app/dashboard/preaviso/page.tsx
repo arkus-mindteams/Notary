@@ -300,13 +300,7 @@ function PreavisoPageContent() {
 
   const handleNewPreaviso = () => {
     setShowNewPreavisoDialog(false)
-    setAppState('chat')
-    setPreavisoData(null)
-    setDocument(null)
-    setEditedDocument('')
-    setEditedDocumentText('')
-    // Navegar a nuevo chat (sin chatId, con new=true) para que PreavisoChat inicie una sesión nueva
-    router.push('/dashboard/preaviso?new=true')
+    window.location.href = '/dashboard/preaviso?new=true'
   }
 
   // Estado: Chat
