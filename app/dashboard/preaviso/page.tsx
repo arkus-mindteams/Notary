@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { ProtectedRoute } from '@/components/protected-route'
@@ -109,7 +109,7 @@ function buildPreavisoUrl(params: { action?: string; chatId?: string | null; new
   return `/dashboard/preaviso${qs ? `?${qs}` : ''}`
 }
 
-export default function PreavisoPage() {
+function PreavisoPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const supabase = useMemo(() => createBrowserClient(), [])
@@ -567,3 +567,22 @@ export default function PreavisoPage() {
   return null
 }
 
+function PreavisoPageFallback() {
+  return (
+    <ProtectedRoute>
+      <DashboardLayout>
+        <div className="p-6 flex items-center justify-center min-h-[200px]">
+          <p className="text-gray-600">Cargando...</p>
+        </div>
+      </DashboardLayout>
+    </ProtectedRoute>
+  )
+}
+
+export default function PreavisoPage() {
+  return (
+    <Suspense fallback={<PreavisoPageFallback />}>
+      <PreavisoPageContent />
+    </Suspense>
+  )
+}
