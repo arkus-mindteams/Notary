@@ -54,7 +54,7 @@ export class ValidationService {
 
     // Rechazar si contiene señales claras de corrección o ruido conversacional
     // Incluso después de sanitizar, si quedó algo de esto, la cadena no es válida.
-    const repairKeywords = /\b(perdon|perd[oó]n|disculpa|error|equivoqu[eé]|no era|es con|sera con|ser[aá] con|corrijo|actualizar|cambiar|pero|redito|credito|cr[eé]dito|banco|institucion|instituci[oó]n)\b/i
+    const repairKeywords = /\b(perdon|perd[oó]n|disculpa|error|equivoqu[eé]|no era|es con|sera con|ser[aá] con|corrijo|actualizar|cambiar|pero|redito|credito|cr[eé]dito)\b/i
     if (repairKeywords.test(normalized)) {
       return false
     }

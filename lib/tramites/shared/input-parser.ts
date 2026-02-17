@@ -42,7 +42,7 @@ export class InputParser {
         const text = String(input || '')
         // Heurística: encontrar institución después de "credito/crédito" o "con"
         // Primero: match de instituciones comunes
-        const common = text.match(/\b(bbva|santander|banorte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar)\b/i)
+        const common = text.match(/\b(bbva|santander|banorte|banco\s+mercantil\s+del\s+norte|mercantil\s+del\s+norte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar)\b/i)
         let institution = common ? this.normalizeInstitution(common[1]) : null
         if (!institution) {
           const m =
@@ -337,7 +337,7 @@ export class InputParser {
     this.rules.push({
       name: 'credit_institution',
       // Patrón más flexible: acepta instituciones en cualquier formato (mayúsculas, minúsculas, con espacios)
-      pattern: /\b(bbva|santander|banorte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar)\b/i,
+      pattern: /\b(bbva|santander|banorte|banco\s+mercantil\s+del\s+norte|mercantil\s+del\s+norte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar)\b/i,
       condition: (input, context, lastAssistantMessage) => {
         // Esta condición es una verificación adicional
         const creditos = context.creditos || []
@@ -353,7 +353,7 @@ export class InputParser {
       },
       extract: (input) => {
         // Extraer la institución del texto (puede estar en cualquier parte)
-        const match = input.match(/\b(bbva|santander|banorte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar)\b/i)
+        const match = input.match(/\b(bbva|santander|banorte|banco\s+mercantil\s+del\s+norte|mercantil\s+del\s+norte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar)\b/i)
         if (!match) return null
         const trimmed = String(input || '').trim()
         // Si el usuario escribió una razón social larga, preservar texto completo
@@ -1578,6 +1578,8 @@ export class InputParser {
       'bbva': 'BBVA',
       'santander': 'Santander',
       'banorte': 'Banorte',
+      'banco mercantil del norte': 'Banco Mercantil del Norte',
+      'mercantil del norte': 'Banco Mercantil del Norte',
       'hsbc': 'HSBC',
       'banamex': 'Banamex',
       'infonavit': 'INFONAVIT',
@@ -1614,13 +1616,13 @@ export class InputParser {
     // Si el usuario escribió una frase, quedarnos con el fragmento más probable
     const m =
       cleaned.match(/(?:instituci[oó]n|banco)\s*[:\-]?\s*([^\n,;.]+)$/i) ||
-      cleaned.match(/(?:con\s+(?:el\s+)?)?(?:banco\s+)?([^\n,;.]+)$/i)
+      cleaned.match(/(?:con\s+(?:el\s+)?)?([^\n,;.]+)$/i)
 
     const candidate = (m && m[1]) ? String(m[1]).trim() : cleaned
 
     // --- Guardrail: Si el candidato es demasiado largo y no parece una institución conocida,
     // es probable que sea una frase de corrección ruidosa.
-    const isCommon = /\b(bbva|santander|banorte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar|coppel|banregio|scotiabank|banbajio)\b/i.test(candidate)
+    const isCommon = /\b(bbva|santander|banorte|banco\s+mercantil\s+del\s+norte|mercantil\s+del\s+norte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar|coppel|banregio|scotiabank|banbajio)\b/i.test(candidate)
 
     // Si la frase es larga y contiene palabras sospechosas, retornar null para que el LLM lo maneje
     if (candidate.length > 30 && !isCommon && /\b(no|error|equivoque|pero|era|con|el|la)\b/i.test(candidate)) {
