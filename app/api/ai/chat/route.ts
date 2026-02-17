@@ -714,22 +714,25 @@ function shouldFallbackToLegacyStateUpdate(message: string): boolean {
     .replace(/[\u0300-\u036f]/g, '')
 
   const hasDomainShortSignal =
-    /\b(credito|contado|gravamen|hipoteca|folio|partida|direccion|comprador|vendedor|persona|fisica|moral|estado civil|casado|soltero|divorciado|viudo|union libre)\b/.test(lower) &&
-    /\b(es|si|sin|con|confirmo|indico|indica)\b/.test(lower)
+    /\b(credito|contado|gravamen|hipoteca|folio|partida|direccion|comprador|vendedor|persona|fisica|moral|estado civil|casado|soltero|divorciado|viudo|union libre|cancela|cancelado|cancelacion)\b/.test(lower) &&
+    /\b(es|si|sin|con|confirmo|indico|indica|sera|se)\b/.test(lower)
+  const hasCancellationReply =
+    /\bcancel/.test(lower) &&
+    /\b(si|no|confirmo|confirmado|correcto|sera|se)\b/.test(lower)
   const hasDirectFolioReply =
     /^\d{6,10}$/.test(text.replace(/\s+/g, '')) ||
     (/\b(folio|partida)\b/.test(lower) && /\b\d{5,10}\b/.test(lower))
 
-  if (!(hasDomainShortSignal || hasDirectFolioReply) && /\b(ejecuta|confirmo|confirma|ok|dale|si)\b/.test(lower) && text.length <= 25) {
+  if (!(hasDomainShortSignal || hasDirectFolioReply || hasCancellationReply) && /\b(ejecuta|confirmo|confirma|ok|dale|si)\b/.test(lower) && text.length <= 25) {
     return false
   }
 
   const hasNarrativeSignals =
     text.length >= 80 ||
     (text.match(/\n/g)?.length || 0) >= 2 ||
-    /folio|partida|lote|manzana|condominio|vendedor|comprador|direccion|credito|gravamen|hipoteca/i.test(text)
+    /folio|partida|lote|manzana|condominio|vendedor|comprador|direccion|credito|gravamen|hipoteca|cancel/i.test(text)
 
-  return hasNarrativeSignals || hasDomainShortSignal || hasDirectFolioReply
+  return hasNarrativeSignals || hasDomainShortSignal || hasDirectFolioReply || hasCancellationReply
 }
 
 function shouldTreatQnaAsStateUpdate(message: string, answer?: string): boolean {
