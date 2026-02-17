@@ -7,12 +7,13 @@ import { ProposeStateUpdateAgent } from '@/lib/ai/routing/propose-state-update-a
 import { DocumentGenerationAgent } from '@/lib/ai/routing/document-generation-agent'
 import { RouterAuditLogService } from '@/lib/ai/routing/router-audit-log-service'
 import type { Intent, RouterResult, RouterUIContext } from '@/lib/ai/routing/types'
+import { PluginRegistry } from '@/lib/tramites/plugins/plugin-registry'
 
 const extractionContextSchema = z.object({
   documentId: z.string().trim().min(1),
   rawText: z.string().trim().min(1),
   fileMeta: z.record(z.unknown()).optional(),
-  tramiteType: z.literal('preaviso').optional(),
+  tramiteType: z.string().trim().min(1).optional(),
 })
 
 type RouterDeps = {
@@ -55,6 +56,8 @@ export class AgentRouter {
     const stageLatencies: Record<string, unknown> = {}
     let topKIds: string[] = []
     let answer = ''
+    const pluginType = String(args.uiContext?.tramiteType || args.uiContext?.pluginType || 'preaviso')
+    const plugin = PluginRegistry.getInstance().get(pluginType)
 
     try {
       const classifyStart = this.deps.now()
@@ -77,7 +80,7 @@ export class AgentRouter {
           documentId: args.uiContext?.documentId,
           rawText: args.uiContext?.rawText,
           fileMeta: args.uiContext?.fileMeta || {},
-          tramiteType: args.uiContext?.tramiteType || 'preaviso',
+          tramiteType: plugin.tramiteType,
         })
 
         if (!extractionInput.success) {
@@ -100,7 +103,7 @@ export class AgentRouter {
         const extraction = await this.deps.extractionAgent.extract({
           documentId: extractionInput.data.documentId,
           rawText: extractionInput.data.rawText,
-          tramiteType: extractionInput.data.tramiteType || 'preaviso',
+          tramiteType: extractionInput.data.tramiteType || plugin.tramiteType,
           fileMeta: extractionInput.data.fileMeta,
           auditContext: {
             userId: args.userAuthId,
@@ -145,6 +148,7 @@ export class AgentRouter {
         const agentStart = this.deps.now()
         const generation = await this.deps.documentGenerationAgent.prepare({
           tramiteId: args.tramiteId,
+          tramiteType: plugin.tramiteType,
           outputFormat: args.uiContext?.outputFormat,
           documentTitle: args.uiContext?.documentTitle,
         })
@@ -166,7 +170,7 @@ export class AgentRouter {
         tramiteId: args.tramiteId,
         userMessage: args.message,
         userAuthId: args.userAuthId,
-        pluginType: args.uiContext?.pluginType || 'preaviso',
+        pluginType: plugin.tramiteType,
       })
       stageLatencies.retrieve_ms = this.deps.now() - retrievalStart
       traceId = retrieval.trace_id

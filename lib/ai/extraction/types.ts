@@ -1,6 +1,7 @@
 import { z } from 'zod'
+import type { TramiteType } from '@/lib/tramites/plugins/tramite-plugin'
 
-export type TramiteExtractionType = 'preaviso'
+export type TramiteExtractionType = TramiteType
 
 export interface ExtractionInput {
   tramiteType: TramiteExtractionType

@@ -14,7 +14,7 @@ export interface RouterUIContext {
   documentId?: string
   rawText?: string
   fileMeta?: Record<string, unknown>
-  tramiteType?: 'preaviso'
+  tramiteType?: string
   outputFormat?: 'docx' | 'pdf'
   documentTitle?: string
 }

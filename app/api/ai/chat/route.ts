@@ -14,6 +14,8 @@ import { computePreavisoState } from '@/lib/preaviso-state'
 import { PreavisoWizardStateService } from '@/lib/services/preaviso-wizard-state-service'
 import { DomainRuleViolationError } from '@/lib/services/preaviso-domain-service'
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
+import { PluginRegistry } from '@/lib/tramites/plugins/plugin-registry'
+import { TramitePluginStateService } from '@/lib/services/tramite-plugin-state-service'
 
 const requestSchema = z
   .object({
@@ -29,7 +31,7 @@ const requestSchema = z
         documentId: z.string().trim().optional(),
         rawText: z.string().optional(),
         fileMeta: z.record(z.unknown()).optional(),
-        tramiteType: z.literal('preaviso').optional(),
+        tramiteType: z.string().trim().optional(),
         outputFormat: z.enum(['docx', 'pdf']).optional(),
         documentTitle: z.string().trim().optional(),
       })
@@ -62,14 +64,23 @@ const defaultDeps = {
   getCurrentUserFromRequest,
   route: (args: Parameters<AgentRouter['route']>[0]) => router.route(args),
   commitProposedUpdates: PreavisoProposedUpdateService.commit,
-  finalizePreavisoFromTramite: async (args: {
+  finalizeTramiteFromTramite: async (args: {
     tramiteId: string
+    pluginType: string
     currentUser: any
     generatedDocument?: { formato?: 'docx' | 'pdf'; titulo?: string }
   }) => {
     const tramite = await TramiteService.findTramiteById(args.tramiteId)
     if (!tramite) {
       throw new ProposedUpdateDomainViolationError('Tramite no encontrado para finalizar')
+    }
+    const plugin = PluginRegistry.getInstance().get(args.pluginType)
+    const snapshot = TramitePluginStateService.buildStateSnapshot(plugin.tramiteType, tramite.datos || {})
+    if (!snapshot.wizard_state.can_finalize) {
+      throw new ProposedUpdateDomainViolationError('El tramite aun no cumple requisitos para finalizar')
+    }
+    if (plugin.tramiteType !== 'preaviso') {
+      throw new ProposedUpdateDomainViolationError(`Finalize no implementado para tramiteType=${plugin.tramiteType}`)
     }
     return PreavisoDomainService.finalizePreaviso(
       {
@@ -186,20 +197,15 @@ const defaultDeps = {
     if (!tramite) {
       throw new ProposedUpdateDomainViolationError('Tramite no encontrado')
     }
-    const computed = computePreavisoState(tramite.datos || {})
-    const wizardState = PreavisoWizardStateService.fromSnapshot(
-      computed.state.current_state,
-      computed.state.state_status,
-      computed.state.required_missing,
-      computed.state.blocking_reasons
-    )
+    const plugin = PluginRegistry.getInstance().get(String(tramite.tipo || 'preaviso'))
+    const computed = TramitePluginStateService.buildStateSnapshot(plugin.tramiteType, tramite.datos || {})
     return {
-      current_state: computed.state.current_state,
-      state_status: computed.state.state_status,
-      required_missing: computed.state.required_missing,
-      blocking_reasons: computed.state.blocking_reasons,
-      allowed_actions: computed.state.allowed_actions,
-      wizard_state: wizardState,
+      current_state: computed.current_state,
+      state_status: computed.state_status,
+      required_missing: computed.required_missing,
+      blocking_reasons: computed.blocking_reasons,
+      allowed_actions: [],
+      wizard_state: computed.wizard_state,
     }
   },
   findRecentChatMessages: async (chatId: string, limit = 20) => {
@@ -278,13 +284,27 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         }
       }
 
+      const requestedPluginType = String(
+        body.uiContext?.tramiteType || body.uiContext?.pluginType || tramiteScope.tipo || 'preaviso'
+      )
+      let resolvedPluginType = requestedPluginType
+      try {
+        resolvedPluginType = PluginRegistry.getInstance().get(requestedPluginType).tramiteType
+      } catch {
+        return errorResponse(422, 'DOMAIN_RULE_VIOLATION', 'tramiteType no soportado', {
+          tramiteType: requestedPluginType,
+        })
+      }
+      const isPreavisoPlugin = resolvedPluginType === 'preaviso'
+
       const routed = await deps.route({
         chatId: body.chatId,
         tramiteId: body.tramiteId,
         message: body.message,
         uiContext: {
           ...(body.uiContext || {}),
-          pluginType: body.uiContext?.pluginType || tramiteScope.tipo || 'preaviso',
+          pluginType: resolvedPluginType,
+          tramiteType: resolvedPluginType,
         },
         userAuthId: currentUser.auth_user_id,
       })
@@ -299,15 +319,18 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         isConfirmationMessage(body.message)
 
       const shouldUseLegacyStateUpdateFallback =
+        isPreavisoPlugin &&
         !confirmationRequested &&
         routed.intent === 'UPDATE_STATE' &&
         shouldFallbackToLegacyStateUpdate(body.message)
 
       const shouldRecoverFromQnaMisroute =
+        isPreavisoPlugin &&
         !confirmationRequested &&
         routed.intent === 'QNA' &&
         shouldTreatQnaAsStateUpdate(body.message, routed.answer)
       const shouldRecoverFromExtractMissingPayload =
+        isPreavisoPlugin &&
         !confirmationRequested &&
         routed.intent === 'EXTRACT_DOCUMENT' &&
         isExtractionMissingPayload(routed.actions) &&
@@ -403,7 +426,7 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
       }
 
       if (routed.intent === 'GENERATE_DOCUMENT' && !confirmationRequested) {
-        if (shouldFallbackToLegacyStateUpdate(body.message)) {
+        if (isPreavisoPlugin && shouldFallbackToLegacyStateUpdate(body.message)) {
           const [tramiteData, recentMessages] = await Promise.all([
             deps.loadTramiteData(body.tramiteId),
             deps.findRecentChatMessages(body.chatId, 20),
@@ -534,8 +557,9 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
               }
             )
           }
-          const finalized = await deps.finalizePreavisoFromTramite({
+          const finalized = await deps.finalizeTramiteFromTramite({
             tramiteId: body.tramiteId,
+            pluginType: resolvedPluginType,
             currentUser,
             generatedDocument: {
               formato: (pendingDocumentGeneration as any)?.generatedDocument?.formato || 'docx',

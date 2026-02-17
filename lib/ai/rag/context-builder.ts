@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'crypto'
 import { createServerClient } from '@/lib/supabase'
 import { EmbeddingsService } from '@/lib/services/embeddings'
 import { TramiteService } from '@/lib/services/tramite-service'
-import { PreavisoWizardStateService } from '@/lib/services/preaviso-wizard-state-service'
+import { PluginRegistry } from '@/lib/tramites/plugins/plugin-registry'
+import { TramitePluginStateService } from '@/lib/services/tramite-plugin-state-service'
 import { DocumentRetrievalService } from '@/lib/ai/rag/document-retrieval-service'
 import { KnowledgeRetrievalService } from '@/lib/ai/rag/knowledge-retrieval-service'
 import {
@@ -37,25 +38,21 @@ type ContextBuilderDeps = {
 const defaultDeps: ContextBuilderDeps = {
   createTraceId: () => randomUUID(),
   getTramiteState: async (tramiteId, pluginType) => {
+    const registry = PluginRegistry.getInstance()
+    const plugin = registry.get(pluginType)
     const tramite = await TramiteService.findTramiteById(tramiteId)
     if (!tramite) {
       throw new Error('Tramite not found')
     }
 
+    const snapshot = TramitePluginStateService.buildStateSnapshot(plugin.tramiteType, tramite.datos || {})
+
     const reduced: ReducedTramiteState = {
       tramite_id: tramite.id,
-      plugin_type: pluginType,
+      plugin_type: plugin.tramiteType,
       estado: tramite.estado,
       summary: buildStateSummary(tramite.datos || {}),
-    }
-
-    if (pluginType === 'preaviso') {
-      const wizard = PreavisoWizardStateService.fromContext(tramite.datos || {})
-      reduced.wizard_state = {
-        current_step: wizard.current_step,
-        total_steps: wizard.total_steps,
-        can_finalize: wizard.can_finalize,
-      }
+      wizard_state: snapshot.wizard_state,
     }
 
     return reduced
@@ -109,20 +106,23 @@ export class ContextBuilder {
     pluginType: RAGPluginType
   }): Promise<ContextPack> {
     const traceId = this.deps.createTraceId()
-    const pluginType = String(args.pluginType || 'preaviso')
+    const registry = PluginRegistry.getInstance()
+    const plugin = registry.get(String(args.pluginType || 'preaviso'))
+    const retrievalConfig = plugin.retrievalConfig()
+    const knowledgeScope = plugin.knowledgeScope({ scope: retrievalConfig.knowledgeScope || 'chat_generation' })
 
     const [tramiteState, documentChunks, knowledgeChunks, recentMessages] = await Promise.all([
-      this.deps.getTramiteState(args.tramiteId, pluginType),
+      this.deps.getTramiteState(args.tramiteId, plugin.tramiteType),
       this.deps.retrieveDocumentChunks({
         query: args.userQuery,
         tramiteId: args.tramiteId,
-        topK: TOPK_DOC,
+        topK: retrievalConfig.topKDoc || TOPK_DOC,
       }),
       this.deps.retrieveKnowledgeChunks({
         query: args.userQuery,
-        tramite: pluginType,
-        scope: 'chat_generation',
-        topK: TOPK_KNOW,
+        tramite: knowledgeScope.tramite,
+        scope: knowledgeScope.scope,
+        topK: retrievalConfig.topKKnowledge || TOPK_KNOW,
       }),
       this.deps.listRecentMessages(args.chatId, N_RECENT_MSG),
     ])
@@ -155,8 +155,8 @@ export class ContextBuilder {
       recent_messages: recentMessages,
       context_metadata: {
         trace_id: traceId,
-        topk_doc: TOPK_DOC,
-        topk_knowledge: TOPK_KNOW,
+        topk_doc: retrievalConfig.topKDoc || TOPK_DOC,
+        topk_knowledge: retrievalConfig.topKKnowledge || TOPK_KNOW,
         recent_messages_window: N_RECENT_MSG,
         embedding_model: Array.from(embeddingModels).sort().join(','),
         chunking_version: chunkingVersion || 'unknown',
