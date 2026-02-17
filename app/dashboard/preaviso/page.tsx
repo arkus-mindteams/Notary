@@ -260,6 +260,16 @@ export default function PreavisoPage() {
                   </p>
                 </div>
                 <div className="flex flex-col gap-2 items-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 h-8 px-3"
+                    onClick={() => {
+                      window.location.href = '/dashboard/preaviso'
+                    }}
+                  >
+                    <span className="text-xs sm:text-sm">Nuevo chat</span>
+                  </Button>
                   <Sheet>
                     <SheetTrigger asChild>
                       <Button variant="outline" size="sm" className="gap-1.5 h-8 px-3">
