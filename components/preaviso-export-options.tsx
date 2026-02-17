@@ -50,14 +50,14 @@ export function PreavisoExportOptions({ data, onExportComplete, onViewFullDocume
 
   return (
     <>
-      <div className="flex flex-col gap-2">
-        <div className="flex gap-2 items-center justify-end flex-wrap">
+      <div className="flex flex-col gap-2 w-full">
+        <div className="flex gap-2 items-center justify-end flex-wrap w-full">
           {leadingButtons}
           <Button
             onClick={handleDownloadWord}
             size="sm"
             variant="outline"
-            className="gap-1.5 h-8 px-3"
+            className="gap-1.5 h-8 px-3 w-full justify-center"
             disabled={isGeneratingWord}
           >
             {isGeneratingWord ? (
@@ -69,14 +69,14 @@ export function PreavisoExportOptions({ data, onExportComplete, onViewFullDocume
           </Button>
         </div>
         {onViewFullDocument && (
-          <div className="flex justify-end">
+          <div className="flex justify-end w-full">
             <Button
               onClick={onViewFullDocument}
               size="sm"
-              className="gap-1.5 h-8 px-3 bg-blue-600 hover:bg-blue-700"
+              className="gap-1.5 h-8 px-3 bg-blue-600 hover:bg-blue-700 w-full justify-center"
             >
               <FileText className="h-3.5 w-3.5" />
-              <span className="text-xs sm:text-sm">Ver Documento Completo</span>
+              <span className="text-xs sm:text-sm">Ver Documento</span>
             </Button>
           </div>
         )}

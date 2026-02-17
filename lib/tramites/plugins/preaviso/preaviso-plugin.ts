@@ -236,7 +236,7 @@ export class PreavisoPlugin implements TramitePlugin {
 
     if (isComplete) {
       if (!isQuestion && !isGreeting) {
-        return 'Listo: con la información capturada ya puedes generar el Preaviso. Puedes ver el documento en los botones de arriba del chat.'
+        return 'Listo: con la información capturada ya puedes generar el Preaviso. Puedes descargar el archivo desde el panel derecho, debajo del PASO 6.'
       }
     }
 
@@ -310,7 +310,7 @@ export class PreavisoPlugin implements TramitePlugin {
     }
 
     if (missing.length === 0) {
-      return 'Listo: con la información capturada ya puedes generar el Preaviso. Puedes ver el documento en los botones de arriba del chat.'
+      return 'Listo: con la información capturada ya puedes generar el Preaviso. Puedes descargar el archivo desde el panel derecho, debajo del PASO 6.'
     }
 
     const firstMissing = missing[0]

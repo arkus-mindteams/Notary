@@ -6,7 +6,6 @@ import { ProtectedRoute } from '@/components/protected-route'
 import { PreavisoChat, type PreavisoData } from '@/components/preaviso-chat'
 import type { PreavisoDocument } from '@/lib/preaviso-generator'
 import { PreavisoTemplateRenderer } from '@/lib/preaviso-template-renderer'
-import { PreavisoExportOptions } from '@/components/preaviso-export-options'
 import { WordLikeEditor } from '@/components/preaviso/word-like-editor'
 import { createBrowserClient } from '@/lib/supabase'
 import { useMemo } from 'react'
@@ -261,48 +260,32 @@ export default function PreavisoPage() {
                   </p>
                 </div>
                 <div className="flex flex-col gap-2 items-end">
-                  {showExportButtons && exportData ? (
-                    <PreavisoExportOptions
-                      leadingButtons={
-                        <Sheet>
-                          <SheetTrigger asChild>
-                            <Button variant="outline" size="sm" className="gap-1.5 h-8 px-3">
-                              <History className="h-3.5 w-3.5" />
-                              <span className="text-xs sm:text-sm">Historial</span>
-                            </Button>
-                          </SheetTrigger>
-                          <SheetContent side="left" className="w-[300px] sm:w-[400px] bg-gray-900 border-r-gray-800 p-0 text-white">
-                            <SheetHeader className="p-4 border-b border-gray-800">
-                              <SheetTitle className="text-gray-100">Historial de Chats</SheetTitle>
-                            </SheetHeader>
-                            <div className="p-0">
-                              <ChatHistory isCollapsed={false} onSelectSession={() => {}} />
-                            </div>
-                          </SheetContent>
-                        </Sheet>
-                      }
-                      data={exportData}
-                      onExportComplete={() => {}}
-                      onViewFullDocument={() => handleGenerateDocument(exportData)}
-                    />
-                  ) : (
-                    <Sheet>
-                      <SheetTrigger asChild>
-                        <Button variant="outline" size="sm" className="gap-1.5 h-8 px-3">
-                          <History className="h-3.5 w-3.5" />
-                          <span className="text-xs sm:text-sm">Historial</span>
-                        </Button>
-                      </SheetTrigger>
-                      <SheetContent side="left" className="w-[300px] sm:w-[400px] bg-gray-900 border-r-gray-800 p-0 text-white">
-                        <SheetHeader className="p-4 border-b border-gray-800">
-                          <SheetTitle className="text-gray-100">Historial de Chats</SheetTitle>
-                        </SheetHeader>
-                        <div className="p-0">
-                          <ChatHistory isCollapsed={false} onSelectSession={() => {}} />
-                        </div>
-                      </SheetContent>
-                    </Sheet>
-                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 h-8 px-3"
+                    onClick={() => {
+                      window.location.href = '/dashboard/preaviso'
+                    }}
+                  >
+                    <span className="text-xs sm:text-sm">Nuevo chat</span>
+                  </Button>
+                  <Sheet>
+                    <SheetTrigger asChild>
+                      <Button variant="outline" size="sm" className="gap-1.5 h-8 px-3">
+                        <History className="h-3.5 w-3.5" />
+                        <span className="text-xs sm:text-sm">Historial</span>
+                      </Button>
+                    </SheetTrigger>
+                    <SheetContent side="left" className="w-[300px] sm:w-[400px] bg-gray-900 border-r-gray-800 p-0 text-white">
+                      <SheetHeader className="p-4 border-b border-gray-800">
+                        <SheetTitle className="text-gray-100">Historial de Chats</SheetTitle>
+                      </SheetHeader>
+                      <div className="p-0">
+                        <ChatHistory isCollapsed={false} onSelectSession={() => {}} />
+                      </div>
+                    </SheetContent>
+                  </Sheet>
                 </div>
               </div>
             </div>
@@ -314,6 +297,11 @@ export default function PreavisoPage() {
                 onExportReady={(data, show) => {
                   setShowExportButtons(show)
                   setExportData(show ? data : null)
+                }}
+                showExportButtons={showExportButtons}
+                exportData={exportData}
+                onViewFullDocument={() => {
+                  if (exportData) handleGenerateDocument(exportData)
                 }}
               />
             </div>
