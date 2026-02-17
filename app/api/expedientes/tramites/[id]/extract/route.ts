@@ -57,6 +57,22 @@ type RouteDeps = typeof defaultDeps
 
 function resolveRawText(bodyRawText: string | undefined, metadata: Record<string, any> | null | undefined): string | null {
   const explicit = String(bodyRawText || '').trim()
+  if (
+    explicit &&
+    (() => {
+      try {
+        const parsed = JSON.parse(explicit)
+        return parsed && typeof parsed === 'object' && (
+          parsed._requires_ocr === true ||
+          typeof parsed._needs_ocr_reason === 'string'
+        )
+      } catch {
+        return false
+      }
+    })()
+  ) {
+    return null
+  }
   if (explicit) return explicit
 
   if (!metadata || typeof metadata !== 'object') return null
@@ -74,6 +90,12 @@ function resolveRawText(bodyRawText: string | undefined, metadata: Record<string
   if (direct) return direct
 
   if (metadata.extracted_data && typeof metadata.extracted_data === 'object') {
+    if (
+      metadata.extracted_data._requires_ocr === true ||
+      typeof metadata.extracted_data._needs_ocr_reason === 'string'
+    ) {
+      return null
+    }
     return JSON.stringify(metadata.extracted_data)
   }
 

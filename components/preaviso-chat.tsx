@@ -1207,6 +1207,87 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     setMessages(prev => [...prev, cancelMessage])
   }
 
+  const ensureActiveTramiteId = async (): Promise<string | null> => {
+    const existing = activeTramiteId || batchTramiteIdRef.current
+    if (existing) return existing
+    if (!user?.id) return null
+
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      if (currentSession?.access_token) {
+        headers['Authorization'] = `Bearer ${currentSession.access_token}`
+      }
+
+      const response = await fetch('/api/expedientes/tramites', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          compradorId: null,
+          userId: user.id,
+          tipo: 'preaviso',
+          datos: {
+            tipoOperacion: 'compraventa',
+            vendedores: [],
+            compradores: [],
+            creditos: undefined,
+            gravamenes: [],
+            inmueble: {
+              folio_real: null,
+              partidas: [],
+              all_registry_pages_confirmed: false,
+              direccion: {
+                calle: null,
+                numero: null,
+                colonia: null,
+                municipio: null,
+                estado: null,
+                codigo_postal: null
+              },
+              superficie: null,
+              valor: null,
+              datos_catastrales: {
+                lote: null,
+                manzana: null,
+                fraccionamiento: null,
+                condominio: null,
+                unidad: null,
+                modulo: null
+              }
+            },
+            control_impresion: {
+              imprimir_conyuges: false,
+              imprimir_coacreditados: false,
+              imprimir_creditos: false
+            },
+            validaciones: {
+              expediente_existente: false,
+              datos_completos: false,
+              bloqueado: true
+            },
+            actosNotariales: {
+              cancelacionCreditoVendedor: false,
+              compraventa: false,
+              aperturaCreditoComprador: false
+            }
+          },
+          estado: 'en_proceso',
+        }),
+      })
+
+      if (!response.ok) return null
+      const tramite = await response.json()
+      const resolvedId = String(tramite?.id || '')
+      if (!resolvedId) return null
+      setActiveTramiteId(resolvedId)
+      batchTramiteIdRef.current = resolvedId
+      return resolvedId
+    } catch (error) {
+      console.error('Error creating tramite for RAG chat:', error)
+      return null
+    }
+  }
+
   const handleSend = async () => {
     // Ocultar paneles inmediatamente cuando se envía un mensaje
     setHidePanelsAfterMessage(true)
@@ -1362,6 +1443,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       messageAbortRef.current = messageAbort
 
       try {
+        const effectiveTramiteId = await ensureActiveTramiteId()
+        if (!effectiveTramiteId) {
+          throw new Error('No se pudo resolver tramiteId para chat RAG')
+        }
+
         // Llamar al agente de IA (usando Plugin System V2)
         // Asegurarse de tener el token actualizado
         const { data: { session: currentSession } } = await supabase.auth.getSession()
@@ -1382,16 +1468,13 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               { role: 'user' as const, content: currentInput }
             ],
             context: {
-              // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
-              // Esto permite que el backend detecte correctamente qué información ya está capturada
               conversation_id: conversationIdRef.current,
               _document_intent: (data as any)._document_intent ?? null,
               _document_people_pending: (data as any)._document_people_pending ?? null,
               _last_question_intent: (freshData as any)._last_question_intent ?? null,
-              tramiteId: activeTramiteId,
+              tramiteId: effectiveTramiteId,
               vendedores: freshData.vendedores || [],
               compradores: freshData.compradores || [],
-              // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
               creditos: freshData.creditos,
               gravamenes: freshData.gravamenes || [],
               inmueble: freshData.inmueble,
@@ -1406,7 +1489,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 })),
               expedienteExistente: expedienteExistente || undefined
             },
-            tramiteId: activeTramiteId
+            tramiteId: effectiveTramiteId
           })
         })
 
@@ -1415,7 +1498,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         const result = await response.json()
-        const messagesToAdd = result.messages || [result.message]
+        const ragAnswer = typeof result?.answer === 'string' ? result.answer : null
+        const legacyMessage = typeof result?.message === 'string' ? result.message : null
+        const messagesToAdd = Array.isArray(result?.messages)
+          ? result.messages
+          : [ragAnswer || legacyMessage || 'No encontré suficiente evidencia para responder con certeza.']
         if (result?.state) {
           setServerState(result.state as ServerStateSnapshot)
         }
@@ -1747,8 +1834,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
 
-    // Limpiar tramiteId de batch anterior para no reutilizarlo en otra sesión
-    batchTramiteIdRef.current = null
+    const effectiveBatchTramiteId = batchTramiteIdRef.current ?? activeTramiteId ?? null
+    if (!effectiveBatchTramiteId) {
+      setIsProcessingDocument(false)
+      setProcessingProgress(0)
+      setMessages(prev => [...prev, {
+        id: generateMessageId('error'),
+        role: 'assistant',
+        content: 'No se pudo resolver el trámite activo para procesar documentos.',
+        timestamp: new Date()
+      }])
+      return
+    }
+    batchTramiteIdRef.current = effectiveBatchTramiteId
     // Siempre establecer isProcessingDocument para mostrar la barra de progreso
     setIsProcessingDocument(true)
     setProcessingProgress(0)
@@ -1774,11 +1872,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       setProcessingProgress(0)
       return
     }
-
-    const pdfFiles = newFiles.filter(
-      file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-    )
-    const imageFiles = newFiles.filter(file => !pdfFiles.includes(file))
 
     const originalDocs: UploadedDocument[] = newFiles.map(file => ({
       id: generateMessageId('doc'),
@@ -1853,45 +1946,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       return
     }
 
-    // Convertir PDFs a imágenes en segundo plano
-    let allImageFiles: File[] = [...imageFiles]
-    if (pdfFiles.length > 0) {
-      try {
-        const { convertPdfToImages } = await import('@/lib/ocr-client')
-        let totalPages = 0
-        let convertedPages = 0
-
-        // Contar páginas totales
-        for (const pdfFile of pdfFiles) {
-          if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-          setProcessingFileName(pdfFile.name)
-          const images = await convertPdfToImages(pdfFile, 0, (current, total) => {
-            if (batchAbort.signal.aborted) return
-            convertedPages++
-            if (totalPages === 0) totalPages = total
-            const progress = Math.min(50, (convertedPages / (totalPages || 1)) * 50) // 0-50% para conversión
-            setProcessingProgress(progress)
-          })
-          if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-          allImageFiles = [...allImageFiles, ...images]
-        }
-      } catch (error) {
-        console.error('Error convirtiendo PDFs:', error)
-        setIsProcessingDocument(false)
-        setProcessingProgress(0)
-        setProcessingFileName(null)
-        const errorMessage: ChatMessage = {
-          id: generateMessageId('pdf-error'),
-          role: 'assistant',
-          content: 'Error al convertir PDFs a imágenes. Por favor, intente con imágenes directamente.',
-          timestamp: new Date()
-        }
-        setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([errorMessage]))
-        return
-      }
-    }
-
-    setProcessingProgress(50) // 50% después de conversión
+    setProcessingProgress(10)
     const newDocuments = [...(data.documentos || []), ...fileNames]
     setData(prev => ({ ...prev, documentos: newDocuments }))
 
@@ -1975,7 +2030,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return 'escritura' // default
       }
 
-      // Preparar items (imagen → docType) antes de procesar
+      // Preparar items (archivo original -> docType) antes de procesar
       type ImgItem = {
         index: number
         imageFile: File
@@ -1986,16 +2041,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
 
       const items: ImgItem[] = []
-      const userImageCount = imageFiles.length // Las primeras N imágenes son archivos directos del usuario
-
-      for (let i = 0; i < allImageFiles.length; i++) {
+      for (let i = 0; i < newFiles.length; i++) {
         if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-        const imageFile = allImageFiles[i]
-        const isArtifact = i >= userImageCount // Si el índice es mayor al conteo de imágenes iniciales, es una página extraída de un PDF
-
-        const originalFile = filesArray.find(f =>
-          imageFile.name.includes(f.name.replace(/\.[^.]+$/, ''))
-        ) || filesArray[0]
+        const imageFile = newFiles[i]
+        const isArtifact = false
+        const originalFile = newFiles[i]
         const docType = await detectDocumentType(originalFile.name, originalFile)
         const originalKey = `${originalFile.name}:${originalFile.size}:${(originalFile as any).lastModified || ''}`
         items.push({ index: i, imageFile, originalFile, docType, originalKey, isArtifact })
@@ -2009,7 +2059,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
           id: generateMessageId('no-pages'),
           role: 'assistant',
-          content: 'No se pudieron extraer páginas del PDF. Intenta con otro archivo o conviértelo a imágenes.',
+          content: 'No se detectaron archivos procesables en la carga.',
           timestamp: new Date()
         }]))
         return
@@ -2031,6 +2081,85 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Aplicar resultados en orden, aunque se procesen en paralelo
       const pending = new Map<number, any>()
       let nextToApply = 0
+      const pendingStructuredExtractionTasks: Promise<void>[] = []
+
+      const mergeStructuredExtractionIntoData = (base: PreavisoData, structured: any): PreavisoData => {
+        if (!structured || typeof structured !== 'object') return base
+        const next: PreavisoData = { ...base }
+        const inmueble = structured?.inmueble || {}
+        const direccion = inmueble?.direccion || {}
+        const datosCatastrales = inmueble?.datos_catastrales || {}
+
+        next.inmueble = {
+          ...(next.inmueble || {
+            folio_real: null,
+            partidas: [],
+            all_registry_pages_confirmed: false,
+            direccion: {
+              calle: null,
+              numero: null,
+              colonia: null,
+              municipio: null,
+              estado: null,
+              codigo_postal: null
+            },
+            superficie: null,
+            valor: null,
+            datos_catastrales: {
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          }),
+          folio_real: inmueble?.folio_real ?? next?.inmueble?.folio_real ?? null,
+          partidas: Array.isArray(inmueble?.partidas) && inmueble.partidas.length > 0
+            ? inmueble.partidas
+            : (next?.inmueble?.partidas || []),
+          seccion: inmueble?.seccion ?? (next as any)?.inmueble?.seccion ?? null,
+          numero_expediente: inmueble?.numero_expediente ?? (next as any)?.inmueble?.numero_expediente ?? null,
+          direccion: {
+            ...(next?.inmueble?.direccion || {}),
+            calle: direccion?.calle ?? next?.inmueble?.direccion?.calle ?? null,
+            numero: direccion?.numero ?? next?.inmueble?.direccion?.numero ?? null,
+            colonia: direccion?.colonia ?? next?.inmueble?.direccion?.colonia ?? null,
+            municipio: direccion?.municipio ?? next?.inmueble?.direccion?.municipio ?? null,
+            estado: direccion?.estado ?? next?.inmueble?.direccion?.estado ?? null,
+            codigo_postal: direccion?.codigo_postal ?? next?.inmueble?.direccion?.codigo_postal ?? null
+          },
+          superficie: inmueble?.superficie ?? next?.inmueble?.superficie ?? null,
+          valor: inmueble?.valor ?? next?.inmueble?.valor ?? null,
+          datos_catastrales: {
+            ...(next?.inmueble?.datos_catastrales || {}),
+            lote: datosCatastrales?.lote ?? next?.inmueble?.datos_catastrales?.lote ?? null,
+            manzana: datosCatastrales?.manzana ?? next?.inmueble?.datos_catastrales?.manzana ?? null,
+            fraccionamiento: datosCatastrales?.fraccionamiento ?? next?.inmueble?.datos_catastrales?.fraccionamiento ?? null,
+            condominio: datosCatastrales?.condominio ?? next?.inmueble?.datos_catastrales?.condominio ?? null,
+            unidad: datosCatastrales?.unidad ?? next?.inmueble?.datos_catastrales?.unidad ?? null,
+            modulo: datosCatastrales?.modulo ?? next?.inmueble?.datos_catastrales?.modulo ?? null
+          }
+        } as any
+
+        if (structured?.titular_registral?.nombre) {
+          const vendedor = {
+            party_id: 'vendedor_1',
+            tipo_persona: 'persona_fisica',
+            persona_fisica: {
+              nombre: structured.titular_registral.nombre,
+              rfc: structured?.titular_registral?.rfc ?? null,
+              curp: structured?.titular_registral?.curp ?? null,
+              estado_civil: null
+            },
+            titular_registral_confirmado: true
+          } as any
+          const existing = Array.isArray(next.vendedores) ? next.vendedores : []
+          next.vendedores = existing.length > 0 ? [{ ...existing[0], ...vendedor }] : [vendedor]
+        }
+
+        return next
+      }
 
       let sessionExpired = false
       let errorCount = 0
@@ -2499,44 +2628,56 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                         typeof processResult?.extractedData?.textoCompleto === 'string'
                           ? processResult.extractedData.textoCompleto.trim()
                           : ''
+                      const requiresOcrFallback = processResult?.extractedData?._requires_ocr === true
                       const rawTextFromOcr =
                         typeof processResult?.ocrText === 'string'
                           ? processResult.ocrText.trim()
                           : ''
-                      const rawTextFromJson =
-                        processResult?.extractedData && typeof processResult.extractedData === 'object'
-                          ? JSON.stringify(processResult.extractedData)
-                          : ''
-                      const rawTextForExtraction = rawTextFromExtraction || rawTextFromOcr || rawTextFromJson
+                      const rawTextForExtraction = rawTextFromExtraction || rawTextFromOcr
                       const tramiteIdForExtraction = effectiveTramiteId
-                                            if (tramiteIdForExtraction && rawTextForExtraction) {
-                        const extractResp = await postJsonWithTimeout(
-                          `/api/expedientes/tramites/${tramiteIdForExtraction}/extract`,
-                          {
-                            documentId: docId,
-                            tramiteType: 'preaviso',
-                            rawText: rawTextForExtraction,
-                            fileMeta: {
-                              source: 'preaviso-chat',
-                              docType: item.docType,
-                              fileName: item.originalFile.name,
-                            },
-                          },
-                          30000
-                        )
+                      if (tramiteIdForExtraction && rawTextForExtraction && !requiresOcrFallback) {
+                        const extractionTask = (async () => {
+                          try {
+                            const extractResp = await postJsonWithTimeout(
+                              `/api/expedientes/tramites/${tramiteIdForExtraction}/extract`,
+                              {
+                                documentId: docId,
+                                tramiteType: 'preaviso',
+                                rawText: rawTextForExtraction,
+                                fileMeta: {
+                                  source: 'preaviso-chat',
+                                  docType: item.docType,
+                                  fileName: item.originalFile.name,
+                                },
+                              },
+                              30000
+                            )
 
-                        if (extractResp.ok) {
-                          const extractJson = await extractResp.json()
-                          processResult.structuredExtraction = extractJson?.structured || null
-                          processResult.structuredExtractionWarnings = extractJson?.warnings || []
-                          processResult.structuredExtractionTraceId = extractJson?.trace_id || null
-                        } else {
-                          const errText = await extractResp.text().catch(() => '')
-                          console.warn('[PreavisoChat] /extract non-ok', {
-                            status: extractResp.status,
-                            body: errText?.slice(0, 250),
-                          })
-                        }
+                            if (extractResp.ok) {
+                              const extractJson = await extractResp.json()
+                              processResult.structuredExtraction = extractJson?.structured || null
+                              processResult.structuredExtractionWarnings = extractJson?.warnings || []
+                              processResult.structuredExtractionTraceId = extractJson?.trace_id || null
+                              if (extractJson?.structured) {
+                                setData(prev => {
+                                  const merged = mergeStructuredExtractionIntoData(prev, extractJson.structured)
+                                  workingData = merged
+                                  dataRef.current = merged
+                                  return merged
+                                })
+                              }
+                            } else {
+                              const errText = await extractResp.text().catch(() => '')
+                              console.warn('[PreavisoChat] /extract non-ok', {
+                                status: extractResp.status,
+                                body: errText?.slice(0, 250),
+                              })
+                            }
+                          } catch (extractError) {
+                            console.warn('[PreavisoChat] Error calling /extract', extractError)
+                          }
+                        })()
+                        pendingStructuredExtractionTasks.push(extractionTask)
                       }
                     } catch (extractError) {
                       console.warn('[PreavisoChat] Error calling /extract', extractError)
@@ -2653,6 +2794,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         formData.append('context', JSON.stringify({
           conversation_id: conversationIdRef.current,
           is_processing_artifact: item.isArtifact,
+          _bulk_fast_mode: totalFiles > 1,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
           _document_people_pending: (workingData as any)._document_people_pending ?? null,
@@ -2850,6 +2992,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return
       }
 
+      if (pendingStructuredExtractionTasks.length > 0) {
+        await Promise.allSettled(pendingStructuredExtractionTasks)
+      }
+
       if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
       setProcessingProgress(90) // 90% después de procesar todos los archivos
 
@@ -2897,14 +3043,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             }
           ],
           context: {
-            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
             _document_intent: (workingData as any)._document_intent ?? null,
             _document_people_pending: (workingData as any)._document_people_pending ?? null,
             _last_question_intent: (workingData as any)._last_question_intent ?? null,
-            tramiteId: activeTramiteId,
+            tramiteId: batchTramiteIdRef.current ?? activeTramiteId ?? null,
             vendedores: workingData.vendedores || [],
             compradores: workingData.compradores || [],
-            // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
             creditos: workingData.creditos,
             gravamenes: workingData.gravamenes || [],
             inmueble: workingData.inmueble,
@@ -2918,9 +3062,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 informacionExtraida: d.extractedData
               }))
           },
-          tramiteId: activeTramiteId,
+          tramiteId: batchTramiteIdRef.current ?? activeTramiteId ?? null,
           conversation_id: conversationIdRef.current
         })
+      })
+      console.info('[PreavisoChat] outgoing_context_summary', {
+        conversation_id: conversationIdRef.current || null,
+        tramite_id: batchTramiteIdRef.current ?? activeTramiteId ?? null,
+        folio_real: workingData?.inmueble?.folio_real ?? null,
+        partidas_count: Array.isArray(workingData?.inmueble?.partidas) ? workingData.inmueble.partidas.length : 0,
+        vendedores_count: Array.isArray(workingData?.vendedores) ? workingData.vendedores.length : 0,
+        documentos_count: Array.isArray(newDocuments) ? newDocuments.length : 0,
       })
 
       setProcessingProgress(100) // 100% completado
@@ -2965,7 +3117,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             return nextData
           })
         }
-        const messagesToAdd = result.messages || [result.message]
+        const ragAnswer = typeof result?.answer === 'string' ? result.answer : null
+        const legacyMessage = typeof result?.message === 'string' ? result.message : null
+        const messagesToAdd = Array.isArray(result?.messages)
+          ? result.messages
+          : [ragAnswer || legacyMessage || 'No encontré suficiente evidencia para responder con certeza.']
 
         // Remover mensaje de procesamiento y agregar respuesta del agente
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
