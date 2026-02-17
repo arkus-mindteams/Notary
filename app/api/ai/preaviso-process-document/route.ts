@@ -130,6 +130,76 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
     next.compradores = merged
   }
 
+  const derivedBuyerName = String(structured?.__derived?.acreditado_nombre || '').trim()
+  const derivedBuyerEstadoCivil = String(structured?.__derived?.buyer_estado_civil || '').trim()
+  const derivedCreditInstitution = String(structured?.__derived?.credit_institucion || '').trim()
+
+  if (derivedBuyerName) {
+    const compradores = Array.isArray(next.compradores) ? [...next.compradores] : []
+    const c0 = { ...(compradores[0] || {}) }
+    c0.party_id = c0.party_id || 'comprador_1'
+    c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
+    c0.persona_fisica = {
+      ...(c0.persona_fisica || {}),
+      nombre: c0.persona_fisica?.nombre || derivedBuyerName,
+      rfc: c0.persona_fisica?.rfc || null,
+      curp: c0.persona_fisica?.curp || null,
+      estado_civil: c0.persona_fisica?.estado_civil || null,
+    }
+    compradores[0] = c0
+    next.compradores = compradores
+  }
+
+  if (derivedBuyerEstadoCivil) {
+    const compradores = Array.isArray(next.compradores) ? [...next.compradores] : []
+    const c0 = { ...(compradores[0] || {}) }
+    c0.party_id = c0.party_id || 'comprador_1'
+    c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
+    c0.persona_fisica = {
+      ...(c0.persona_fisica || {}),
+      nombre: c0.persona_fisica?.nombre || null,
+      rfc: c0.persona_fisica?.rfc || null,
+      curp: c0.persona_fisica?.curp || null,
+      estado_civil: c0.persona_fisica?.estado_civil || derivedBuyerEstadoCivil,
+    }
+    compradores[0] = c0
+    next.compradores = compradores
+  }
+
+  if (derivedCreditInstitution) {
+    const creditos = Array.isArray(next.creditos) ? [...next.creditos] : []
+    const c0 = { ...(creditos[0] || {}) }
+    const participantesExistentes = Array.isArray(c0.participantes) ? c0.participantes : []
+    let participantes = participantesExistentes
+    if (participantes.length === 0) {
+      const buyerName =
+        next?.compradores?.[0]?.persona_fisica?.nombre ||
+        next?.compradores?.[0]?.persona_moral?.denominacion_social ||
+        null
+      if (buyerName) {
+        participantes = [
+          {
+            party_id: 'comprador_1',
+            nombre: buyerName,
+            rol: 'acreditado'
+          }
+        ]
+      }
+    }
+    creditos[0] = {
+      credito_id: c0.credito_id ?? null,
+      institucion: c0.institucion || derivedCreditInstitution,
+      monto: c0.monto ?? null,
+      participantes,
+      tipo_credito: c0.tipo_credito ?? null,
+    }
+    next.creditos = creditos
+    next.actosNotariales = {
+      ...(next.actosNotariales || {}),
+      aperturaCreditoComprador: true,
+    }
+  }
+
   if (structured?.gravamenes === 'LIBRE') {
     next.gravamenes = []
     next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: false }
@@ -164,6 +234,120 @@ function detectFoliosFromText(rawText: string): string[] {
     }
   }
   return Array.from(found)
+}
+
+function normalizeExtractionDocumentType(documentType: string | null | undefined): 'inscripcion' | 'escritura' | 'identificacion' | 'acta_matrimonio' | 'otro' {
+  const normalized = String(documentType || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+
+  if (normalized.includes('inscrip')) return 'inscripcion'
+  if (normalized.includes('escritur')) return 'escritura'
+  if (normalized.includes('ident')) return 'identificacion'
+  if (normalized.includes('matrimonio') || normalized.includes('acta_matrimonio')) return 'acta_matrimonio'
+  return 'otro'
+}
+
+function normalizeInstitutionName(rawInstitution: string | null | undefined): string | null {
+  const input = String(rawInstitution || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!input) return null
+
+  const normalized = input
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  if (normalized.includes('infonavit')) return 'INFONAVIT'
+  if (normalized.includes('fovissste')) return 'FOVISSSTE'
+  if (normalized.includes('banco mercantil del norte') || /\bbanorte\b/.test(normalized)) return 'Banco Mercantil del Norte'
+  if (normalized.includes('bbva')) return 'BBVA'
+  if (normalized.includes('hsbc')) return 'HSBC'
+  if (normalized.includes('santander')) return 'Santander'
+  if (normalized.includes('banamex') || normalized.includes('citibanamex')) return 'Banamex'
+  if (normalized.includes('banco inmobiliario mexicano')) return 'Banco Inmobiliario Mexicano'
+
+  return input
+}
+
+function enrichStructuredExtractionFromText(args: {
+  structured: any
+  rawText: string
+  documentType: string | null
+}): any {
+  const sourceDocumentType = normalizeExtractionDocumentType(args.documentType)
+  const rawText = String(args.rawText || '')
+  const next = { ...(args.structured || {}) } as any
+
+  // El backend ya conoce el tipo real del archivo; evitar deriva del modelo.
+  next.source_document_type = sourceDocumentType
+
+  // Derivaciones deterministas de certificados/correos operativos
+  const acreditadoMatch = rawText.match(/\bACREDITADO\s*[:\-]\s*([^\n\r]+)/i)
+  const acreditadoNombre = acreditadoMatch ? String(acreditadoMatch[1] || '').replace(/\s+/g, ' ').trim() : null
+  if ((!Array.isArray(next.compradores_detectados) || next.compradores_detectados.length === 0) && acreditadoNombre) {
+    next.compradores_detectados = [{ nombre: acreditadoNombre, rfc: null, curp: null }]
+  }
+
+  const creditMatch = rawText.match(/\bCREDITO\s*[:\-]\s*([^\n\r]+)/i)
+  const creditoInstitucion = normalizeInstitutionName(creditMatch ? creditMatch[1] : null)
+
+  const rawNormalized = rawText
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  const isCasadoSociedadConyugal = /\bcasad[oa]\s+en\s+sociedad\s+conyugal\b/.test(rawNormalized)
+  const buyerEstadoCivil = isCasadoSociedadConyugal ? 'casado' : null
+
+  next.__derived = {
+    ...(next.__derived || {}),
+    acreditado_nombre: acreditadoNombre,
+    credit_institucion: creditoInstitucion,
+    buyer_estado_civil: buyerEstadoCivil,
+  }
+
+  const hasGravamenesArray = Array.isArray(next?.gravamenes) && next.gravamenes.length > 0
+  const isLibre = next?.gravamenes === 'LIBRE'
+  if (hasGravamenesArray || isLibre) return next
+
+  const normalizedText = rawText
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  if (/\blibre\s+de\s+gravamen(es)?\b|\bsin\s+gravamen(es)?\b/.test(normalizedText)) {
+    next.gravamenes = 'LIBRE'
+    return next
+  }
+
+  const acreedores = new Set<string>()
+  for (const match of rawText.matchAll(/\bACREEDOR(?:ES)?\s*[:\-]\s*([^\n\r]+)/gi)) {
+    const value = String(match?.[1] || '').replace(/\s+/g, ' ').trim()
+    if (value) acreedores.add(value)
+  }
+
+  const montoMatch = rawText.match(/\bMONTO\s+DEL\s+CREDITO\s*[:\-]\s*\$?\s*([0-9][0-9,.\s]*)\s*([A-ZÁÉÍÓÚÑ\s]+)?/i)
+  const monto = montoMatch ? String(montoMatch[1] || '').replace(/\s+/g, ' ').trim() : null
+  const moneda = montoMatch ? String(montoMatch[2] || '').replace(/\s+/g, ' ').trim() || null : null
+  const tipo =
+    /\bHIPOTECA(?:RIA)?\b/i.test(rawText) || /\bGARANTIA\s+HIPOTECARIA\b/i.test(rawText)
+      ? 'hipoteca'
+      : null
+
+  if (acreedores.size > 0 || monto || tipo) {
+    const list = Array.from(acreedores)
+    next.gravamenes = (list.length > 0 ? list : [null]).map((institucion) => ({
+      institucion: institucion || null,
+      monto: monto || null,
+      moneda,
+      tipo,
+    }))
+  }
+
+  return next
 }
 
 async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<void> {
@@ -489,23 +673,29 @@ export async function POST(req: Request) {
           traceId,
         },
       })
+      const enrichedStructured = enrichStructuredExtractionFromText({
+        structured: extraction.structured,
+        rawText: textResult.text,
+        documentType,
+      })
 
       console.info('[preaviso-process-document] text_first_extraction_summary', {
         trace_id: traceId,
         file_name: file.name,
-        folio_real: extraction?.structured?.inmueble?.folio_real ?? null,
-        partidas_count: Array.isArray(extraction?.structured?.inmueble?.partidas)
-          ? extraction.structured.inmueble.partidas.length
+        folio_real: enrichedStructured?.inmueble?.folio_real ?? null,
+        partidas_count: Array.isArray(enrichedStructured?.inmueble?.partidas)
+          ? enrichedStructured.inmueble.partidas.length
           : 0,
+        gravamenes_count: Array.isArray(enrichedStructured?.gravamenes) ? enrichedStructured.gravamenes.length : 0,
         source_refs_count: Array.isArray(extraction?.source_refs) ? extraction.source_refs.length : 0,
         warnings_count: Array.isArray(extraction?.warnings) ? extraction.warnings.length : 0,
       })
 
       result = {
-        data: mergeExtractedIntoContext(context || {}, extraction.structured),
+        data: mergeExtractedIntoContext(context || {}, enrichedStructured),
         commands: [],
         extractedData: {
-          ...(extraction.structured || {}),
+          ...(enrichedStructured || {}),
           textoCompleto: textResult.text,
           _source_extraction: textResult.source,
           _trace_id: extraction.trace_id,
