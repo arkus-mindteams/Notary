@@ -432,6 +432,24 @@ async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<
       throw new Error(`chat_session_link_failed: ${linkError.message}`)
     }
 
+    if (input.tramiteId) {
+      const { error: tramiteLinkError } = await supabase
+        .from('tramite_documentos')
+        .upsert(
+          {
+            tramite_id: input.tramiteId,
+            documento_id: documento.id,
+          },
+          {
+            onConflict: 'tramite_id,documento_id',
+            ignoreDuplicates: true,
+          }
+        )
+      if (tramiteLinkError) {
+        throw new Error(`tramite_document_link_failed: ${tramiteLinkError.message}`)
+      }
+    }
+
     await ActivityLogService.logDocumentUpload({
       userId: userIdForLogs,
       sessionId: String(input.conversationId),

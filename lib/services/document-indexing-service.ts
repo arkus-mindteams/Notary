@@ -44,6 +44,7 @@ export type DocumentIndexResult = {
 type IndexingDeps = {
   findDocumentoById: (documentoId: string) => Promise<DocumentoRow | null>
   findTramiteIdByDocumentoId: (documentoId: string) => Promise<string | null>
+  findSessionIdByDocumentoId?: (documentoId: string) => Promise<string | null>
   hasExistingIndexSignature: (params: {
     documentoId: string
     documentHash: string
@@ -105,6 +106,18 @@ const defaultDeps: IndexingDeps = {
       .maybeSingle()
     if (error) return null
     return (data?.tramite_id as string | undefined) || null
+  },
+  findSessionIdByDocumentoId: async (documentoId) => {
+    const supabase = createServerClient()
+    const { data, error } = await supabase
+      .from('chat_session_documents')
+      .select('session_id')
+      .eq('documento_id', documentoId)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    if (error) return null
+    return (data?.session_id as string | undefined) || null
   },
   hasExistingIndexSignature: async (params) => {
     const supabase = createServerClient()
@@ -193,6 +206,7 @@ export class DocumentIndexingService {
     const embeddingDimensions = EmbeddingsService.getModelDimensions()
 
     let tramiteId: string | null = null
+    let sessionId: string | null = null
     try {
       const documento = await this.deps.findDocumentoById(params.documentoId)
       if (!documento) {
@@ -200,6 +214,9 @@ export class DocumentIndexingService {
       }
 
       tramiteId = await this.deps.findTramiteIdByDocumentoId(params.documentoId)
+      sessionId = this.deps.findSessionIdByDocumentoId
+        ? await this.deps.findSessionIdByDocumentoId(params.documentoId)
+        : null
       await this.deps.logEvent({
         userId: params.userId,
         traceId: params.traceId,
@@ -346,7 +363,7 @@ export class DocumentIndexingService {
         rows.push({
           documento_id: params.documentoId,
           tramite_id: tramiteId,
-          session_id: null,
+          session_id: sessionId,
           page_number: 1,
           chunk_index: chunk.chunk_index,
           text: chunk.content,

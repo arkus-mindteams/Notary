@@ -118,7 +118,7 @@ export class IntentClassifier {
     const wantsExtraction =
       input.hasDocument === true ||
       includesAny(uiAction, ['upload_document', 'document_uploaded', 'extract_document', 'process_document']) ||
-      /\b(subo|adjunto|subi|subí|extrae|extraer|procesa|procesar|lee)\b/.test(normalized) && /\b(documento|pdf|archivo|escritura|acta|identificacion|identificación)\b/.test(normalized)
+      /\b(subo|subido|subida|adjunto|subi|subí|extrae|extraer|procesa|procesar|lee)\b/.test(normalized) && /\b(documento|pdf|archivo|escritura|acta|identificacion|identificación)\b/.test(normalized)
     if (wantsExtraction) hits.add('EXTRACT_DOCUMENT')
 
     const wantsGeneration =

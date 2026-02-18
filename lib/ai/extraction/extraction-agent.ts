@@ -14,6 +14,14 @@ const MAX_ATTEMPTS = 3
 const EXTRACTION_DEBUG = process.env.EXTRACTION_DEBUG === '1'
 const EXTRACTION_DEBUG_MAX_CHARS = Number(process.env.EXTRACTION_DEBUG_MAX_CHARS || 12000)
 
+function resolveExtractionModel(): string {
+  return process.env.OPENAI_EXTRACTION_MODEL || process.env.OPENAI_DOC_MODEL || process.env.OPENAI_MODEL || 'gpt-4o'
+}
+
+function isGpt5Model(model: string): boolean {
+  return String(model || '').toLowerCase().includes('gpt-5')
+}
+
 function clipForDebug(value: string): string {
   const text = String(value || '')
   if (text.length <= EXTRACTION_DEBUG_MAX_CHARS) return text
@@ -26,7 +34,7 @@ class OpenAIExtractionClient implements ExtractionLLMClient {
 
   constructor() {
     this.apiKey = process.env.OPENAI_API_KEY || ''
-    this.model = process.env.OPENAI_MODEL || 'gpt-4o'
+    this.model = resolveExtractionModel()
   }
 
   async complete(args: {
@@ -38,19 +46,41 @@ class OpenAIExtractionClient implements ExtractionLLMClient {
       throw new Error('OPENAI_API_KEY no configurada')
     }
 
+    const primary = await this.requestCompletion(this.model, args)
+    if (primary.content.trim()) return primary
+
+    const fallbackModel = process.env.OPENAI_EXTRACTION_FALLBACK_MODEL || 'gpt-4o-mini'
+    const shouldFallback =
+      isGpt5Model(this.model) &&
+      primary.finish_reason === 'length' &&
+      fallbackModel &&
+      fallbackModel !== this.model
+
+    if (!shouldFallback) return primary
+    const fallback = await this.requestCompletion(fallbackModel, {
+      ...args,
+      maxTokens: Math.min(Number(args.maxTokens || 3000), 3500),
+    })
+    return fallback.content.trim() ? fallback : primary
+  }
+
+  private async requestCompletion(
+    model: string,
+    args: { systemPrompt: string; userPrompt: string; maxTokens?: number }
+  ) {
     const body: Record<string, unknown> = {
-      model: this.model,
+      model,
       messages: [
         { role: 'system', content: args.systemPrompt },
         { role: 'user', content: args.userPrompt },
       ],
-      ...(this.model.includes('o1') || this.model.includes('o3') || this.model.includes('gpt-5')
+      ...(model.includes('o1') || model.includes('o3') || model.includes('gpt-5')
         ? {}
         : {
             response_format: { type: 'json_object' },
             temperature: 0,
           }),
-      ...(this.model.includes('gpt-4') || this.model.includes('gpt-5') || this.model.includes('o1') || this.model.includes('o3')
+      ...(model.includes('gpt-4') || model.includes('gpt-5') || model.includes('o1') || model.includes('o3')
         ? { max_completion_tokens: args.maxTokens || 3000 }
         : { max_tokens: args.maxTokens || 3000 }),
     }
@@ -72,8 +102,9 @@ class OpenAIExtractionClient implements ExtractionLLMClient {
     const data = await resp.json()
     return {
       content: extractMessageContent(data?.choices?.[0]?.message),
+      finish_reason: String(data?.choices?.[0]?.finish_reason || ''),
       usage: data?.usage,
-      model: this.model,
+      model,
     }
   }
 }
@@ -194,17 +225,23 @@ export class ExtractionAgent {
           document_id: input.documentId,
           attempt,
           is_repair: isRepair,
-          model: process.env.OPENAI_MODEL || 'gpt-4o',
+          model: resolveExtractionModel(),
           text_length: rawText.length,
           system_prompt: clipForDebug(systemPrompt),
           user_prompt: clipForDebug(userPrompt),
         })
       }
 
+      const baseMaxTokens = Number(process.env.OPENAI_EXTRACTION_MAX_TOKENS || 3000)
+      const modelName = resolveExtractionModel()
+      const attemptMaxTokens = isGpt5Model(modelName)
+        ? Math.min(baseMaxTokens + (attempt - 1) * 1200, 6500)
+        : baseMaxTokens
+
       const llmResult = await this.llmClient.complete({
         systemPrompt,
         userPrompt,
-        maxTokens: 3000,
+        maxTokens: attemptMaxTokens,
       })
 
       if (EXTRACTION_DEBUG) {
@@ -212,7 +249,9 @@ export class ExtractionAgent {
           trace_id: traceId,
           document_id: input.documentId,
           attempt,
-          model: llmResult.model || process.env.OPENAI_MODEL || 'gpt-4o',
+          model: llmResult.model || modelName,
+          finish_reason: llmResult.finish_reason || null,
+          max_tokens: attemptMaxTokens,
           usage: llmResult.usage || null,
           content: clipForDebug(llmResult.content),
         })
@@ -221,14 +260,18 @@ export class ExtractionAgent {
       lastModelOutput = llmResult.content
       const parsed = this.parseJson(llmResult.content)
       if (!parsed.ok) {
-        lastValidationErrors = [parsed.error]
+        const finishReason = String(llmResult.finish_reason || '').trim()
+        const reason = parsed.error === 'Respuesta vacia de IA' && finishReason === 'length'
+          ? `${parsed.error} (finish_reason=length, max_tokens=${attemptMaxTokens})`
+          : parsed.error
+        lastValidationErrors = [reason]
         await this.auditLogger.log({
           traceId,
           tramiteType: input.tramiteType,
           documentId: input.documentId,
           attempt,
           status: attempt < MAX_ATTEMPTS ? 'retry' : 'error',
-          reason: parsed.error,
+          reason,
           model: llmResult.model,
           usage: llmResult.usage,
           metadata: metadataBase,
@@ -304,11 +347,49 @@ export class ExtractionAgent {
       if (match?.[1]) candidate = match[1]
     }
 
+    const rebuilt = this.rebuildFromJsConcatenation(candidate)
+    if (rebuilt) candidate = rebuilt
+
+    const firstBrace = candidate.indexOf('{')
+    const lastBrace = candidate.lastIndexOf('}')
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      candidate = candidate.slice(firstBrace, lastBrace + 1).trim()
+    }
+
     try {
       return { ok: true, value: JSON.parse(candidate) }
     } catch (error: any) {
       return { ok: false, error: `JSON.parse fallo: ${error?.message || 'invalid_json'}` }
     }
+  }
+
+  private rebuildFromJsConcatenation(raw: string): string | null {
+    const text = String(raw || '').trim()
+    if (!text.includes('+')) return null
+    const matches = text.match(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g)
+    if (!matches || matches.length === 0) return null
+    const rebuilt = matches.map((m) => this.decodeJsQuotedLiteral(m)).join('')
+    return rebuilt.trim() || null
+  }
+
+  private decodeJsQuotedLiteral(literal: string): string {
+    if (!literal || literal.length < 2) return literal
+    const quote = literal[0]
+    const inner = literal.slice(1, -1)
+    if (quote === '"') {
+      try {
+        return JSON.parse(literal)
+      } catch {
+        return inner
+      }
+    }
+    return inner
+      .replace(/\\\\/g, '\\')
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t')
+      .replace(/\\'/g, "'")
+      .replace(/\\"/g, '"')
   }
 
   private buildValidationErrors(issues: ZodIssue[]): string[] {

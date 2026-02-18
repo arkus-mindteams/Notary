@@ -40,6 +40,7 @@ export interface ExtractionPlugin<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
 
 export interface ExtractionLLMResult {
   content: string
+  finish_reason?: string
   usage?: {
     prompt_tokens?: number
     completion_tokens?: number

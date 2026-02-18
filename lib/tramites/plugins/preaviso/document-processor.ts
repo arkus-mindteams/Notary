@@ -5,6 +5,24 @@ import { getHandler } from './document-processor/handlers/registry'
 import { ActivityLogService } from '../../../services/activity-log-service'
 
 export class PreavisoDocumentProcessor {
+  private extractMessageContent(message: any): string {
+    if (!message) return ''
+    if (typeof message.content === 'string') return message.content
+    if (Array.isArray(message.content)) {
+      const parts = message.content
+        .map((part: any) => {
+          if (typeof part === 'string') return part
+          if (part && typeof part.text === 'string') return part.text
+          if (part && typeof part.content === 'string') return part.content
+          return ''
+        })
+        .filter(Boolean)
+      return parts.join('\n').trim()
+    }
+    if (typeof message.refusal === 'string') return message.refusal
+    return ''
+  }
+
   private decodeJsQuotedLiteral(literal: string): string {
     if (!literal || literal.length < 2) return literal
     const quote = literal[0]
@@ -452,7 +470,7 @@ REGLAS CRÃTICAS:
             }
           ],
           // o1 models don't support temperature or response_format
-          ...(model.includes("o1") || model.includes("o3") ? {} : {
+          ...(model.includes("o1") || model.includes("o3") || model.includes("gpt-5") ? {} : {
             temperature: 0,
             response_format: { type: 'json_object' }
           }),
@@ -469,7 +487,7 @@ REGLAS CRÃTICAS:
       }
 
       const data = await response.json()
-      const content = data.choices[0]?.message?.content || '{}'
+      const content = this.extractMessageContent(data?.choices?.[0]?.message) || '{}'
       const usage = data.usage || null // âœ… Capturar usage del segundo pase
 
       const parsed: any = this.safeParseJsonObject(content)
@@ -619,7 +637,7 @@ REGLAS CRÃTICAS:
               ]
             }
           ],
-          ...(model.includes("o1") || model.includes("o3") ? {} : {
+          ...(model.includes("o1") || model.includes("o3") || model.includes("gpt-5") ? {} : {
             temperature: 0.1,
             response_format: { type: 'json_object' }
           }),
@@ -645,7 +663,7 @@ REGLAS CRÃTICAS:
     }
 
     const data = await response.json()
-    const content = data.choices[0]?.message?.content || '{}'
+    const content = this.extractMessageContent(data?.choices?.[0]?.message) || '{}'
     const usage = data.usage || null // âœ… Capturar usage
 
     const parsed = this.safeParseJsonObject(content)
