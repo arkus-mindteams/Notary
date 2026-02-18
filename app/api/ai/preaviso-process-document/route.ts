@@ -1,27 +1,543 @@
-/**
+﻿/**
  * Endpoint de procesamiento de documentos usando Plugin System
  */
 
 import { NextResponse } from 'next/server'
+import { createHash, randomUUID } from 'crypto'
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
 import { ActivityLogService } from '@/lib/services/activity-log-service'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import { DocumentoService } from '@/lib/services/documento-service'
-import {
-  DocumentExtractionTextBuilder,
-  RAG_CHUNK_MAX_CHARS
-} from '@/lib/services/document-extraction-text-builder'
+import { DocumentIndexingService } from '@/lib/services/document-indexing-service'
+import { DocumentTextExtractor } from '@/lib/services/document-text-extractor'
+import { ExtractionAgent } from '@/lib/ai/extraction/extraction-agent'
+
+type DeferredPostProcessInput = {
+  traceId: string
+  authUserId: string | null
+  conversationId: string | null
+  tramiteId: string | null
+  documentType: string
+  file: File
+  extractedData: any
+}
+
+function toSafeError(error: unknown): { message: string; code?: string } {
+  if (!error || typeof error !== 'object') {
+    return { message: 'unknown_error' }
+  }
+  const err = error as { message?: string; code?: string }
+  return {
+    message: err.message || 'processing_error',
+    code: err.code
+  }
+}
+
+function buildProcessingFingerprint(params: {
+  sessionId: string | null
+  tramiteId: string | null
+  documentType: string
+  fileName: string
+  fileSize: number
+  extractedData: any
+}): string {
+  const extractedHash = createHash('sha256')
+    .update(JSON.stringify(params.extractedData || {}))
+    .digest('hex')
+
+  return createHash('sha256')
+    .update([
+      params.sessionId || 'no-session',
+      params.tramiteId || 'no-tramite',
+      params.documentType,
+      params.fileName,
+      String(params.fileSize),
+      extractedHash
+    ].join('|'))
+    .digest('hex')
+}
+
+function mergeExtractedIntoContext(context: any, structured: any): any {
+  const next = { ...(context || {}) }
+  const inmueble = structured?.inmueble || {}
+  const direccion = inmueble?.direccion || {}
+  const datosCatastrales = inmueble?.datos_catastrales || {}
+
+  next.inmueble = {
+    ...(next.inmueble || {}),
+    folio_real: inmueble?.folio_real ?? next?.inmueble?.folio_real ?? null,
+    partidas: Array.isArray(inmueble?.partidas) && inmueble.partidas.length > 0
+      ? inmueble.partidas
+      : (next?.inmueble?.partidas || []),
+    seccion: inmueble?.seccion ?? next?.inmueble?.seccion ?? null,
+    numero_expediente: inmueble?.numero_expediente ?? next?.inmueble?.numero_expediente ?? null,
+    direccion: {
+      ...(next?.inmueble?.direccion || {}),
+      calle: direccion?.calle ?? next?.inmueble?.direccion?.calle ?? null,
+      numero: direccion?.numero ?? next?.inmueble?.direccion?.numero ?? null,
+      colonia: direccion?.colonia ?? next?.inmueble?.direccion?.colonia ?? null,
+      municipio: direccion?.municipio ?? next?.inmueble?.direccion?.municipio ?? null,
+      estado: direccion?.estado ?? next?.inmueble?.direccion?.estado ?? null,
+      codigo_postal: direccion?.codigo_postal ?? next?.inmueble?.direccion?.codigo_postal ?? null,
+    },
+    superficie: inmueble?.superficie ?? next?.inmueble?.superficie ?? null,
+    valor: inmueble?.valor ?? next?.inmueble?.valor ?? null,
+    datos_catastrales: {
+      ...(next?.inmueble?.datos_catastrales || {}),
+      lote: datosCatastrales?.lote ?? next?.inmueble?.datos_catastrales?.lote ?? null,
+      manzana: datosCatastrales?.manzana ?? next?.inmueble?.datos_catastrales?.manzana ?? null,
+      fraccionamiento: datosCatastrales?.fraccionamiento ?? next?.inmueble?.datos_catastrales?.fraccionamiento ?? null,
+      condominio: datosCatastrales?.condominio ?? next?.inmueble?.datos_catastrales?.condominio ?? null,
+      unidad: datosCatastrales?.unidad ?? next?.inmueble?.datos_catastrales?.unidad ?? null,
+      modulo: datosCatastrales?.modulo ?? next?.inmueble?.datos_catastrales?.modulo ?? null,
+    }
+  }
+
+  if (structured?.titular_registral?.nombre) {
+    const vendedor = {
+      party_id: 'vendedor_1',
+      persona_fisica: {
+        nombre: structured.titular_registral.nombre,
+        rfc: structured?.titular_registral?.rfc ?? null,
+        curp: structured?.titular_registral?.curp ?? null,
+      },
+      titular_registral_confirmado: true,
+    }
+    const existing = Array.isArray(next.vendedores) ? next.vendedores : []
+    next.vendedores = existing.length > 0 ? [{ ...existing[0], ...vendedor }] : [vendedor]
+  }
+
+  const compradoresDetectados = Array.isArray(structured?.compradores_detectados)
+    ? structured.compradores_detectados.filter((p: any) => p?.nombre)
+    : []
+  if (compradoresDetectados.length > 0) {
+    const existing = Array.isArray(next.compradores) ? next.compradores : []
+    const merged = [...existing]
+    for (let i = 0; i < compradoresDetectados.length; i++) {
+      const buyer = compradoresDetectados[i]
+      const prev = merged[i] || {}
+      merged[i] = {
+        ...prev,
+        party_id: prev.party_id || `comprador_${i + 1}`,
+        persona_fisica: {
+          ...(prev.persona_fisica || {}),
+          nombre: buyer?.nombre ?? prev?.persona_fisica?.nombre ?? null,
+          rfc: buyer?.rfc ?? prev?.persona_fisica?.rfc ?? null,
+          curp: buyer?.curp ?? prev?.persona_fisica?.curp ?? null,
+        }
+      }
+    }
+    next.compradores = merged
+  }
+
+  const derivedBuyerName = String(structured?.__derived?.acreditado_nombre || '').trim()
+  const derivedBuyerEstadoCivil = String(structured?.__derived?.buyer_estado_civil || '').trim()
+  const derivedCreditInstitution = String(structured?.__derived?.credit_institucion || '').trim()
+
+  if (derivedBuyerName) {
+    const compradores = Array.isArray(next.compradores) ? [...next.compradores] : []
+    const c0 = { ...(compradores[0] || {}) }
+    c0.party_id = c0.party_id || 'comprador_1'
+    c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
+    c0.persona_fisica = {
+      ...(c0.persona_fisica || {}),
+      nombre: c0.persona_fisica?.nombre || derivedBuyerName,
+      rfc: c0.persona_fisica?.rfc || null,
+      curp: c0.persona_fisica?.curp || null,
+      estado_civil: c0.persona_fisica?.estado_civil || null,
+    }
+    compradores[0] = c0
+    next.compradores = compradores
+  }
+
+  if (derivedBuyerEstadoCivil) {
+    const compradores = Array.isArray(next.compradores) ? [...next.compradores] : []
+    const c0 = { ...(compradores[0] || {}) }
+    c0.party_id = c0.party_id || 'comprador_1'
+    c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
+    c0.persona_fisica = {
+      ...(c0.persona_fisica || {}),
+      nombre: c0.persona_fisica?.nombre || null,
+      rfc: c0.persona_fisica?.rfc || null,
+      curp: c0.persona_fisica?.curp || null,
+      estado_civil: c0.persona_fisica?.estado_civil || derivedBuyerEstadoCivil,
+    }
+    compradores[0] = c0
+    next.compradores = compradores
+  }
+
+  if (derivedCreditInstitution) {
+    const creditos = Array.isArray(next.creditos) ? [...next.creditos] : []
+    const c0 = { ...(creditos[0] || {}) }
+    const participantesExistentes = Array.isArray(c0.participantes) ? c0.participantes : []
+    let participantes = participantesExistentes
+    if (participantes.length === 0) {
+      const buyerName =
+        next?.compradores?.[0]?.persona_fisica?.nombre ||
+        next?.compradores?.[0]?.persona_moral?.denominacion_social ||
+        null
+      if (buyerName) {
+        participantes = [
+          {
+            party_id: 'comprador_1',
+            nombre: buyerName,
+            rol: 'acreditado'
+          }
+        ]
+      }
+    }
+    creditos[0] = {
+      credito_id: c0.credito_id ?? null,
+      institucion: c0.institucion || derivedCreditInstitution,
+      monto: c0.monto ?? null,
+      participantes,
+      tipo_credito: c0.tipo_credito ?? null,
+    }
+    next.creditos = creditos
+    next.actosNotariales = {
+      ...(next.actosNotariales || {}),
+      aperturaCreditoComprador: true,
+    }
+  }
+
+  if (structured?.gravamenes === 'LIBRE') {
+    next.gravamenes = []
+    next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: false }
+  } else if (Array.isArray(structured?.gravamenes) && structured.gravamenes.length > 0) {
+    next.gravamenes = structured.gravamenes
+    next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
+  }
+
+  return next
+}
+
+function isImageLikeFile(file: File): boolean {
+  const mime = String(file.type || '').toLowerCase()
+  if (mime.startsWith('image/')) return true
+  const name = String(file.name || '').toLowerCase()
+  return /\.(png|jpe?g|webp|gif|bmp|tiff?)$/.test(name)
+}
+
+function detectFoliosFromText(rawText: string): string[] {
+  const text = String(rawText || '')
+  if (!text) return []
+  const patterns = [
+    /\bfolio\s*real\s*[:#-]?\s*([0-9]{5,})\b/gi,
+    /\bfolio\s*[:#-]?\s*([0-9]{5,})\b/gi,
+    /\bmatr[ií]cula\s*[:#-]?\s*([0-9]{5,})\b/gi,
+  ]
+  const found = new Set<string>()
+  for (const re of patterns) {
+    for (const match of text.matchAll(re)) {
+      const folio = String(match?.[1] || '').trim()
+      if (folio) found.add(folio)
+    }
+  }
+  return Array.from(found)
+}
+
+function normalizeExtractionDocumentType(documentType: string | null | undefined): 'inscripcion' | 'escritura' | 'identificacion' | 'acta_matrimonio' | 'otro' {
+  const normalized = String(documentType || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+
+  if (normalized.includes('inscrip')) return 'inscripcion'
+  if (normalized.includes('escritur')) return 'escritura'
+  if (normalized.includes('ident')) return 'identificacion'
+  if (normalized.includes('matrimonio') || normalized.includes('acta_matrimonio')) return 'acta_matrimonio'
+  return 'otro'
+}
+
+function normalizeInstitutionName(rawInstitution: string | null | undefined): string | null {
+  const input = String(rawInstitution || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!input) return null
+
+  const normalized = input
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  if (normalized.includes('infonavit')) return 'INFONAVIT'
+  if (normalized.includes('fovissste')) return 'FOVISSSTE'
+  if (normalized.includes('banco mercantil del norte') || /\bbanorte\b/.test(normalized)) return 'Banco Mercantil del Norte'
+  if (normalized.includes('bbva')) return 'BBVA'
+  if (normalized.includes('hsbc')) return 'HSBC'
+  if (normalized.includes('santander')) return 'Santander'
+  if (normalized.includes('banamex') || normalized.includes('citibanamex')) return 'Banamex'
+  if (normalized.includes('banco inmobiliario mexicano')) return 'Banco Inmobiliario Mexicano'
+
+  return input
+}
+
+function enrichStructuredExtractionFromText(args: {
+  structured: any
+  rawText: string
+  documentType: string | null
+}): any {
+  const sourceDocumentType = normalizeExtractionDocumentType(args.documentType)
+  const rawText = String(args.rawText || '')
+  const next = { ...(args.structured || {}) } as any
+
+  // El backend ya conoce el tipo real del archivo; evitar deriva del modelo.
+  next.source_document_type = sourceDocumentType
+
+  // Derivaciones deterministas de certificados/correos operativos
+  const acreditadoMatch = rawText.match(/\bACREDITADO\s*[:\-]\s*([^\n\r]+)/i)
+  const acreditadoNombre = acreditadoMatch ? String(acreditadoMatch[1] || '').replace(/\s+/g, ' ').trim() : null
+  if ((!Array.isArray(next.compradores_detectados) || next.compradores_detectados.length === 0) && acreditadoNombre) {
+    next.compradores_detectados = [{ nombre: acreditadoNombre, rfc: null, curp: null }]
+  }
+
+  const creditMatch = rawText.match(/\bCREDITO\s*[:\-]\s*([^\n\r]+)/i)
+  const creditoInstitucion = normalizeInstitutionName(creditMatch ? creditMatch[1] : null)
+
+  const rawNormalized = rawText
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  const isCasadoSociedadConyugal = /\bcasad[oa]\s+en\s+sociedad\s+conyugal\b/.test(rawNormalized)
+  const buyerEstadoCivil = isCasadoSociedadConyugal ? 'casado' : null
+
+  next.__derived = {
+    ...(next.__derived || {}),
+    acreditado_nombre: acreditadoNombre,
+    credit_institucion: creditoInstitucion,
+    buyer_estado_civil: buyerEstadoCivil,
+  }
+
+  const hasGravamenesArray = Array.isArray(next?.gravamenes) && next.gravamenes.length > 0
+  const isLibre = next?.gravamenes === 'LIBRE'
+  if (hasGravamenesArray || isLibre) return next
+
+  const normalizedText = rawText
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  if (/\blibre\s+de\s+gravamen(es)?\b|\bsin\s+gravamen(es)?\b/.test(normalizedText)) {
+    next.gravamenes = 'LIBRE'
+    return next
+  }
+
+  const acreedores = new Set<string>()
+  for (const match of rawText.matchAll(/\bACREEDOR(?:ES)?\s*[:\-]\s*([^\n\r]+)/gi)) {
+    const value = String(match?.[1] || '').replace(/\s+/g, ' ').trim()
+    if (value) acreedores.add(value)
+  }
+
+  const montoMatch = rawText.match(/\bMONTO\s+DEL\s+CREDITO\s*[:\-]\s*\$?\s*([0-9][0-9,.\s]*)\s*([A-ZÁÉÍÓÚÑ\s]+)?/i)
+  const monto = montoMatch ? String(montoMatch[1] || '').replace(/\s+/g, ' ').trim() : null
+  const moneda = montoMatch ? String(montoMatch[2] || '').replace(/\s+/g, ' ').trim() || null : null
+  const tipo =
+    /\bHIPOTECA(?:RIA)?\b/i.test(rawText) || /\bGARANTIA\s+HIPOTECARIA\b/i.test(rawText)
+      ? 'hipoteca'
+      : null
+
+  if (acreedores.size > 0 || monto || tipo) {
+    const list = Array.from(acreedores)
+    next.gravamenes = (list.length > 0 ? list : [null]).map((institucion) => ({
+      institucion: institucion || null,
+      monto: monto || null,
+      moneda,
+      tipo,
+    }))
+  }
+
+  return next
+}
+
+async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<void> {
+  const asyncStartedAt = Date.now()
+  const userIdForLogs = input.authUserId || 'system'
+
+  try {
+    const { createServerClient } = await import('@/lib/supabase')
+    const supabase = createServerClient()
+
+    if (!input.conversationId) {
+      await ActivityLogService.logDocumentProcessingStage({
+        userId: userIdForLogs,
+        sessionId: input.conversationId || undefined,
+        tramiteId: input.tramiteId || undefined,
+        traceId: input.traceId,
+        stage: 'postprocess_async',
+        status: 'skipped',
+        durationMs: Date.now() - asyncStartedAt,
+        metadata: {
+          reason: 'missing_conversation_id',
+          document_type: input.documentType
+        }
+      })
+      return
+    }
+
+    const processingFingerprint = buildProcessingFingerprint({
+      sessionId: input.conversationId,
+      tramiteId: input.tramiteId,
+      documentType: input.documentType,
+      fileName: input.file.name,
+      fileSize: input.file.size,
+      extractedData: input.extractedData
+    })
+
+    let documento = await DocumentoService.findDocumentoByProcessingFingerprint(processingFingerprint)
+    if (!documento) {
+      const { data: insertedDocumento, error: docError } = await supabase
+        .from('documentos')
+        .insert({
+          tipo: input.documentType,
+          nombre: input.file.name,
+          s3_key: `chat/${input.conversationId}/${input.file.name}`,
+          s3_bucket: process.env.S3_BUCKET || 'notary-documents',
+          ["tama\u00f1o"]: input.file.size,
+          mime_type: input.file.type || 'application/pdf',
+          metadata: {
+            extracted_data: input.extractedData,
+            processing_fingerprint: processingFingerprint,
+            trace_id: input.traceId,
+            via: 'preaviso_chat'
+          }
+        })
+        .select()
+        .single()
+
+      if (docError || !insertedDocumento) {
+        throw new Error(`document_insert_failed: ${docError?.message || 'unknown_error'}`)
+      }
+      documento = insertedDocumento
+    }
+
+    const { error: linkError } = await supabase
+      .from('chat_session_documents')
+      .upsert({
+        session_id: input.conversationId,
+        documento_id: documento.id,
+        uploaded_by: input.authUserId,
+        metadata: {
+          document_type: input.documentType,
+          extraction_success: true,
+          tramite_id: input.tramiteId,
+          trace_id: input.traceId
+        }
+      }, {
+        onConflict: 'session_id,documento_id',
+        ignoreDuplicates: true
+      })
+
+    if (linkError) {
+      throw new Error(`chat_session_link_failed: ${linkError.message}`)
+    }
+
+    await ActivityLogService.logDocumentUpload({
+      userId: userIdForLogs,
+      sessionId: String(input.conversationId),
+      tramiteId: input.tramiteId || undefined,
+      documentoId: documento.id,
+      fileName: input.file.name,
+      fileSize: input.file.size,
+      mimeType: input.file.type || 'application/pdf'
+    })
+
+    let indexingStatus: string | null = null
+    let chunksCreated = 0
+    let embeddingsCreated = 0
+    let indexingExtractionSource: string | null = null
+    let indexingNeedsOcrReason: string | null = null
+    try {
+      const indexingService = new DocumentIndexingService()
+      const indexingResult = await indexingService.indexDocument({
+        documentoId: documento.id,
+        forceReindex: false,
+        traceId: input.traceId,
+        userId: userIdForLogs
+      })
+      indexingStatus = indexingResult.status
+      chunksCreated = indexingResult.chunks_created
+      embeddingsCreated = indexingResult.embeddings_created
+      indexingExtractionSource = indexingResult.extraction_source || null
+      indexingNeedsOcrReason = indexingResult.needs_ocr_reason || null
+    } catch (indexError) {
+      const safeIndexError = toSafeError(indexError)
+      indexingStatus = 'error'
+      console.error('[preaviso-process-document] indexing error', {
+        trace_id: input.traceId,
+        documento_id: documento.id,
+        code: safeIndexError.code,
+        message: safeIndexError.message
+      })
+    }
+
+    console.info('[preaviso-process-document] indexing debug', {
+      trace_id: input.traceId,
+      documento_id: documento.id,
+      status: indexingStatus,
+      extraction_source: indexingExtractionSource,
+      needs_ocr_reason: indexingNeedsOcrReason,
+      chunks_created: chunksCreated,
+      embeddings_created: embeddingsCreated,
+    })
+
+    const postprocessAsyncMs = Date.now() - asyncStartedAt
+    
+    await ActivityLogService.logDocumentProcessingStage({
+      userId: userIdForLogs,
+      sessionId: input.conversationId || undefined,
+      tramiteId: input.tramiteId || undefined,
+      documentoId: documento.id,
+      traceId: input.traceId,
+      stage: 'postprocess_async',
+      status: 'success',
+      durationMs: postprocessAsyncMs,
+      metadata: {
+        document_type: input.documentType,
+        indexing_status: indexingStatus,
+        indexing_extraction_source: indexingExtractionSource,
+        indexing_needs_ocr_reason: indexingNeedsOcrReason,
+        chunks_created: chunksCreated,
+        embeddings_created: embeddingsCreated
+      }
+    })
+  } catch (error) {
+    const safeError = toSafeError(error)
+    const postprocessAsyncMs = Date.now() - asyncStartedAt
+
+    console.error('[preaviso-process-document] deferred postprocess error', {
+      trace_id: input.traceId,
+      postprocess_async_ms: postprocessAsyncMs,
+      code: safeError.code,
+      message: safeError.message
+    })
+
+    await ActivityLogService.logDocumentProcessingStage({
+      userId: userIdForLogs,
+      sessionId: input.conversationId || undefined,
+      tramiteId: input.tramiteId || undefined,
+      traceId: input.traceId,
+      stage: 'postprocess_async',
+      status: 'error',
+      durationMs: postprocessAsyncMs,
+      metadata: {
+        document_type: input.documentType,
+        error_code: safeError.code || 'unknown',
+        error_message: safeError.message
+      }
+    })
+  }
+}
 
 export async function POST(req: Request) {
-  // Import createServerClient here, as it's only used in the fallback logic
+  const requestStartedAt = Date.now()
+  const traceId = randomUUID()
+
+  // Import createServerClient here, as it's only used in fallback logic
   const { createServerClient } = await import('@/lib/supabase')
 
   try {
-    // ✅ Obtener usuario autenticado usando el helper oficial
-    // Esto valida el token del header Authorization
     const usuario = await getCurrentUserFromRequest(req)
-
-    // El ID que necesitamos para activity_logs es el auth_user_id (el de Supabase Auth)
     let authUserId: string | null = usuario?.auth_user_id || null
 
     const formData = await req.formData()
@@ -31,17 +547,12 @@ export async function POST(req: Request) {
     const tramiteIdRaw = (formData.get('tramiteId') as string | null) || 'preaviso'
     const needOcr = (formData.get('needOcr') as string | null) || null
 
-    // Mapear tramiteId: si viene un UUID (ID de base de datos), usar el tipo del trámite del contexto
-    // o default a 'preaviso'. El frontend puede enviar el UUID del trámite, pero necesitamos el ID del plugin.
-    let pluginId = 'preaviso' // Default
+    let pluginId = 'preaviso'
     if (tramiteIdRaw && typeof tramiteIdRaw === 'string') {
-      // Si es un UUID (formato: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), ignorarlo y usar el tipo del contexto
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tramiteIdRaw)
       if (!isUUID) {
-        // Si no es UUID, puede ser el ID del plugin directamente
         pluginId = tramiteIdRaw
       } else {
-        // Es UUID, usar el tipo del trámite del contexto si está disponible
         let contextTmp: any = null
         if (contextRaw) {
           try {
@@ -54,8 +565,7 @@ export async function POST(req: Request) {
         if (contextTipo === 'preaviso' || !contextTipo) {
           pluginId = 'preaviso'
         } else {
-          // En el futuro, mapear otros tipos de trámites
-          pluginId = 'preaviso' // Por ahora, solo preaviso está implementado
+          pluginId = 'preaviso'
         }
       }
     }
@@ -83,7 +593,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // ✅ Fallback: si no hay usuario en el request, intentar obtenerlo del trámite
     if (!authUserId && context?.tramiteId) {
       try {
         const supabase = createServerClient()
@@ -94,8 +603,6 @@ export async function POST(req: Request) {
           .single()
 
         if (tramite?.usuario_id) {
-          // El usuario_id en tramites es el ID de la tabla publica usuarios.
-          // Necesitamos el auth_user_id para el activity_log
           const { data: userRecord } = await supabase
             .from('usuarios')
             .select('auth_user_id')
@@ -104,210 +611,231 @@ export async function POST(req: Request) {
 
           authUserId = userRecord?.auth_user_id || null
         }
-      } catch (e) {
-        console.error('[preaviso-process-document] Error en fallback de userId:', e)
+      } catch (error) {
+        console.error('[preaviso-process-document] fallback userId error', {
+          trace_id: traceId,
+          ...toSafeError(error)
+        })
       }
     }
 
-    // ✅ Inyectar userId en el contexto para que el DocumentProcessor lo use al loggear
     if (authUserId && context) {
       context._userId = authUserId
     } else if (authUserId) {
       context = { _userId: authUserId }
     }
 
-    // DEBUG: Verificar que el backend reciba conversation_id, tramiteId y contexto
     try {
       const conversationIdIncoming = context?.conversation_id || null
-      console.log('[preaviso-process-document] incoming', {
-        documentType,
-        fileName: file?.name || null,
-        pluginId,
-        userId: authUserId,
-        conversation_id: conversationIdIncoming,
-        tramiteId: context?.tramiteId || null,
-        _document_intent: context?._document_intent ?? null,
-        comprador0: context?.compradores?.[0]?.persona_fisica?.nombre || context?.compradores?.[0]?.persona_moral?.denominacion_social || null,
-        comprador0EstadoCivil: context?.compradores?.[0]?.persona_fisica?.estado_civil || null,
-        conyuge: context?.compradores?.[0]?.persona_fisica?.conyuge?.nombre || null,
-      })
-    } catch { }
+          } catch {
+      // ignore debug logging issues
+    }
 
-    // Obtener sistema de trámites
     const tramiteSystem = getTramiteSystem()
+    const textExtractor = new DocumentTextExtractor()
+    const extractionAgent = new ExtractionAgent()
+    const extractStartedAt = Date.now()
+    let result: { data: any; commands: any[]; extractedData?: any; meta?: any }
+    const textResult = await textExtractor.extractFromFile(file, { allowOcrFallback: false })
+    console.info('[preaviso-process-document] text_first_probe', {
+      trace_id: traceId,
+      file_name: file.name,
+      mime_type: file.type || 'unknown',
+      source: textResult.source,
+      needs_ocr: textResult.needs_ocr,
+      reason: textResult.reason || null,
+      text_length: String(textResult.text || '').length,
+      text_debug: textResult.debug || null,
+    })
 
-    // Procesar documento
-    const result = await tramiteSystem.processDocument(
-      pluginId,
-      file,
-      documentType,
-      context || {}
-    )
+    if (!textResult.needs_ocr && textResult.text?.trim()) {
+      const regexFolios = detectFoliosFromText(textResult.text)
+      console.info('[preaviso-process-document] text_first_folio_probe', {
+        trace_id: traceId,
+        file_name: file.name,
+        regex_folios_detected: regexFolios.length,
+        regex_folios_sample: regexFolios.slice(0, 10),
+      })
 
-    // ✅ 4. Guardar documento en DB y vincular con sesión (Logging Unificado)
-    try {
-      const conversationId = context?.conversation_id || null
-      const tramiteId = context?.tramiteId || null
-      const supabase = createServerClient()
+      const extraction = await extractionAgent.extract({
+        tramiteType: 'preaviso',
+        documentId: `adhoc:${traceId}:${file.name}`,
+        rawText: textResult.text,
+        fileMeta: {
+          file_name: file.name,
+          mime_type: file.type || 'application/octet-stream',
+          source_document_type: documentType,
+          source_extraction: textResult.source,
+        },
+        auditContext: {
+          userId: authUserId || null,
+          tramiteId: context?.tramiteId || null,
+          traceId,
+        },
+      })
+      const enrichedStructured = enrichStructuredExtractionFromText({
+        structured: extraction.structured,
+        rawText: textResult.text,
+        documentType,
+      })
 
-      // No usar is_processing_artifact para omitir guardado/RAG: las páginas extraídas de un PDF
-      // (marcadas como artifact en el front) son contenido real y deben persistirse e indexarse.
-      if (!conversationId) {
-        console.warn('[preaviso-process-document] No conversation_id in context: document and RAG will not be saved. Frontend must send context.conversation_id.')
+      console.info('[preaviso-process-document] text_first_extraction_summary', {
+        trace_id: traceId,
+        file_name: file.name,
+        folio_real: enrichedStructured?.inmueble?.folio_real ?? null,
+        partidas_count: Array.isArray(enrichedStructured?.inmueble?.partidas)
+          ? enrichedStructured.inmueble.partidas.length
+          : 0,
+        gravamenes_count: Array.isArray(enrichedStructured?.gravamenes) ? enrichedStructured.gravamenes.length : 0,
+        source_refs_count: Array.isArray(extraction?.source_refs) ? extraction.source_refs.length : 0,
+        warnings_count: Array.isArray(extraction?.warnings) ? extraction.warnings.length : 0,
+      })
+
+      result = {
+        data: mergeExtractedIntoContext(context || {}, enrichedStructured),
+        commands: [],
+        extractedData: {
+          ...(enrichedStructured || {}),
+          textoCompleto: textResult.text,
+          _source_extraction: textResult.source,
+          _trace_id: extraction.trace_id,
+        },
+        meta: {
+          text_first: true,
+          extraction_source: textResult.source,
+          text_debug: textResult.debug || null,
+          warnings: extraction.warnings || [],
+        }
       }
-      if (conversationId && result.extractedData) {
-        console.log('[preaviso-process-document] Saving document and RAG', { conversationId, hasExtractedData: !!result.extractedData })
-        // 1. Guardar documento en tabla 'documentos'
-        const { data: documento, error: docError } = await supabase
-          .from('documentos')
-          .insert({
-            tipo: documentType,
-            nombre: file.name,
-            s3_key: `chat/${conversationId}/${file.name}`,
-            s3_bucket: process.env.S3_BUCKET || 'notary-documents',
-            tamaño: file.size,
-            mime_type: file.type || 'application/pdf',
-            metadata: {
-              extracted_data: result.extractedData,
-              via: 'preaviso_chat'
-            }
-          })
-          .select()
-          .single()
-
-        if (docError) {
-          console.error('[preaviso-process-document] Error saving to documentos:', docError)
-        } else if (documento) {
-          // 2. Vincular con la sesión de chat
-          const { error: linkError } = await supabase
-            .from('chat_session_documents')
-            .insert({
-              session_id: conversationId,
-              documento_id: documento.id,
-              uploaded_by: authUserId,
-              metadata: {
-                document_type: documentType,
-                extraction_success: true,
-                tramite_id: tramiteId
-              }
-            })
-
-          if (linkError) {
-            console.error('[preaviso-process-document] Error linking document to session:', linkError)
-          }
-
-          // 3. Registrar upload en activity_logs
-          await ActivityLogService.logDocumentUpload({
-            userId: authUserId || 'system',
-            sessionId: String(conversationId),
-            tramiteId: tramiteId ? String(tramiteId) : undefined,
-            documentoId: documento.id,
-            fileName: file.name,
-            fileSize: file.size,
-            mimeType: file.type || 'application/pdf'
-          }).catch(console.error)
-
-          // 4. Indexar documento en RAG (documento_text_chunks) ligado a la sesión de chat
-          // para recuperar contexto al reabrir la conversación (session_id) y opcionalmente al trámite (tramite_id)
-          const conversationIdForRag = conversationId || context?.conversation_id || null
-          if (result.extractedData && (conversationIdForRag || tramiteId)) {
-            try {
-              // Preferir transcripción completa del documento (textoCompleto) si el extractor la devolvió; si no, usar JSON completo
-              const rawFullText =
-                typeof result.extractedData.textoCompleto === 'string' && result.extractedData.textoCompleto.trim()
-                  ? result.extractedData.textoCompleto.trim()
-                  : DocumentExtractionTextBuilder.buildFullTextFromExtractedData(result.extractedData)
-              const chunks = DocumentExtractionTextBuilder.splitIntoChunks(rawFullText, RAG_CHUNK_MAX_CHARS)
-
-              if (chunks.length > 0) {
-                console.log('[preaviso-process-document] Indexing full document for RAG (chunks)', {
-                  documentoId: documento.id,
-                  sessionId: conversationIdForRag,
-                  tramiteId: tramiteId || null,
-                  fullTextLength: rawFullText.length,
-                  chunkCount: chunks.length,
-                  source: typeof result.extractedData.textoCompleto === 'string' && result.extractedData.textoCompleto.trim() ? 'textoCompleto' : 'json'
-                })
-                try {
-                  await DocumentoService.processAndSaveTextChunks(documento.id, chunks, 1, {
-                    sessionId: conversationIdForRag,
-                    tramiteId: tramiteId || null
-                  })
-                  console.log('[preaviso-process-document] RAG index saved successfully', { documentoId: documento.id, chunkCount: chunks.length })
-                } catch (ragErr) {
-                  console.error('[preaviso-process-document] Error indexing document for RAG:', ragErr)
-                }
-              } else {
-                console.warn('[preaviso-process-document] No text to index from extractedData:', {
-                  documentoId: documento.id,
-                  documentType,
-                  extractedDataKeys: Object.keys(result.extractedData || {})
-                })
-              }
-            } catch (indexError) {
-              console.error('[preaviso-process-document] Error building text for RAG indexing:', indexError)
-            }
-          } else if (!conversationIdForRag && !tramiteId) {
-            console.warn('[preaviso-process-document] Skipping RAG indexing: no conversation_id nor tramiteId', {
-              documentoId: documento?.id,
-              documentType
-            })
+    } else {
+      if (isImageLikeFile(file)) {
+        result = await tramiteSystem.processDocument(
+          pluginId,
+          file,
+          documentType,
+          context || {}
+        )
+      } else {
+        // No enviar PDFs/DOCX sin texto utilizable a Vision (espera imagen MIME).
+        result = {
+          data: context || {},
+          commands: [],
+          extractedData: {
+            textoCompleto: '',
+            _source_extraction: textResult.source,
+            _needs_ocr_reason: textResult.reason || 'text_not_usable',
+            _requires_ocr: true,
+            _text_debug: textResult.debug || null,
+          },
+          meta: {
+            text_first: false,
+            requires_ocr: true,
+            extraction_source: textResult.source,
+            needs_ocr_reason: textResult.reason || 'text_not_usable',
+            text_debug: textResult.debug || null,
           }
         }
       }
-    } catch (e) {
-      console.error('[preaviso-process-document] unified logging error', e)
     }
+    const extractSyncMs = Date.now() - extractStartedAt
 
-    // Guardar OCR en Redis si se requiere (reutilizar lógica existente)
-    // NOTA: El OCR se maneja principalmente desde el frontend que procesa cada página
-    // Este endpoint procesa el documento completo, así que el OCR se guarda por página desde el frontend
-    // Si necesitamos guardar OCR aquí, usaríamos upsertPage con los parámetros correctos
+    const conversationId = context?.conversation_id || null
+    const tramiteId = context?.tramiteId || null
+    const userIdForLogs = authUserId || 'system'
+
+    
+    await ActivityLogService.logDocumentProcessingStage({
+      userId: userIdForLogs,
+      sessionId: conversationId || undefined,
+      tramiteId: tramiteId || undefined,
+      traceId,
+      stage: 'extract_sync',
+      status: 'success',
+      durationMs: extractSyncMs,
+      metadata: {
+        document_type: documentType,
+        file_name: file.name,
+        file_size: file.size
+      }
+    })
+
+    await ActivityLogService.logDocumentProcessingStage({
+      userId: userIdForLogs,
+      sessionId: conversationId || undefined,
+      tramiteId: tramiteId || undefined,
+      traceId,
+      stage: 'postprocess_async',
+      status: 'queued',
+      durationMs: 0,
+      metadata: {
+        document_type: documentType
+      }
+    })
+
+    setTimeout(() => {
+      void runDeferredPostProcess({
+        traceId,
+        authUserId,
+        conversationId,
+        tramiteId,
+        documentType,
+        file,
+        extractedData: result.extractedData || null
+      })
+    }, 0)
+
     if (needOcr === '1') {
       try {
-        // Por ahora, el OCR se maneja desde el frontend que procesa cada página individualmente
-        // Si necesitamos guardar OCR aquí, usaríamos:
-        // const { PreavisoOcrCacheService } = await import('@/lib/services/preaviso-ocr-cache-service')
-        // const ocrText = await extractOCRText(file)
-        // await PreavisoOcrCacheService.upsertPage({
-        //   tramiteId: context?.tramiteId || pluginId,
-        //   docName: file.name,
-        //   docSubtype: documentType,
-        //   docRole: null,
-        //   pageNumber: 1, // Para documentos multi-página, el frontend maneja cada página
-        //   text: ocrText
-        // })
-        console.log('[preaviso-process-document] OCR se maneja desde el frontend por página')
-      } catch (ocrError) {
-        console.error('[preaviso-process-document] Error guardando OCR:', ocrError)
-        // No fallar si OCR falla
+              } catch (error) {
+        console.error('[preaviso-process-document] OCR logging error', {
+          trace_id: traceId,
+          ...toSafeError(error)
+        })
       }
     }
 
-    return NextResponse.json({
-      data: result.data,
-      extractedData: result.extractedData || null, // Datos extraídos del documento
-      commands: result.commands.map((c: any) => c.type), // Para debugging
-      message: 'Documento procesado correctamente'
+    const requestLatencyMs = Date.now() - requestStartedAt
+    console.info('[preaviso-process-document] response_summary', {
+      trace_id: traceId,
+      file_name: file.name,
+      folio_real: result?.data?.inmueble?.folio_real ?? null,
+      partidas_count: Array.isArray(result?.data?.inmueble?.partidas) ? result.data.inmueble.partidas.length : 0,
+      tramite_id: result?.data?.tramiteId ?? context?.tramiteId ?? null,
+      text_first: result?.meta?.text_first === true,
+      extraction_source: result?.meta?.extraction_source || null,
     })
 
-  } catch (error: any) {
-    console.error('[preaviso-process-document] Error:', error)
+    return NextResponse.json({
+      data: result.data,
+      extractedData: result.extractedData || null,
+      commands: result.commands.map((c: any) => c.type),
+      message: 'Documento procesado correctamente',
+      trace_id: traceId,
+      timings: {
+        extract_sync_ms: extractSyncMs,
+        request_total_ms: requestLatencyMs,
+        postprocess_async_state: 'queued'
+      }
+    })
+
+  } catch (error: unknown) {
+    const safeError = toSafeError(error)
+    console.error('[preaviso-process-document] Error', {
+      trace_id: traceId,
+      code: safeError.code,
+      message: safeError.message
+    })
+
     return NextResponse.json(
       {
         error: 'internal_error',
-        message: error.message || 'Error procesando documento'
+        message: safeError.message || 'Error procesando documento',
+        trace_id: traceId
       },
       { status: 500 }
     )
   }
 }
 
-/**
- * Helper para extraer texto OCR (simplificado)
- */
-async function extractOCRText(file: File): Promise<string> {
-  // Por ahora, retornar nombre del archivo como placeholder
-  // En producción, usar servicio OCR real
-  return `OCR text from ${file.name}`
-}
+
+

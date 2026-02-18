@@ -366,6 +366,12 @@ function buildDefaultPrompt(): string {
     "  - surfaces: array opcional de superficies extraídas del plano (ej: [{ name: \"TOTAL\", value_m2: 55.980 }]).",
     "  - Si no hay superficie, usar array vacío: []",
     "",
+    "Direcciones intercardinales: usa exactamente lo que aparece (SUROESTE, NOROESTE, NORESTE, SURESTE, OESTE, etc.). normalized_direction: SW, NW, NE, SE, W, N, S, E.",
+    "Si la medida lleva prefijo \"Lc=\" (ej: \"Lc=14.312 m. CON LOTE 15\"), inclúyelo en length_prefix: \"LC=\" y el número en length_m.",
+    "",
+    "Ejemplo con direcciones intercardinales y Lc=:",
+    "Si en la imagen aparece \"UNIDAD 4M\" con \"SUROESTE: 10.200 m CON LOTE 25\", \"OESTE: Lc=17.211 m. CON LOTE 25\", \"NOROESTE: 3.738 m. CON LOTE 25\", \"NORESTE: 14.890 m CON CALLE...\", \"SURESTE: 0.415 m. CON ÁREA COMÚN AS-2\", etc., devuelve un objeto con unit_name \"UNIDAD 4M\" y directions con raw_direction SUROESTE/OESTE/NOROESTE/NORESTE/SURESTE y un segmento por línea (length_prefix \"\" o \"LC=\", length_m como número o string, abutter con el colindante).",
+    "",
     "EJEMPLO COMPLETO (CON direcciones verticales explícitas):",
     "",
     "Texto de entrada:",
@@ -901,9 +907,11 @@ function mergeUnitsByNameNew(units: StructuredUnit[]): StructuredUnit[] {
   for (const u of units) {
     const rawName = u.unit_name || (u as any).unit?.name || ""
     const norm = normalizeUnitName(rawName)
-    if (!norm || isHeadingLikeName(rawName)) {
-      continue
-    }
+    const hasContent = (Array.isArray(u.directions) && u.directions.length > 0) ||
+      (Array.isArray(u.boundaries) && u.boundaries.length > 0)
+    // Don't skip units that have directions/boundaries even if the name looks like a heading
+    if (!norm) continue
+    if (isHeadingLikeName(rawName) && !hasContent) continue
 
     const existing = byName.get(norm)
     if (!existing) {
@@ -1380,6 +1388,14 @@ export async function POST(req: Request) {
       const { result: aiResponse, usage: aiUsage } = await callOpenAIVision(prompt, images)
       usage = aiUsage
 
+      // Debug: log raw AI response shape (truncated in production)
+      const logPayload = JSON.stringify(aiResponse)
+      if (process.env.NODE_ENV === "development") {
+        console.log("[api/ai/structure] Raw AI response (first 2000 chars):", logPayload.slice(0, 2000))
+      } else {
+        console.log("[api/ai/structure] AI response keys:", typeof aiResponse === "object" && aiResponse !== null ? Object.keys(aiResponse) : "not an object")
+      }
+
       // Extract lot-level metadata if present
       let lotLocation: string | undefined = undefined
       let totalLotSurface: number | undefined = undefined
@@ -1404,12 +1420,20 @@ export async function POST(req: Request) {
         if (!unitName) return null
 
         // Check if unit has directions array (new format from AI)
-        if (Array.isArray(unitRaw.directions) && unitRaw.directions.length > 0) {
-          // Preserve new format with directions and segments
-          const directions = unitRaw.directions
-            .filter((dir: any) => dir.raw_direction && Array.isArray(dir.segments))
+        const directionsRaw = unitRaw.directions ?? unitRaw.direcciones
+        if (Array.isArray(directionsRaw) && directionsRaw.length > 0) {
+          // Preserve new format with directions and segments (accept segments or colindancias)
+          const directions = directionsRaw
             .map((dir: any) => {
-              const rawDir = String(dir.raw_direction).trim()
+              const rawDir = String(dir.raw_direction ?? dir.direction ?? dir.direccion ?? "").trim()
+              if (!rawDir) return null
+              const segmentsArr = dir.segments ?? dir.colindancias ?? []
+              if (!Array.isArray(segmentsArr)) return null
+              return { rawDir, dir, segmentsArr }
+            })
+            .filter((x: any): x is { rawDir: string; dir: any; segmentsArr: any[] } =>
+              x != null && !!x.rawDir && Array.isArray(x.segmentsArr))
+            .map(({ rawDir, dir, segmentsArr }) => {
               // Ensure normalized_direction is correct, normalize it if needed
               let normalizedDir = dir.normalized_direction
               if (!normalizedDir || !["N", "S", "E", "W", "NE", "NW", "SE", "SW", "UP", "DOWN"].includes(normalizedDir)) {
@@ -1420,29 +1444,30 @@ export async function POST(req: Request) {
                 raw_direction: rawDir,
                 normalized_direction: normalizedDir as any,
                 direction_order_index: typeof dir.direction_order_index === "number" ? dir.direction_order_index : 0,
-                segments: (dir.segments || [])
+                segments: segmentsArr
                   .map((seg: any) => {
-                    // Preserve length_m as string if it's already a string, otherwise convert to number
-                    // This allows preserving exact decimal places from the AI response
+                    // Accept alternative keys from AI: length_m, length, medida, longitud
+                    const lengthRaw = seg.length_m ?? seg.length ?? seg.medida ?? seg.longitud
                     let lengthM: number | string | null = null
-                    if (seg.length_m !== null && seg.length_m !== undefined) {
-                      if (typeof seg.length_m === "string") {
-                        // Already a string, preserve it as-is (maintains exact decimals)
-                        lengthM = seg.length_m.trim()
-                      } else if (typeof seg.length_m === "number") {
-                        // It's a number, keep it as number
-                        lengthM = seg.length_m
+                    if (lengthRaw !== null && lengthRaw !== undefined) {
+                      if (typeof lengthRaw === "string") {
+                        lengthM = lengthRaw.trim()
+                      } else if (typeof lengthRaw === "number") {
+                        lengthM = lengthRaw
                       } else {
-                        // Try to parse, but prefer string if original was likely a decimal
-                        const parsed = parseFloat(String(seg.length_m))
+                        const parsed = parseFloat(String(lengthRaw))
                         lengthM = isNaN(parsed) ? null : parsed
                       }
                     }
+                    // Accept alternative keys for abutter: abutter, colindante, adjacent
+                    const abutterVal = String(seg.abutter ?? seg.colindante ?? seg.adjacent ?? "").trim()
+                    const lengthPrefixRaw = seg.length_prefix ?? seg.prefix
+                    const prefixStr = lengthPrefixRaw === null || lengthPrefixRaw === undefined ? null : String(lengthPrefixRaw).trim()
 
                     return {
-                      length_prefix: seg.length_prefix === null || seg.length_prefix === undefined ? null : String(seg.length_prefix).trim(),
+                      length_prefix: prefixStr === "" ? null : prefixStr,
                       length_m: lengthM,
-                      abutter: String(seg.abutter || "").trim(),
+                      abutter: abutterVal,
                       order_index: typeof seg.order_index === "number" ? seg.order_index : 0,
                     }
                   })
@@ -1466,30 +1491,26 @@ export async function POST(req: Request) {
         if (Array.isArray(unitRaw.boundaries) && unitRaw.boundaries.length > 0) {
           const boundaries = unitRaw.boundaries
             .map((b: any, idx: number) => {
-              // Handle new format boundary
-              if (b.raw_direction && b.normalized_direction) {
-                return {
-                  raw_direction: b.raw_direction,
-                  normalized_direction: b.normalized_direction as any,
-                  length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
-                  abutter: String(b.abutter || "").trim(),
-                  order_index: typeof b.order_index === "number" ? b.order_index : idx,
-                }
-              }
+              const rawDir = String(b.raw_direction ?? b.direction ?? "").trim()
+              const normalizedDir = (b.normalized_direction && ["N", "S", "E", "W", "NE", "NW", "SE", "SW", "UP", "DOWN"].includes(b.normalized_direction))
+                ? b.normalized_direction
+                : normalizeDirectionCode(rawDir)
+              const lengthRaw = b.length_m ?? b.length ?? b.medida
+              const lengthM = lengthRaw === null || lengthRaw === undefined ? null : (typeof lengthRaw === "number" ? lengthRaw : parseFloat(String(lengthRaw)))
+              const abutterVal = String(b.abutter ?? b.colindante ?? b.adjacent ?? "").trim()
+              const orderIdx = typeof b.order_index === "number" ? b.order_index : idx
 
-              // Handle legacy format (convert to new format)
-              const rawDir = String(b.direction || "").trim()
-              const normalizedDir = normalizeDirectionCode(rawDir)
+              if (!rawDir) return null
 
               return {
                 raw_direction: rawDir,
-                normalized_direction: normalizedDir,
-                length_m: b.length_m === null || b.length_m === undefined ? null : (typeof b.length_m === "number" ? b.length_m : parseFloat(String(b.length_m))),
-                abutter: String(b.abutter || "").trim(),
-                order_index: typeof b.order_index === "number" ? b.order_index : idx,
+                normalized_direction: normalizedDir as any,
+                length_m: lengthM,
+                abutter: abutterVal,
+                order_index: orderIdx,
               }
             })
-            .filter((b: any) => b.raw_direction && b.normalized_direction)
+            .filter((b: any) => b != null && b.raw_direction && b.normalized_direction)
 
           // Sort by order_index to ensure correct order
           boundaries.sort((a: any, b: any) => (a.order_index ?? 0) - (b.order_index ?? 0))
@@ -1501,6 +1522,38 @@ export async function POST(req: Request) {
             boundaries,
             surfaces: Array.isArray(unitRaw.surfaces) ? unitRaw.surfaces : [],
             anomalies: Array.isArray(unitRaw.anomalies) ? unitRaw.anomalies : undefined,
+          }
+        }
+
+        // Fallback: flat colindancias/medidas array at unit level (e.g. [{ direccion, medida, colindante }])
+        const flatList = unitRaw.colindancias ?? unitRaw.medidas ?? unitRaw.medidas_y_colindancias
+        if (Array.isArray(flatList) && flatList.length > 0) {
+          const boundaries = flatList
+            .map((b: any, idx: number) => {
+              const rawDir = String(b.raw_direction ?? b.direction ?? b.direccion ?? "").trim()
+              if (!rawDir) return null
+              const normalizedDir = (b.normalized_direction && ["N", "S", "E", "W", "NE", "NW", "SE", "SW", "UP", "DOWN"].includes(b.normalized_direction))
+                ? b.normalized_direction
+                : normalizeDirectionCode(rawDir)
+              const lengthRaw = b.length_m ?? b.length ?? b.medida
+              const lengthM = lengthRaw === null || lengthRaw === undefined ? null : (typeof lengthRaw === "number" ? lengthRaw : parseFloat(String(lengthRaw)))
+              const abutterVal = String(b.abutter ?? b.colindante ?? b.adjacent ?? "").trim()
+              return {
+                raw_direction: rawDir,
+                normalized_direction: normalizedDir as any,
+                length_m: lengthM,
+                abutter: abutterVal,
+                order_index: typeof b.order_index === "number" ? b.order_index : idx,
+              }
+            })
+            .filter((b: any): b is NonNullable<typeof b> => b != null && !!b.raw_direction && !!b.normalized_direction)
+          if (boundaries.length > 0) {
+            return {
+              unit_name: unitName,
+              boundaries,
+              surfaces: Array.isArray(unitRaw.surfaces) ? unitRaw.surfaces : [],
+              anomalies: Array.isArray(unitRaw.anomalies) ? unitRaw.anomalies : undefined,
+            }
           }
         }
 
@@ -1523,9 +1576,27 @@ export async function POST(req: Request) {
         const normalized = normalizeUnit(aiResponse)
         if (normalized) units = [normalized]
       } else {
-        // Log the actual response for debugging
-        console.error("[api/ai/structure] Invalid AI response shape:", JSON.stringify(aiResponse, null, 2))
-        throw new Error("invalid_ai_shape")
+        // Try to salvage: look for first array of objects or single object with unit-like keys
+        const arr = Array.isArray(aiResponse) ? aiResponse : null
+        const single = arr === null && typeof aiResponse === "object" && aiResponse !== null ? aiResponse : null
+        if (arr && arr.length > 0) {
+          units = arr.map((u: any) => normalizeUnit(u)).filter((u: any): u is StructuredUnit => u !== null)
+        }
+        if (units.length === 0 && single && (single.unit_name || single.unidad || single.name)) {
+          const u = normalizeUnit({
+            unit_name: single.unit_name ?? single.unidad ?? single.name,
+            directions: single.directions ?? single.direcciones,
+            boundaries: single.boundaries ?? single.colindancias,
+            colindancias: single.colindancias,
+            medidas: single.medidas,
+            surfaces: single.surfaces,
+          })
+          if (u) units = [u]
+        }
+        if (units.length === 0) {
+          console.error("[api/ai/structure] Invalid AI response shape. Full response:", logPayload.slice(0, 4000))
+          throw new Error("invalid_ai_shape")
+        }
       }
 
       if (units.length === 0) {

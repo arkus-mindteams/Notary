@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef, useEffect, useMemo } from 'react'
+import { flushSync } from 'react-dom'
 import Image from 'next/image'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Card, CardContent } from '@/components/ui/card'
@@ -83,6 +84,9 @@ interface PreavisoChatProps {
   onDataComplete: (data: PreavisoData) => void
   onGenerateDocument: (data: PreavisoData, uploadedDocuments?: UploadedDocument[], activeTramiteId?: string | null) => void
   onExportReady?: (data: PreavisoData, show: boolean) => void
+  showExportButtons?: boolean
+  exportData?: PreavisoData | null
+  onViewFullDocument?: () => void
 }
 
 const INITIAL_MESSAGES = [
@@ -174,7 +178,14 @@ function ImageThumbnail({ file, isProcessing = false, isProcessed = false, hasEr
   )
 }
 
-export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady }: PreavisoChatProps) {
+export function PreavisoChat({
+  onDataComplete,
+  onGenerateDocument,
+  onExportReady,
+  showExportButtons = false,
+  exportData = null,
+  onViewFullDocument,
+}: PreavisoChatProps) {
   const { user, session } = useAuth()
   const isMobile = useIsMobile()
   const isTablet = useIsTablet()
@@ -197,8 +208,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const isManualResetRef = useRef(false)
   const isSubmittingRef = useRef(false) // Lock para prevenir doble envío
   const [activeTramiteId, setActiveTramiteId] = useState<string | null>(null)
+  const activeTramiteIdRef = useRef<string | null>(null)
   /** TramiteId recién creado en este batch; evita race donde processOne usa activeTramiteId aún null */
   const batchTramiteIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    activeTramiteIdRef.current = activeTramiteId
+  }, [activeTramiteId])
   const [expedienteExistente, setExpedienteExistente] = useState<{
     compradorId: string
     compradorNombre: string
@@ -263,6 +278,15 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
   // Fuente de verdad del progreso/estado (viene del backend)
   const [serverState, setServerState] = useState<ServerStateSnapshot | null>(null)
+  const [pendingRouterCommit, setPendingRouterCommit] = useState<{
+    traceId: string | null
+    count: number
+    mode: 'updates' | 'document_generation'
+  } | null>(null)
+  const [pendingFolioSelection, setPendingFolioSelection] = useState<{
+    prompt: string
+    options: Array<{ folio: string; scope?: string; label?: string }>
+  } | null>(null)
 
   // conversation_id estable (logging/QA): persiste en sessionStorage para sobrevivir refresh.
   // Manejo de Sesiones (Chat History)
@@ -282,8 +306,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
   const [sessionReady, setSessionReady] = useState(!!chatId)
 
   const createNewSession = async (): Promise<string | null> => {
-    console.log('[PreavisoChat] Creando nueva sesión...')
-    try {
+        try {
       const { data: { session: currentSession } } = await supabase.auth.getSession()
       const headers: HeadersInit = { 'Content-Type': 'application/json' }
       if (currentSession?.access_token) {
@@ -300,8 +323,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         const newId = json.session?.id ?? null
         if (!newId) return null
         conversationIdRef.current = newId
-        console.log('[PreavisoChat] Nueva sesión creada:', newId)
-
+        
         // Resetear estado completo
         setData({
           tipoOperacion: 'compraventa',
@@ -409,8 +431,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     // const chatId and isNew are now available from closure scope
 
     const loadSession = async (id: string) => {
-      console.log('[PreavisoChat] Cargando sesión:', id)
-      try {
+            try {
         if (conversationIdRef.current !== id) {
           setMessages([]) // Limpiar UI solo si cambiamos de chat
         }
@@ -426,6 +447,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (!res.ok) throw new Error('Error cargando sesión')
 
         const json = await res.json()
+        let resolvedTramiteId: string | null = null
 
         // Restaurar mensajes
         if (json.messages && Array.isArray(json.messages)) {
@@ -436,6 +458,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             try {
               metadata = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : (m.metadata || {})
             } catch { }
+            if (!resolvedTramiteId && metadata?.tramite_id) {
+              resolvedTramiteId = String(metadata.tramite_id)
+            }
+            if (!resolvedTramiteId && metadata?.tramiteId) {
+              resolvedTramiteId = String(metadata.tramiteId)
+            }
 
             const msgAttachments = (metadata.attachments || []).map((att: any) => {
               // Reconstruct mock File object for display
@@ -461,8 +489,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
         // Restaurar contexto (data)
         if (json.session?.last_context) {
-          console.log('[PreavisoChat] Restaurando contexto:', json.session.last_context)
-          setData(json.session.last_context)
+                    setData(json.session.last_context)
+          if (!resolvedTramiteId && json.session?.last_context?.tramiteId) {
+            resolvedTramiteId = String(json.session.last_context.tramiteId)
+          }
 
           try {
             const { data: { session: stateSession } } = await supabase.auth.getSession()
@@ -481,6 +511,46 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             }
           } catch (err) {
             console.error('[PreavisoChat] Error cargando estado inicial desde backend:', err)
+          }
+        }
+
+        if (resolvedTramiteId) {
+          setActiveTramiteId(resolvedTramiteId)
+          activeTramiteIdRef.current = resolvedTramiteId
+          batchTramiteIdRef.current = resolvedTramiteId
+
+          if (!json.session?.last_context) {
+            try {
+              const { data: { session: tramiteSession } } = await supabase.auth.getSession()
+              const tramiteHeaders: HeadersInit = {}
+              if (tramiteSession?.access_token) {
+                tramiteHeaders['Authorization'] = `Bearer ${tramiteSession.access_token}`
+              }
+              const tramiteResp = await fetch(`/api/expedientes/tramites?id=${resolvedTramiteId}`, {
+                headers: tramiteHeaders,
+              })
+              if (tramiteResp.ok) {
+                const tramiteJson = await tramiteResp.json()
+                if (tramiteJson?.datos) {
+                  setData(tramiteJson.datos)
+                }
+
+                const stateResp = await fetch('/api/expedientes/preaviso/wizard-state', {
+                  method: 'POST',
+                  headers: {
+                    ...tramiteHeaders,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ tramiteId: resolvedTramiteId }),
+                })
+                if (stateResp.ok) {
+                  const stateJson = await stateResp.json()
+                  setServerState(stateJson as ServerStateSnapshot)
+                }
+              }
+            } catch (err) {
+              console.error('[PreavisoChat] Error rehidratando contexto desde tramite:', err)
+            }
           }
         }
 
@@ -515,20 +585,17 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     let mounted = true
     // chatId is now from outer scope
 
-    console.log('[PreavisoChat] useEffect ejecutado - user?.id:', user?.id, 'initializationRef.current:', initializationRef.current, 'initialMessagesSent:', initialMessagesSent, 'messages.length:', messages.length)
-
+    
     const initializeChat = async () => {
       // Si hay un chatId en la URL, asumimos que el primer useEffect se encarga de cargar la sesión.
       // No debemos inicializar un chat "nuevo" encima.
       if (chatId) {
-        console.log('[PreavisoChat] ChatId detectado, omitiendo inicialización automática de nuevo chat.')
-        return
+                return
       }
 
       // Si estamos haciendo un reset manual, no interferir
       if (isManualResetRef.current) {
-        console.log('[PreavisoChat] Reset manual en progreso, omitiendo inicialización automática')
-        return
+                return
       }
 
       if (!session?.access_token) {
@@ -543,16 +610,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Si el usuario cambió, resetear flags de inicialización
       const userChanged = effectiveUserId !== lastUserIdRef.current
       if (userChanged) {
-        console.log('[PreavisoChat] Usuario cambió de', lastUserIdRef.current, 'a', effectiveUserId, '- reseteando estado')
-        initializationRef.current = false
+                initializationRef.current = false
         setInitialMessagesSent(false)
         setMessages([]) // Limpiar mensajes anteriores
         lastUserIdRef.current = effectiveUserId
         // Continuar con la inicialización después del reset
       } else if (lastUserIdRef.current === null && effectiveUserId) {
         // Primera carga: establecer el usuario actual
-        console.log('[PreavisoChat] Primera carga, estableciendo usuario:', effectiveUserId)
-        lastUserIdRef.current = effectiveUserId
+                lastUserIdRef.current = effectiveUserId
       }
 
       // Verificar si los mensajes están vacíos - si están vacíos, necesitamos inicializar
@@ -560,8 +625,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       const messagesEmpty = messages.length === 0
 
       if (messagesEmpty) {
-        console.log('[PreavisoChat] Mensajes vacíos, reseteando flags y procediendo con inicialización')
-        initializationRef.current = false
+                initializationRef.current = false
         setInitialMessagesSent(false)
       }
 
@@ -571,8 +635,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       )
 
       if (hasInitialMessages) {
-        console.log('[PreavisoChat] Mensajes iniciales ya presentes en el estado, marcando como enviados')
-        setInitialMessagesSent(true)
+                setInitialMessagesSent(true)
         initializationRef.current = true
         return
       }
@@ -580,19 +643,16 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Verificar si ya se inicializó para este usuario
       // FIX: Eliminamos el chequeo de !messagesEmpty que causaba doble ejecución cuando messages estaba vacío
       if (!userChanged && initializationRef.current) {
-        console.log('[PreavisoChat] Ya se inicializó para este usuario, omitiendo...')
-        return
+                return
       }
 
-      console.log('[PreavisoChat] Iniciando inicialización del chat para usuario:', effectiveUserId)
-
+      
       // Marcar como inicializado ANTES de enviar mensajes para evitar ejecuciones duplicadas
       initializationRef.current = true
 
       // Enviar mensajes iniciales primero (no dependen de la creación del trámite)
       const sendInitialMessages = async () => {
-        console.log('[PreavisoChat] Enviando mensajes iniciales...')
-        for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
+                for (let i = 0; i < INITIAL_MESSAGES.length; i++) {
           if (!mounted) break
 
           await new Promise(resolve => setTimeout(resolve, i * 400))
@@ -613,8 +673,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
         if (mounted) {
           setInitialMessagesSent(true)
-          console.log('[PreavisoChat] Mensajes iniciales enviados correctamente')
-        }
+                  }
       }
 
       // Enviar mensajes iniciales inmediatamente
@@ -689,6 +748,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (response.ok && mounted) {
           const tramite = await response.json()
           setActiveTramiteId(tramite.id)
+          activeTramiteIdRef.current = String(tramite.id || '')
+          batchTramiteIdRef.current = String(tramite.id || '')
         }
       } catch (error) {
         console.error('Error creando nuevo trámite:', error)
@@ -803,7 +864,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         // Si no hay trámite activo, crear uno
-        if (!activeTramiteId) {
+        const effectiveActiveTramiteId =
+          activeTramiteIdRef.current || activeTramiteId || batchTramiteIdRef.current
+        if (!effectiveActiveTramiteId) {
           const response = await fetch('/api/expedientes/tramites', {
             method: 'POST',
             headers,
@@ -819,10 +882,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           if (response.ok) {
             const tramite = await response.json()
             setActiveTramiteId(tramite.id)
+            activeTramiteIdRef.current = String(tramite.id || '')
+            batchTramiteIdRef.current = String(tramite.id || '')
           }
         } else {
           // Actualizar trámite existente
-          await fetch(`/api/expedientes/tramites?id=${activeTramiteId}`, {
+          await fetch(`/api/expedientes/tramites?id=${effectiveActiveTramiteId}`, {
             method: 'PUT',
             headers,
             body: JSON.stringify({
@@ -1110,6 +1175,8 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (response.ok) {
           const tramite = await response.json()
           setActiveTramiteId(tramite.id)
+          activeTramiteIdRef.current = String(tramite.id || '')
+          batchTramiteIdRef.current = String(tramite.id || '')
         }
       } catch (error) {
         console.error('Error creando nuevo trámite:', error)
@@ -1222,6 +1289,219 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
     setMessages(prev => [...prev, cancelMessage])
   }
 
+  const ensureActiveTramiteId = async (): Promise<string | null> => {
+    const existing = activeTramiteIdRef.current || activeTramiteId || batchTramiteIdRef.current
+    if (existing) return existing
+    if (!user?.id) return null
+
+    try {
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      if (currentSession?.access_token) {
+        headers['Authorization'] = `Bearer ${currentSession.access_token}`
+      }
+
+      const response = await fetch('/api/expedientes/tramites', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          compradorId: null,
+          userId: user.id,
+          tipo: 'preaviso',
+          datos: {
+            tipoOperacion: 'compraventa',
+            vendedores: [],
+            compradores: [],
+            creditos: undefined,
+            gravamenes: [],
+            inmueble: {
+              folio_real: null,
+              partidas: [],
+              all_registry_pages_confirmed: false,
+              direccion: {
+                calle: null,
+                numero: null,
+                colonia: null,
+                municipio: null,
+                estado: null,
+                codigo_postal: null
+              },
+              superficie: null,
+              valor: null,
+              datos_catastrales: {
+                lote: null,
+                manzana: null,
+                fraccionamiento: null,
+                condominio: null,
+                unidad: null,
+                modulo: null
+              }
+            },
+            control_impresion: {
+              imprimir_conyuges: false,
+              imprimir_coacreditados: false,
+              imprimir_creditos: false
+            },
+            validaciones: {
+              expediente_existente: false,
+              datos_completos: false,
+              bloqueado: true
+            },
+            actosNotariales: {
+              cancelacionCreditoVendedor: false,
+              compraventa: false,
+              aperturaCreditoComprador: false
+            }
+          },
+          estado: 'en_proceso',
+        }),
+      })
+
+      if (!response.ok) return null
+      const tramite = await response.json()
+      const resolvedId = String(tramite?.id || '')
+      if (!resolvedId) return null
+      setActiveTramiteId(resolvedId)
+      activeTramiteIdRef.current = resolvedId
+      batchTramiteIdRef.current = resolvedId
+      return resolvedId
+    } catch (error) {
+      console.error('Error creating tramite for RAG chat:', error)
+      return null
+    }
+  }
+
+  const syncRouterActionsFromResult = (result: any) => {
+    const actions = Array.isArray(result?.actions) ? result.actions : []
+    const proposedUpdates = Array.isArray(result?.proposed_updates) ? result.proposed_updates : []
+    const hasConfirmCommit = actions.some((a: any) => a?.type === 'confirm_commit')
+    const hasCommitApplied = actions.some((a: any) => a?.type === 'commit_applied')
+    const hasNoPending = actions.some((a: any) => a?.type === 'no_pending_proposals')
+    const hasPrepareGeneration = actions.some((a: any) => a?.type === 'prepare_document_generation')
+    const hasDocumentGenerationCommitted = actions.some((a: any) => a?.type === 'document_generation_committed')
+    const hasRequestMissingField = actions.some((a: any) => a?.type === 'request_missing_field')
+    const selectFolioAction = actions.find((a: any) => a?.type === 'select_folio')
+
+    if (selectFolioAction && Array.isArray(selectFolioAction?.options) && selectFolioAction.options.length > 1) {
+      setPendingFolioSelection({
+        prompt: String(selectFolioAction.prompt || 'Selecciona el folio correcto para continuar:'),
+        options: selectFolioAction.options
+          .map((o: any) => ({
+            folio: String(o?.folio || '').replace(/\D/g, ''),
+            scope: typeof o?.scope === 'string' ? o.scope : undefined,
+            label: typeof o?.label === 'string' ? o.label : undefined,
+          }))
+          .filter((o: any) => !!o.folio),
+      })
+    } else {
+      setPendingFolioSelection(null)
+    }
+
+    if (hasConfirmCommit && proposedUpdates.length > 0) {
+      setPendingRouterCommit({
+        traceId: typeof result?.trace_id === 'string' ? result.trace_id : null,
+        count: proposedUpdates.length,
+        mode: 'updates',
+      })
+      return
+    }
+
+    if (hasPrepareGeneration) {
+      setPendingRouterCommit({
+        traceId: typeof result?.trace_id === 'string' ? result.trace_id : null,
+        count: 1,
+        mode: 'document_generation',
+      })
+      return
+    }
+
+    if (hasCommitApplied || hasNoPending || hasDocumentGenerationCommitted || hasRequestMissingField) {
+      setPendingRouterCommit(null)
+    }
+  }
+
+  const handleConfirmProposedUpdates = async () => {
+    if (isProcessing || isProcessingDocument || !pendingRouterCommit) return
+
+    try {
+      setIsProcessing(true)
+      const effectiveTramiteId = await ensureActiveTramiteId()
+      if (!effectiveTramiteId || !conversationIdRef.current) {
+        throw new Error('No se pudo confirmar commit: falta tramiteId o chatId')
+      }
+
+      const userMessage: ChatMessage = {
+        id: generateMessageId('user'),
+        role: 'user',
+        content: 'ejecuta',
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, userMessage])
+
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      if (currentSession?.access_token) {
+        headers['Authorization'] = `Bearer ${currentSession.access_token}`
+      }
+
+      const resp = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          chatId: conversationIdRef.current,
+          tramiteId: effectiveTramiteId,
+          message: 'ejecuta',
+          uiContext: {
+            pluginType: 'preaviso',
+            uiAction: pendingRouterCommit.mode === 'document_generation'
+              ? 'confirm_document_generation'
+              : 'confirm_proposed_updates',
+            currentStep: serverState?.current_state || undefined,
+            hasDocument: false,
+          },
+        }),
+      })
+
+      if (!resp.ok) {
+        throw new Error(`Error confirmando propuestas: ${resp.status}`)
+      }
+
+      const result = await resp.json()
+      syncRouterActionsFromResult(result)
+      if (result?.state) setServerState(result.state as ServerStateSnapshot)
+      if (result?.data) {
+        setData((prevData) => {
+          const nextData = { ...prevData, ...(result.data || {}) }
+          const actos = determineActosNotariales(nextData)
+          nextData.actosNotariales = {
+            cancelacionCreditoVendedor: actos.cancelacionCreditoVendedor,
+            compraventa: actos.compraventa,
+            aperturaCreditoComprador: actos.aperturaCreditoComprador ?? false,
+          }
+          return nextData
+        })
+      }
+
+      const assistantText =
+        typeof result?.answer === 'string' && result.answer.trim()
+          ? result.answer
+          : pendingRouterCommit.mode === 'document_generation'
+            ? 'Documento generado y versionado correctamente.'
+            : 'Cambios aplicados correctamente.'
+      const assistantMessage: ChatMessage = {
+        id: generateMessageId('assistant'),
+        role: 'assistant',
+        content: toUserFacingAssistantText(assistantText),
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, assistantMessage])
+    } catch (error) {
+      console.error('[PreavisoChat] Error confirming proposed updates:', error)
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
   const handleSend = async () => {
     // Ocultar paneles inmediatamente cuando se envía un mensaje
     setHidePanelsAfterMessage(true)
@@ -1246,8 +1526,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       // Esperar a que la sesión esté lista si es necesario
       if (!conversationIdRef.current) {
-        console.log('Esperando inicialización de sesión...')
-        // Pequeño retry loop (máx 3 segundos)
+                // Pequeño retry loop (máx 3 segundos)
         for (let i = 0; i < 30; i++) {
           if (conversationIdRef.current) break
           await new Promise(r => setTimeout(r, 100))
@@ -1378,6 +1657,14 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       messageAbortRef.current = messageAbort
 
       try {
+        const effectiveTramiteId = await ensureActiveTramiteId()
+        if (!effectiveTramiteId) {
+          throw new Error('No se pudo resolver tramiteId para chat RAG')
+        }
+        if (!conversationIdRef.current) {
+          throw new Error('No se pudo resolver chatId para /api/ai/chat')
+        }
+
         // Llamar al agente de IA (usando Plugin System V2)
         // Asegurarse de tener el token actualizado
         const { data: { session: currentSession } } = await supabase.auth.getSession()
@@ -1388,41 +1675,20 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
           headers['Authorization'] = `Bearer ${currentSession.access_token}`
         }
 
-        const response = await fetch('/api/ai/preaviso-chat', {
+        const response = await fetch('/api/ai/chat', {
           method: 'POST',
           headers,
           signal: messageAbort.signal,
           body: JSON.stringify({
-            messages: [
-              ...messages.map(m => ({ role: m.role, content: m.content })),
-              { role: 'user' as const, content: currentInput }
-            ],
-            context: {
-              // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
-              // Esto permite que el backend detecte correctamente qué información ya está capturada
-              conversation_id: conversationIdRef.current,
-              _document_intent: (data as any)._document_intent ?? null,
-              _document_people_pending: (data as any)._document_people_pending ?? null,
-              _last_question_intent: (freshData as any)._last_question_intent ?? null,
-              tramiteId: activeTramiteId,
-              vendedores: freshData.vendedores || [],
-              compradores: freshData.compradores || [],
-              // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
-              creditos: freshData.creditos,
-              gravamenes: freshData.gravamenes || [],
-              inmueble: freshData.inmueble,
-              folios: freshData.folios,
-              documentos: freshData.documentos,
-              documentosProcesados: freshDocs
-                .filter(d => d.processed && d.extractedData)
-                .map(d => ({
-                  nombre: d.name,
-                  tipo: d.documentType || 'desconocido',
-                  informacionExtraida: d.extractedData
-                })),
-              expedienteExistente: expedienteExistente || undefined
+            chatId: conversationIdRef.current,
+            tramiteId: effectiveTramiteId,
+            message: currentInput,
+            uiContext: {
+              pluginType: 'preaviso',
+              uiAction: 'chat_message',
+              currentStep: serverState?.current_state || undefined,
+              hasDocument: false,
             },
-            tramiteId: activeTramiteId
           })
         })
 
@@ -1431,7 +1697,12 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         const result = await response.json()
-        const messagesToAdd = result.messages || [result.message]
+        syncRouterActionsFromResult(result)
+        const ragAnswer = typeof result?.answer === 'string' ? result.answer : null
+        const legacyMessage = typeof result?.message === 'string' ? result.message : null
+        const messagesToAdd = Array.isArray(result?.messages)
+          ? result.messages
+          : [ragAnswer || legacyMessage || 'No encontré suficiente evidencia para responder con certeza.']
         if (result?.state) {
           setServerState(result.state as ServerStateSnapshot)
         }
@@ -1636,8 +1907,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
     // Esperar a que la sesión esté lista si es necesario (igual que handleSend)
     if (!conversationIdRef.current) {
-      console.log('Esperando inicialización de sesión para upload...')
-
+      
       // ✅ FIX: Si no hay sesión, intentar crearla explícitamente primero
       if (!isCreatingSessionRef.current) {
         try {
@@ -1737,6 +2007,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         if (response.ok) {
           const tramite = await response.json()
           setActiveTramiteId(tramite.id)
+          activeTramiteIdRef.current = String(tramite.id || '')
           batchTramiteIdRef.current = tramite.id
         } else {
           console.error('Error creando trámite para carga de archivo')
@@ -1764,8 +2035,19 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
     }
 
-    // Limpiar tramiteId de batch anterior para no reutilizarlo en otra sesión
-    batchTramiteIdRef.current = null
+    const effectiveBatchTramiteId = batchTramiteIdRef.current ?? activeTramiteId ?? null
+    if (!effectiveBatchTramiteId) {
+      setIsProcessingDocument(false)
+      setProcessingProgress(0)
+      setMessages(prev => [...prev, {
+        id: generateMessageId('error'),
+        role: 'assistant',
+        content: 'No se pudo resolver el trámite activo para procesar documentos.',
+        timestamp: new Date()
+      }])
+      return
+    }
+    batchTramiteIdRef.current = effectiveBatchTramiteId
     // Siempre establecer isProcessingDocument para mostrar la barra de progreso
     setIsProcessingDocument(true)
     setProcessingProgress(0)
@@ -1791,11 +2073,6 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       setProcessingProgress(0)
       return
     }
-
-    const pdfFiles = newFiles.filter(
-      file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-    )
-    const imageFiles = newFiles.filter(file => !pdfFiles.includes(file))
 
     const originalDocs: UploadedDocument[] = newFiles.map(file => ({
       id: generateMessageId('doc'),
@@ -1870,45 +2147,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       return
     }
 
-    // Convertir PDFs a imágenes en segundo plano
-    let allImageFiles: File[] = [...imageFiles]
-    if (pdfFiles.length > 0) {
-      try {
-        const { convertPdfToImages } = await import('@/lib/ocr-client')
-        let totalPages = 0
-        let convertedPages = 0
-
-        // Contar páginas totales
-        for (const pdfFile of pdfFiles) {
-          if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-          setProcessingFileName(pdfFile.name)
-          const images = await convertPdfToImages(pdfFile, 0, (current, total) => {
-            if (batchAbort.signal.aborted) return
-            convertedPages++
-            if (totalPages === 0) totalPages = total
-            const progress = Math.min(50, (convertedPages / (totalPages || 1)) * 50) // 0-50% para conversión
-            setProcessingProgress(progress)
-          })
-          if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-          allImageFiles = [...allImageFiles, ...images]
-        }
-      } catch (error) {
-        console.error('Error convirtiendo PDFs:', error)
-        setIsProcessingDocument(false)
-        setProcessingProgress(0)
-        setProcessingFileName(null)
-        const errorMessage: ChatMessage = {
-          id: generateMessageId('pdf-error'),
-          role: 'assistant',
-          content: 'Error al convertir PDFs a imágenes. Por favor, intente con imágenes directamente.',
-          timestamp: new Date()
-        }
-        setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([errorMessage]))
-        return
-      }
-    }
-
-    setProcessingProgress(50) // 50% después de conversión
+    setProcessingProgress(10)
     const newDocuments = [...(data.documentos || []), ...fileNames]
     setData(prev => ({ ...prev, documentos: newDocuments }))
 
@@ -1992,7 +2231,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return 'escritura' // default
       }
 
-      // Preparar items (imagen → docType) antes de procesar
+      // Preparar items (archivo original -> docType) antes de procesar
       type ImgItem = {
         index: number
         imageFile: File
@@ -2003,16 +2242,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       }
 
       const items: ImgItem[] = []
-      const userImageCount = imageFiles.length // Las primeras N imágenes son archivos directos del usuario
-
-      for (let i = 0; i < allImageFiles.length; i++) {
+      for (let i = 0; i < newFiles.length; i++) {
         if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-        const imageFile = allImageFiles[i]
-        const isArtifact = i >= userImageCount // Si el índice es mayor al conteo de imágenes iniciales, es una página extraída de un PDF
-
-        const originalFile = filesArray.find(f =>
-          imageFile.name.includes(f.name.replace(/\.[^.]+$/, ''))
-        ) || filesArray[0]
+        const imageFile = newFiles[i]
+        const isArtifact = false
+        const originalFile = newFiles[i]
         const docType = await detectDocumentType(originalFile.name, originalFile)
         const originalKey = `${originalFile.name}:${originalFile.size}:${(originalFile as any).lastModified || ''}`
         items.push({ index: i, imageFile, originalFile, docType, originalKey, isArtifact })
@@ -2026,7 +2260,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
           id: generateMessageId('no-pages'),
           role: 'assistant',
-          content: 'No se pudieron extraer páginas del PDF. Intenta con otro archivo o conviértelo a imágenes.',
+          content: 'No se detectaron archivos procesables en la carga.',
           timestamp: new Date()
         }]))
         return
@@ -2039,6 +2273,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
 
       // Upload S3: marcar "in-flight" para evitar duplicados en concurrencia
       const uploadedOriginalFilesThisBatch = new Set<string>()
+      const extractedOriginalFilesThisBatch = new Set<string>()
       // OCR/RAG: mapear originalKey -> documentoId para persistir texto por página
       const documentoIdByOriginalKey = new Map<string, string>()
       // OCR pendiente cuando aún no existe documentoId (ej. primeras páginas antes del upload)
@@ -2047,6 +2282,85 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       // Aplicar resultados en orden, aunque se procesen en paralelo
       const pending = new Map<number, any>()
       let nextToApply = 0
+      const pendingStructuredExtractionTasks: Promise<void>[] = []
+
+      const mergeStructuredExtractionIntoData = (base: PreavisoData, structured: any): PreavisoData => {
+        if (!structured || typeof structured !== 'object') return base
+        const next: PreavisoData = { ...base }
+        const inmueble = structured?.inmueble || {}
+        const direccion = inmueble?.direccion || {}
+        const datosCatastrales = inmueble?.datos_catastrales || {}
+
+        next.inmueble = {
+          ...(next.inmueble || {
+            folio_real: null,
+            partidas: [],
+            all_registry_pages_confirmed: false,
+            direccion: {
+              calle: null,
+              numero: null,
+              colonia: null,
+              municipio: null,
+              estado: null,
+              codigo_postal: null
+            },
+            superficie: null,
+            valor: null,
+            datos_catastrales: {
+              lote: null,
+              manzana: null,
+              fraccionamiento: null,
+              condominio: null,
+              unidad: null,
+              modulo: null
+            }
+          }),
+          folio_real: inmueble?.folio_real ?? next?.inmueble?.folio_real ?? null,
+          partidas: Array.isArray(inmueble?.partidas) && inmueble.partidas.length > 0
+            ? inmueble.partidas
+            : (next?.inmueble?.partidas || []),
+          seccion: inmueble?.seccion ?? (next as any)?.inmueble?.seccion ?? null,
+          numero_expediente: inmueble?.numero_expediente ?? (next as any)?.inmueble?.numero_expediente ?? null,
+          direccion: {
+            ...(next?.inmueble?.direccion || {}),
+            calle: direccion?.calle ?? next?.inmueble?.direccion?.calle ?? null,
+            numero: direccion?.numero ?? next?.inmueble?.direccion?.numero ?? null,
+            colonia: direccion?.colonia ?? next?.inmueble?.direccion?.colonia ?? null,
+            municipio: direccion?.municipio ?? next?.inmueble?.direccion?.municipio ?? null,
+            estado: direccion?.estado ?? next?.inmueble?.direccion?.estado ?? null,
+            codigo_postal: direccion?.codigo_postal ?? next?.inmueble?.direccion?.codigo_postal ?? null
+          },
+          superficie: inmueble?.superficie ?? next?.inmueble?.superficie ?? null,
+          valor: inmueble?.valor ?? next?.inmueble?.valor ?? null,
+          datos_catastrales: {
+            ...(next?.inmueble?.datos_catastrales || {}),
+            lote: datosCatastrales?.lote ?? next?.inmueble?.datos_catastrales?.lote ?? null,
+            manzana: datosCatastrales?.manzana ?? next?.inmueble?.datos_catastrales?.manzana ?? null,
+            fraccionamiento: datosCatastrales?.fraccionamiento ?? next?.inmueble?.datos_catastrales?.fraccionamiento ?? null,
+            condominio: datosCatastrales?.condominio ?? next?.inmueble?.datos_catastrales?.condominio ?? null,
+            unidad: datosCatastrales?.unidad ?? next?.inmueble?.datos_catastrales?.unidad ?? null,
+            modulo: datosCatastrales?.modulo ?? next?.inmueble?.datos_catastrales?.modulo ?? null
+          }
+        } as any
+
+        if (structured?.titular_registral?.nombre) {
+          const vendedor = {
+            party_id: 'vendedor_1',
+            tipo_persona: 'persona_fisica',
+            persona_fisica: {
+              nombre: structured.titular_registral.nombre,
+              rfc: structured?.titular_registral?.rfc ?? null,
+              curp: structured?.titular_registral?.curp ?? null,
+              estado_civil: null
+            },
+            titular_registral_confirmado: true
+          } as any
+          const existing = Array.isArray(next.vendedores) ? next.vendedores : []
+          next.vendedores = existing.length > 0 ? [{ ...existing[0], ...vendedor }] : [vendedor]
+        }
+
+        return next
+      }
 
       let sessionExpired = false
       let errorCount = 0
@@ -2090,6 +2404,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
         if (processResult?.state) setServerState(processResult.state as ServerStateSnapshot)
         if (processResult?.expedienteExistente) setExpedienteExistente(processResult.expedienteExistente)
+        const effectiveTramiteId = batchTramiteIdRef.current ?? activeTramiteId
 
         const postJsonWithTimeout = async (input: string, body: any, timeoutMs: number) => {
           const controller = new AbortController()
@@ -2141,6 +2456,9 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             const mergedData = {
               ...prevData,
               ...nextData,
+              structuredExtraction: processResult.structuredExtraction || prevData.structuredExtraction || null,
+              structuredExtractionWarnings: processResult.structuredExtractionWarnings || prevData.structuredExtractionWarnings || [],
+              structuredExtractionTraceId: processResult.structuredExtractionTraceId || prevData.structuredExtractionTraceId || null,
               // Arrays críticos que deben acumularse
               foliosReales: mergeUnique(prevData.foliosReales, nextData.foliosReales),
               foliosRealesUnidades: mergeUnique(prevData.foliosRealesUnidades, nextData.foliosRealesUnidades),
@@ -2441,7 +2759,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         // S3 upload (solo 1 por archivo original)
-        if (activeTramiteId && !uploadedOriginalFilesThisBatch.has(item.originalKey)) {
+        if (effectiveTramiteId && !uploadedOriginalFilesThisBatch.has(item.originalKey)) {
           // marcar antes para evitar carreras
           uploadedOriginalFilesThisBatch.add(item.originalKey)
           try {
@@ -2482,7 +2800,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             uploadFormData.append('file', item.originalFile)
             uploadFormData.append('compradorId', '')
             uploadFormData.append('tipo', expedienteTipo)
-            uploadFormData.append('tramiteId', activeTramiteId || '')
+            uploadFormData.append('tramiteId', effectiveTramiteId || '')
             uploadFormData.append('sessionId', conversationIdRef.current || '')
             uploadFormData.append('metadata', JSON.stringify({
               preaviso_subtype: item.docType,
@@ -2502,13 +2820,78 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                 if (uploadedDoc?.id) {
                   const docId = String(uploadedDoc.id)
                   documentoIdByOriginalKey.set(item.originalKey, docId)
+
+                  // Fase 3: llamar ExtractionAgent backend-driven una sola vez por archivo original.
+                  if (!extractedOriginalFilesThisBatch.has(item.originalKey)) {
+                    extractedOriginalFilesThisBatch.add(item.originalKey)
+                    try {
+                      const rawTextFromExtraction =
+                        typeof processResult?.extractedData?.textoCompleto === 'string'
+                          ? processResult.extractedData.textoCompleto.trim()
+                          : ''
+                      const requiresOcrFallback = processResult?.extractedData?._requires_ocr === true
+                      const rawTextFromOcr =
+                        typeof processResult?.ocrText === 'string'
+                          ? processResult.ocrText.trim()
+                          : ''
+                      const rawTextForExtraction = rawTextFromExtraction || rawTextFromOcr
+                      const tramiteIdForExtraction = effectiveTramiteId
+                      if (tramiteIdForExtraction && rawTextForExtraction && !requiresOcrFallback) {
+                        const extractionTask = (async () => {
+                          try {
+                            const extractResp = await postJsonWithTimeout(
+                              `/api/expedientes/tramites/${tramiteIdForExtraction}/extract`,
+                              {
+                                documentId: docId,
+                                tramiteType: 'preaviso',
+                                rawText: rawTextForExtraction,
+                                fileMeta: {
+                                  source: 'preaviso-chat',
+                                  docType: item.docType,
+                                  fileName: item.originalFile.name,
+                                },
+                              },
+                              30000
+                            )
+
+                            if (extractResp.ok) {
+                              const extractJson = await extractResp.json()
+                              processResult.structuredExtraction = extractJson?.structured || null
+                              processResult.structuredExtractionWarnings = extractJson?.warnings || []
+                              processResult.structuredExtractionTraceId = extractJson?.trace_id || null
+                              if (extractJson?.structured) {
+                                setData(prev => {
+                                  const merged = mergeStructuredExtractionIntoData(prev, extractJson.structured)
+                                  workingData = merged
+                                  dataRef.current = merged
+                                  return merged
+                                })
+                              }
+                            } else {
+                              const errText = await extractResp.text().catch(() => '')
+                              console.warn('[PreavisoChat] /extract non-ok', {
+                                status: extractResp.status,
+                                body: errText?.slice(0, 250),
+                              })
+                            }
+                          } catch (extractError) {
+                            console.warn('[PreavisoChat] Error calling /extract', extractError)
+                          }
+                        })()
+                        pendingStructuredExtractionTasks.push(extractionTask)
+                      }
+                    } catch (extractError) {
+                      console.warn('[PreavisoChat] Error calling /extract', extractError)
+                    }
+                  }
+
                   // flush OCR pendiente
                   const pend = pendingOcrByOriginalKey.get(item.originalKey) || []
                   if (pend.length > 0) {
                     for (const p of pend) {
                       try {
                         await postJsonWithTimeout('/api/ai/preaviso-ocr-cache/upsert', {
-                          tramiteId: activeTramiteId,
+                          tramiteId: effectiveTramiteId,
                           docName: item.originalFile.name,
                           docSubtype: item.docType,
                           docRole: null,
@@ -2531,7 +2914,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         try {
-          if (activeTramiteId && processResult?.ocrText && typeof processResult.ocrText === 'string') {
+          if (effectiveTramiteId && processResult?.ocrText && typeof processResult.ocrText === 'string') {
             const text = processResult.ocrText.trim()
             if (text) {
               const inferPageNumber = (): number => {
@@ -2548,7 +2931,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
               if (docId) {
                 try {
                   await postJsonWithTimeout('/api/ai/preaviso-ocr-cache/upsert', {
-                    tramiteId: activeTramiteId,
+                    tramiteId: effectiveTramiteId,
                     docName: item.originalFile.name,
                     docSubtype: item.docType,
                     docRole: null,
@@ -2597,16 +2980,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         }
 
         // DEBUG: verificar _document_intent en el momento exacto de procesar documento
-        console.log('[PreavisoChat] processOne -> context snapshot', {
-          file: item?.originalFile?.name,
-          docType: item?.docType,
-          _document_intent: (workingData as any)?._document_intent ?? null,
-          _document_people_pending: (workingData as any)?._document_people_pending ?? null,
-          comprador0: workingData?.compradores?.[0]?.persona_fisica?.nombre || workingData?.compradores?.[0]?.persona_moral?.denominacion_social || null,
-          comprador0EstadoCivil: workingData?.compradores?.[0]?.persona_fisica?.estado_civil || null,
-          conyuge: workingData?.compradores?.[0]?.persona_fisica?.conyuge?.nombre || null,
-        })
-
+        
         // Contexto actual (snapshot) para que el backend devuelva merge + state.
         // Para PDFs (inscripción/escritura/plano) la dependencia de contexto es baja.
         // Para identificaciones dejamos concurrencia=1 (ver pool abajo).
@@ -2621,6 +2995,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         formData.append('context', JSON.stringify({
           conversation_id: conversationIdRef.current,
           is_processing_artifact: item.isArtifact,
+          _bulk_fast_mode: totalFiles > 1,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
           _document_people_pending: (workingData as any)._document_people_pending ?? null,
@@ -2818,6 +3193,10 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         return
       }
 
+      if (pendingStructuredExtractionTasks.length > 0) {
+        await Promise.allSettled(pendingStructuredExtractionTasks)
+      }
+
       if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
       setProcessingProgress(90) // 90% después de procesar todos los archivos
 
@@ -2830,15 +3209,7 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
       workingDocs = uploadedDocumentsRef.current
 
       // DEBUG: verificar que el chat reciba el contexto actualizado (incluye _document_intent y cónyuge si ya fue capturado)
-      console.log('[PreavisoChat] before /preaviso-chat -> context snapshot', {
-        _document_intent: (workingData as any)?._document_intent ?? null,
-        _document_people_pending: (workingData as any)?._document_people_pending ?? null,
-        comprador0: workingData?.compradores?.[0]?.persona_fisica?.nombre || workingData?.compradores?.[0]?.persona_moral?.denominacion_social || null,
-        comprador0EstadoCivil: workingData?.compradores?.[0]?.persona_fisica?.estado_civil || null,
-        conyuge: workingData?.compradores?.[0]?.persona_fisica?.conyuge?.nombre || null,
-        creditos: Array.isArray(workingData?.creditos) ? `len=${workingData.creditos.length}` : (workingData?.creditos === undefined ? 'undefined' : 'other'),
-      })
-
+      
       // Después de procesar, consultar al agente de IA para determinar siguientes pasos
       const newDocuments = [...workingData.documentos, ...fileNames]
 
@@ -2858,51 +3229,64 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
         })
         .join('\n\n')
 
-      const chatResponse = await fetch('/api/ai/preaviso-chat', {
+      const { data: { session: chatSession } } = await supabase.auth.getSession()
+      const chatHeaders: HeadersInit = { 'Content-Type': 'application/json' }
+      if (chatSession?.access_token) {
+        chatHeaders['Authorization'] = `Bearer ${chatSession.access_token}`
+      }
+      if (!conversationIdRef.current) {
+        throw new Error('No se pudo resolver chatId para /api/ai/chat')
+      }
+      const effectiveTramiteIdForChat = batchTramiteIdRef.current ?? activeTramiteIdRef.current ?? activeTramiteId ?? null
+      if (effectiveTramiteIdForChat) {
+        try {
+          const snapshotForChat = {
+            ...workingData,
+            documentos: Array.isArray(newDocuments) ? Array.from(new Set(newDocuments)) : (workingData.documentos || []),
+          }
+          await fetch(`/api/expedientes/tramites?id=${effectiveTramiteIdForChat}`, {
+            method: 'PUT',
+            headers: chatHeaders,
+            signal: batchAbort.signal,
+            body: JSON.stringify({
+              datos: snapshotForChat,
+            }),
+          })
+        } catch (persistError) {
+          console.warn('[PreavisoChat] No se pudo persistir snapshot antes de /api/ai/chat', persistError)
+        }
+      }
+
+      const chatResponse = await fetch('/api/ai/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: chatHeaders,
         signal: batchAbort.signal,
         body: JSON.stringify({
-          messages: [
-            ...messages.filter(m => m.id !== processingMessage.id).map(m => ({ role: m.role, content: m.content })),
-            {
-              role: 'user' as const,
-              content: userText || `He subido el siguiente documento: ${fileNames.join(', ')}`
-            }
-          ],
-          context: {
-            // Enviar SIEMPRE el contexto completo, incluso si algunos campos están vacíos (v1.4)
-            _document_intent: (workingData as any)._document_intent ?? null,
-            _document_people_pending: (workingData as any)._document_people_pending ?? null,
-            _last_question_intent: (workingData as any)._last_question_intent ?? null,
-            tramiteId: activeTramiteId,
-            vendedores: workingData.vendedores || [],
-            compradores: workingData.compradores || [],
-            // IMPORTANTE: no forzar [] si no está confirmado; undefined se omite en JSON.stringify
-            creditos: workingData.creditos,
-            gravamenes: workingData.gravamenes || [],
-            inmueble: workingData.inmueble,
-            folios: workingData.folios,
-            documentos: newDocuments,
-            documentosProcesados: workingData.documentosProcesados || workingDocs
-              .filter(d => d.processed && d.extractedData)
-              .map(d => ({
-                nombre: d.name,
-                tipo: d.documentType || 'desconocido',
-                informacionExtraida: d.extractedData
-              }))
+          chatId: conversationIdRef.current,
+          tramiteId: effectiveTramiteIdForChat,
+          message: userText || `He subido el siguiente documento: ${fileNames.join(', ')}`,
+          uiContext: {
+            pluginType: 'preaviso',
+            uiAction: 'chat_after_document_process',
+            currentStep: serverState?.current_state || undefined,
+            hasDocument: false,
           },
-          tramiteId: activeTramiteId,
-          conversation_id: conversationIdRef.current
         })
+      })
+      console.info('[PreavisoChat] outgoing_context_summary', {
+        conversation_id: conversationIdRef.current || null,
+        tramite_id: batchTramiteIdRef.current ?? activeTramiteId ?? null,
+        folio_real: workingData?.inmueble?.folio_real ?? null,
+        partidas_count: Array.isArray(workingData?.inmueble?.partidas) ? workingData.inmueble.partidas.length : 0,
+        vendedores_count: Array.isArray(workingData?.vendedores) ? workingData.vendedores.length : 0,
+        documentos_count: Array.isArray(newDocuments) ? newDocuments.length : 0,
       })
 
       setProcessingProgress(100) // 100% completado
 
       if (chatResponse.ok) {
         const result = await chatResponse.json()
+        syncRouterActionsFromResult(result)
         if (result?.state) {
           setServerState(result.state as ServerStateSnapshot)
         }
@@ -2941,7 +3325,11 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             return nextData
           })
         }
-        const messagesToAdd = result.messages || [result.message]
+        const ragAnswer = typeof result?.answer === 'string' ? result.answer : null
+        const legacyMessage = typeof result?.message === 'string' ? result.message : null
+        const messagesToAdd = Array.isArray(result?.messages)
+          ? result.messages
+          : [ragAnswer || legacyMessage || 'No encontré suficiente evidencia para responder con certeza.']
 
         // Remover mensaje de procesamiento y agregar respuesta del agente
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
@@ -4134,6 +4522,51 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
                       </div>
                     )}
 
+                    {pendingRouterCommit && (
+                      <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 flex items-center justify-between gap-3">
+                        <p className="text-xs text-amber-900">
+                          {pendingRouterCommit.mode === 'document_generation'
+                            ? 'La generacion del documento esta lista para confirmar.'
+                            : `Hay ${pendingRouterCommit.count} cambio(s) propuesto(s) pendientes por confirmar.`}
+                        </p>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={handleConfirmProposedUpdates}
+                          disabled={isProcessing || isProcessingDocument}
+                          className="h-7 text-xs bg-amber-600 hover:bg-amber-700 text-white"
+                        >
+                          {pendingRouterCommit.mode === 'document_generation' ? 'Generar documento' : 'Aplicar cambios'}
+                        </Button>
+                      </div>
+                    )}
+
+                    {pendingFolioSelection && pendingFolioSelection.options.length > 0 && (
+                      <div className="mb-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                        <p className="text-xs text-blue-900 mb-2">{pendingFolioSelection.prompt}</p>
+                        <div className="flex flex-wrap gap-2">
+                          {pendingFolioSelection.options.map((opt) => (
+                            <Button
+                              key={`${opt.scope || 'otros'}-${opt.folio}`}
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs border-blue-300 text-blue-800 hover:bg-blue-100"
+                              onClick={() => {
+                                if (isProcessing || isProcessingDocument) return
+                                const quickValue = opt.folio
+                                flushSync(() => setInput(quickValue))
+                                setPendingFolioSelection(null)
+                                handleSend()
+                              }}
+                            >
+                              {opt.label || opt.folio}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Contenedor relativo para el textarea y los iconos */}
                     <div className="relative">
                       <input
@@ -4238,6 +4671,18 @@ export function PreavisoChat({ onDataComplete, onGenerateDocument, onExportReady
             serverState={serverState}
             isVisible={showDataPanel}
             onClose={(isMobile || isTablet) ? () => setShowDataPanel(false) : undefined}
+            bottomActions={
+              showExportButtons && exportData ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-gray-500">Documento listo</p>
+                  <PreavisoExportOptions
+                    data={exportData}
+                    onExportComplete={() => {}}
+                    onViewFullDocument={onViewFullDocument || (() => onGenerateDocument(exportData))}
+                  />
+                </div>
+              ) : null
+            }
           />
         )}
       </div>

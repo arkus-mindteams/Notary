@@ -1,4 +1,5 @@
 "use client"
+import type { ReactNode } from 'react'
 
 import {
     CheckCircle2,
@@ -24,9 +25,10 @@ interface DocumentSidebarProps {
     serverState: ServerStateSnapshot | null
     isVisible: boolean
     onClose?: () => void
+    bottomActions?: ReactNode
 }
 
-export function DocumentSidebar({ data, serverState, isVisible, onClose }: DocumentSidebarProps) {
+export function DocumentSidebar({ data, serverState, isVisible, onClose, bottomActions }: DocumentSidebarProps) {
     if (!isVisible) return null
 
     const getStepStatus = (stateId: string): 'pending' | 'completed' | 'blocked' => {
@@ -465,6 +467,12 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose }: Docum
                                     )}
                                 </div>
                             </div>
+
+                            {bottomActions && (
+                                <div className="pt-3 border-t border-gray-100">
+                                    {bottomActions}
+                                </div>
+                            )}
 
                         </div>
                     </div>

@@ -19,7 +19,7 @@ export class CreditInstitutionHandler {
       institution = institution
         .replace(/^((no|perdon|perd[oó]n|disculpa|error|me\s+equivoque|no\s+era|es\s+con|sera\s+con|ser[aá]\s+con|actualiza|corrige|corrijo|cambio|cambia|el\s+banco\s+es|la\s+institucion\s+es|con)\b[,.\s:]*)+/gi, '')
         .replace(/\b(el\s+redito|el\s+credito|el\s+cr[eé]dito)\s+(es\s+con|ser[aá]\s+con|era\s+con|es)\b[,.\s:]*/gi, '')
-        .replace(/\b(el\s+banco|la\s+institucion|la\s+instituci[oó]n|del|de\s+la)\b[,.\s:]*/gi, '')
+        .replace(/^(el\s+banco|la\s+institucion|la\s+instituci[oó]n)\b[,.\s:]*/gi, '')
         .trim()
 
       // Limpiar puntuación inicial/final residual (ej: ", SANTANDER")
@@ -27,6 +27,11 @@ export class CreditInstitutionHandler {
 
       // Capitalización especial
       const upper = institution.toUpperCase()
+      if (/\b(banco\s+mercantil\s+del\s+norte|mercantil\s+del\s+norte)\b/i.test(institution)) {
+        institution = 'Banco Mercantil del Norte'
+      } else if (/\bbanorte\b/i.test(institution)) {
+        institution = 'Banorte'
+      }
       if (['BANJICO', 'BBVA', 'HSBC', 'INFONAVIT', 'FOVISSSTE', 'SANTANDER', 'BANORTE', 'SCOTIABANK'].includes(upper)) {
         institution = upper
       }

@@ -122,10 +122,6 @@ INSTRUCCIONES CRÍTICAS:
         const allFolios = new Set([...folios, ...foliosFromInfo])
         const mergedFolios = Array.from(allFolios).filter(Boolean)
 
-        console.log('[InscripcionHandler] Folios detectados (Merged):', {
-            mergedFolios,
-            total: mergedFolios.length
-        })
 
         const existingSelection = context.folios?.selection
         const existingFolioConfirmed = existingSelection?.confirmed_by_user === true &&

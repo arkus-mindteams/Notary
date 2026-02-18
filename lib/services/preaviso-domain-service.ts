@@ -4,6 +4,7 @@ import { DocumentoService } from '@/lib/services/documento-service'
 import type { PreavisoData } from '@/lib/tramites/shared/types/preaviso-types'
 import type { Usuario } from '@/lib/types/auth-types'
 import type { Tramite } from '@/lib/types/expediente-types'
+import { TramitePluginStateService } from '@/lib/services/tramite-plugin-state-service'
 
 const DEFAULT_NOTARIA_ID = '00000000-0000-0000-0000-000000000001'
 
@@ -31,6 +32,11 @@ export class PreavisoDomainService {
     input: FinalizePreavisoInput,
     currentUser: Usuario
   ): Promise<FinalizePreavisoResult> {
+    const snapshot = TramitePluginStateService.buildStateSnapshot('preaviso', input.preavisoData || {})
+    if (!snapshot.wizard_state.can_finalize) {
+      throw new DomainRuleViolationError('No se puede finalizar: faltan campos requeridos del tramite')
+    }
+
     const comprador = await this.resolveComprador(input.preavisoData, currentUser)
 
     let tramite: Tramite | null = null

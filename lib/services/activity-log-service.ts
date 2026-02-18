@@ -23,10 +23,55 @@ interface LogDocumentUploadParams {
     mimeType: string
 }
 
+interface LogDocumentExtractionParams {
+    userId: string
+    tramiteId?: string
+    documentoId: string
+    traceId: string
+    status: 'retry' | 'success' | 'error'
+    attempt: number
+    reason?: string
+    actionType?: string
+    metadata?: Record<string, any>
+}
+
+interface LogDocumentProcessingStageParams {
+    userId: string
+    sessionId?: string
+    tramiteId?: string
+    documentoId?: string
+    traceId: string
+    stage: 'extract_sync' | 'postprocess_async'
+    status: 'queued' | 'success' | 'error' | 'skipped'
+    durationMs?: number
+    metadata?: Record<string, any>
+}
+
+interface LogDocumentIndexingParams {
+    userId: string
+    traceId: string
+    documentoId: string
+    tramiteId?: string
+    stage: string
+    status: 'start' | 'success' | 'error' | 'skipped' | 'needs_ocr'
+    durationMs?: number
+    metadata?: Record<string, any>
+}
+
 interface LogUserEventParams {
     userId: string
     eventType: string
     metadata?: Record<string, any>
+    sessionId?: string
+    tramiteId?: string
+}
+
+interface LogKnowledgeSnapshotParams {
+    userId: string
+    sessionId?: string
+    tramiteId?: string
+    snapshot: Record<string, any>
+    actionType?: string
 }
 
 interface GetStatsOptions {
@@ -44,7 +89,9 @@ interface GetStatsOptions {
  * Replaces: AgentUsageService, StatsService (partially), and conversation logging
  */
 export class ActivityLogService {
-    private static supabase = createServerClient()
+    private static get supabase() {
+        return createServerClient()
+    }
 
     // Pricing per 1M tokens (USD)
     private static readonly PRICING: Record<string, { input: number; output: number }> = {
@@ -134,6 +181,99 @@ export class ActivityLogService {
     }
 
     /**
+     * Log extraction attempts/results for auditability
+     */
+    static async logDocumentExtraction(params: LogDocumentExtractionParams) {
+        try {
+            const { error } = await this.supabase
+                .from('activity_logs')
+                .insert({
+                    user_id: params.userId,
+                    session_id: null,
+                    tramite_id: params.tramiteId || null,
+                    category: 'document_processing',
+                    event_type: params.actionType || 'document_extraction',
+                    data: {
+                        documento_id: params.documentoId,
+                        trace_id: params.traceId,
+                        status: params.status,
+                        attempt: params.attempt,
+                        reason: params.reason || null,
+                        ...(params.metadata || {})
+                    }
+                })
+
+            if (error) {
+                console.error('[ActivityLogService] Error logging document extraction:', error)
+            }
+        } catch (error) {
+            console.error('[ActivityLogService] Unexpected error in logDocumentExtraction:', error)
+        }
+    }
+
+    /**
+     * Log processing stages for end-to-end document pipeline latency auditing
+     */
+    static async logDocumentProcessingStage(params: LogDocumentProcessingStageParams) {
+        try {
+            const { error } = await this.supabase
+                .from('activity_logs')
+                .insert({
+                    user_id: params.userId,
+                    session_id: params.sessionId || null,
+                    tramite_id: params.tramiteId || null,
+                    category: 'document_processing',
+                    event_type: 'document_processing_stage',
+                    data: {
+                        documento_id: params.documentoId || null,
+                        trace_id: params.traceId,
+                        stage: params.stage,
+                        status: params.status,
+                        duration_ms: params.durationMs ?? null,
+                        ...(params.metadata || {})
+                    }
+                })
+
+            if (error) {
+                console.error('[ActivityLogService] Error logging document processing stage:', error)
+            }
+        } catch (error) {
+            console.error('[ActivityLogService] Unexpected error in logDocumentProcessingStage:', error)
+        }
+    }
+
+    /**
+     * Log document indexing stages (Fase 4: text chunks + embeddings)
+     */
+    static async logDocumentIndexing(params: LogDocumentIndexingParams) {
+        try {
+            const { error } = await this.supabase
+                .from('activity_logs')
+                .insert({
+                    user_id: params.userId,
+                    session_id: null,
+                    tramite_id: params.tramiteId || null,
+                    category: 'document_processing',
+                    event_type: 'document_indexing',
+                    data: {
+                        documento_id: params.documentoId,
+                        trace_id: params.traceId,
+                        stage: params.stage,
+                        status: params.status,
+                        duration_ms: params.durationMs ?? null,
+                        ...(params.metadata || {})
+                    }
+                })
+
+            if (error) {
+                console.error('[ActivityLogService] Error logging document indexing:', error)
+            }
+        } catch (error) {
+            console.error('[ActivityLogService] Unexpected error in logDocumentIndexing:', error)
+        }
+    }
+
+    /**
      * Log user event (replaces StatsService.logEvent)
      */
     static async logUserEvent(params: LogUserEventParams): Promise<string | null> {
@@ -142,6 +282,8 @@ export class ActivityLogService {
                 .from('activity_logs')
                 .insert({
                     user_id: params.userId,
+                    session_id: params.sessionId || null,
+                    tramite_id: params.tramiteId || null,
                     category: 'user_event',
                     event_type: params.eventType,
                     data: params.metadata || {}
@@ -157,6 +299,39 @@ export class ActivityLogService {
             return data.id
         } catch (error) {
             console.error('[ActivityLogService] Unexpected error in logUserEvent:', error)
+            return null
+        }
+    }
+
+    /**
+     * Log knowledge snapshot used by AI generation for reproducibility
+     */
+    static async logKnowledgeSnapshot(params: LogKnowledgeSnapshotParams): Promise<string | null> {
+        try {
+            const { data, error } = await this.supabase
+                .from('activity_logs')
+                .insert({
+                    user_id: params.userId,
+                    session_id: params.sessionId || null,
+                    tramite_id: params.tramiteId || null,
+                    category: 'ai_usage',
+                    event_type: params.actionType || 'knowledge_snapshot',
+                    data: {
+                        model: params.snapshot?.model || process.env.OPENAI_MODEL || 'gpt-4o',
+                        knowledge_snapshot: params.snapshot
+                    }
+                })
+                .select('id')
+                .single()
+
+            if (error) {
+                console.error('[ActivityLogService] Error logging knowledge snapshot:', error)
+                return null
+            }
+
+            return data.id
+        } catch (error) {
+            console.error('[ActivityLogService] Unexpected error in logKnowledgeSnapshot:', error)
             return null
         }
     }

@@ -108,6 +108,16 @@ export async function POST(req: Request) {
       conversation_id: conversationId, // System-reserved field for session tracking
       tramiteId: tramiteIdFromBody || context?.tramiteId || null
     }
+    console.info('[preaviso-chat] incoming_context_summary', {
+      conversation_id: conversationId,
+      tramite_id: processingContext?.tramiteId || null,
+      folio_real: processingContext?.inmueble?.folio_real ?? null,
+      partidas_count: Array.isArray(processingContext?.inmueble?.partidas)
+        ? processingContext.inmueble.partidas.length
+        : 0,
+      vendedores_count: Array.isArray(processingContext?.vendedores) ? processingContext.vendedores.length : 0,
+      documentos_count: Array.isArray(processingContext?.documentos) ? processingContext.documentos.length : 0,
+    })
 
     // Procesar mensaje (últimos 20 mensajes = ~10 intercambios para contexto de todo el chat)
     const result = await tramiteSystem.process(
@@ -127,6 +137,8 @@ export async function POST(req: Request) {
         null
 
       if (conversationId) {
+        const knowledgeSnapshot = result.meta?.knowledge_snapshot || null
+
         // 1. Guardar mensaje del usuario
         const { error: userMsgError } = await supabase.from('chat_messages').insert({
           session_id: conversationId,
@@ -151,7 +163,8 @@ export async function POST(req: Request) {
             content: lastAssistantMessage,
             metadata: {
               processing_time: null,
-              tokens: result.meta?.usage || null
+              tokens: result.meta?.usage || null,
+              knowledge_snapshot: knowledgeSnapshot
             }
           })
           if (assistantMsgError) console.error('[preaviso-chat] Error saving assistant message:', assistantMsgError)
@@ -192,6 +205,16 @@ export async function POST(req: Request) {
               category: 'preaviso',
               plugin_id: pluginId
             }
+          }).catch(console.error)
+        }
+
+        if (authUserId && knowledgeSnapshot) {
+          ActivityLogService.logKnowledgeSnapshot({
+            userId: authUserId,
+            sessionId: conversationId,
+            tramiteId: (tramiteIdFromBody as string) || undefined,
+            snapshot: knowledgeSnapshot,
+            actionType: 'generate_question_knowledge_snapshot'
           }).catch(console.error)
         }
       }

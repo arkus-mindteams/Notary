@@ -11,6 +11,20 @@ import {
   Command
 } from './types'
 
+export interface PluginKnowledgeSnapshot {
+  tramite: string
+  scope: string
+  prompt_version: string
+  knowledge_version: string
+  knowledge_hash: string
+  knowledge_chunk_ids: string[]
+  knowledge_chunk_keys: string[]
+  document_chunk_ids?: string[]
+  model?: string
+  selected_at: string
+  selection_reason: string
+}
+
 export interface TramitePlugin {
   // Identificación
   id: string
@@ -78,4 +92,7 @@ export interface TramitePlugin {
 
   // Convertir una llamada a block tool en comandos del trámite (opcional)
   convertBlockToolToCommands?(toolName: string, args: Record<string, unknown>, context: any): Command[]
+
+  // Último snapshot de knowledge usado en generación IA (opcional, para auditoría/reproducibilidad)
+  getLastKnowledgeSnapshot?(): PluginKnowledgeSnapshot | null
 }

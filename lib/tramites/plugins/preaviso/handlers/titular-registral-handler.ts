@@ -41,12 +41,6 @@ export class TitularRegistralHandler {
       ? command.payload.confirmed 
       : (command.payload.source === 'documento_inscripcion' ? true : false)
 
-    console.log('[TitularRegistralHandler] Procesando:', {
-      name: command.payload.name,
-      tipoPersona,
-      confirmed,
-      source: command.payload.source
-    })
 
     vendedores[0] = {
       ...vendedor,
@@ -72,11 +66,6 @@ export class TitularRegistralHandler {
 
     updatedContext.vendedores = vendedores
 
-    console.log('[TitularRegistralHandler] Vendedor actualizado:', {
-      nombre: vendedores[0].persona_fisica?.nombre || vendedores[0].persona_moral?.denominacion_social,
-      tipo_persona: vendedores[0].tipo_persona,
-      confirmado: vendedores[0].titular_registral_confirmado
-    })
 
     return { 
       updatedContext, 
