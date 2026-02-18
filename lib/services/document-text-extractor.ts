@@ -90,6 +90,24 @@ const defaultDeps: ExtractorDeps = {
 const DOCUMENT_INDEX_DEBUG = process.env.DOCUMENT_INDEX_DEBUG === '1'
 const DOCUMENT_TEXT_DEBUG = process.env.DOCUMENT_TEXT_DEBUG === '1'
 let pdfWorkerConfigured = false
+let nodeCanvasLoaded = false
+
+async function ensureNodeCanvasLoaded() {
+  if (nodeCanvasLoaded) return
+  nodeCanvasLoaded = true
+  try {
+    await import('@napi-rs/canvas')
+    if (DOCUMENT_TEXT_DEBUG) {
+      console.info('[DocumentTextExtractor] node_canvas_loaded')
+    }
+  } catch (error: any) {
+    if (DOCUMENT_TEXT_DEBUG) {
+      console.warn('[DocumentTextExtractor] node_canvas_load_failed', {
+        message: String(error?.message || error),
+      })
+    }
+  }
+}
 
 function configurePdfWorker(pdfjs: any) {
   if (pdfWorkerConfigured) return
@@ -502,6 +520,7 @@ export class DocumentTextExtractor {
 
   private async extractPdfText(bytes: Uint8Array): Promise<string> {
     try {
+      await ensureNodeCanvasLoaded()
       const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
       configurePdfWorker(pdfjs)
       const task = pdfjs.getDocument({
