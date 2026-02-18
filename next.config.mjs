@@ -11,7 +11,15 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  serverExternalPackages: ['react-pdf'],
+  serverExternalPackages: ['react-pdf', 'pdfjs-dist', '@napi-rs/canvas'],
+  outputFileTracingIncludes: {
+    '/*': [
+      './node_modules/pdfjs-dist/**/*',
+      './node_modules/@napi-rs/canvas/**/*',
+      './node_modules/@napi-rs/canvas-linux-x64-gnu/**/*',
+      './node_modules/@napi-rs/canvas-linux-x64-musl/**/*',
+    ],
+  },
   webpack: (config, { isServer }) => {
     // Evitar que el cliente intente bundlear módulos nativos de Node.
     // En servidor NO desactivar `canvas`, porque pdfjs puede usarlo para polyfills.
