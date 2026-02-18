@@ -91,6 +91,9 @@ export class KnowledgeRetrievalService {
         tramite,
         scope,
       })
+      if (!rows.length) {
+        rows = await this.deps.fallbackKnowledgeChunks({ tramite, scope, limit: topK })
+      }
     } catch (error) {
       console.warn('[KnowledgeRetrievalService] Vector retrieval unavailable, using fallback:', error)
       rows = await this.deps.fallbackKnowledgeChunks({ tramite, scope, limit: topK })

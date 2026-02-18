@@ -50,9 +50,12 @@ class OpenAIRAGClient implements LLMClient {
         { role: 'system', content: args.systemPrompt },
         { role: 'user', content: args.userPrompt },
       ],
-      ...(this.model.includes('o1') || this.model.includes('o3')
+      ...(this.model.includes('o1') || this.model.includes('o3') || this.model.includes('gpt-5')
         ? {}
-        : { response_format: { type: 'json_object' }, temperature: 0 }),
+        : {
+            response_format: { type: 'json_object' },
+            temperature: 0,
+          }),
       ...(this.model.includes('gpt-4') || this.model.includes('gpt-5') || this.model.includes('o1') || this.model.includes('o3')
         ? { max_completion_tokens: 900 }
         : { max_tokens: 900 }),
@@ -74,7 +77,7 @@ class OpenAIRAGClient implements LLMClient {
 
     const data = await response.json()
     return {
-      content: String(data?.choices?.[0]?.message?.content || ''),
+      content: extractMessageContent(data?.choices?.[0]?.message),
       usage: data?.usage || undefined,
       model: this.model,
     }
@@ -187,7 +190,21 @@ export class RetrievalResponseAgent {
     })
     const llmMs = Date.now() - llmStartedAt
 
-    const parsed = this.parseAndValidate(llm.content, traceId)
+    let parsed: z.infer<typeof responseSchema>
+    try {
+      parsed = this.parseAndValidate(llm.content, traceId)
+    } catch (error) {
+      console.warn('[RetrievalResponseAgent] Invalid/empty LLM JSON output, using safe fallback', {
+        trace_id: traceId,
+        model: llm.model,
+        error: error instanceof Error ? error.message : 'unknown_error',
+      })
+      parsed = {
+        answer: 'No encontré evidencia relevante en documentos o base de conocimiento para responder con certeza.',
+        citations: [],
+        suggested_updates: [],
+      }
+    }
     const citations = parsed.citations.filter((id) => allowedCitationIds.has(id))
 
     await this.deps.logTurn({
@@ -308,5 +325,23 @@ export class RetrievalResponseAgent {
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function extractMessageContent(message: any): string {
+  if (!message) return ''
+  if (typeof message.content === 'string') return message.content
+  if (Array.isArray(message.content)) {
+    const parts = message.content
+      .map((part: any) => {
+        if (typeof part === 'string') return part
+        if (part && typeof part.text === 'string') return part.text
+        if (part && typeof part.content === 'string') return part.content
+        return ''
+      })
+      .filter(Boolean)
+    return parts.join('\n').trim()
+  }
+  if (typeof message.refusal === 'string') return message.refusal
+  return ''
 }
 

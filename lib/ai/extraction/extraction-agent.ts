@@ -44,9 +44,12 @@ class OpenAIExtractionClient implements ExtractionLLMClient {
         { role: 'system', content: args.systemPrompt },
         { role: 'user', content: args.userPrompt },
       ],
-      ...(this.model.includes('o1') || this.model.includes('o3')
+      ...(this.model.includes('o1') || this.model.includes('o3') || this.model.includes('gpt-5')
         ? {}
-        : { response_format: { type: 'json_object' }, temperature: 0 }),
+        : {
+            response_format: { type: 'json_object' },
+            temperature: 0,
+          }),
       ...(this.model.includes('gpt-4') || this.model.includes('gpt-5') || this.model.includes('o1') || this.model.includes('o3')
         ? { max_completion_tokens: args.maxTokens || 3000 }
         : { max_tokens: args.maxTokens || 3000 }),
@@ -68,11 +71,29 @@ class OpenAIExtractionClient implements ExtractionLLMClient {
 
     const data = await resp.json()
     return {
-      content: String(data?.choices?.[0]?.message?.content || ''),
+      content: extractMessageContent(data?.choices?.[0]?.message),
       usage: data?.usage,
       model: this.model,
     }
   }
+}
+
+function extractMessageContent(message: any): string {
+  if (!message) return ''
+  if (typeof message.content === 'string') return message.content
+  if (Array.isArray(message.content)) {
+    const parts = message.content
+      .map((part: any) => {
+        if (typeof part === 'string') return part
+        if (part && typeof part.text === 'string') return part.text
+        if (part && typeof part.content === 'string') return part.content
+        return ''
+      })
+      .filter(Boolean)
+    return parts.join('\n').trim()
+  }
+  if (typeof message.refusal === 'string') return message.refusal
+  return ''
 }
 
 class ActivityLogExtractionAuditLogger implements ExtractionAuditLogger {

@@ -43,9 +43,12 @@ class OpenAIIntentClassifierClient implements LLMClassifierClient {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      ...(this.model.includes('o1') || this.model.includes('o3')
+      ...(this.model.includes('o1') || this.model.includes('o3') || this.model.includes('gpt-5')
         ? {}
-        : { response_format: { type: 'json_object' }, temperature: 0 }),
+        : {
+            response_format: { type: 'json_object' },
+            temperature: 0,
+          }),
       ...(this.model.includes('gpt-4') || this.model.includes('gpt-5') || this.model.includes('o1') || this.model.includes('o3')
         ? { max_completion_tokens: 120 }
         : { max_tokens: 120 }),
@@ -62,7 +65,7 @@ class OpenAIIntentClassifierClient implements LLMClassifierClient {
 
     if (!response.ok) return 'UNKNOWN'
     const data = await response.json().catch(() => ({}))
-    let content = String(data?.choices?.[0]?.message?.content || '').trim()
+    let content = extractMessageContent(data?.choices?.[0]?.message).trim()
     if (content.startsWith('```')) {
       const match = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
       if (match?.[1]) content = match[1]
@@ -75,6 +78,24 @@ class OpenAIIntentClassifierClient implements LLMClassifierClient {
       return 'UNKNOWN'
     }
   }
+}
+
+function extractMessageContent(message: any): string {
+  if (!message) return ''
+  if (typeof message.content === 'string') return message.content
+  if (Array.isArray(message.content)) {
+    const parts = message.content
+      .map((part: any) => {
+        if (typeof part === 'string') return part
+        if (part && typeof part.text === 'string') return part.text
+        if (part && typeof part.content === 'string') return part.content
+        return ''
+      })
+      .filter(Boolean)
+    return parts.join('\n').trim()
+  }
+  if (typeof message.refusal === 'string') return message.refusal
+  return ''
 }
 
 type IntentClassifierDeps = {
@@ -121,6 +142,14 @@ export class IntentClassifier {
     const hasRichDomainDataInMessage =
       message.length >= 80 &&
       /\b(folio|partida|lote|manzana|condominio|direccion|dirección|vendedor|comprador|credito|crédito|gravamen|hipoteca)\b/.test(normalized)
+
+    if (
+      hasRichDomainDataInMessage &&
+      !asksQuestion &&
+      !includesAny(uiAction, ['generate_document', 'finalize', 'finalize_preaviso'])
+    ) {
+      return 'UPDATE_STATE'
+    }
 
     if (
       wantsGeneration &&
