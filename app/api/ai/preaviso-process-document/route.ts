@@ -137,14 +137,25 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
   if (derivedBuyerName) {
     const compradores = Array.isArray(next.compradores) ? [...next.compradores] : []
     const c0 = { ...(compradores[0] || {}) }
+    const derivedLooksMoral = looksLikePersonaMoralName(derivedBuyerName)
     c0.party_id = c0.party_id || 'comprador_1'
-    c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
-    c0.persona_fisica = {
-      ...(c0.persona_fisica || {}),
-      nombre: c0.persona_fisica?.nombre || derivedBuyerName,
-      rfc: c0.persona_fisica?.rfc || null,
-      curp: c0.persona_fisica?.curp || null,
-      estado_civil: c0.persona_fisica?.estado_civil || null,
+    if (derivedLooksMoral) {
+      c0.tipo_persona = 'persona_moral'
+      c0.persona_moral = {
+        ...(c0.persona_moral || {}),
+        denominacion_social: c0.persona_moral?.denominacion_social || derivedBuyerName,
+        rfc: c0.persona_moral?.rfc || null,
+      }
+      c0.persona_fisica = undefined
+    } else {
+      c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
+      c0.persona_fisica = {
+        ...(c0.persona_fisica || {}),
+        nombre: c0.persona_fisica?.nombre || derivedBuyerName,
+        rfc: c0.persona_fisica?.rfc || null,
+        curp: c0.persona_fisica?.curp || null,
+        estado_civil: c0.persona_fisica?.estado_civil || null,
+      }
     }
     compradores[0] = c0
     next.compradores = compradores
@@ -153,6 +164,21 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
   if (derivedBuyerEstadoCivil) {
     const compradores = Array.isArray(next.compradores) ? [...next.compradores] : []
     const c0 = { ...(compradores[0] || {}) }
+    const currentBuyerName =
+      c0?.persona_fisica?.nombre ||
+      c0?.persona_moral?.denominacion_social ||
+      null
+    const buyerIsMoral =
+      c0?.tipo_persona === 'persona_moral' ||
+      looksLikePersonaMoralName(currentBuyerName)
+    if (buyerIsMoral) {
+      compradores[0] = {
+        ...c0,
+        tipo_persona: 'persona_moral',
+        persona_fisica: undefined,
+      }
+      next.compradores = compradores
+    } else {
     c0.party_id = c0.party_id || 'comprador_1'
     c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
     c0.persona_fisica = {
@@ -164,6 +190,7 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
     }
     compradores[0] = c0
     next.compradores = compradores
+    }
   }
 
   if (derivedCreditInstitution) {
@@ -271,6 +298,14 @@ function normalizeInstitutionName(rawInstitution: string | null | undefined): st
   if (normalized.includes('banco inmobiliario mexicano')) return 'Banco Inmobiliario Mexicano'
 
   return input
+}
+
+function looksLikePersonaMoralName(name: string | null | undefined): boolean {
+  const upper = String(name || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  return /\b(SA|S\.A\.|SAPI|SOCIEDAD|CV|C\.V\.|S DE RL|S\. DE R\.L\.)\b/.test(upper)
 }
 
 function enrichStructuredExtractionFromText(args: {

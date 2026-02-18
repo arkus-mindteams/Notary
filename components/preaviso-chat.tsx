@@ -287,6 +287,11 @@ export function PreavisoChat({
     prompt: string
     options: Array<{ folio: string; scope?: string; label?: string }>
   } | null>(null)
+  const [pendingDocumentVisionSelection, setPendingDocumentVisionSelection] = useState<{
+    prompt: string
+    options: Array<{ originalKey: string; fileName: string; selected: boolean; reason: string }>
+  } | null>(null)
+  const pendingDocumentVisionResolverRef = useRef<((selectedKeys: Set<string>) => void) | null>(null)
 
   // conversation_id estable (logging/QA): persiste en sessionStorage para sobrevivir refresh.
   // Manejo de Sesiones (Chat History)
@@ -776,6 +781,9 @@ export function PreavisoChat({
   const cancelDocumentProcessing = () => {
     if (!isProcessingDocument) return
     cancelDocumentBatchRequestedRef.current = true
+    if (pendingDocumentVisionResolverRef.current) {
+      resolvePendingDocumentVisionSelection(new Set())
+    }
     try {
       documentBatchAbortRef.current?.abort()
     } catch { }
@@ -1500,6 +1508,39 @@ export function PreavisoChat({
     } finally {
       setIsProcessing(false)
     }
+  }
+
+  const requestDocumentVisionDecision = async (candidates: Array<{ originalKey: string; fileName: string; reason: string }>) => {
+    const defaultOptions = candidates.map((c) => ({
+      originalKey: c.originalKey,
+      fileName: c.fileName,
+      selected: true,
+      reason: c.reason,
+    }))
+
+    setPendingDocumentVisionSelection({
+      prompt: 'Detecte documentos sin texto utilizable. Selecciona cuales quieres procesar con OCR/Vision.',
+      options: defaultOptions,
+    })
+
+    const promptMessage: ChatMessage = {
+      id: generateMessageId('vision-prompt'),
+      role: 'assistant',
+      content: 'Hay documentos que requieren OCR/Vision. Usa los botones para decidir que procesar.',
+      timestamp: new Date(),
+    }
+    setMessages((prev) => [...prev, promptMessage])
+
+    return await new Promise<Set<string>>((resolve) => {
+      pendingDocumentVisionResolverRef.current = resolve
+    })
+  }
+
+  const resolvePendingDocumentVisionSelection = (selectedKeys: Set<string>) => {
+    const resolver = pendingDocumentVisionResolverRef.current
+    pendingDocumentVisionResolverRef.current = null
+    setPendingDocumentVisionSelection(null)
+    resolver?.(selectedKeys)
   }
 
   const handleSend = async () => {
@@ -2242,53 +2283,18 @@ export function PreavisoChat({
       }
 
       const items: ImgItem[] = []
-      type ProcessInput = { imageFile: File; originalFile: File; isArtifact: boolean }
-      const processInputs: ProcessInput[] = []
-
-      for (const originalFile of newFiles) {
+      for (let i = 0; i < newFiles.length; i++) {
         if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-        const isPdf =
-          String(originalFile.type || '').toLowerCase() === 'application/pdf' ||
-          /\.pdf$/i.test(originalFile.name)
-
-        if (isPdf) {
-          try {
-            const { convertPdfToImages } = await import('@/lib/ocr-client')
-            const convertedImages = await convertPdfToImages(originalFile)
-            if (Array.isArray(convertedImages) && convertedImages.length > 0) {
-              for (const imageFile of convertedImages) {
-                processInputs.push({
-                  imageFile,
-                  originalFile,
-                  isArtifact: true,
-                })
-              }
-              continue
-            }
-          } catch (pdfConversionError) {
-            console.warn('[PreavisoChat] PDF->image conversion failed, using original PDF', {
-              file_name: originalFile.name,
-              message: (pdfConversionError as any)?.message || 'conversion_error',
-            })
-          }
-        }
-
-        processInputs.push({
-          imageFile: originalFile,
-          originalFile,
-          isArtifact: false,
-        })
-      }
-
-      for (let i = 0; i < processInputs.length; i++) {
-        if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-        const { imageFile, originalFile, isArtifact } = processInputs[i]
+        const imageFile = newFiles[i]
+        const isArtifact = false
+        const originalFile = newFiles[i]
         const docType = await detectDocumentType(originalFile.name, originalFile)
         const originalKey = `${originalFile.name}:${originalFile.size}:${(originalFile as any).lastModified || ''}`
         items.push({ index: i, imageFile, originalFile, docType, originalKey, isArtifact })
       }
 
       const totalFiles = items.length
+      let totalWorkItems = totalFiles
       if (totalFiles === 0) {
         setIsProcessingDocument(false)
         setProcessingProgress(0)
@@ -2319,6 +2325,8 @@ export function PreavisoChat({
       const pending = new Map<number, any>()
       let nextToApply = 0
       const pendingStructuredExtractionTasks: Promise<void>[] = []
+      const needsVisionDecisionByOriginalKey = new Map<string, { originalFile: File; docType: string; reason: string }>()
+      const successfulOriginalKeys = new Set<string>()
 
       const mergeStructuredExtractionIntoData = (base: PreavisoData, structured: any): PreavisoData => {
         if (!structured || typeof structured !== 'object') return base
@@ -2437,6 +2445,38 @@ export function PreavisoChat({
           const msg = classifyProcessError(processResult)
           if (msg) errorMessages.push(msg)
           return
+        }
+        const requiresOcr = processResult?.extractedData?._requires_ocr === true
+        const needsOcrReason = String(processResult?.extractedData?._needs_ocr_reason || processResult?.meta?.needs_ocr_reason || '')
+        const allowedOcrReasons = new Set(['pdf_text_not_usable', 'image_requires_ocr', 'no_usable_text', 'download_failed'])
+        const extractedText = String(processResult?.extractedData?.textoCompleto || '').trim()
+        const extractedFolio = String(processResult?.data?.inmueble?.folio_real || '').trim()
+        const extractedPartidas = Array.isArray(processResult?.data?.inmueble?.partidas)
+          ? processResult.data.inmueble.partidas.filter(Boolean)
+          : []
+        const hasUsefulExtraction =
+          extractedText.length > 120 ||
+          extractedFolio.length > 0 ||
+          extractedPartidas.length > 0
+        if (hasUsefulExtraction) {
+          successfulOriginalKeys.add(item.originalKey)
+        }
+        const originalIsPdf =
+          String(item.originalFile?.type || '').toLowerCase() === 'application/pdf' ||
+          /\.pdf$/i.test(String(item.originalFile?.name || ''))
+        if (
+          !item.isArtifact &&
+          originalIsPdf &&
+          requiresOcr &&
+          allowedOcrReasons.has(needsOcrReason) &&
+          !hasUsefulExtraction &&
+          !successfulOriginalKeys.has(item.originalKey)
+        ) {
+          needsVisionDecisionByOriginalKey.set(item.originalKey, {
+            originalFile: item.originalFile,
+            docType: item.docType,
+            reason: needsOcrReason || 'pdf_text_not_usable',
+          })
         }
         if (processResult?.state) setServerState(processResult.state as ServerStateSnapshot)
         if (processResult?.expedienteExistente) setExpedienteExistente(processResult.expedienteExistente)
@@ -3168,13 +3208,13 @@ export function PreavisoChat({
               const result = await processOne(item)
               if (batchAbort.signal.aborted) return
               completedCount++
-              setProcessingProgress(50 + (completedCount / Math.max(1, totalFiles)) * 40)
+              setProcessingProgress(50 + (completedCount / Math.max(1, totalWorkItems)) * 40)
               await onOneDone(item.index, item, result)
             } catch (e) {
               if ((e as any)?.name === 'AbortError') return
               console.error(`Error procesando ${item.originalFile.name}:`, e)
               completedCount++
-              setProcessingProgress(50 + (completedCount / Math.max(1, totalFiles)) * 40)
+              setProcessingProgress(50 + (completedCount / Math.max(1, totalWorkItems)) * 40)
               await onOneDone(item.index, item, { __error: true })
             }
           }
@@ -3237,6 +3277,45 @@ export function PreavisoChat({
       }
       if (idItems.length > 0) {
         await runPool(idItems, 1)
+      }
+
+      if (!batchAbort.signal.aborted && needsVisionDecisionByOriginalKey.size > 0) {
+        const candidates = Array.from(needsVisionDecisionByOriginalKey.entries()).map(([originalKey, value]) => ({
+          originalKey,
+          fileName: value.originalFile.name,
+          reason: value.reason,
+        }))
+        const selectedOriginalKeys = await requestDocumentVisionDecision(candidates)
+        if (selectedOriginalKeys.size > 0) {
+          const ocrItems: ImgItem[] = []
+          let generatedIndex = nextToApply
+          const { convertPdfToImages } = await import('@/lib/ocr-client')
+          for (const [originalKey, value] of needsVisionDecisionByOriginalKey.entries()) {
+            if (!selectedOriginalKeys.has(originalKey)) continue
+            try {
+              const convertedImages = await convertPdfToImages(value.originalFile)
+              for (const imageFile of convertedImages) {
+                ocrItems.push({
+                  index: generatedIndex++,
+                  imageFile,
+                  originalFile: value.originalFile,
+                  docType: value.docType,
+                  originalKey,
+                  isArtifact: true,
+                })
+              }
+            } catch (conversionError) {
+              console.warn('[PreavisoChat] PDF->image conversion failed for selected OCR/Vision doc', {
+                file_name: value.originalFile.name,
+                message: (conversionError as any)?.message || 'conversion_error',
+              })
+            }
+          }
+          if (ocrItems.length > 0) {
+            totalWorkItems += ocrItems.length
+            await runPool(ocrItems, 2)
+          }
+        }
       }
 
       if (sessionExpired) {
@@ -4649,6 +4728,109 @@ export function PreavisoChat({
                             </Button>
                           ))}
                         </div>
+                      </div>
+                    )}
+
+                    {pendingDocumentVisionSelection && pendingDocumentVisionSelection.options.length > 0 && (
+                      <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                        <p className="text-xs text-amber-900 mb-2">{pendingDocumentVisionSelection.prompt}</p>
+                        <div className="flex flex-wrap gap-2 mb-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs border-amber-300 text-amber-900 hover:bg-amber-100"
+                            onClick={() => {
+                              setPendingDocumentVisionSelection((prev) => prev
+                                ? {
+                                    ...prev,
+                                    options: prev.options.map((opt) => ({ ...opt, selected: true })),
+                                  }
+                                : prev)
+                            }}
+                          >
+                            Procesar todos
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs border-amber-300 text-amber-900 hover:bg-amber-100"
+                            onClick={() => {
+                              setPendingDocumentVisionSelection((prev) => prev
+                                ? {
+                                    ...prev,
+                                    options: prev.options.map((opt) => ({ ...opt, selected: false })),
+                                  }
+                                : prev)
+                            }}
+                          >
+                            Omitir todos
+                          </Button>
+                        </div>
+                        <div className="space-y-2 mb-2">
+                          {pendingDocumentVisionSelection.options.map((opt) => (
+                            <div key={opt.originalKey} className="flex items-center justify-between gap-2 rounded border border-amber-200 bg-white px-2 py-1">
+                              <div className="min-w-0">
+                                <p className="text-xs text-amber-900 truncate">{opt.fileName}</p>
+                                <p className="text-[10px] text-amber-700">Motivo: {opt.reason}</p>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant={opt.selected ? 'default' : 'outline'}
+                                  className={`h-6 text-[11px] ${opt.selected ? 'bg-amber-700 hover:bg-amber-800 text-white' : 'border-amber-300 text-amber-900 hover:bg-amber-100'}`}
+                                  onClick={() => {
+                                    setPendingDocumentVisionSelection((prev) => prev
+                                      ? {
+                                          ...prev,
+                                          options: prev.options.map((p) =>
+                                            p.originalKey === opt.originalKey ? { ...p, selected: true } : p
+                                          ),
+                                        }
+                                      : prev)
+                                  }}
+                                >
+                                  Procesar
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant={!opt.selected ? 'default' : 'outline'}
+                                  className={`h-6 text-[11px] ${!opt.selected ? 'bg-gray-700 hover:bg-gray-800 text-white' : 'border-amber-300 text-amber-900 hover:bg-amber-100'}`}
+                                  onClick={() => {
+                                    setPendingDocumentVisionSelection((prev) => prev
+                                      ? {
+                                          ...prev,
+                                          options: prev.options.map((p) =>
+                                            p.originalKey === opt.originalKey ? { ...p, selected: false } : p
+                                          ),
+                                        }
+                                      : prev)
+                                  }}
+                                >
+                                  Omitir
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-7 text-xs bg-amber-700 hover:bg-amber-800 text-white"
+                          onClick={() => {
+                            const selected = new Set(
+                              (pendingDocumentVisionSelection?.options || [])
+                                .filter((opt) => opt.selected)
+                                .map((opt) => opt.originalKey)
+                            )
+                            resolvePendingDocumentVisionSelection(selected)
+                          }}
+                        >
+                          Continuar
+                        </Button>
                       </div>
                     )}
 

@@ -11,7 +11,7 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  serverExternalPackages: ['react-pdf', 'pdfjs-dist', '@napi-rs/canvas'],
+  serverExternalPackages: ['react-pdf', '@napi-rs/canvas'],
   outputFileTracingIncludes: {
     '/*': [
       './node_modules/pdfjs-dist/**/*',

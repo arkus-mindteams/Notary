@@ -25,6 +25,12 @@ export const toUserFacingAssistantText = (raw: string): string => {
 export const inferMarriageStatus = (persons: any[]): any[] => {
     if (!Array.isArray(persons)) return persons;
     return persons.map(p => {
+        if (p?.tipo_persona === 'persona_moral') {
+            return {
+                ...p,
+                persona_fisica: undefined
+            };
+        }
         if (p?.persona_fisica?.conyuge?.nombre?.trim()) {
             return {
                 ...p,

@@ -8,7 +8,6 @@ type DocumentoRecord = {
   s3_key?: string | null
   metadata?: Record<string, any> | null
 }
-
 export type TextExtractionResult = {
   text: string
   source: 'metadata' | 'pdf_text' | 'docx_text' | 'ocr_fallback' | 'none'
@@ -133,11 +132,20 @@ export class DocumentTextExtractor {
 
   static isUsableText(text: string): boolean {
     const normalized = String(text || '').trim()
-    if (normalized.length < 200) return false
+    if (normalized.length < 80) return false
 
     const alphaNum = (normalized.match(/[A-Za-z0-9\u00C0-\u017F]/g) || []).length
     const ratio = alphaNum / Math.max(1, normalized.length)
-    return ratio >= 0.55
+    if (normalized.length >= 180 && ratio >= 0.45) return true
+
+    // Allow slightly noisier OCR/PDF extraction when registral fields are clearly present.
+    const hasRegistrySignals =
+      /(folio|partida|seccion|inscripcion|inmueble|propietari|comprador|vendedor|superficie)/i.test(
+        normalized
+      )
+    if (hasRegistrySignals && normalized.length >= 100 && ratio >= 0.3) return true
+
+    return false
   }
 
   static getTextQuality(text: string): { length: number; alnumRatio: number } {
@@ -354,6 +362,18 @@ export class DocumentTextExtractor {
     const allowOcrFallback = opts?.allowOcrFallback === true
     const mime = String(file.type || '').toLowerCase()
     const bytes = new Uint8Array(await file.arrayBuffer())
+    if (DOCUMENT_TEXT_DEBUG) {
+      const head = Array.from(bytes.slice(0, 8))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join(' ')
+      console.info('[DocumentTextExtractor] file_bytes_probe', {
+        file_name: file.name,
+        mime_type: mime,
+        file_size: file.size,
+        bytes_length: bytes.length,
+        bytes_head_hex: head,
+      })
+    }
     if (!bytes || bytes.length === 0) {
       return {
         text: '',
@@ -470,10 +490,7 @@ export class DocumentTextExtractor {
   }
 
   private async extractPdfText(bytes: Uint8Array): Promise<string> {
-    try {
-      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-      // En serverless (Vercel), depender del worker externo puede fallar por tracing/rutas.
-      // Para extracción de texto preferimos ejecución en hilo principal.
+    const extractWithPdfjs = async (pdfjs: any): Promise<string> => {
       const task = pdfjs.getDocument({
         data: bytes,
         disableWorker: true,
@@ -492,11 +509,54 @@ export class DocumentTextExtractor {
         if (text) pages.push(text)
       }
       return pages.join('\n\n').trim()
+    }
+    const extractWithPdfParse = async (): Promise<string> => {
+      const mod: any = await import('pdf-parse/lib/pdf-parse.js')
+      const pdfParse = mod?.default || mod
+      const parsed = await pdfParse(Buffer.from(bytes))
+      return String(parsed?.text || '').replace(/\s+\n/g, '\n').trim()
+    }
+
+    try {
+      const legacyPdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+      const legacyText = await extractWithPdfjs(legacyPdfjs)
+      if (legacyText.trim()) return legacyText
+      const modernPdfjs = await import('pdfjs-dist/build/pdf.mjs')
+      const modernText = await extractWithPdfjs(modernPdfjs)
+      if (modernText.trim()) return modernText
+      const parsedText = await extractWithPdfParse()
+      if (parsedText.trim()) return parsedText
+      return ''
     } catch (error: any) {
+      try {
+        const modernPdfjs = await import('pdfjs-dist/build/pdf.mjs')
+        const modernText = await extractWithPdfjs(modernPdfjs)
+        if (modernText.trim()) return modernText
+      } catch (fallbackError: any) {
+        if (DOCUMENT_TEXT_DEBUG) {
+          console.error('[DocumentTextExtractor] pdf_text_extraction_fallback_failed', {
+            message: String(fallbackError?.message || fallbackError),
+            stack: String(fallbackError?.stack || '').slice(0, 1200),
+          })
+        }
+      }
+      try {
+        const parsedText = await extractWithPdfParse()
+        if (parsedText.trim()) return parsedText
+      } catch (pdfParseError: any) {
+        if (DOCUMENT_TEXT_DEBUG) {
+          console.error('[DocumentTextExtractor] pdf_text_extraction_pdf_parse_failed', {
+            message: String(pdfParseError?.message || pdfParseError),
+            stack: String(pdfParseError?.stack || '').slice(0, 1200),
+          })
+        }
+      }
       if (DOCUMENT_TEXT_DEBUG) {
         console.error('[DocumentTextExtractor] pdf_text_extraction_failed', {
           message: String(error?.message || error),
           stack: String(error?.stack || '').slice(0, 1200),
+          bytes_length: bytes.length,
+          bytes_head_ascii: String.fromCharCode(...Array.from(bytes.slice(0, 8))),
         })
       }
       return ''
@@ -521,3 +581,4 @@ export class DocumentTextExtractor {
     }
   }
 }
+

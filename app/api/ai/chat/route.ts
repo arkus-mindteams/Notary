@@ -1008,6 +1008,7 @@ function reconcileLegacyCapturedData(args: {
         denominacion_social: buyer0.persona_moral?.denominacion_social || null,
         rfc: buyer0.persona_moral?.rfc || null,
       }
+      buyer0.persona_fisica = undefined
     } else {
       buyer0.persona_fisica = {
         ...(buyer0.persona_fisica || {}),
@@ -1028,6 +1029,17 @@ function reconcileLegacyCapturedData(args: {
   if (buyerEstadoCivil) {
     const compradores = Array.isArray(merged.compradores) ? [...merged.compradores] : []
     const buyer0 = { ...(compradores[0] || {}) }
+    const buyerName = String(
+      buyer0?.persona_fisica?.nombre ||
+      buyer0?.persona_moral?.denominacion_social ||
+      ''
+    ).trim()
+    const buyerIsMoral =
+      buyer0.tipo_persona === 'persona_moral' ||
+      looksLikePersonaMoralName(buyerName)
+    if (buyerIsMoral) {
+      return merged
+    }
     buyer0.party_id = buyer0.party_id || 'comprador_1'
     buyer0.tipo_persona = buyer0.tipo_persona || 'persona_fisica'
     buyer0.persona_fisica = {
@@ -1093,6 +1105,14 @@ function inferBuyerTipoPersonaFromMessage(normalizedMessage: string): 'persona_f
   if (hasPersonaMoral && !hasPersonaFisica) return 'persona_moral'
   if (hasPersonaFisica && !hasPersonaMoral) return 'persona_fisica'
   return null
+}
+
+function looksLikePersonaMoralName(name: string): boolean {
+  const upper = String(name || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  return /\b(SA|S\.A\.|SAPI|SOCIEDAD|CV|C\.V\.|S DE RL|S\. DE R\.L\.)\b/.test(upper)
 }
 
 function inferBuyerEstadoCivilFromMessage(
@@ -1167,7 +1187,7 @@ function hydrateCriticalFieldsFromHistory(
       .toUpperCase()
       .trim()
     const buyerName = labeledParties.comprador.toUpperCase().trim()
-    if (sellerName && buyerName && sellerName === buyerName) {
+    if (sellerName && buyerName && sellerName !== buyerName) {
       merged.compradores = [buildPartyFromLabel('comprador_1', labeledParties.comprador)]
     }
   }
