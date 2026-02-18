@@ -1,6 +1,4 @@
 import { DetectDocumentTextCommand, TextractClient } from '@aws-sdk/client-textract'
-import path from 'path'
-import { pathToFileURL } from 'url'
 import { S3Service } from '@/lib/services/s3-service'
 
 type DocumentoRecord = {
@@ -89,35 +87,6 @@ const defaultDeps: ExtractorDeps = {
 
 const DOCUMENT_INDEX_DEBUG = process.env.DOCUMENT_INDEX_DEBUG === '1'
 const DOCUMENT_TEXT_DEBUG = process.env.DOCUMENT_TEXT_DEBUG === '1'
-let pdfWorkerConfigured = false
-
-function configurePdfWorker(pdfjs: any) {
-  if (pdfWorkerConfigured) return
-  try {
-    const workerPath = path.join(
-      process.cwd(),
-      'node_modules',
-      'pdfjs-dist',
-      'legacy',
-      'build',
-      'pdf.worker.mjs'
-    )
-    pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href
-    if (DOCUMENT_TEXT_DEBUG) {
-      console.info('[DocumentTextExtractor] pdf_worker_configured', {
-        worker_src: pdfjs.GlobalWorkerOptions.workerSrc,
-      })
-    }
-  } catch (error: any) {
-    if (DOCUMENT_TEXT_DEBUG) {
-      console.warn('[DocumentTextExtractor] pdf_worker_config_failed', {
-        message: String(error?.message || error),
-      })
-    }
-  } finally {
-    pdfWorkerConfigured = true
-  }
-}
 
 function decodeXmlEntities(input: string): string {
   return input
@@ -503,10 +472,11 @@ export class DocumentTextExtractor {
   private async extractPdfText(bytes: Uint8Array): Promise<string> {
     try {
       const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-      configurePdfWorker(pdfjs)
+      // En serverless (Vercel), depender del worker externo puede fallar por tracing/rutas.
+      // Para extracción de texto preferimos ejecución en hilo principal.
       const task = pdfjs.getDocument({
         data: bytes,
-        disableWorker: false,
+        disableWorker: true,
         useWorkerFetch: false,
       } as any)
       const document = await task.promise
