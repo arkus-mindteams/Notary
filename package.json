@@ -18,6 +18,7 @@
     "@aws-sdk/client-textract": "^3.982.0",
     "@aws-sdk/s3-request-presigner": "^3.943.0",
     "@hookform/resolvers": "^3.10.0",
+    "@napi-rs/canvas": "^0.1.93",
     "@radix-ui/react-accordion": "1.2.2",
     "@radix-ui/react-alert-dialog": "1.1.4",
     "@radix-ui/react-aspect-ratio": "1.1.1",
