@@ -2242,11 +2242,47 @@ export function PreavisoChat({
       }
 
       const items: ImgItem[] = []
-      for (let i = 0; i < newFiles.length; i++) {
+      type ProcessInput = { imageFile: File; originalFile: File; isArtifact: boolean }
+      const processInputs: ProcessInput[] = []
+
+      for (const originalFile of newFiles) {
         if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-        const imageFile = newFiles[i]
-        const isArtifact = false
-        const originalFile = newFiles[i]
+        const isPdf =
+          String(originalFile.type || '').toLowerCase() === 'application/pdf' ||
+          /\.pdf$/i.test(originalFile.name)
+
+        if (isPdf) {
+          try {
+            const { convertPdfToImages } = await import('@/lib/ocr-client')
+            const convertedImages = await convertPdfToImages(originalFile)
+            if (Array.isArray(convertedImages) && convertedImages.length > 0) {
+              for (const imageFile of convertedImages) {
+                processInputs.push({
+                  imageFile,
+                  originalFile,
+                  isArtifact: true,
+                })
+              }
+              continue
+            }
+          } catch (pdfConversionError) {
+            console.warn('[PreavisoChat] PDF->image conversion failed, using original PDF', {
+              file_name: originalFile.name,
+              message: (pdfConversionError as any)?.message || 'conversion_error',
+            })
+          }
+        }
+
+        processInputs.push({
+          imageFile: originalFile,
+          originalFile,
+          isArtifact: false,
+        })
+      }
+
+      for (let i = 0; i < processInputs.length; i++) {
+        if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        const { imageFile, originalFile, isArtifact } = processInputs[i]
         const docType = await detectDocumentType(originalFile.name, originalFile)
         const originalKey = `${originalFile.name}:${originalFile.size}:${(originalFile as any).lastModified || ''}`
         items.push({ index: i, imageFile, originalFile, docType, originalKey, isArtifact })
