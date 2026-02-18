@@ -288,6 +288,20 @@ function normalizeInstitutionName(rawInstitution: string | null | undefined): st
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
 
+  // Evitar tomar montos/moneda como "institución".
+  if (
+    /\$\s*\d/.test(input) ||
+    /\b(pesos?|moneda nacional|m\.?\s*n\.?|mxn|usd|dolares?)\b/i.test(normalized)
+  ) {
+    return null
+  }
+
+  const letters = (input.match(/[A-Za-zÁÉÍÓÚÑáéíóúñ]/g) || []).length
+  const digits = (input.match(/\d/g) || []).length
+  if (letters < 4 || (digits >= 3 && letters <= 2)) {
+    return null
+  }
+
   if (normalized.includes('infonavit')) return 'INFONAVIT'
   if (normalized.includes('fovissste')) return 'FOVISSSTE'
   if (normalized.includes('banco mercantil del norte') || /\bbanorte\b/.test(normalized)) return 'Banco Mercantil del Norte'
@@ -298,6 +312,24 @@ function normalizeInstitutionName(rawInstitution: string | null | undefined): st
   if (normalized.includes('banco inmobiliario mexicano')) return 'Banco Inmobiliario Mexicano'
 
   return input
+}
+
+function detectInstitutionFromText(rawText: string): string | null {
+  const normalized = String(rawText || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  if (normalized.includes('infonavit')) return 'INFONAVIT'
+  if (normalized.includes('fovissste')) return 'FOVISSSTE'
+  if (normalized.includes('banco mercantil del norte') || /\bbanorte\b/.test(normalized)) return 'Banco Mercantil del Norte'
+  if (normalized.includes('bbva')) return 'BBVA'
+  if (normalized.includes('hsbc')) return 'HSBC'
+  if (normalized.includes('santander')) return 'Santander'
+  if (normalized.includes('banamex') || normalized.includes('citibanamex')) return 'Banamex'
+  if (normalized.includes('banco inmobiliario mexicano')) return 'Banco Inmobiliario Mexicano'
+
+  return null
 }
 
 function looksLikePersonaMoralName(name: string | null | undefined): boolean {
@@ -328,7 +360,9 @@ function enrichStructuredExtractionFromText(args: {
   }
 
   const creditMatch = rawText.match(/\bCREDITO\s*[:\-]\s*([^\n\r]+)/i)
-  const creditoInstitucion = normalizeInstitutionName(creditMatch ? creditMatch[1] : null)
+  const creditoInstitucion =
+    normalizeInstitutionName(creditMatch ? creditMatch[1] : null) ||
+    detectInstitutionFromText(rawText)
 
   const rawNormalized = rawText
     .toLowerCase()

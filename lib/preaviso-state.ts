@@ -56,6 +56,10 @@ export interface PreavisoStateComputation {
  */
 export function computePreavisoState(context?: any): PreavisoStateComputation {
   const PREAVISO_DEBUG = process.env.PREAVISO_DEBUG === '1'
+  const nonEmptyText = (value: any): string | null => {
+    const s = String(value ?? '').trim()
+    return s.length > 0 ? s : null
+  }
   const normalizeForMatch = (value: any): string => {
     const s = String(value || '')
       .normalize('NFD')
@@ -364,8 +368,11 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   // Vendedor/titular
   const vendedores = context?.vendedores || []
   const primerVendedor = vendedores[0]
-  const vendedorNombre =
-    primerVendedor?.persona_fisica?.nombre || primerVendedor?.persona_moral?.denominacion_social || infoInscripcion.propietario?.nombre
+  const vendedorNombre = nonEmptyText(
+    primerVendedor?.persona_fisica?.nombre ||
+    primerVendedor?.persona_moral?.denominacion_social ||
+    infoInscripcion.propietario?.nombre
+  )
   const vendedorTipoPersona = primerVendedor?.tipo_persona
   // Titular registral idealmente viene del documento; si el usuario ya confirmó explícitamente al vendedor como titular,
   // permitir usar el nombre capturado como referencia para no bloquear el flujo.
@@ -421,14 +428,21 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   // Compradores
   const compradores = context?.compradores || []
   const primerComprador = compradores[0]
-  const compradorNombre = primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
+  const compradorNombre = nonEmptyText(
+    primerComprador?.persona_fisica?.nombre || primerComprador?.persona_moral?.denominacion_social
+  )
   const compradorTipoPersona = primerComprador?.tipo_persona
   // Regla:
   // - Persona moral: nombre + tipo_persona
   // - Persona física soltero/divorciado/viudo: nombre + tipo_persona + estado_civil
   // - Persona física casado: nombre + tipo_persona + estado_civil + cónyuge.nombre (no se completa hasta capturar cónyuge)
-  const compradorEstadoCivil = primerComprador?.persona_fisica?.estado_civil || null
-  const conyugeNombre = primerComprador?.persona_fisica?.conyuge?.nombre || (compradores.length > 1 ? (compradores[1]?.persona_fisica?.nombre || compradores[1]?.persona_moral?.denominacion_social) : null) || null
+  const compradorEstadoCivil = nonEmptyText(primerComprador?.persona_fisica?.estado_civil)
+  const conyugeNombre = nonEmptyText(
+    primerComprador?.persona_fisica?.conyuge?.nombre ||
+    (compradores.length > 1
+      ? (compradores[1]?.persona_fisica?.nombre || compradores[1]?.persona_moral?.denominacion_social)
+      : null)
+  )
   const compradorFisicaCompleto =
     compradorTipoPersona === 'persona_fisica' && !!compradorNombre && !!compradorEstadoCivil &&
     (compradorEstadoCivil !== 'casado' || !!conyugeNombre)
@@ -619,6 +633,7 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
 
   if (currentState === 'ESTADO_4') {
     if (compradores.length === 0) requiredMissing.push('compradores[]')
+    if (!compradorNombre) requiredMissing.push('compradores[].nombre')
     if (!compradorTipoPersona) requiredMissing.push('compradores[].tipo_persona')
     if (compradorTipoPersona === 'persona_fisica' && !compradorEstadoCivil) {
       requiredMissing.push('compradores[0].persona_fisica.estado_civil')
