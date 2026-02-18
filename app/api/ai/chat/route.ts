@@ -329,6 +329,11 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         !confirmationRequested &&
         routed.intent === 'QNA' &&
         shouldTreatQnaAsStateUpdate(body.message, routed.answer)
+      const shouldRecoverFromUnknownMisroute =
+        isPreavisoPlugin &&
+        !confirmationRequested &&
+        routed.intent === 'UNKNOWN' &&
+        shouldTreatUnknownAsStateUpdate(body.message, routed.answer)
       const shouldRecoverFromExtractMissingPayload =
         isPreavisoPlugin &&
         !confirmationRequested &&
@@ -340,7 +345,12 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
 
       let usedLegacyStateFallback = false
 
-      if (shouldUseLegacyStateUpdateFallback || shouldRecoverFromQnaMisroute || shouldRecoverFromExtractMissingPayload) {
+      if (
+        shouldUseLegacyStateUpdateFallback ||
+        shouldRecoverFromQnaMisroute ||
+        shouldRecoverFromUnknownMisroute ||
+        shouldRecoverFromExtractMissingPayload
+      ) {
         const [tramiteData, recentMessages] = await Promise.all([
           deps.loadTramiteData(body.tramiteId),
           deps.findRecentChatMessages(body.chatId, 20),
@@ -745,6 +755,8 @@ function shouldFallbackToLegacyStateUpdate(message: string): boolean {
     /\b(si|no|confirmo|confirmado|correcto|sera|se)\b/.test(lower)
   const hasDirectFolioReply =
     /^\d{6,10}$/.test(text.replace(/\s+/g, '')) ||
+    /^es\s+el\s+\d{5,10}$/.test(lower) ||
+    /^es\s+\d{5,10}$/.test(lower) ||
     (/\b(folio|partida)\b/.test(lower) && /\b\d{5,10}\b/.test(lower))
 
   if (!(hasDomainShortSignal || hasDirectFolioReply || hasCancellationReply) && /\b(ejecuta|confirmo|confirma|ok|dale|si)\b/.test(lower) && text.length <= 25) {
@@ -773,9 +785,51 @@ function shouldTreatQnaAsStateUpdate(message: string, answer?: string): boolean 
     /\b(credito|credito|contado|gravamen|hipoteca|folio|partida|direccion|direccion|comprador|vendedor|estado civil|casado|soltero)\b/.test(normalized) &&
     /\b(es|son|sin|con|confirmo|indico|indica)\b/.test(normalized)
 
-  const noEvidenceAnswer = /no encontre evidencia relevante|no encontr[eé] evidencia relevante/i.test(String(answer || ''))
+  const noEvidenceAnswer = containsNoEvidenceMessage(answer)
 
   return domainSignal || noEvidenceAnswer
+}
+
+function shouldTreatUnknownAsStateUpdate(message: string, answer?: string): boolean {
+  const text = String(message || '').trim()
+  if (!text) return false
+  if (text.includes('?')) return false
+
+  const noEvidenceAnswer = containsNoEvidenceMessage(answer)
+  if (!noEvidenceAnswer) return false
+
+  return isLikelyPersonNameReply(text) || shouldFallbackToLegacyStateUpdate(text)
+}
+
+function isLikelyPersonNameReply(message: string): boolean {
+  const text = String(message || '').trim()
+  if (!text) return false
+  if (text.length < 4 || text.length > 80) return false
+  if (/\d/.test(text)) return false
+  if (/[?@#]/.test(text)) return false
+
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  const words = normalized.split(/\s+/).filter(Boolean)
+  if (words.length < 2 || words.length > 5) return false
+  if (!words.every((w) => /^[a-z.'-]+$/.test(w))) return false
+
+  const blocked = new Set(['si', 'no', 'ok', 'dale', 'ejecuta', 'confirmo', 'confirmar'])
+  if (words.some((w) => blocked.has(w))) return false
+
+  return true
+}
+
+function containsNoEvidenceMessage(answer?: string): boolean {
+  const normalized = String(answer || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  return normalized.includes('no encontre evidencia relevante')
 }
 
 function isExtractionMissingPayload(actions: unknown): boolean {
