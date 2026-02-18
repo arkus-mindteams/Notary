@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { createServerClient } from '@/lib/supabase'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import { RetrievalResponseAgent, AIOutputInvalidError } from '@/lib/ai/rag/retrieval-response-agent'
+import { PluginRegistry } from '@/lib/tramites/plugins/plugin-registry'
 
 const requestSchema = z.object({
   chatId: z.string().uuid(),
@@ -131,12 +132,21 @@ export function createRagChatRouteHandler(deps: RouteDeps = defaultDeps) {
         }
       }
 
+      let resolvedPluginType = body.pluginType || tramiteScope.tipo || 'preaviso'
+      try {
+        resolvedPluginType = PluginRegistry.getInstance().get(resolvedPluginType).tramiteType
+      } catch {
+        return errorResponse(422, 'DOMAIN_RULE_VIOLATION', 'tramiteType no soportado', {
+          pluginType: body.pluginType || tramiteScope.tipo || 'preaviso',
+        })
+      }
+
       const result = await deps.respond({
         chatId: body.chatId,
         tramiteId: body.tramiteId,
         userMessage: body.message,
         userAuthId: currentUser.auth_user_id,
-        pluginType: body.pluginType || tramiteScope.tipo || 'preaviso',
+        pluginType: resolvedPluginType,
       })
 
       await Promise.all([

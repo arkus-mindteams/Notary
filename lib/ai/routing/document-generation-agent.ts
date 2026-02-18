@@ -1,7 +1,9 @@
 import { randomUUID } from 'crypto'
+import { PluginRegistry } from '@/lib/tramites/plugins/plugin-registry'
 
 export interface DocumentGenerationInput {
   tramiteId: string
+  tramiteType?: string
   outputFormat?: 'docx' | 'pdf'
   documentTitle?: string
 }
@@ -16,8 +18,10 @@ export interface DocumentGenerationResult {
 export class DocumentGenerationAgent {
   async prepare(input: DocumentGenerationInput): Promise<DocumentGenerationResult> {
     const traceId = randomUUID()
-    const format = input.outputFormat || 'docx'
-    const title = input.documentTitle || 'SOLICITUD DE CERTIFICADO CON EFECTO DE PRE-AVISO'
+    const plugin = PluginRegistry.getInstance().get(String(input.tramiteType || 'preaviso'))
+    const config = plugin.docGenerationConfig()
+    const format = input.outputFormat || config.defaultFormat
+    const title = input.documentTitle || config.defaultTitle
 
     return {
       trace_id: traceId,
@@ -25,7 +29,7 @@ export class DocumentGenerationAgent {
         {
           type: 'prepare_document_generation',
           requires_domain_commit: true,
-          commit_endpoint: '/api/expedientes/preaviso/finalize',
+          commit_endpoint: config.commitEndpoint,
         },
       ],
       payload: {

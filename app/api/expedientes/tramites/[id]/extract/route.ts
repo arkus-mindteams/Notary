@@ -6,10 +6,11 @@ import { TramiteService } from '@/lib/services/tramite-service'
 import { DocumentoService } from '@/lib/services/documento-service'
 import { ExtractionAgent, AIOutputInvalidError } from '@/lib/ai/extraction/extraction-agent'
 import type { ExtractionResult } from '@/lib/ai/extraction/types'
+import { PluginRegistry } from '@/lib/tramites/plugins/plugin-registry'
 
 const requestSchema = z.object({
   documentId: z.string().trim().min(1),
-  tramiteType: z.literal('preaviso'),
+  tramiteType: z.string().trim().min(1),
   rawText: z.string().optional(),
   fileMeta: z.record(z.any()).optional(),
 }).strict()
@@ -124,6 +125,13 @@ export function createExtractRouteHandler(deps: RouteDeps = defaultDeps) {
       }
 
       const body = parsedBody.data
+      try {
+        PluginRegistry.getInstance().get(body.tramiteType)
+      } catch {
+        return errorResponse(422, 'DOMAIN_RULE_VIOLATION', 'tramiteType no soportado', {
+          tramiteType: body.tramiteType,
+        })
+      }
       const resolvedParams = await Promise.resolve(params)
       const tramiteId = resolvedParams.id
       const tramite = await deps.findTramiteById(tramiteId)

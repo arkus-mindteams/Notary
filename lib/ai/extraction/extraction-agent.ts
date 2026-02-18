@@ -1,12 +1,11 @@
 import { createHash, randomUUID } from 'crypto'
 import type { ZodIssue } from 'zod'
 import { ActivityLogService } from '@/lib/services/activity-log-service'
-import { PreavisoExtractionPlugin } from '@/lib/ai/extraction/plugins/preaviso-extraction-plugin'
+import { PluginRegistry } from '@/lib/tramites/plugins/plugin-registry'
 import type {
   ExtractionAuditLogger,
   ExtractionInput,
   ExtractionLLMClient,
-  ExtractionPlugin,
   ExtractionResult,
   TramiteExtractionType,
 } from '@/lib/ai/extraction/types'
@@ -123,28 +122,22 @@ export class AIOutputInvalidError extends Error {
 }
 
 export class ExtractionAgent {
-  private readonly plugins = new Map<TramiteExtractionType, ExtractionPlugin>()
   private readonly llmClient: ExtractionLLMClient
   private readonly auditLogger: ExtractionAuditLogger
+  private readonly pluginRegistry: PluginRegistry
 
   constructor(args?: {
     llmClient?: ExtractionLLMClient
     auditLogger?: ExtractionAuditLogger
+    pluginRegistry?: PluginRegistry
   }) {
     this.llmClient = args?.llmClient || new OpenAIExtractionClient()
     this.auditLogger = args?.auditLogger || new ActivityLogExtractionAuditLogger()
-    this.registerPlugin(new PreavisoExtractionPlugin())
-  }
-
-  registerPlugin(plugin: ExtractionPlugin) {
-    this.plugins.set(plugin.tramiteType, plugin)
+    this.pluginRegistry = args?.pluginRegistry || PluginRegistry.getInstance()
   }
 
   async extract(input: ExtractionInput): Promise<ExtractionResult> {
-    const plugin = this.plugins.get(input.tramiteType)
-    if (!plugin) {
-      throw new Error(`No extraction plugin registered for tramite ${input.tramiteType}`)
-    }
+    const plugin = this.pluginRegistry.get(input.tramiteType)
 
     const traceId = input.auditContext?.traceId || randomUUID()
     const rawText = String(input.rawText || '').trim()
@@ -165,14 +158,14 @@ export class ExtractionAgent {
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const isRepair = attempt > 1
-      const systemPrompt = plugin.buildSystemPrompt(input)
+      const systemPrompt = plugin.buildExtractionSystemPrompt(input)
       const userPrompt = isRepair
-        ? plugin.buildRepairPrompt({
+        ? plugin.buildExtractionRepairPrompt({
           input,
           lastModelOutput,
           validationErrors: lastValidationErrors,
         })
-        : plugin.buildUserPrompt(input)
+        : plugin.buildExtractionUserPrompt(input)
 
       if (EXTRACTION_DEBUG) {
         console.log('[ExtractionAgent][request]', {
@@ -229,7 +222,7 @@ export class ExtractionAgent {
         })
       }
 
-      const validation = plugin.outputSchema.safeParse(parsed.value)
+      const validation = plugin.schemas.extractionSchema.safeParse(parsed.value)
       if (!validation.success) {
         lastValidationErrors = this.buildValidationErrors(validation.error.issues)
         await this.auditLogger.log({
