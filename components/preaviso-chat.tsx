@@ -2406,21 +2406,56 @@ export function PreavisoChat({
         if (processResult?.expedienteExistente) setExpedienteExistente(processResult.expedienteExistente)
         const effectiveTramiteId = batchTramiteIdRef.current ?? activeTramiteId
 
-        const postJsonWithTimeout = async (input: string, body: any, timeoutMs: number) => {
+        const postJsonWithTimeout = async (
+          input: string,
+          body: any,
+          timeoutMs: number,
+          opts?: { signal?: AbortSignal; label?: string; requestId?: string }
+        ) => {
           const controller = new AbortController()
-          const timer = setTimeout(() => controller.abort(), timeoutMs)
+          let abortReason: 'timeout' | 'parent_abort' | null = null
+          const onAbort = () => {
+            abortReason = 'parent_abort'
+            controller.abort()
+          }
+          if (opts?.signal) {
+            if (opts.signal.aborted) onAbort()
+            else opts.signal.addEventListener('abort', onAbort, { once: true })
+          }
+          const timer = setTimeout(() => {
+            abortReason = 'timeout'
+            controller.abort()
+          }, timeoutMs)
           try {
             const { data: { session } } = await supabase.auth.getSession()
             const headers: HeadersInit = { 'Content-Type': 'application/json' }
             if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
+            if (opts?.requestId) headers['x-client-request-id'] = opts.requestId
+            console.info('[PreavisoChat] request start', {
+              label: opts?.label || input,
+              request_id: opts?.requestId || null,
+              timeout_ms: timeoutMs,
+            })
             return await fetch(input, {
               method: 'POST',
               headers,
               body: JSON.stringify(body),
               signal: controller.signal,
             })
+          } catch (error: any) {
+            if (error?.name === 'AbortError') {
+              console.warn('[PreavisoChat] request aborted', {
+                label: opts?.label || input,
+                request_id: opts?.requestId || null,
+                reason: abortReason || 'unknown_abort',
+                timeout_ms: timeoutMs,
+              })
+              ;(error as any).__abortReason = abortReason || 'unknown_abort'
+            }
+            throw error
           } finally {
             clearTimeout(timer)
+            if (opts?.signal) opts.signal.removeEventListener('abort', onAbort)
           }
         }
 
@@ -2839,6 +2874,7 @@ export function PreavisoChat({
                       if (tramiteIdForExtraction && rawTextForExtraction && !requiresOcrFallback) {
                         const extractionTask = (async () => {
                           try {
+                            const extractionRequestId = `extract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
                             const extractResp = await postJsonWithTimeout(
                               `/api/expedientes/tramites/${tramiteIdForExtraction}/extract`,
                               {
@@ -2851,11 +2887,20 @@ export function PreavisoChat({
                                   fileName: item.originalFile.name,
                                 },
                               },
-                              30000
+                              60000,
+                              {
+                                signal: batchAbort.signal,
+                                label: '/api/expedientes/tramites/[id]/extract',
+                                requestId: extractionRequestId,
+                              }
                             )
 
                             if (extractResp.ok) {
                               const extractJson = await extractResp.json()
+                              console.info('[PreavisoChat] /extract ok', {
+                                request_id: extractionRequestId,
+                                trace_id: extractJson?.trace_id || null,
+                              })
                               processResult.structuredExtraction = extractJson?.structured || null
                               processResult.structuredExtractionWarnings = extractJson?.warnings || []
                               processResult.structuredExtractionTraceId = extractJson?.trace_id || null
@@ -2870,12 +2915,16 @@ export function PreavisoChat({
                             } else {
                               const errText = await extractResp.text().catch(() => '')
                               console.warn('[PreavisoChat] /extract non-ok', {
+                                request_id: extractionRequestId,
                                 status: extractResp.status,
                                 body: errText?.slice(0, 250),
                               })
                             }
                           } catch (extractError) {
-                            console.warn('[PreavisoChat] Error calling /extract', extractError)
+                            console.warn('[PreavisoChat] Error calling /extract', {
+                              message: (extractError as any)?.message || 'extract_error',
+                              abort_reason: (extractError as any)?.__abortReason || null,
+                            })
                           }
                         })()
                         pendingStructuredExtractionTasks.push(extractionTask)

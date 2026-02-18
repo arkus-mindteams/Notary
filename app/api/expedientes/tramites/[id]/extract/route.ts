@@ -108,7 +108,12 @@ export function createExtractRouteHandler(deps: RouteDeps = defaultDeps) {
     req: Request,
     { params }: { params: { id: string } | Promise<{ id: string }> }
   ) {
+    const startedAt = Date.now()
+    const clientRequestId = req.headers.get('x-client-request-id') || null
     try {
+      console.info('[api/expedientes/tramites/[id]/extract] start', {
+        client_request_id: clientRequestId,
+      })
       const currentUser = await deps.getCurrentUserFromRequest(req)
       if (!currentUser || !currentUser.activo) {
         return errorResponse(401, 'UNAUTHORIZED', 'No autenticado')
@@ -205,6 +210,12 @@ export function createExtractRouteHandler(deps: RouteDeps = defaultDeps) {
       )
     } catch (error: any) {
       if (error instanceof AIOutputInvalidError) {
+        console.warn('[api/expedientes/tramites/[id]/extract] ai_output_invalid', {
+          client_request_id: clientRequestId,
+          trace_id: String(error.details?.trace_id || ''),
+          duration_ms: Date.now() - startedAt,
+          message: error.message,
+        })
         return errorResponse(
           422,
           'AI_OUTPUT_INVALID',
@@ -214,8 +225,17 @@ export function createExtractRouteHandler(deps: RouteDeps = defaultDeps) {
         )
       }
 
-      console.error('[api/expedientes/tramites/[id]/extract] Error:', error)
+      console.error('[api/expedientes/tramites/[id]/extract] Error:', {
+        client_request_id: clientRequestId,
+        duration_ms: Date.now() - startedAt,
+        message: error?.message || 'internal_error',
+      })
       return errorResponse(500, 'INTERNAL_ERROR', error?.message || 'Error interno del servidor')
+    } finally {
+      console.info('[api/expedientes/tramites/[id]/extract] end', {
+        client_request_id: clientRequestId,
+        duration_ms: Date.now() - startedAt,
+      })
     }
   }
 }
