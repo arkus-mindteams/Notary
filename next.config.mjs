@@ -12,8 +12,12 @@ const nextConfig = {
     unoptimized: true,
   },
   serverExternalPackages: ['react-pdf'],
-  webpack: (config) => {
-    config.resolve.alias.canvas = false;
+  webpack: (config, { isServer }) => {
+    // Evitar que el cliente intente bundlear módulos nativos de Node.
+    // En servidor NO desactivar `canvas`, porque pdfjs puede usarlo para polyfills.
+    if (!isServer) {
+      config.resolve.alias.canvas = false;
+    }
     config.resolve.alias.encoding = false;
 
     // Forzar resolución desde la raíz del proyecto (evita C:\Notary como contexto)
@@ -22,7 +26,7 @@ const nextConfig = {
     // Configuración específica para PDF.js
     config.resolve.fallback = {
       ...config.resolve.fallback,
-      canvas: false,
+      ...(isServer ? {} : { canvas: false }),
       fs: false,
     };
 
