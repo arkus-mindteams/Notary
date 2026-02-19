@@ -2,8 +2,18 @@
  * Endpoint de procesamiento de documentos usando Plugin System
  */
 
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+
 import { NextResponse } from 'next/server'
 import { createHash, randomUUID } from 'crypto'
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import {
+  TextractClient,
+  DetectDocumentTextCommand,
+  StartDocumentTextDetectionCommand,
+  GetDocumentTextDetectionCommand,
+} from '@aws-sdk/client-textract'
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
 import { ActivityLogService } from '@/lib/services/activity-log-service'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
@@ -245,6 +255,194 @@ function isImageLikeFile(file: File): boolean {
   return /\.(png|jpe?g|webp|gif|bmp|tiff?)$/.test(name)
 }
 
+async function extractPdfTextWithAsyncOcr(
+  file: File,
+  traceId: string,
+  providedBytes?: Uint8Array
+): Promise<{
+  text: string | null
+  source: 'async_textract' | 'sync_textract' | 'none'
+  reason: string | null
+  elapsed_ms: number
+}> {
+  const startedAt = Date.now()
+  const awsRegion = process.env.AWS_REGION
+  const awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID
+  const awsSecretAccessKey = process.env.AWS_SECRET_ACCESS_KEY
+  const bucket = process.env.AWS_S3_BUCKET || process.env.OCR_S3_BUCKET
+  if (!awsRegion || !awsAccessKeyId || !awsSecretAccessKey) {
+    console.warn('[preaviso-process-document] async_ocr_unavailable', {
+      trace_id: traceId,
+      file_name: file.name,
+      reason: 'missing_aws_credentials_or_region',
+      has_region: Boolean(awsRegion),
+      has_access_key: Boolean(awsAccessKeyId),
+      has_secret_key: Boolean(awsSecretAccessKey),
+      has_bucket: Boolean(bucket),
+    })
+    return {
+      text: null,
+      source: 'none',
+      reason: 'missing_aws_credentials_or_region',
+      elapsed_ms: Date.now() - startedAt,
+    }
+  }
+
+  const credentials = {
+    accessKeyId: awsAccessKeyId,
+    secretAccessKey: awsSecretAccessKey,
+  }
+
+  const s3 = new S3Client({ region: awsRegion, credentials })
+  const textract = new TextractClient({ region: awsRegion, credentials })
+  const key = bucket
+    ? (process.env.OCR_S3_PREFIX || 'uploads/') +
+      `${Date.now()}-${String(file.name || 'document').replace(/\s+/g, '_').toLowerCase()}`
+    : null
+
+  try {
+    const bytes = providedBytes && providedBytes.length > 0
+      ? providedBytes
+      : new Uint8Array(await file.arrayBuffer())
+
+    if (bucket && key) {
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: bytes,
+          ContentType: file.type || 'application/pdf',
+        })
+      )
+
+      const startResp = await textract.send(
+        new StartDocumentTextDetectionCommand({
+          DocumentLocation: {
+            S3Object: { Bucket: bucket, Name: key },
+          },
+        })
+      )
+      const jobId = startResp.JobId
+      console.info('[preaviso-process-document] async_ocr_started', {
+        trace_id: traceId,
+        file_name: file.name,
+        has_bucket: true,
+        job_id: jobId || null,
+      })
+      if (jobId) {
+        const configuredTimeoutMs = Number(
+          process.env.OCR_ASYNC_TIMEOUT_MS || process.env.OPENAI_DOC_TIMEOUT_BULK_MS || 120000
+        )
+        const timeoutMs = Number.isFinite(configuredTimeoutMs)
+          ? Math.max(60000, configuredTimeoutMs)
+          : 120000
+        for (;;) {
+          const resp = await textract.send(new GetDocumentTextDetectionCommand({ JobId: jobId }))
+          const status = String(resp.JobStatus || '')
+          if (status === 'SUCCEEDED') {
+            let nextToken = resp.NextToken
+            const allBlocks = [...(resp.Blocks || [])]
+            while (nextToken) {
+              const pageResp = await textract.send(
+                new GetDocumentTextDetectionCommand({
+                  JobId: jobId,
+                  NextToken: nextToken,
+                })
+              )
+              allBlocks.push(...(pageResp.Blocks || []))
+              nextToken = pageResp.NextToken
+            }
+            const text = allBlocks
+              .filter((b) => b.BlockType === 'LINE' && b.Text)
+              .map((b) => String(b.Text))
+              .join('\n')
+              .trim()
+            if (text) {
+              return {
+                text,
+                source: 'async_textract',
+                reason: null,
+                elapsed_ms: Date.now() - startedAt,
+              }
+            }
+            break
+          }
+          if (status === 'FAILED' || status === 'PARTIAL_SUCCESS') {
+            console.warn('[preaviso-process-document] async_ocr_non_success', {
+              trace_id: traceId,
+              file_name: file.name,
+              job_status: status,
+            })
+            break
+          }
+          if (Date.now() - startedAt > timeoutMs) {
+            console.warn('[preaviso-process-document] async_ocr_timeout', {
+              trace_id: traceId,
+              file_name: file.name,
+              timeout_ms: timeoutMs,
+              elapsed_ms: Date.now() - startedAt,
+            })
+            break
+          }
+          await new Promise((resolve) => setTimeout(resolve, 2000))
+        }
+      }
+    }
+
+    // Fallback: intento síncrono con bytes para evitar vacío silencioso.
+    try {
+      const syncResp = await textract.send(
+        new DetectDocumentTextCommand({
+          Document: { Bytes: bytes },
+        })
+      )
+      const syncText = (syncResp.Blocks || [])
+        .filter((b) => b.BlockType === 'LINE' && b.Text)
+        .map((b) => String(b.Text))
+        .join('\n')
+        .trim()
+      if (syncText) {
+        return {
+          text: syncText,
+          source: 'sync_textract',
+          reason: null,
+          elapsed_ms: Date.now() - startedAt,
+        }
+      }
+    } catch (syncError) {
+      console.warn('[preaviso-process-document] sync_ocr_fallback_failed', {
+        trace_id: traceId,
+        file_name: file.name,
+        ...toSafeError(syncError),
+      })
+      return {
+        text: null,
+        source: 'none',
+        reason: 'sync_ocr_fallback_failed',
+        elapsed_ms: Date.now() - startedAt,
+      }
+    }
+    return {
+      text: null,
+      source: 'none',
+      reason: 'no_text_from_ocr',
+      elapsed_ms: Date.now() - startedAt,
+    }
+  } catch (error) {
+    console.error('[preaviso-process-document] async_ocr_error', {
+      trace_id: traceId,
+      file_name: file.name,
+      ...toSafeError(error),
+    })
+    return {
+      text: null,
+      source: 'none',
+      reason: 'async_ocr_error',
+      elapsed_ms: Date.now() - startedAt,
+    }
+  }
+}
+
 function detectFoliosFromText(rawText: string): string[] {
   const text = String(rawText || '')
   if (!text) return []
@@ -302,6 +500,12 @@ function normalizeInstitutionName(rawInstitution: string | null | undefined): st
     return null
   }
 
+  const hasLegalDenomination =
+    /\b(s\.?\s*a\.?|sapi|sociedad|anonima|institucion\s+de\s+banca\s+multiple|grupo\s+financiero|de\s+c\.?\s*v\.?)\b/i.test(input)
+  if (hasLegalDenomination) {
+    return input
+  }
+
   if (normalized.includes('infonavit')) return 'INFONAVIT'
   if (normalized.includes('fovissste')) return 'FOVISSSTE'
   if (normalized.includes('banco mercantil del norte') || /\bbanorte\b/.test(normalized)) return 'Banco Mercantil del Norte'
@@ -315,6 +519,12 @@ function normalizeInstitutionName(rawInstitution: string | null | undefined): st
 }
 
 function detectInstitutionFromText(rawText: string): string | null {
+  const legalLineMatch = String(rawText || '').match(
+    /\b(?:credito|cr[eé]dito|acreditante|acreedor(?:es)?)\b\s*[:\-]\s*([^\n\r]+)/i
+  )
+  const legalLineInstitution = normalizeInstitutionName(legalLineMatch ? legalLineMatch[1] : null)
+  if (legalLineInstitution) return legalLineInstitution
+
   const normalized = String(rawText || '')
     .toLowerCase()
     .normalize('NFD')
@@ -723,7 +933,12 @@ export async function POST(req: Request) {
     const extractionAgent = new ExtractionAgent()
     const extractStartedAt = Date.now()
     let result: { data: any; commands: any[]; extractedData?: any; meta?: any }
-    const textResult = await textExtractor.extractFromFile(file, { allowOcrFallback: false })
+    const fileBytes = new Uint8Array(await file.arrayBuffer())
+    const fileForTextProbe = new File([fileBytes], file.name, {
+      type: file.type || 'application/octet-stream',
+      lastModified: Date.now(),
+    })
+    const textResult = await textExtractor.extractFromFile(fileForTextProbe, { allowOcrFallback: false })
     console.info('[preaviso-process-document] text_first_probe', {
       trace_id: traceId,
       file_name: file.name,
@@ -803,23 +1018,79 @@ export async function POST(req: Request) {
           context || {}
         )
       } else {
-        // No enviar PDFs/DOCX sin texto utilizable a Vision (espera imagen MIME).
-        result = {
-          data: context || {},
-          commands: [],
-          extractedData: {
-            textoCompleto: '',
-            _source_extraction: textResult.source,
-            _needs_ocr_reason: textResult.reason || 'text_not_usable',
-            _requires_ocr: true,
-            _text_debug: textResult.debug || null,
-          },
-          meta: {
-            text_first: false,
-            requires_ocr: true,
-            extraction_source: textResult.source,
-            needs_ocr_reason: textResult.reason || 'text_not_usable',
-            text_debug: textResult.debug || null,
+        const isPdf = String(file.type || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(file.name)
+        const ocrAttempt = isPdf
+          ? await extractPdfTextWithAsyncOcr(file, traceId, fileBytes)
+          : { text: null, source: 'none' as const, reason: 'not_pdf', elapsed_ms: 0 }
+        const asyncOcrText = String(ocrAttempt?.text || '').trim()
+        if (asyncOcrText) {
+          const extraction = await extractionAgent.extract({
+            tramiteType: 'preaviso',
+            documentId: `adhoc:${traceId}:${file.name}`,
+            rawText: asyncOcrText,
+            fileMeta: {
+              file_name: file.name,
+              mime_type: file.type || 'application/octet-stream',
+              source_document_type: documentType,
+              source_extraction: ocrAttempt.source || 'ocr_async_pdf',
+            },
+            auditContext: {
+              userId: authUserId || null,
+              tramiteId: context?.tramiteId || null,
+              traceId,
+            },
+          })
+          const enrichedStructured = enrichStructuredExtractionFromText({
+            structured: extraction.structured,
+            rawText: asyncOcrText,
+            documentType,
+          })
+
+          result = {
+            data: mergeExtractedIntoContext(context || {}, enrichedStructured),
+            commands: [],
+            extractedData: {
+              ...(enrichedStructured || {}),
+              textoCompleto: asyncOcrText,
+              _source_extraction: ocrAttempt.source || 'ocr_async_pdf',
+              _ocr_debug: {
+                reason: ocrAttempt.reason,
+                elapsed_ms: ocrAttempt.elapsed_ms,
+                source: ocrAttempt.source,
+              },
+              _trace_id: extraction.trace_id,
+            },
+            meta: {
+              text_first: false,
+              extraction_source: ocrAttempt.source || 'ocr_async_pdf',
+              text_debug: textResult.debug || null,
+              warnings: extraction.warnings || [],
+            }
+          }
+        } else {
+          // No enviar PDFs/DOCX sin texto utilizable a Vision (espera imagen MIME).
+          result = {
+            data: context || {},
+            commands: [],
+            extractedData: {
+              textoCompleto: '',
+              _source_extraction: textResult.source,
+              _needs_ocr_reason: textResult.reason || 'text_not_usable',
+              _requires_ocr: true,
+              _ocr_debug: {
+                reason: ocrAttempt.reason,
+                elapsed_ms: ocrAttempt.elapsed_ms,
+                source: ocrAttempt.source,
+              },
+              _text_debug: textResult.debug || null,
+            },
+            meta: {
+              text_first: false,
+              requires_ocr: true,
+              extraction_source: textResult.source,
+              needs_ocr_reason: textResult.reason || 'text_not_usable',
+              text_debug: textResult.debug || null,
+            }
           }
         }
       }

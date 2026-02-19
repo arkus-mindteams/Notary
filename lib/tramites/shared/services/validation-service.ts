@@ -59,17 +59,16 @@ export class ValidationService {
       return false
     }
 
-    // Los nombres de bancos suelen ser cortos (1-3 palabras). 
-    // Si es muy largo (>30) y no tiene sufijos legales, es sospechoso.
+    // Permitir razones sociales largas cuando contienen marcadores legales.
     if (normalized.length > 30) {
-      const isLegalEntity = /\b(s\.?a\.?|sociedad|anonima|banco|institucion|credit|finan)\b/i.test(normalized)
+      const isLegalEntity = /\b(s\.?a\.?|sociedad|anonima|banco|institucion|institucion de banca multiple|grupo financiero|sapi|de c\.?v\.?)\b/i.test(normalized)
       if (!isLegalEntity) return false
     }
 
     // No debe ser solo números o caracteres especiales
     if (!/[a-z]{3,}/i.test(normalized)) return false
 
-    return normalized.length >= 3 && normalized.length <= 60
+    return normalized.length >= 3 && normalized.length <= 220
   }
 
   /**

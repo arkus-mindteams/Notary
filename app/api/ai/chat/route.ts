@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
+import { randomUUID } from 'crypto'
 import { createServerClient } from '@/lib/supabase'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import { AgentRouter } from '@/lib/ai/routing/agent-router'
@@ -235,6 +236,43 @@ const defaultDeps = {
     if (!tramite) throw new ProposedUpdateDomainViolationError('Tramite no encontrado')
     return tramite.datos || {}
   },
+  findLatestTramiteDocumentExtraction: async (tramiteId: string) => {
+    const supabase = createServerClient()
+    const { data, error } = await supabase
+      .from('tramite_documentos')
+      .select('created_at, documentos(id,nombre,tipo,metadata)')
+      .eq('tramite_id', tramiteId)
+      .order('created_at', { ascending: false })
+      .limit(10)
+
+    if (error) throw new Error(`Error loading tramite documents: ${error.message}`)
+    const rows = (data || []) as Array<{
+      created_at?: string | null
+      documentos?: {
+        id?: string | null
+        nombre?: string | null
+        tipo?: string | null
+        metadata?: Record<string, unknown> | null
+      } | null
+    }>
+
+    for (const row of rows) {
+      const doc = row.documentos
+      const extractedData =
+        doc?.metadata && typeof doc.metadata === 'object'
+          ? (doc.metadata as any).extracted_data || null
+          : null
+      if (extractedData && typeof extractedData === 'object') {
+        return {
+          documentId: String(doc?.id || ''),
+          fileName: String(doc?.nombre || ''),
+          documentType: String(doc?.tipo || ''),
+          extractedData,
+        }
+      }
+    }
+    return null
+  },
 }
 
 type RouteDeps = typeof defaultDeps
@@ -297,17 +335,32 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
       }
       const isPreavisoPlugin = resolvedPluginType === 'preaviso'
 
-      const routed = await deps.route({
-        chatId: body.chatId,
-        tramiteId: body.tramiteId,
-        message: body.message,
-        uiContext: {
-          ...(body.uiContext || {}),
-          pluginType: resolvedPluginType,
-          tramiteType: resolvedPluginType,
-        },
-        userAuthId: currentUser.auth_user_id,
-      })
+      const shouldDirectLegacyStateUpdate =
+        isPreavisoPlugin &&
+        !isConfirmationMessage(body.message) &&
+        shouldFallbackToLegacyStateUpdate(body.message) &&
+        shouldBypassRouterForShortUpdate(body.message, body.uiContext?.uiAction)
+
+      const routed = shouldDirectLegacyStateUpdate
+        ? ({
+            intent: 'UPDATE_STATE',
+            agent_used: 'ProposeStateUpdateAgent',
+            answer: '',
+            proposed_updates: [],
+            actions: [],
+            trace_id: randomUUID(),
+          } as any)
+        : await deps.route({
+            chatId: body.chatId,
+            tramiteId: body.tramiteId,
+            message: body.message,
+            uiContext: {
+              ...(body.uiContext || {}),
+              pluginType: resolvedPluginType,
+              tramiteType: resolvedPluginType,
+            },
+            userAuthId: currentUser.auth_user_id,
+          })
 
       let tramiteState = await deps.getTramiteStateSnapshot(body.tramiteId)
 
@@ -321,6 +374,7 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
       const shouldUseLegacyStateUpdateFallback =
         isPreavisoPlugin &&
         !confirmationRequested &&
+        !shouldDirectLegacyStateUpdate &&
         routed.intent === 'UPDATE_STATE' &&
         shouldFallbackToLegacyStateUpdate(body.message)
 
@@ -342,8 +396,81 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         (body.uiContext?.uiAction === 'chat_after_document_process' ||
           body.uiContext?.hasDocument === true ||
           /subi|subido|subir|documento|captura|imagen|archivo/i.test(body.message))
+      const shouldRetryFromDocumentEvidence =
+        isPreavisoPlugin &&
+        !confirmationRequested &&
+        shouldRetryFromDocumentMessage(body.message) &&
+        Array.isArray(routed.actions) &&
+        routed.actions.some((a: any) => a?.type === 'request_missing_field')
 
       let usedLegacyStateFallback = false
+
+      if (shouldDirectLegacyStateUpdate && !confirmationRequested) {
+        const [tramiteData, recentMessages] = await Promise.all([
+          deps.loadTramiteData(body.tramiteId),
+          deps.findRecentChatMessages(body.chatId, 20),
+        ])
+
+        const normalizedLegacyData = reconcileLegacyCapturedData({
+          prevData: (tramiteData || {}) as Record<string, any>,
+          nextData: (tramiteData || {}) as Record<string, any>,
+          message: body.message,
+        })
+        const normalizedWithHistory = hydrateCriticalFieldsFromHistory(
+          normalizedLegacyData,
+          recentMessages.map((m) => String(m.content || ''))
+        )
+        const normalizedEnriched = enrichInmuebleFromFolioCandidates(normalizedWithHistory)
+
+        await deps.persistTramiteData(body.tramiteId, normalizedEnriched)
+        const computed = computePreavisoState(normalizedEnriched || {})
+        const wizardState = PreavisoWizardStateService.fromSnapshot(
+          computed.state.current_state,
+          computed.state.state_status,
+          computed.state.required_missing,
+          computed.state.blocking_reasons
+        )
+        const guidance = buildMissingDataGuidance(
+          computed.state.required_missing || [],
+          computed.state.blocking_reasons || []
+        )
+        const hasMissing = guidance.required_missing.length > 0 || guidance.blocking_reasons.length > 0
+
+        responsePayload = {
+          ...routed,
+          intent: 'UPDATE_STATE',
+          agent_used: 'ProposeStateUpdateAgent',
+          answer: hasMissing
+            ? guidance.message
+            : 'Datos actualizados desde tu respuesta.',
+          proposed_updates: [],
+          actions: [
+            ...(Array.isArray(routed.actions) ? routed.actions : []),
+            { type: 'direct_state_update_applied' },
+            ...(hasMissing
+              ? [
+                  {
+                    type: 'request_missing_field',
+                    required_missing: guidance.required_missing,
+                    blocking_reasons: guidance.blocking_reasons,
+                    next_questions: guidance.next_questions,
+                  },
+                ]
+              : []),
+          ],
+          data: normalizedEnriched || {},
+          state: {
+            current_state: computed.state.current_state,
+            state_status: computed.state.state_status,
+            required_missing: computed.state.required_missing,
+            blocking_reasons: computed.state.blocking_reasons,
+            allowed_actions: computed.state.allowed_actions,
+            wizard_state: wizardState,
+          },
+        }
+        responsePayload = appendFolioSelectionActionIfNeeded(responsePayload, normalizedEnriched)
+        usedLegacyStateFallback = true
+      }
 
       if (
         shouldUseLegacyStateUpdateFallback ||
@@ -433,6 +560,79 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         }
         responsePayload = appendFolioSelectionActionIfNeeded(responsePayload, normalizedEnriched)
         usedLegacyStateFallback = true
+      }
+
+      if (shouldRetryFromDocumentEvidence) {
+        const [tramiteData, recentMessages, latestDocExtraction] = await Promise.all([
+          deps.loadTramiteData(body.tramiteId),
+          deps.findRecentChatMessages(body.chatId, 20),
+          deps.findLatestTramiteDocumentExtraction(body.tramiteId),
+        ])
+
+        if (latestDocExtraction?.extractedData) {
+          const mergedFromDoc = mergeStructuredExtractionIntoTramiteData(
+            (tramiteData || {}) as Record<string, any>,
+            latestDocExtraction.extractedData as Record<string, any>
+          )
+          const normalizedWithHistory = hydrateCriticalFieldsFromHistory(
+            mergedFromDoc,
+            recentMessages.map((m) => String(m.content || ''))
+          )
+          const normalizedEnriched = enrichInmuebleFromFolioCandidates(normalizedWithHistory)
+
+          await deps.persistTramiteData(body.tramiteId, normalizedEnriched)
+          const computed = computePreavisoState(normalizedEnriched || {})
+          const wizardState = PreavisoWizardStateService.fromSnapshot(
+            computed.state.current_state,
+            computed.state.state_status,
+            computed.state.required_missing,
+            computed.state.blocking_reasons
+          )
+          const guidance = buildMissingDataGuidance(
+            computed.state.required_missing || [],
+            computed.state.blocking_reasons || []
+          )
+          const hasMissing = guidance.required_missing.length > 0 || guidance.blocking_reasons.length > 0
+
+          responsePayload = {
+            ...routed,
+            intent: 'UPDATE_STATE',
+            agent_used: 'ProposeStateUpdateAgent',
+            answer: hasMissing
+              ? `Reprocesé la información del documento "${latestDocExtraction.fileName || 'reciente'}". ${guidance.message}`
+              : `Reprocesé la información del documento "${latestDocExtraction.fileName || 'reciente'}" y actualicé el trámite.`,
+            proposed_updates: [],
+            actions: [
+              ...(Array.isArray(routed.actions) ? routed.actions : []),
+              {
+                type: 'document_reprocess_applied',
+                document_id: latestDocExtraction.documentId || null,
+                file_name: latestDocExtraction.fileName || null,
+              },
+              ...(hasMissing
+                ? [
+                    {
+                      type: 'request_missing_field',
+                      required_missing: guidance.required_missing,
+                      blocking_reasons: guidance.blocking_reasons,
+                      next_questions: guidance.next_questions,
+                    },
+                  ]
+                : []),
+            ],
+            data: normalizedEnriched || {},
+            state: {
+              current_state: computed.state.current_state,
+              state_status: computed.state.state_status,
+              required_missing: computed.state.required_missing,
+              blocking_reasons: computed.state.blocking_reasons,
+              allowed_actions: computed.state.allowed_actions,
+              wizard_state: wizardState,
+            },
+          }
+          responsePayload = appendFolioSelectionActionIfNeeded(responsePayload, normalizedEnriched)
+          usedLegacyStateFallback = true
+        }
       }
 
       if (routed.intent === 'GENERATE_DOCUMENT' && !confirmationRequested) {
@@ -681,8 +881,9 @@ function isConfirmationMessage(message: string): boolean {
 function buildMissingDataGuidance(requiredMissing: string[], blockingReasons: string[]) {
   const uniqueMissing = Array.from(new Set(requiredMissing.filter(Boolean)))
   const uniqueBlocking = Array.from(new Set(blockingReasons.filter(Boolean)))
+  const userFacingMissing = reduceMissingFieldsForQuestions(uniqueMissing)
 
-  const nextQuestions = uniqueMissing.slice(0, 3).map(mapMissingFieldToQuestion)
+  const nextQuestions = userFacingMissing.slice(0, 3).map(mapMissingFieldToQuestion)
   const blockingHints = uniqueBlocking.slice(0, 2).map(mapBlockingReasonToHint)
 
   const messageParts: string[] = [
@@ -695,13 +896,32 @@ function buildMissingDataGuidance(requiredMissing: string[], blockingReasons: st
   if (blockingHints.length > 0) {
     messageParts.push(`Ademas, hay que resolver: ${blockingHints.join(' ')}`)
   }
+  if (nextQuestions.length > 0) {
+    messageParts.push('Si ese dato no aparece en el documento, puedes capturarlo manualmente escribiendolo en el chat.')
+  }
 
   return {
     message: messageParts.join(' ').trim(),
-    required_missing: uniqueMissing,
+    required_missing: userFacingMissing,
     blocking_reasons: uniqueBlocking,
     next_questions: nextQuestions,
   }
+}
+
+function reduceMissingFieldsForQuestions(fields: string[]): string[] {
+  const set = new Set(fields.filter(Boolean))
+  const result: string[] = []
+  for (const field of set) {
+    const hasParentComprador = field.startsWith('compradores[].') && set.has('compradores[]')
+    const hasParentVendedor = field.startsWith('vendedores[].') && set.has('vendedores[]')
+    const hasParentCredito = /^creditos\[\d+\]\./.test(field) && set.has('creditos[]')
+    const hasParentGravamen = /^gravamenes\[\d+\]\./.test(field) && set.has('gravamenes[]')
+    if (hasParentComprador || hasParentVendedor || hasParentCredito || hasParentGravamen) {
+      continue
+    }
+    result.push(field)
+  }
+  return result
 }
 
 function mapMissingFieldToQuestion(field: string): string {
@@ -713,8 +933,10 @@ function mapMissingFieldToQuestion(field: string): string {
   if (normalized === 'inmueble.partidas') return 'proporciona la partida registral del inmueble.'
   if (normalized === 'inmueble.direccion') return 'proporciona la direccion del inmueble.'
   if (normalized === 'vendedores[]') return 'indica quien es el vendedor.'
+  if (normalized === 'vendedores[].nombre') return 'indica el nombre completo del vendedor.'
   if (normalized === 'vendedores[].tipo_persona') return 'confirma si el vendedor es persona fisica o moral.'
   if (normalized === 'compradores[]') return 'indica quien es el comprador.'
+  if (normalized === 'compradores[].nombre') return 'indica el nombre completo del comprador.'
   if (normalized === 'compradores[].tipo_persona') return 'confirma si el comprador es persona fisica o moral.'
   if (normalized === 'compradores[0].persona_fisica.estado_civil') return 'indica el estado civil del comprador.'
   if (normalized === 'compradores[].persona_fisica.conyuge.nombre') return 'indica el nombre completo del conyuge.'
@@ -758,6 +980,10 @@ function shouldFallbackToLegacyStateUpdate(message: string): boolean {
     /^es\s+el\s+\d{5,10}$/.test(lower) ||
     /^es\s+\d{5,10}$/.test(lower) ||
     (/\b(folio|partida)\b/.test(lower) && /\b\d{5,10}\b/.test(lower))
+  const isSingleWordDomainReply = /^(contado|credito|casado|soltero|divorciado|viudo|si|no)$/.test(lower)
+  const hasPaymentQuickSignal =
+    /\b(contado|credito)\b/.test(lower) &&
+    /\b(compra|pago|forma de pago|de)\b/.test(lower)
 
   if (!(hasDomainShortSignal || hasDirectFolioReply || hasCancellationReply) && /\b(ejecuta|confirmo|confirma|ok|dale|si)\b/.test(lower) && text.length <= 25) {
     return false
@@ -768,7 +994,203 @@ function shouldFallbackToLegacyStateUpdate(message: string): boolean {
     (text.match(/\n/g)?.length || 0) >= 2 ||
     /folio|partida|lote|manzana|condominio|vendedor|comprador|direccion|credito|gravamen|hipoteca|cancel/i.test(text)
 
-  return hasNarrativeSignals || hasDomainShortSignal || hasDirectFolioReply || hasCancellationReply
+  return (
+    hasNarrativeSignals ||
+    hasDomainShortSignal ||
+    hasDirectFolioReply ||
+    hasCancellationReply ||
+    isSingleWordDomainReply ||
+    hasPaymentQuickSignal
+  )
+}
+
+function shouldBypassRouterForShortUpdate(message: string, uiAction?: string): boolean {
+  const text = String(message || '').trim()
+  if (!text) return false
+  if (text.includes('?')) return false
+
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  const compact = normalized.replace(/\s+/g, '')
+  const normalizedUiAction = String(uiAction || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  if (normalizedUiAction.includes('generate_document') || normalizedUiAction.includes('finalize')) {
+    return false
+  }
+
+  if (text.length <= 40) {
+    if (/^\d{5,10}$/.test(compact)) return true
+    if (/^(es)?folio\d{5,10}$/.test(compact)) return true
+    if (/^(es)?partida[a-z0-9-]{4,}$/.test(compact)) return true
+    if (/^(contado|credito|casado|soltero|divorciado|viudo|si|no)$/.test(normalized)) return true
+    if (/\b(compra|pago|forma de pago)\b/.test(normalized) && /\b(contado|credito)\b/.test(normalized)) return true
+    if (/\bde contado\b/.test(normalized)) return true
+    if (/\b(es|si|sin|con|confirmo|indico|indica)\b/.test(normalized) &&
+      /\b(credito|contado|gravamen|hipoteca|folio|partida|direccion|comprador|vendedor)\b/.test(normalized)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function shouldRetryFromDocumentMessage(message: string): boolean {
+  const normalized = String(message || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+  if (!normalized) return false
+  return (
+    /\b(toma|usar|usa|extrae|saca|revisa|lee|recupera)\b/.test(normalized) &&
+    /\b(documento|archivo|pdf|inscripcion|escritura|adjunt[ea]|subi|subido)\b/.test(normalized)
+  )
+}
+
+function mergeStructuredExtractionIntoTramiteData(
+  prevData: Record<string, any>,
+  extractedData: Record<string, any>
+): Record<string, any> {
+  const prev = prevData || {}
+  const extracted = extractedData || {}
+  const next: Record<string, any> = { ...prev }
+
+  const inmueble = extracted?.inmueble || {}
+  const direccion = inmueble?.direccion || {}
+  const datosCatastrales = inmueble?.datos_catastrales || {}
+  next.inmueble = {
+    ...(next.inmueble || {}),
+    folio_real: coalesceString(inmueble?.folio_real, next?.inmueble?.folio_real),
+    partidas:
+      Array.isArray(inmueble?.partidas) && inmueble.partidas.length > 0
+        ? inmueble.partidas
+        : Array.isArray(next?.inmueble?.partidas)
+          ? next.inmueble.partidas
+          : [],
+    direccion: mergeObjectPreservingNonEmpty(
+      (next?.inmueble?.direccion || {}) as Record<string, unknown>,
+      direccion as Record<string, unknown>
+    ),
+    superficie: coalesceValue(inmueble?.superficie, next?.inmueble?.superficie),
+    valor: coalesceValue(inmueble?.valor, next?.inmueble?.valor),
+    datos_catastrales: mergeObjectPreservingNonEmpty(
+      (next?.inmueble?.datos_catastrales || {}) as Record<string, unknown>,
+      datosCatastrales as Record<string, unknown>
+    ),
+  }
+
+  const titularNombre = String(extracted?.titular_registral?.nombre || '').trim()
+  if (titularNombre) {
+    const vendedores = Array.isArray(next.vendedores) ? [...next.vendedores] : []
+    const looksMoral = looksLikePersonaMoralName(titularNombre)
+    const base = { ...(vendedores[0] || {}) }
+    if (looksMoral) {
+      vendedores[0] = {
+        ...base,
+        party_id: base.party_id || 'vendedor_1',
+        tipo_persona: 'persona_moral',
+        persona_moral: {
+          ...(base.persona_moral || {}),
+          denominacion_social: titularNombre,
+          rfc: base.persona_moral?.rfc || extracted?.titular_registral?.rfc || null,
+        },
+        persona_fisica: undefined,
+      }
+    } else {
+      vendedores[0] = {
+        ...base,
+        party_id: base.party_id || 'vendedor_1',
+        tipo_persona: 'persona_fisica',
+        persona_fisica: {
+          ...(base.persona_fisica || {}),
+          nombre: titularNombre,
+          rfc: base.persona_fisica?.rfc || extracted?.titular_registral?.rfc || null,
+          curp: base.persona_fisica?.curp || extracted?.titular_registral?.curp || null,
+          estado_civil: base.persona_fisica?.estado_civil || null,
+        },
+      }
+    }
+    next.vendedores = vendedores
+  }
+
+  const buyers = Array.isArray(extracted?.compradores_detectados)
+    ? extracted.compradores_detectados.filter((p: any) => String(p?.nombre || '').trim())
+    : []
+  if (buyers.length > 0) {
+    const compradores = Array.isArray(next.compradores) ? [...next.compradores] : []
+    buyers.forEach((buyer: any, idx: number) => {
+      const name = String(buyer?.nombre || '').trim()
+      if (!name) return
+      const looksMoral = looksLikePersonaMoralName(name)
+      const base = { ...(compradores[idx] || {}) }
+      if (looksMoral) {
+        compradores[idx] = {
+          ...base,
+          party_id: base.party_id || `comprador_${idx + 1}`,
+          tipo_persona: 'persona_moral',
+          persona_moral: {
+            ...(base.persona_moral || {}),
+            denominacion_social: name,
+            rfc: base.persona_moral?.rfc || buyer?.rfc || null,
+          },
+          persona_fisica: undefined,
+        }
+      } else {
+        compradores[idx] = {
+          ...base,
+          party_id: base.party_id || `comprador_${idx + 1}`,
+          tipo_persona: 'persona_fisica',
+          persona_fisica: {
+            ...(base.persona_fisica || {}),
+            nombre: name,
+            rfc: base.persona_fisica?.rfc || buyer?.rfc || null,
+            curp: base.persona_fisica?.curp || buyer?.curp || null,
+            estado_civil: base.persona_fisica?.estado_civil || null,
+          },
+        }
+      }
+    })
+    next.compradores = compradores
+  }
+
+  const conyuge = String(extracted?.conyuges_detectados?.[0]?.nombre || '').trim()
+  if (conyuge && Array.isArray(next.compradores) && next.compradores.length > 0) {
+    const compradores = [...next.compradores]
+    const c0 = { ...(compradores[0] || {}) }
+    const isMoral =
+      c0?.tipo_persona === 'persona_moral' ||
+      looksLikePersonaMoralName(c0?.persona_moral?.denominacion_social || c0?.persona_fisica?.nombre || '')
+    if (!isMoral) {
+      c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
+      c0.persona_fisica = {
+        ...(c0.persona_fisica || {}),
+        nombre: c0.persona_fisica?.nombre || null,
+        estado_civil: c0.persona_fisica?.estado_civil || 'casado',
+        conyuge: {
+          ...(c0.persona_fisica?.conyuge || {}),
+          nombre: conyuge,
+          participa: c0.persona_fisica?.conyuge?.participa ?? false,
+        },
+      }
+      compradores[0] = c0
+      next.compradores = compradores
+    }
+  }
+
+  if (extracted?.gravamenes === 'LIBRE') {
+    next.gravamenes = []
+    next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: false }
+  } else if (Array.isArray(extracted?.gravamenes) && extracted.gravamenes.length > 0) {
+    next.gravamenes = extracted.gravamenes
+    next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
+  }
+
+  return next
 }
 
 function shouldTreatQnaAsStateUpdate(message: string, answer?: string): boolean {
@@ -948,8 +1370,8 @@ function reconcileLegacyCapturedData(args: {
     merged.documentos = prev.documentos
   }
 
-  const saysNoCredit = /\b(sin credito|sin crédito|no credito|no crédito|de contado|pago de contado)\b/.test(normalized)
-  const saysWithCredit = /\b(con credito|con crédito)\b/.test(normalized)
+  const saysNoCredit = /\b(sin credito|sin crédito|no credito|no crédito|de contado|pago de contado|contado)\b/.test(normalized)
+  const saysWithCredit = /\b(con credito|con crédito|credito|crédito)\b/.test(normalized) && !/\b(sin credito|sin crédito|no credito|no crédito)\b/.test(normalized)
   const saysNoLien = /\b(sin gravamen|sin hipoteca|no hay gravamen|no tiene gravamen|ni gravamen|sin ningun gravamen|libre de gravamen|libre de hipoteca)\b/.test(normalized)
   const saysWithLienByExplicitPhrase = /\b(con gravamen|con hipoteca|existe hipoteca)\b/.test(normalized)
   const saysWithLienByTiene = /\btiene gravamen\b/.test(normalized) && !/\bno tiene gravamen\b/.test(normalized)

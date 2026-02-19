@@ -15,7 +15,8 @@ class OpenAIIntentClassifierClient implements LLMClassifierClient {
 
   constructor() {
     this.apiKey = process.env.OPENAI_API_KEY || ''
-    this.model = process.env.OPENAI_ROUTER_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini'
+    // Keep routing cheap/fast and independent from main model.
+    this.model = process.env.OPENAI_ROUTER_MODEL || 'gpt-4o-mini'
   }
 
   async classifyAmbiguous(input: ClassifyIntentInput): Promise<Intent> {
@@ -111,37 +112,48 @@ export class IntentClassifier {
 
   async classify(input: ClassifyIntentInput): Promise<Intent> {
     const message = String(input.message || '').trim()
+    const compact = message.replace(/\s+/g, '')
     const normalized = normalize(message)
     const uiAction = normalize(String(input.uiAction || ''))
     const hits = new Set<Intent>()
 
+    // Fast deterministic path for short state replies.
+    if (
+      /^\d{5,10}$/.test(compact) ||
+      /^es\d{5,10}$/.test(normalize(compact)) ||
+      /^folio\d{5,10}$/.test(normalize(compact)) ||
+      /^partida\d{5,10}$/.test(normalize(compact))
+    ) {
+      return 'UPDATE_STATE'
+    }
+
     const wantsExtraction =
       input.hasDocument === true ||
       includesAny(uiAction, ['upload_document', 'document_uploaded', 'extract_document', 'process_document']) ||
-      /\b(subo|subido|subida|adjunto|subi|subí|extrae|extraer|procesa|procesar|lee)\b/.test(normalized) && /\b(documento|pdf|archivo|escritura|acta|identificacion|identificación)\b/.test(normalized)
+      /\b(subo|subido|subida|adjunto|subi|extrae|extraer|procesa|procesar|lee)\b/.test(normalized) && /\b(documento|pdf|archivo|escritura|acta|identificacion)\b/.test(normalized)
     if (wantsExtraction) hits.add('EXTRACT_DOCUMENT')
 
     const wantsGeneration =
       includesAny(uiAction, ['generate_document', 'finalize', 'finalize_preaviso']) ||
       /\b(genera|generar|finaliza|finalizar|emitir|crear)\b/.test(normalized) &&
-        /\b(documento|preaviso|pdf|docx|version|versi[oó]n)\b/.test(normalized)
+        /\b(documento|preaviso|pdf|docx|version)\b/.test(normalized)
     if (wantsGeneration) hits.add('GENERATE_DOCUMENT')
 
     const asksQuestion =
       message.includes('?') ||
-      /^\s*(que|qué|como|cómo|cual|cuál|cuando|cuándo|donde|dónde|por que|por qué|puedes|me puedes)\b/.test(normalized)
+      /^\s*(que|como|cual|cuando|donde|por que|puedes|me puedes)\b/.test(normalized)
     if (asksQuestion) hits.add('QNA')
 
     const wantsStateUpdate =
       includesAny(uiAction, ['save_step', 'patch_step', 'update_state', 'update_field']) ||
       /\b(actualiza|actualizar|cambia|cambiar|corrige|corregir|modifica|modificar|agrega|agregar|quita|elimina|guardar)\b/.test(normalized) ||
-      /\b(mi rfc es|mi curp es|mi nombre es|folio real es|domicilio es|direccion es|dirección es)\b/.test(normalized) ||
-      /\b(es con credito|es con crédito|pago de contado|sin gravamen|con gravamen|sin hipoteca|con hipoteca|estado civil|casado|soltero|divorciado)\b/.test(normalized)
+      /\b(mi rfc es|mi curp es|mi nombre es|folio real es|domicilio es|direccion es)\b/.test(normalized) ||
+      /\b(es con credito|pago de contado|sin gravamen|con gravamen|sin hipoteca|con hipoteca|estado civil|casado|soltero|divorciado)\b/.test(normalized)
     if (wantsStateUpdate) hits.add('UPDATE_STATE')
 
     const hasRichDomainDataInMessage =
       message.length >= 80 &&
-      /\b(folio|partida|lote|manzana|condominio|direccion|dirección|vendedor|comprador|credito|crédito|gravamen|hipoteca)\b/.test(normalized)
+      /\b(folio|partida|lote|manzana|condominio|direccion|vendedor|comprador|credito|gravamen|hipoteca)\b/.test(normalized)
 
     if (
       hasRichDomainDataInMessage &&
@@ -161,10 +173,15 @@ export class IntentClassifier {
 
     const hasShortDomainUpdateStatement =
       !asksQuestion &&
-      /\b(credito|crédito|contado|gravamen|hipoteca|folio|partida|direccion|dirección|comprador|vendedor)\b/.test(normalized) &&
+      /\b(credito|contado|gravamen|hipoteca|folio|partida|direccion|comprador|vendedor)\b/.test(normalized) &&
       /\b(es|son|sin|con|confirmo|indico|indica)\b/.test(normalized)
+    const isSingleWordDomainReply = /^(contado|credito|casado|soltero|divorciado|viudo|si|no)$/.test(normalized)
+    const hasShortPaymentPhrase =
+      /\b(contado|credito)\b/.test(normalized) &&
+      /\b(compra|pago|forma de pago|de)\b/.test(normalized) &&
+      normalized.length <= 40
 
-    if (hasShortDomainUpdateStatement) {
+    if (hasShortDomainUpdateStatement || isSingleWordDomainReply || hasShortPaymentPhrase) {
       return 'UPDATE_STATE'
     }
 

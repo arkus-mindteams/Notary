@@ -40,10 +40,19 @@ export class InputParser {
       },
       extract: (input, context) => {
         const text = String(input || '')
+        const hasLegalDenomination = (value: string) =>
+          /\b(s\.?\s*a\.?|sapi|sociedad|anonima|instituci[oó]n\s+de\s+banca\s+m[uú]ltiple|grupo\s+financiero|de\s+c\.?\s*v\.?)\b/i.test(value)
         // Heurística: encontrar institución después de "credito/crédito" o "con"
         // Primero: match de instituciones comunes
         const common = text.match(/\b(bbva|santander|banorte|banco\s+mercantil\s+del\s+norte|mercantil\s+del\s+norte|hsbc|banamex|infonavit|fovissste|banco\s+azteca|banco\s+del\s+bienestar)\b/i)
         let institution = common ? this.normalizeInstitution(common[1]) : null
+        const legalFromCreditPhrase = text.match(/\b(?:credito|cr[eé]dito)\b[\s\S]{0,60}\b(?:de|con)\s+([^\n\r]+)/i)
+        if (legalFromCreditPhrase?.[1]) {
+          const candidate = this.extractInstitutionFreeform(legalFromCreditPhrase[1])
+          if (candidate && hasLegalDenomination(candidate)) {
+            institution = candidate
+          }
+        }
         if (!institution) {
           const m =
             text.match(/\b(?:credito|cr[eé]dito)\b\s*(?:de|con)?\s*([A-ZÁÉÍÓÚÑ0-9][A-ZÁÉÍÓÚÑ0-9\s.&'\"()-]{1,40})/i) ||
