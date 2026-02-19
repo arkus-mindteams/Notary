@@ -110,11 +110,11 @@ const BLOCK_TOOLS: OpenAIChatTool[] = [
     type: 'function',
     function: {
       name: 'set_credito',
-      description: 'Registrar o actualizar el NUEVO CRÉDITO DE ADQUISICIÓN DEL COMPRADOR (Paso 5). REGLAS: 1) Extrae ÚNICAMENTE el nombre limpio de la institución (ej. "BANJICO", "SANTANDER"), ignorando frases como "perdon", "era con", etc. 2) Por defecto se asume comprador + cónyuge. 3) Usar solo_comprador: true si el usuario indica que el cónyuge no participa. NOTA: Si el usuario se refiere a una hipoteca previa del vendedor que debe cancelarse, usa set_gravamen.',
+      description: 'Registrar o actualizar el NUEVO CRÉDITO DE ADQUISICIÓN DEL COMPRADOR (Paso 5). REGLAS: 1) Si el usuario da la razón social completa de la institución, consérvala completa (sin abreviar). Solo limpia ruido conversacional como "perdon", "era con", etc. 2) Por defecto se asume comprador + cónyuge. 3) Usar solo_comprador: true si el usuario indica que el cónyuge no participa. NOTA: Si el usuario se refiere a una hipoteca previa del vendedor que debe cancelarse, usa set_gravamen.',
       parameters: {
         type: 'object',
         properties: {
-          institucion: { type: 'string', description: 'Nombre limpio del banco o institución que otorga el NUEVO crédito (ej. INFONAVIT, BBVA, BANJICO).' },
+          institucion: { type: 'string', description: 'Nombre de la institución que otorga el NUEVO crédito. Si viene razón social completa, conservar completa.' },
           participante_nombre: { type: 'string', description: 'Nombre del acreditado/participante principal si se menciona' },
           solo_comprador: { type: 'boolean', description: 'true si el usuario indica que solo el comprador participa en el crédito' }
         },

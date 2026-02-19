@@ -165,6 +165,7 @@ CREDITOS:
   - Phrases: "el credito del comprador", "el crédito que", "institución crediticia"
   - If the user says only "crédito" or "el crédito" without specifying the institution name, DO NOT extract it. Ask the user for the specific institution name instead.
   - Valid examples: "FOVISSSTE", "INFONAVIT", "BBVA", "SANTANDER", "BANORTE", "HSBC", "BANAMEX"
+  - If the user provides a full legal denomination (e.g. includes "SOCIEDAD ANONIMA", "INSTITUCION DE BANCA MULTIPLE", "GRUPO FINANCIERO"), preserve the full name exactly and do not shorten it.
 
 GRAVAMENES:
 - Emit ONLY if explicitly mentioned or confirmed.

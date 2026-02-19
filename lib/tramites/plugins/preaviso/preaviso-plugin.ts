@@ -894,7 +894,7 @@ export class PreavisoPlugin implements TramitePlugin {
   getExtraInterpretationInstructions(context: any): string {
     return `
       REGLAS DE INTERPRETACIÓN Y USO DE HERRAMIENTAS:
-      - Paso 5 (Crédito): Si el usuario proporciona o CORRIGE la institución de crédito, LLAMA A set_credito. Extrae ÚNICAMENTE el nombre limpio del banco (ej. "SANTANDER", "BANJICO"). Ignora ruido como "perdon", "era con", "el credito es con", etc.
+      - Paso 5 (Crédito): Si el usuario proporciona o CORRIGE la institución de crédito, LLAMA A set_credito. Si viene razón social completa, CONSÉRVALA COMPLETA (no la abrevies). Ignora ruido como "perdon", "era con", "el credito es con", etc.
       - Paso 6 (Gravamen): Si el usuario dice "sí tiene gravamen", REVISA EL CONTEXTO. Si ya existe una institución en documentosProcesados (ej. "BANORTE" de la inscripción), ÚSALA. Si NO hay institución en el contexto y el usuario NO la dijo, envía solo existe_hipoteca: true (NO inventes instituciones).
       - Dirección: Si el usuario pide usar su ubicación o actualizar con datos de ubicación, llama set_inmueble usando los campos de ubicación del contexto.
       - Estado Civil: Si el comprador tiene cónyuge, por defecto se asume comprador + cónyuge. Usa solo_comprador: true solo si el usuario indica que el cónyuge NO participa.

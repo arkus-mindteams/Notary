@@ -25,14 +25,17 @@ export class CreditInstitutionHandler {
       // Limpiar puntuación inicial/final residual (ej: ", SANTANDER")
       institution = institution.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '').trim()
 
-      // Capitalización especial
       const upper = institution.toUpperCase()
-      if (/\b(banco\s+mercantil\s+del\s+norte|mercantil\s+del\s+norte)\b/i.test(institution)) {
-        institution = 'Banco Mercantil del Norte'
-      } else if (/\bbanorte\b/i.test(institution)) {
-        institution = 'Banorte'
+      const hasLegalDenomination = /\b(s\.?\s*a\.?|sapi|sociedad|anonima|institucion\s+de\s+banca\s+multiple|grupo\s+financiero|de\s+c\.?\s*v\.?)\b/i.test(institution)
+      // Si trae razón social completa, preservar texto íntegro.
+      if (!hasLegalDenomination) {
+        if (/\b(banco\s+mercantil\s+del\s+norte|mercantil\s+del\s+norte)\b/i.test(institution)) {
+          institution = 'Banco Mercantil del Norte'
+        } else if (/\bbanorte\b/i.test(institution)) {
+          institution = 'Banorte'
+        }
       }
-      if (['BANJICO', 'BBVA', 'HSBC', 'INFONAVIT', 'FOVISSSTE', 'SANTANDER', 'BANORTE', 'SCOTIABANK'].includes(upper)) {
+      if (!hasLegalDenomination && ['BANJICO', 'BBVA', 'HSBC', 'INFONAVIT', 'FOVISSSTE', 'SANTANDER', 'BANORTE', 'SCOTIABANK'].includes(upper)) {
         institution = upper
       }
     }
