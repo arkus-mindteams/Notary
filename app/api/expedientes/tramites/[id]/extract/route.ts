@@ -16,6 +16,14 @@ const requestSchema = z.object({
 }).strict()
 
 const extractionAgent = new ExtractionAgent()
+const LOG_MAX_CHARS = 12000
+
+function clip(value: unknown, maxChars: number = LOG_MAX_CHARS): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value || {})
+  if (!text) return ''
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`
+}
 
 const errorResponse = (
   status: number,
@@ -183,6 +191,26 @@ export function createExtractRouteHandler(deps: RouteDeps = defaultDeps) {
         )
       }
 
+      // Debug explícito del "segundo prompt" (entrada/salida de extracción estructurada).
+      // Útil para revisar consolidado de múltiples documentos.
+      console.info('[api/expedientes/tramites/[id]/extract] prompt2_input', {
+        client_request_id: clientRequestId,
+        tramite_id: tramiteId,
+        document_id: body.documentId,
+        tramite_type: body.tramiteType,
+        raw_text_length: rawText.length,
+        raw_text_preview: clip(rawText),
+        file_meta_preview: clip({
+          source: body.fileMeta?.source || null,
+          documents_count: body.fileMeta?.documents_count || null,
+          documents: body.fileMeta?.documents || null,
+          consolidated_rules: body.fileMeta?.consolidated_rules || null,
+          consolidated_facts_count: Array.isArray(body.fileMeta?.consolidated_facts)
+            ? body.fileMeta.consolidated_facts.length
+            : 0,
+        }),
+      })
+
       const extraction: ExtractionResult = await deps.extract({
         tramiteType: body.tramiteType,
         documentId: body.documentId,
@@ -198,6 +226,14 @@ export function createExtractRouteHandler(deps: RouteDeps = defaultDeps) {
           userId: currentUser.auth_user_id || null,
           tramiteId,
         },
+      })
+
+      console.info('[api/expedientes/tramites/[id]/extract] prompt2_output', {
+        client_request_id: clientRequestId,
+        trace_id: extraction.trace_id,
+        warnings_count: Array.isArray(extraction.warnings) ? extraction.warnings.length : 0,
+        source_refs_count: Array.isArray(extraction.source_refs) ? extraction.source_refs.length : 0,
+        structured_preview: clip(extraction.structured),
       })
 
       return NextResponse.json(

@@ -2283,7 +2283,17 @@ export function PreavisoChat({
       // Aplicar resultados en orden, aunque se procesen en paralelo
       const pending = new Map<number, any>()
       let nextToApply = 0
-      const pendingStructuredExtractionTasks: Promise<void>[] = []
+      const consolidatedExtractionInputs: Array<{
+        documentId: string
+        rawText: string
+        docType: string
+        fileName: string
+        intakeSummary?: string[]
+        intakeFacts?: any[]
+        intakeRules?: any
+        intakeDetectedType?: string | null
+        intakeConfidence?: number | null
+      }> = []
       const successfulOriginalKeys = new Set<string>()
 
       const mergeStructuredExtractionIntoData = (base: PreavisoData, structured: any): PreavisoData => {
@@ -2889,7 +2899,7 @@ export function PreavisoChat({
                   const docId = String(uploadedDoc.id)
                   documentoIdByOriginalKey.set(item.originalKey, docId)
 
-                  // Fase 3: llamar ExtractionAgent backend-driven una sola vez por archivo original.
+                  // Acumular texto por documento para ejecutar una sola extraccion consolidada al final del lote.
                   if (!extractedOriginalFilesThisBatch.has(item.originalKey)) {
                     extractedOriginalFilesThisBatch.add(item.originalKey)
                     try {
@@ -2905,65 +2915,22 @@ export function PreavisoChat({
                       const rawTextForExtraction = rawTextFromExtraction || rawTextFromOcr
                       const tramiteIdForExtraction = effectiveTramiteId
                       if (tramiteIdForExtraction && rawTextForExtraction && !requiresOcrFallback) {
-                        const extractionTask = (async () => {
-                          try {
-                            const extractionRequestId = `extract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-                            const extractResp = await postJsonWithTimeout(
-                              `/api/expedientes/tramites/${tramiteIdForExtraction}/extract`,
-                              {
-                                documentId: docId,
-                                tramiteType: 'preaviso',
-                                rawText: rawTextForExtraction,
-                                fileMeta: {
-                                  source: 'preaviso-chat',
-                                  docType: item.docType,
-                                  fileName: item.originalFile.name,
-                                },
-                              },
-                              60000,
-                              {
-                                signal: batchAbort.signal,
-                                label: '/api/expedientes/tramites/[id]/extract',
-                                requestId: extractionRequestId,
-                              }
-                            )
-
-                            if (extractResp.ok) {
-                              const extractJson = await extractResp.json()
-                              console.info('[PreavisoChat] /extract ok', {
-                                request_id: extractionRequestId,
-                                trace_id: extractJson?.trace_id || null,
-                              })
-                              processResult.structuredExtraction = extractJson?.structured || null
-                              processResult.structuredExtractionWarnings = extractJson?.warnings || []
-                              processResult.structuredExtractionTraceId = extractJson?.trace_id || null
-                              if (extractJson?.structured) {
-                                setData(prev => {
-                                  const merged = mergeStructuredExtractionIntoData(prev, extractJson.structured)
-                                  workingData = merged
-                                  dataRef.current = merged
-                                  return merged
-                                })
-                              }
-                            } else {
-                              const errText = await extractResp.text().catch(() => '')
-                              console.warn('[PreavisoChat] /extract non-ok', {
-                                request_id: extractionRequestId,
-                                status: extractResp.status,
-                                body: errText?.slice(0, 250),
-                              })
-                            }
-                          } catch (extractError) {
-                            console.warn('[PreavisoChat] Error calling /extract', {
-                              message: (extractError as any)?.message || 'extract_error',
-                              abort_reason: (extractError as any)?.__abortReason || null,
-                            })
-                          }
-                        })()
-                        pendingStructuredExtractionTasks.push(extractionTask)
+                        const intakeDebug = processResult?.extractedData?._intake_debug || null
+                        consolidatedExtractionInputs.push({
+                          documentId: docId,
+                          rawText: rawTextForExtraction,
+                          docType: item.docType,
+                          fileName: item.originalFile.name,
+                          intakeSummary: Array.isArray(intakeDebug?.summary) ? intakeDebug.summary : [],
+                          intakeFacts: Array.isArray(intakeDebug?.facts) ? intakeDebug.facts : [],
+                          intakeRules: intakeDebug?.rules || null,
+                          intakeDetectedType: intakeDebug?.detected_type || null,
+                          intakeConfidence:
+                            typeof intakeDebug?.confidence === 'number' ? intakeDebug.confidence : null,
+                        })
                       }
                     } catch (extractError) {
-                      console.warn('[PreavisoChat] Error calling /extract', extractError)
+                      console.warn('[PreavisoChat] Error preparing consolidated extraction', extractError)
                     }
                   }
 
@@ -3078,6 +3045,7 @@ export function PreavisoChat({
           conversation_id: conversationIdRef.current,
           is_processing_artifact: item.isArtifact,
           _bulk_fast_mode: totalFiles > 1,
+          _defer_structured_extraction: totalFiles > 1,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
           _document_people_pending: (workingData as any)._document_people_pending ?? null,
@@ -3277,8 +3245,98 @@ export function PreavisoChat({
         return
       }
 
-      if (pendingStructuredExtractionTasks.length > 0) {
-        await Promise.allSettled(pendingStructuredExtractionTasks)
+      const tramiteIdForFinalExtraction = batchTramiteIdRef.current ?? activeTramiteIdRef.current ?? activeTramiteId
+      if (tramiteIdForFinalExtraction && totalFiles > 1 && consolidatedExtractionInputs.length > 0) {
+        try {
+          const primaryDocumentId = consolidatedExtractionInputs[0]?.documentId
+          const consolidatedRawText = consolidatedExtractionInputs
+            .map((item, idx) => {
+              const docHeader = `--- DOCUMENTO ${idx + 1} ---\n` +
+                `documentId: ${item.documentId}\n` +
+                `fileName: ${item.fileName}\n` +
+                `docType: ${item.docType}\n` +
+                `detectedType: ${item.intakeDetectedType || 'N/A'}\n`
+              return `${docHeader}\n${String(item.rawText || '').trim()}`
+            })
+            .join('\n\n')
+            .trim()
+
+          if (primaryDocumentId && consolidatedRawText) {
+            const consolidatedRequestId = `extract-batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+            const { data: { session } } = await supabase.auth.getSession()
+            const headers: HeadersInit = { 'Content-Type': 'application/json' }
+            if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
+            headers['x-client-request-id'] = consolidatedRequestId
+
+            const controller = new AbortController()
+            const timer = setTimeout(() => controller.abort(), 120_000)
+            let extractResp: Response
+            try {
+              extractResp = await fetch(`/api/expedientes/tramites/${tramiteIdForFinalExtraction}/extract`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  documentId: primaryDocumentId,
+                  tramiteType: 'preaviso',
+                  rawText: consolidatedRawText,
+                  fileMeta: {
+                    source: 'preaviso-chat-consolidated',
+                    documents_count: consolidatedExtractionInputs.length,
+                    documents: consolidatedExtractionInputs.map((item) => ({
+                      documentId: item.documentId,
+                      docType: item.docType,
+                      fileName: item.fileName,
+                      intakeSummary: item.intakeSummary || [],
+                      intakeDetectedType: item.intakeDetectedType || null,
+                      intakeConfidence: item.intakeConfidence ?? null,
+                    })),
+                    consolidated_facts: consolidatedExtractionInputs.flatMap((item) =>
+                      Array.isArray(item.intakeFacts)
+                        ? item.intakeFacts.map((f: any) => ({ ...f, documentId: item.documentId }))
+                        : []
+                    ),
+                    consolidated_rules: consolidatedExtractionInputs
+                      .map((item) => item.intakeRules)
+                      .filter(Boolean),
+                  },
+                }),
+                signal: controller.signal,
+              })
+            } finally {
+              clearTimeout(timer)
+            }
+
+            if (extractResp.ok) {
+              const extractJson = await extractResp.json()
+              console.info('[PreavisoChat] consolidated /extract ok', {
+                request_id: consolidatedRequestId,
+                trace_id: extractJson?.trace_id || null,
+                documents_count: consolidatedExtractionInputs.length,
+              })
+              if (extractJson?.structured) {
+                setData(prev => {
+                  const merged = mergeStructuredExtractionIntoData(prev, extractJson.structured)
+                  workingData = merged
+                  dataRef.current = merged
+                  return merged
+                })
+              }
+            } else {
+              const errText = await extractResp.text().catch(() => '')
+              console.warn('[PreavisoChat] consolidated /extract non-ok', {
+                request_id: consolidatedRequestId,
+                status: extractResp.status,
+                body: errText?.slice(0, 350),
+                documents_count: consolidatedExtractionInputs.length,
+              })
+            }
+          }
+        } catch (extractError: any) {
+          console.warn('[PreavisoChat] consolidated /extract error', {
+            message: extractError?.message || 'extract_error',
+            documents_count: consolidatedExtractionInputs.length,
+          })
+        }
       }
 
       if (batchAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError')

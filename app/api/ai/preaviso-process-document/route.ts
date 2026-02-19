@@ -21,6 +21,7 @@ import { DocumentoService } from '@/lib/services/documento-service'
 import { DocumentIndexingService } from '@/lib/services/document-indexing-service'
 import { DocumentTextExtractor } from '@/lib/services/document-text-extractor'
 import { ExtractionAgent } from '@/lib/ai/extraction/extraction-agent'
+import { DocumentIntakeService } from '@/lib/ai/intake/document-intake.service'
 
 type DeferredPostProcessInput = {
   traceId: string
@@ -550,6 +551,18 @@ function looksLikePersonaMoralName(name: string | null | undefined): boolean {
   return /\b(SA|S\.A\.|SAPI|SOCIEDAD|CV|C\.V\.|S DE RL|S\. DE R\.L\.)\b/.test(upper)
 }
 
+function buildRawTextFromIntakePages(
+  pages: Array<{ pageNumber: number; text: string }> | null | undefined
+): string {
+  if (!Array.isArray(pages) || pages.length === 0) return ''
+  return pages
+    .slice()
+    .sort((a, b) => Number(a.pageNumber || 0) - Number(b.pageNumber || 0))
+    .map((p) => `--- PAGINA ${p.pageNumber} ---\n${String(p.text || '').trim()}`)
+    .join('\n\n')
+    .trim()
+}
+
 function enrichStructuredExtractionFromText(args: {
   structured: any
   rawText: string
@@ -889,6 +902,7 @@ export async function POST(req: Request) {
         context = null
       }
     }
+    const deferStructuredExtraction = context?._defer_structured_extraction === true
 
     if (!authUserId && context?.tramiteId) {
       try {
@@ -959,54 +973,73 @@ export async function POST(req: Request) {
         regex_folios_sample: regexFolios.slice(0, 10),
       })
 
-      const extraction = await extractionAgent.extract({
-        tramiteType: 'preaviso',
-        documentId: `adhoc:${traceId}:${file.name}`,
-        rawText: textResult.text,
-        fileMeta: {
+      if (deferStructuredExtraction) {
+        result = {
+          data: context || {},
+          commands: [],
+          extractedData: {
+            textoCompleto: textResult.text,
+            _source_extraction: textResult.source,
+            _deferred_structured_extraction: true,
+          },
+          meta: {
+            text_first: true,
+            extraction_source: textResult.source,
+            text_debug: textResult.debug || null,
+            deferred_structured_extraction: true,
+            warnings: [],
+          }
+        }
+      } else {
+        const extraction = await extractionAgent.extract({
+          tramiteType: 'preaviso',
+          documentId: `adhoc:${traceId}:${file.name}`,
+          rawText: textResult.text,
+          fileMeta: {
+            file_name: file.name,
+            mime_type: file.type || 'application/octet-stream',
+            source_document_type: documentType,
+            source_extraction: textResult.source,
+          },
+          auditContext: {
+            userId: authUserId || null,
+            tramiteId: context?.tramiteId || null,
+            traceId,
+          },
+        })
+        const enrichedStructured = enrichStructuredExtractionFromText({
+          structured: extraction.structured,
+          rawText: textResult.text,
+          documentType,
+        })
+
+        console.info('[preaviso-process-document] text_first_extraction_summary', {
+          trace_id: traceId,
           file_name: file.name,
-          mime_type: file.type || 'application/octet-stream',
-          source_document_type: documentType,
-          source_extraction: textResult.source,
-        },
-        auditContext: {
-          userId: authUserId || null,
-          tramiteId: context?.tramiteId || null,
-          traceId,
-        },
-      })
-      const enrichedStructured = enrichStructuredExtractionFromText({
-        structured: extraction.structured,
-        rawText: textResult.text,
-        documentType,
-      })
+          folio_real: enrichedStructured?.inmueble?.folio_real ?? null,
+          partidas_count: Array.isArray(enrichedStructured?.inmueble?.partidas)
+            ? enrichedStructured.inmueble.partidas.length
+            : 0,
+          gravamenes_count: Array.isArray(enrichedStructured?.gravamenes) ? enrichedStructured.gravamenes.length : 0,
+          source_refs_count: Array.isArray(extraction?.source_refs) ? extraction.source_refs.length : 0,
+          warnings_count: Array.isArray(extraction?.warnings) ? extraction.warnings.length : 0,
+        })
 
-      console.info('[preaviso-process-document] text_first_extraction_summary', {
-        trace_id: traceId,
-        file_name: file.name,
-        folio_real: enrichedStructured?.inmueble?.folio_real ?? null,
-        partidas_count: Array.isArray(enrichedStructured?.inmueble?.partidas)
-          ? enrichedStructured.inmueble.partidas.length
-          : 0,
-        gravamenes_count: Array.isArray(enrichedStructured?.gravamenes) ? enrichedStructured.gravamenes.length : 0,
-        source_refs_count: Array.isArray(extraction?.source_refs) ? extraction.source_refs.length : 0,
-        warnings_count: Array.isArray(extraction?.warnings) ? extraction.warnings.length : 0,
-      })
-
-      result = {
-        data: mergeExtractedIntoContext(context || {}, enrichedStructured),
-        commands: [],
-        extractedData: {
-          ...(enrichedStructured || {}),
-          textoCompleto: textResult.text,
-          _source_extraction: textResult.source,
-          _trace_id: extraction.trace_id,
-        },
-        meta: {
-          text_first: true,
-          extraction_source: textResult.source,
-          text_debug: textResult.debug || null,
-          warnings: extraction.warnings || [],
+        result = {
+          data: mergeExtractedIntoContext(context || {}, enrichedStructured),
+          commands: [],
+          extractedData: {
+            ...(enrichedStructured || {}),
+            textoCompleto: textResult.text,
+            _source_extraction: textResult.source,
+            _trace_id: extraction.trace_id,
+          },
+          meta: {
+            text_first: true,
+            extraction_source: textResult.source,
+            text_debug: textResult.debug || null,
+            warnings: extraction.warnings || [],
+          }
         }
       }
     } else {
@@ -1019,52 +1052,140 @@ export async function POST(req: Request) {
         )
       } else {
         const isPdf = String(file.type || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(file.name)
-        const ocrAttempt = isPdf
-          ? await extractPdfTextWithAsyncOcr(file, traceId, fileBytes)
-          : { text: null, source: 'none' as const, reason: 'not_pdf', elapsed_ms: 0 }
+        let intakeRawText = ''
+        let intakeMeta: any = null
+
+        if (isPdf) {
+          try {
+            const intakeService = new DocumentIntakeService()
+            const intakeResult = await intakeService.processBatch({
+              traceId,
+              documents: [
+                {
+                  documentId: `adhoc:${traceId}:${file.name}`,
+                  filename: file.name,
+                  mimeType: file.type || 'application/pdf',
+                  file: new File([fileBytes], file.name, {
+                    type: file.type || 'application/pdf',
+                    lastModified: Date.now(),
+                  }),
+                },
+              ],
+              options: {
+                maxPages: 20,
+                storeChunks: true,
+                tramiteId: context?.tramiteId || null,
+                sessionId: context?.conversation_id || null,
+              },
+            })
+            const intakeDoc = intakeResult.documents[0]
+            intakeRawText = buildRawTextFromIntakePages(intakeDoc?.pages)
+            intakeMeta = {
+              trace_id: intakeResult.traceId,
+              detected_type: intakeDoc?.detectedType || null,
+              confidence: intakeDoc?.confidence || null,
+              pages: Array.isArray(intakeDoc?.pages) ? intakeDoc.pages.length : 0,
+              summary: Array.isArray(intakeDoc?.summary) ? intakeDoc.summary : [],
+              facts: intakeDoc?.facts || [],
+              rules: intakeResult.rules,
+            }
+            console.info('[preaviso-process-document] intake_pdf_summary', {
+              trace_id: traceId,
+              file_name: file.name,
+              detected_type: intakeDoc?.detectedType || null,
+              confidence: intakeDoc?.confidence || null,
+              pages: intakeMeta.pages,
+              facts_count: Array.isArray(intakeDoc?.facts) ? intakeDoc.facts.length : 0,
+              conflicts_count: Array.isArray(intakeResult.rules?.conflicts) ? intakeResult.rules.conflicts.length : 0,
+            })
+          } catch (intakeError) {
+            console.error('[preaviso-process-document] intake_pdf_error', {
+              trace_id: traceId,
+              file_name: file.name,
+              ...toSafeError(intakeError),
+            })
+          }
+        }
+
+        const ocrAttempt =
+          intakeRawText
+            ? { text: intakeRawText, source: 'document_intake_pdf' as const, reason: null, elapsed_ms: 0 }
+            : isPdf
+              ? await extractPdfTextWithAsyncOcr(file, traceId, fileBytes)
+              : { text: null, source: 'none' as const, reason: 'not_pdf', elapsed_ms: 0 }
         const asyncOcrText = String(ocrAttempt?.text || '').trim()
         if (asyncOcrText) {
-          const extraction = await extractionAgent.extract({
-            tramiteType: 'preaviso',
-            documentId: `adhoc:${traceId}:${file.name}`,
-            rawText: asyncOcrText,
-            fileMeta: {
-              file_name: file.name,
-              mime_type: file.type || 'application/octet-stream',
-              source_document_type: documentType,
-              source_extraction: ocrAttempt.source || 'ocr_async_pdf',
-            },
-            auditContext: {
-              userId: authUserId || null,
-              tramiteId: context?.tramiteId || null,
-              traceId,
-            },
-          })
-          const enrichedStructured = enrichStructuredExtractionFromText({
-            structured: extraction.structured,
-            rawText: asyncOcrText,
-            documentType,
-          })
-
-          result = {
-            data: mergeExtractedIntoContext(context || {}, enrichedStructured),
-            commands: [],
-            extractedData: {
-              ...(enrichedStructured || {}),
-              textoCompleto: asyncOcrText,
-              _source_extraction: ocrAttempt.source || 'ocr_async_pdf',
-              _ocr_debug: {
-                reason: ocrAttempt.reason,
-                elapsed_ms: ocrAttempt.elapsed_ms,
-                source: ocrAttempt.source,
+          if (deferStructuredExtraction) {
+            result = {
+              data: context || {},
+              commands: [],
+              extractedData: {
+                textoCompleto: asyncOcrText,
+                _source_extraction: ocrAttempt.source || 'ocr_async_pdf',
+                _ocr_debug: {
+                  reason: ocrAttempt.reason,
+                  elapsed_ms: ocrAttempt.elapsed_ms,
+                  source: ocrAttempt.source,
+                },
+                _intake_debug: intakeMeta,
+                _deferred_structured_extraction: true,
               },
-              _trace_id: extraction.trace_id,
-            },
-            meta: {
-              text_first: false,
-              extraction_source: ocrAttempt.source || 'ocr_async_pdf',
-              text_debug: textResult.debug || null,
-              warnings: extraction.warnings || [],
+              meta: {
+                text_first: false,
+                extraction_source: ocrAttempt.source || 'ocr_async_pdf',
+                text_debug: textResult.debug || null,
+                deferred_structured_extraction: true,
+                warnings: [],
+              },
+            }
+          } else {
+            const extraction = await extractionAgent.extract({
+              tramiteType: 'preaviso',
+              documentId: `adhoc:${traceId}:${file.name}`,
+              rawText: asyncOcrText,
+              fileMeta: {
+                file_name: file.name,
+                mime_type: file.type || 'application/octet-stream',
+                source_document_type: documentType,
+                source_extraction: ocrAttempt.source || 'ocr_async_pdf',
+                intake_rules: intakeMeta?.rules || null,
+                intake_facts: intakeMeta?.facts || null,
+                intake_detected_type: intakeMeta?.detected_type || null,
+                intake_confidence: intakeMeta?.confidence || null,
+              },
+              auditContext: {
+                userId: authUserId || null,
+                tramiteId: context?.tramiteId || null,
+                traceId,
+              },
+            })
+            const enrichedStructured = enrichStructuredExtractionFromText({
+              structured: extraction.structured,
+              rawText: asyncOcrText,
+              documentType,
+            })
+
+            result = {
+              data: mergeExtractedIntoContext(context || {}, enrichedStructured),
+              commands: [],
+              extractedData: {
+                ...(enrichedStructured || {}),
+                textoCompleto: asyncOcrText,
+                _source_extraction: ocrAttempt.source || 'ocr_async_pdf',
+                _ocr_debug: {
+                  reason: ocrAttempt.reason,
+                  elapsed_ms: ocrAttempt.elapsed_ms,
+                  source: ocrAttempt.source,
+                },
+                _intake_debug: intakeMeta,
+                _trace_id: extraction.trace_id,
+              },
+              meta: {
+                text_first: false,
+                extraction_source: ocrAttempt.source || 'ocr_async_pdf',
+                text_debug: textResult.debug || null,
+                warnings: extraction.warnings || [],
+              },
             }
           }
         } else {
@@ -1090,7 +1211,7 @@ export async function POST(req: Request) {
               extraction_source: textResult.source,
               needs_ocr_reason: textResult.reason || 'text_not_usable',
               text_debug: textResult.debug || null,
-            }
+            },
           }
         }
       }
