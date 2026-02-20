@@ -71,12 +71,18 @@ function buildProcessingFingerprint(params: {
 function mergeExtractedIntoContext(context: any, structured: any): any {
   const next = { ...(context || {}) }
   const inmueble = structured?.inmueble || {}
+  const derivedFolioCandidates = Array.isArray(structured?.__derived?.folio_real_candidates)
+    ? structured.__derived.folio_real_candidates
+    : []
+  const hasAmbiguousFolioCandidates = derivedFolioCandidates.length > 1
   const direccion = inmueble?.direccion || {}
   const datosCatastrales = inmueble?.datos_catastrales || {}
 
   next.inmueble = {
     ...(next.inmueble || {}),
-    folio_real: inmueble?.folio_real ?? next?.inmueble?.folio_real ?? null,
+    folio_real: hasAmbiguousFolioCandidates
+      ? (next?.inmueble?.folio_real ?? null)
+      : (inmueble?.folio_real ?? next?.inmueble?.folio_real ?? null),
     partidas: Array.isArray(inmueble?.partidas) && inmueble.partidas.length > 0
       ? inmueble.partidas
       : (next?.inmueble?.partidas || []),
@@ -101,6 +107,36 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
       condominio: datosCatastrales?.condominio ?? next?.inmueble?.datos_catastrales?.condominio ?? null,
       unidad: datosCatastrales?.unidad ?? next?.inmueble?.datos_catastrales?.unidad ?? null,
       modulo: datosCatastrales?.modulo ?? next?.inmueble?.datos_catastrales?.modulo ?? null,
+    }
+  }
+
+  if (derivedFolioCandidates.length > 0) {
+    const prevFolios = next?.folios || {
+      candidates: [],
+      selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false },
+    }
+    const map = new Map<string, any>()
+    for (const c of [...(prevFolios.candidates || []), ...derivedFolioCandidates.map((folio: string) => ({
+      folio: String(folio || '').replace(/\D/g, ''),
+      scope: 'unidades',
+      attrs: {
+        unidad: structured?.__derived?.unidad_detectada || structured?.inmueble?.datos_catastrales?.unidad || null,
+        condominio: structured?.inmueble?.datos_catastrales?.condominio || null,
+      },
+      sources: [{ docName: structured?.__derived?.source_file_name || null, docType: structured?.source_document_type || null }],
+    }))]) {
+      const folio = String(c?.folio || '').replace(/\D/g, '')
+      const scope = c?.scope || 'otros'
+      if (!folio) continue
+      map.set(`${scope}:${folio}`, {
+        ...c,
+        folio,
+        scope,
+      })
+    }
+    next.folios = {
+      candidates: Array.from(map.values()),
+      selection: prevFolios.selection || { selected_folio: null, selected_scope: null, confirmed_by_user: false },
     }
   }
 
@@ -244,6 +280,55 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
   } else if (Array.isArray(structured?.gravamenes) && structured.gravamenes.length > 0) {
     next.gravamenes = structured.gravamenes
     next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
+  }
+
+  const normalizeName = (value: unknown): string =>
+    String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Za-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toUpperCase()
+
+  const classifiedNames = new Set<string>()
+  const titularName = structured?.titular_registral?.nombre
+  if (titularName) classifiedNames.add(normalizeName(titularName))
+
+  const compradoresDetectadosRaw = Array.isArray(structured?.compradores_detectados)
+    ? structured.compradores_detectados
+    : []
+  for (const p of compradoresDetectadosRaw) {
+    const n = normalizeName(p?.nombre)
+    if (n) classifiedNames.add(n)
+  }
+
+  const conyugesDetectadosRaw = Array.isArray(structured?.conyuges_detectados)
+    ? structured.conyuges_detectados
+    : []
+  for (const p of conyugesDetectadosRaw) {
+    const n = normalizeName(p?.nombre)
+    if (n) classifiedNames.add(n)
+  }
+
+  const noClasificadasRaw = Array.isArray(structured?.personas_detectadas_no_clasificadas)
+    ? structured.personas_detectadas_no_clasificadas
+    : []
+  if (noClasificadasRaw.length > 0) {
+    const dedup = new Map<string, any>()
+    for (const person of noClasificadasRaw) {
+      const n = normalizeName(person?.nombre)
+      if (!n) continue
+      if (classifiedNames.has(n)) continue
+      if (!dedup.has(n)) {
+        dedup.set(n, {
+          nombre: String(person?.nombre || '').trim(),
+          rfc: person?.rfc ?? null,
+          curp: person?.curp ?? null,
+        })
+      }
+    }
+    next.personas_detectadas_no_clasificadas = Array.from(dedup.values())
   }
 
   return next
@@ -571,6 +656,13 @@ function enrichStructuredExtractionFromText(args: {
   const sourceDocumentType = normalizeExtractionDocumentType(args.documentType)
   const rawText = String(args.rawText || '')
   const next = { ...(args.structured || {}) } as any
+  const normalizedFolioCandidates = Array.from(
+    new Set(
+      Array.from(rawText.matchAll(/\bFOLIO(?:\s+REAL)?\s*[:#\-]?\s*([0-9]{5,})\b/gi))
+        .map((m) => String(m?.[1] || '').replace(/\D/g, ''))
+        .filter(Boolean)
+    )
+  )
 
   // El backend ya conoce el tipo real del archivo; evitar deriva del modelo.
   next.source_document_type = sourceDocumentType
@@ -599,6 +691,23 @@ function enrichStructuredExtractionFromText(args: {
     acreditado_nombre: acreditadoNombre,
     credit_institucion: creditoInstitucion,
     buyer_estado_civil: buyerEstadoCivil,
+    folio_real_candidates: normalizedFolioCandidates,
+  }
+
+  if (normalizedFolioCandidates.length > 0) {
+    next.inmueble = {
+      ...(next.inmueble || {}),
+      folio_real:
+        normalizedFolioCandidates.length > 1
+          ? null
+          : (next?.inmueble?.folio_real || normalizedFolioCandidates[0] || null),
+    }
+    if (normalizedFolioCandidates.length > 1) {
+      const warnings = Array.isArray(next.warnings) ? [...next.warnings] : []
+      const msg = `Se detectaron multiples folios reales en el documento (${normalizedFolioCandidates.join(', ')}). Requiere confirmacion humana.`
+      if (!warnings.includes(msg)) warnings.push(msg)
+      next.warnings = warnings
+    }
   }
 
   const hasGravamenesArray = Array.isArray(next?.gravamenes) && next.gravamenes.length > 0

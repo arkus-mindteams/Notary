@@ -15,6 +15,7 @@ export function buildDocumentIntakeSystemPrompt(): string {
     '- Manten trazabilidad: todo campo importante debe tener al menos una evidencia con pageNumber + snippet.',
     '- Si el documento esta borroso/ilegible, indicalo en issues[] y baja confidence.',
     '- evidence[].snippet debe ser literal y maximo 160 caracteres.',
+    '- Usa filename solo como pista auxiliar para clasificacion; la evidencia textual visible manda.',
   ].join('\n')
 }
 
@@ -84,6 +85,7 @@ export function buildDocumentIntakeUserPrompt(args: {
     '- pages[].text debe ser lo mas completo posible.',
     '- Mantener documentId/filename exactamente como vienen en metadata.',
     '- Si no puedes leer algo, deja valores null y agrega issue.',
+    '- Si filename sugiere un tipo y el contenido visible sugiere otro, deja trazabilidad en issues[].',
   ].join('\n')
 }
 

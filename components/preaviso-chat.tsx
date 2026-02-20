@@ -193,6 +193,10 @@ export function PreavisoChat({
   const messageIdCounterRef = useRef(0)
   const conversationIdRef = useRef<string | null>(null)
   const documentProcessCacheRef = useRef<Map<string, any>>(new Map())
+  const getJobStorageKey = () => {
+    const sessionId = conversationIdRef.current || 'no-session'
+    return `preaviso:document-job:${sessionId}`
+  }
   /** Para documentos ya en caché: siempre reprocesar (forceReprocess en backend) */
   const earlyAlreadyProcessedRef = useRef<{ choice: 'use' | 'reprocess'; fileNames: string[] } | null>(null)
 
@@ -211,6 +215,72 @@ export function PreavisoChat({
   const activeTramiteIdRef = useRef<string | null>(null)
   /** TramiteId recién creado en este batch; evita race donde processOne usa activeTramiteId aún null */
   const batchTramiteIdRef = useRef<string | null>(null)
+  const withAuthHeaders = async (): Promise<HeadersInit> => {
+    const { data: { session: currentSession } } = await supabase.auth.getSession()
+    const headers: HeadersInit = { 'Content-Type': 'application/json' }
+    if (currentSession?.access_token) {
+      headers['Authorization'] = `Bearer ${currentSession.access_token}`
+    }
+    return headers
+  }
+
+  const startDocumentJob = async (args: {
+    totalDocs: number
+    tramiteId?: string | null
+    sessionId?: string | null
+    metadata?: Record<string, any>
+  }): Promise<string | null> => {
+    try {
+      const headers = await withAuthHeaders()
+      const resp = await fetch('/api/ai/document-jobs/start', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(args),
+      })
+      if (!resp.ok) return null
+      const json = await resp.json()
+      const jobId = String(json?.job?.id || '')
+      if (!jobId) return null
+      currentDocumentJobIdRef.current = jobId
+      try { localStorage.setItem(getJobStorageKey(), jobId) } catch {}
+      return jobId
+    } catch {
+      return null
+    }
+  }
+
+  const updateDocumentJob = async (jobId: string | null, patch: Record<string, any>) => {
+    if (!jobId) return
+    try {
+      const headers = await withAuthHeaders()
+      await fetch(`/api/ai/document-jobs/${jobId}/progress`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(patch),
+      })
+    } catch {
+      // ignore job progress errors
+    }
+  }
+
+  const loadActiveDocumentJob = async () => {
+    try {
+      const headers = await withAuthHeaders()
+      const params = new URLSearchParams()
+      if (conversationIdRef.current) params.set('sessionId', conversationIdRef.current)
+      const activeTramite = batchTramiteIdRef.current || activeTramiteIdRef.current || activeTramiteId
+      if (activeTramite) params.set('tramiteId', activeTramite)
+      const resp = await fetch(`/api/ai/document-jobs/active?${params.toString()}`, {
+        method: 'GET',
+        headers,
+      })
+      if (!resp.ok) return null
+      const json = await resp.json()
+      return json?.job || null
+    } catch {
+      return null
+    }
+  }
   useEffect(() => {
     activeTramiteIdRef.current = activeTramiteId
   }, [activeTramiteId])
@@ -282,10 +352,6 @@ export function PreavisoChat({
     traceId: string | null
     count: number
     mode: 'updates' | 'document_generation'
-  } | null>(null)
-  const [pendingFolioSelection, setPendingFolioSelection] = useState<{
-    prompt: string
-    options: Array<{ folio: string; scope?: string; label?: string }>
   } | null>(null)
 
   // conversation_id estable (logging/QA): persiste en sessionStorage para sobrevivir refresh.
@@ -776,6 +842,10 @@ export function PreavisoChat({
   const cancelDocumentProcessing = () => {
     if (!isProcessingDocument) return
     cancelDocumentBatchRequestedRef.current = true
+    void updateDocumentJob(currentDocumentJobIdRef.current, {
+      status: 'cancelled',
+      message: 'cancelled_by_user',
+    })
     try {
       documentBatchAbortRef.current?.abort()
     } catch { }
@@ -833,9 +903,70 @@ export function PreavisoChat({
   // Abort global para cancelar un batch completo de carga/procesamiento
   const documentBatchAbortRef = useRef<AbortController | null>(null)
   const cancelDocumentBatchRequestedRef = useRef(false)
+  const currentDocumentJobIdRef = useRef<string | null>(null)
 
   // Abort controller para cancelar peticiones de mensajes de chat
   const messageAbortRef = useRef<AbortController | null>(null)
+
+  // Rehidratar progreso de job activo tras refresh/reingreso.
+  useEffect(() => {
+    let mounted = true
+    const run = async () => {
+      if (!session?.access_token) return
+      const job = await loadActiveDocumentJob()
+      if (!mounted || !job) return
+      const status = String(job.status || '')
+      if (status === 'queued' || status === 'processing') {
+        currentDocumentJobIdRef.current = String(job.id || '')
+        try { localStorage.setItem(getJobStorageKey(), String(job.id || '')) } catch {}
+        const total = Math.max(1, Number(job.total_docs || 1))
+        const processed = Math.max(0, Number(job.processed_docs || 0))
+        setIsProcessingDocument(true)
+        setProcessingProgress(Math.min(95, Math.round((processed / total) * 90)))
+        setProcessingFileName(
+          job.current_document
+            ? `${job.current_document} (${processed}/${total})`
+            : `Procesando documentos (${processed}/${total})`
+        )
+      }
+    }
+    void run()
+    return () => {
+      mounted = false
+    }
+  }, [session?.access_token, activeTramiteId])
+
+  // Poll ligero del job activo para complementar barra de carga con progreso real.
+  useEffect(() => {
+    if (!isProcessingDocument) return
+    const jobId = currentDocumentJobIdRef.current
+    if (!jobId) return
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const headers = await withAuthHeaders()
+        const resp = await fetch(`/api/ai/document-jobs/${jobId}`, { method: 'GET', headers })
+        if (!resp.ok || cancelled) return
+        const json = await resp.json()
+        const job = json?.job
+        if (!job || cancelled) return
+        const total = Math.max(1, Number(job.total_docs || 1))
+        const processed = Math.max(0, Number(job.processed_docs || 0))
+        setProcessingProgress(Math.min(95, Math.round((processed / total) * 90)))
+        if (job.current_document) {
+          setProcessingFileName(`${job.current_document} (${processed}/${total})`)
+        }
+      } catch {
+        // ignore polling errors
+      }
+    }
+    void poll()
+    const timer = setInterval(() => void poll(), 3000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [isProcessingDocument, session?.access_token])
 
   // Guardar progreso automáticamente cuando cambian los datos
   useEffect(() => {
@@ -1380,22 +1511,6 @@ export function PreavisoChat({
     const hasPrepareGeneration = actions.some((a: any) => a?.type === 'prepare_document_generation')
     const hasDocumentGenerationCommitted = actions.some((a: any) => a?.type === 'document_generation_committed')
     const hasRequestMissingField = actions.some((a: any) => a?.type === 'request_missing_field')
-    const selectFolioAction = actions.find((a: any) => a?.type === 'select_folio')
-
-    if (selectFolioAction && Array.isArray(selectFolioAction?.options) && selectFolioAction.options.length > 1) {
-      setPendingFolioSelection({
-        prompt: String(selectFolioAction.prompt || 'Selecciona el folio correcto para continuar:'),
-        options: selectFolioAction.options
-          .map((o: any) => ({
-            folio: String(o?.folio || '').replace(/\D/g, ''),
-            scope: typeof o?.scope === 'string' ? o.scope : undefined,
-            label: typeof o?.label === 'string' ? o.label : undefined,
-          }))
-          .filter((o: any) => !!o.folio),
-      })
-    } else {
-      setPendingFolioSelection(null)
-    }
 
     if (hasConfirmCommit && proposedUpdates.length > 0) {
       setPendingRouterCommit({
@@ -1899,6 +2014,31 @@ export function PreavisoChat({
     }
   }
 
+  const sendQuickChatMessage = (value: string) => {
+    const text = String(value || '').trim()
+    if (!text) return
+    if (isProcessing || isProcessingDocument) return
+    flushSync(() => setInput(text))
+    handleSend()
+  }
+
+  const handleSidebarFolioSelect = (folio: string) => {
+    sendQuickChatMessage(String(folio || '').replace(/\D/g, ''))
+  }
+
+  const handleSidebarPersonSelect = (name: string) => {
+    const cleanName = String(name || '').trim()
+    if (!cleanName) return
+    const suggested = `${cleanName} es comprador`
+    const custom = window.prompt(
+      `Clasifica a "${cleanName}".\nEjemplos:\n- ${cleanName} es vendedor\n- ${cleanName} es comprador\n- ${cleanName} es conyuge de comprador`,
+      suggested
+    )
+    if (custom === null) return
+    const finalText = String(custom || '').trim() || suggested
+    sendQuickChatMessage(finalText)
+  }
+
   const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false, skipUserMessage = false, userText: string | null = null) => {
     if (!files || files.length === 0) return
 
@@ -2150,6 +2290,11 @@ export function PreavisoChat({
     setProcessingProgress(10)
     const newDocuments = [...(data.documentos || []), ...fileNames]
     setData(prev => ({ ...prev, documentos: newDocuments }))
+    let totalWorkItems = 0
+    let completedCount = 0
+    let errorCount = 0
+    let batchJobId: string | null = null
+    let jobFinalized = false
 
     // Procesar cada documento con IA
     try {
@@ -2253,7 +2398,9 @@ export function PreavisoChat({
       }
 
       const totalFiles = items.length
-      let totalWorkItems = totalFiles
+      totalWorkItems = totalFiles
+      batchJobId = null
+      jobFinalized = false
       if (totalFiles === 0) {
         setIsProcessingDocument(false)
         setProcessingProgress(0)
@@ -2266,7 +2413,25 @@ export function PreavisoChat({
         }]))
         return
       }
-      let completedCount = 0
+
+      batchJobId = await startDocumentJob({
+        totalDocs: totalFiles,
+        tramiteId: effectiveBatchTramiteId,
+        sessionId: conversationIdRef.current,
+        metadata: {
+          via: 'preaviso_chat',
+          file_names: items.map((i) => i.originalFile.name),
+        },
+      })
+      if (batchJobId) {
+        await updateDocumentJob(batchJobId, {
+          status: 'processing',
+          message: `Procesando ${totalFiles} documento(s)`,
+          totalDocs: totalFiles,
+          processedDocs: 0,
+        })
+      }
+      completedCount = 0
 
       // Snapshot mutable para construir contexto correcto durante el flujo (evita usar "data" o "uploadedDocuments" viejos)
       let workingData: PreavisoData = dataRef.current
@@ -2300,6 +2465,10 @@ export function PreavisoChat({
         if (!structured || typeof structured !== 'object') return base
         const next: PreavisoData = { ...base }
         const inmueble = structured?.inmueble || {}
+        const derivedFolioCandidates = Array.isArray(structured?.__derived?.folio_real_candidates)
+          ? structured.__derived.folio_real_candidates
+          : []
+        const hasAmbiguousFolioCandidates = derivedFolioCandidates.length > 1
         const direccion = inmueble?.direccion || {}
         const datosCatastrales = inmueble?.datos_catastrales || {}
 
@@ -2327,7 +2496,9 @@ export function PreavisoChat({
               modulo: null
             }
           }),
-          folio_real: inmueble?.folio_real ?? next?.inmueble?.folio_real ?? null,
+          folio_real: hasAmbiguousFolioCandidates
+            ? (next?.inmueble?.folio_real ?? null)
+            : (inmueble?.folio_real ?? next?.inmueble?.folio_real ?? null),
           partidas: Array.isArray(inmueble?.partidas) && inmueble.partidas.length > 0
             ? inmueble.partidas
             : (next?.inmueble?.partidas || []),
@@ -2355,27 +2526,197 @@ export function PreavisoChat({
           }
         } as any
 
-        if (structured?.titular_registral?.nombre) {
+        if (derivedFolioCandidates.length > 0) {
+          const prevFolios = (next as any).folios || {
+            candidates: [],
+            selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false }
+          }
+          const map = new Map<string, any>()
+          const fromStructured = derivedFolioCandidates.map((folio: string) => ({
+            folio: String(folio || '').replace(/\D/g, ''),
+            scope: 'unidades',
+            attrs: {
+              unidad: structured?.inmueble?.datos_catastrales?.unidad || null,
+              condominio: structured?.inmueble?.datos_catastrales?.condominio || null
+            },
+            sources: [{ docName: structured?.__derived?.source_file_name || null, docType: structured?.source_document_type || null }]
+          }))
+          for (const c of [...(prevFolios.candidates || []), ...fromStructured]) {
+            const folio = String(c?.folio || '').replace(/\D/g, '')
+            const scope = c?.scope || 'otros'
+            if (!folio) continue
+            map.set(`${scope}:${folio}`, { ...c, folio, scope })
+          }
+          ;(next as any).folios = {
+            candidates: Array.from(map.values()),
+            selection: prevFolios.selection || { selected_folio: null, selected_scope: null, confirmed_by_user: false }
+          }
+        }
+
+        const normalizeName = (value: unknown): string =>
+          String(value || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^A-Za-z0-9\s]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toUpperCase()
+
+        const titularNombre = String(structured?.titular_registral?.nombre || '').trim()
+        if (titularNombre) {
+          const existing = Array.isArray(next.vendedores) ? [...next.vendedores] : []
           const vendedor = {
-            party_id: 'vendedor_1',
+            ...(existing[0] || {}),
+            party_id: (existing[0] as any)?.party_id || 'vendedor_1',
             tipo_persona: 'persona_fisica',
             persona_fisica: {
-              nombre: structured.titular_registral.nombre,
-              rfc: structured?.titular_registral?.rfc ?? null,
-              curp: structured?.titular_registral?.curp ?? null,
-              estado_civil: null
+              ...((existing[0] as any)?.persona_fisica || {}),
+              nombre: titularNombre,
+              rfc: (existing[0] as any)?.persona_fisica?.rfc || structured?.titular_registral?.rfc || null,
+              curp: (existing[0] as any)?.persona_fisica?.curp || structured?.titular_registral?.curp || null,
+              estado_civil: (existing[0] as any)?.persona_fisica?.estado_civil || null
             },
             titular_registral_confirmado: true
           } as any
-          const existing = Array.isArray(next.vendedores) ? next.vendedores : []
-          next.vendedores = existing.length > 0 ? [{ ...existing[0], ...vendedor }] : [vendedor]
+          existing[0] = vendedor
+          next.vendedores = existing
+        }
+
+        const compradoresDetectados = Array.isArray(structured?.compradores_detectados)
+          ? structured.compradores_detectados.filter((p: any) => String(p?.nombre || '').trim())
+          : []
+        if (compradoresDetectados.length > 0) {
+          const existing = Array.isArray(next.compradores) ? [...next.compradores] : []
+          compradoresDetectados.forEach((buyer: any, idx: number) => {
+            const name = String(buyer?.nombre || '').trim()
+            if (!name) return
+            const prev = existing[idx] || {}
+            existing[idx] = {
+              ...prev,
+              party_id: (prev as any).party_id || `comprador_${idx + 1}`,
+              tipo_persona: 'persona_fisica',
+              persona_fisica: {
+                ...((prev as any).persona_fisica || {}),
+                nombre: name,
+                rfc: (prev as any).persona_fisica?.rfc || buyer?.rfc || null,
+                curp: (prev as any).persona_fisica?.curp || buyer?.curp || null,
+                estado_civil: (prev as any).persona_fisica?.estado_civil || null
+              }
+            } as any
+          })
+          next.compradores = existing
+        }
+
+        const conyuge = String(structured?.conyuges_detectados?.[0]?.nombre || '').trim()
+        if (conyuge) {
+          const compradores = Array.isArray(next.compradores) ? [...next.compradores] : []
+          const c0 = { ...(compradores[0] || {}) } as any
+          c0.party_id = c0.party_id || 'comprador_1'
+          c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
+          c0.persona_fisica = {
+            ...(c0.persona_fisica || {}),
+            nombre: c0.persona_fisica?.nombre || null,
+            rfc: c0.persona_fisica?.rfc || null,
+            curp: c0.persona_fisica?.curp || null,
+            estado_civil: c0.persona_fisica?.estado_civil || 'casado',
+            conyuge: {
+              ...(c0.persona_fisica?.conyuge || {}),
+              nombre: conyuge,
+              participa: c0.persona_fisica?.conyuge?.participa ?? false
+            }
+          }
+          compradores[0] = c0
+          next.compradores = compradores
+        }
+
+        const classifiedNames = new Set<string>()
+        if (titularNombre) classifiedNames.add(normalizeName(titularNombre))
+        for (const p of compradoresDetectados) {
+          const n = normalizeName(p?.nombre)
+          if (n) classifiedNames.add(n)
+        }
+        const conyugesDetectados = Array.isArray(structured?.conyuges_detectados)
+          ? structured.conyuges_detectados
+          : []
+        for (const p of conyugesDetectados) {
+          const n = normalizeName(p?.nombre)
+          if (n) classifiedNames.add(n)
+        }
+
+        const noClasificadasRaw = Array.isArray(structured?.personas_detectadas_no_clasificadas)
+          ? structured.personas_detectadas_no_clasificadas
+          : []
+        const dedupNoClasificadas = new Map<string, any>()
+        for (const person of noClasificadasRaw) {
+          const n = normalizeName(person?.nombre)
+          if (!n || classifiedNames.has(n)) continue
+          if (!dedupNoClasificadas.has(n)) {
+            dedupNoClasificadas.set(n, {
+              name: String(person?.nombre || '').trim(),
+              rfc: person?.rfc ?? null,
+              curp: person?.curp ?? null,
+              source: 'documento'
+            })
+          }
+        }
+        const pendingPersons = Array.from(dedupNoClasificadas.values())
+        if (pendingPersons.length > 0) {
+          next._document_people_pending = {
+            status: 'pending',
+            source: 'documento',
+            persons: pendingPersons
+          }
         }
 
         return next
       }
 
+      const buildUncategorizedPeopleMessage = (current: any): string | null => {
+        const pending = Array.isArray(current?._document_people_pending?.persons)
+          ? current._document_people_pending.persons
+          : []
+        const raw = Array.isArray(current?.personas_detectadas_no_clasificadas)
+          ? current.personas_detectadas_no_clasificadas
+          : []
+        const spouses = Array.isArray(current?.conyuges_detectados)
+          ? current.conyuges_detectados
+          : []
+        const all = [...pending, ...raw, ...spouses]
+        const dedup = new Map<string, string>()
+        for (const p of all) {
+          const name = String(p?.name || p?.nombre || '').trim()
+          if (!name) continue
+          const key = name
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim()
+          if (!key || dedup.has(key)) continue
+          dedup.set(key, name)
+        }
+        const names = Array.from(dedup.values())
+        if (names.length === 0) return null
+        return `Informacion extra detectada sin categorizar:\n- ${names.join('\n- ')}\n\nIndica si cada persona es comprador, vendedor o conyuge.`
+      }
+
+      const buildFolioCandidatesMessage = (current: any): string | null => {
+        const selectedFolio = String(current?.inmueble?.folio_real || '').trim()
+        const candidatesRaw = Array.isArray(current?.folios?.candidates) ? current.folios.candidates : []
+        const candidates = Array.from(
+          new Set(
+            candidatesRaw
+              .map((c: any) => String(c?.folio || '').replace(/\D/g, ''))
+              .filter(Boolean)
+          )
+        )
+        if (selectedFolio) return null
+        if (candidates.length <= 1) return null
+        return `Detecte multiples folios reales candidatos en el documento:\n- ${candidates.join('\n- ')}\n\nIndica cual folio real corresponde al inmueble de esta operacion.`
+      }
+
       let sessionExpired = false
-      let errorCount = 0
+      errorCount = 0
       const errorMessages: string[] = []
       const classifyProcessError = (res: any): string => {
         if (!res || !res.__error) return ''
@@ -2566,9 +2907,24 @@ export function PreavisoChat({
           setData(prev => {
             const updated = { ...prev }
             const d = processResult.data
+            const extracted = processResult.extractedData || {}
             if (d.tipoOperacion !== undefined) updated.tipoOperacion = d.tipoOperacion
             if (Object.prototype.hasOwnProperty.call(d, '_document_intent')) (updated as any)._document_intent = (d as any)._document_intent
-            if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) (updated as any)._document_people_pending = (d as any)._document_people_pending
+            if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) {
+              (updated as any)._document_people_pending = (d as any)._document_people_pending
+            } else if (Object.prototype.hasOwnProperty.call(extracted, '_document_people_pending')) {
+              ;(updated as any)._document_people_pending = (extracted as any)._document_people_pending
+            }
+            if (Array.isArray((d as any)?.personas_detectadas_no_clasificadas)) {
+              ;(updated as any).personas_detectadas_no_clasificadas = (d as any).personas_detectadas_no_clasificadas
+            } else if (Array.isArray((extracted as any)?.personas_detectadas_no_clasificadas)) {
+              ;(updated as any).personas_detectadas_no_clasificadas = (extracted as any).personas_detectadas_no_clasificadas
+            }
+            if (Array.isArray((d as any)?.conyuges_detectados)) {
+              ;(updated as any).conyuges_detectados = (d as any).conyuges_detectados
+            } else if (Array.isArray((extracted as any)?.conyuges_detectados)) {
+              ;(updated as any).conyuges_detectados = (extracted as any).conyuges_detectados
+            }
 
             // CRÍTICO: Merge inteligente de vendedores (no sobrescribir si ya existen)
             if (d.vendedores !== undefined) {
@@ -2834,6 +3190,18 @@ export function PreavisoChat({
         }
         if (Object.prototype.hasOwnProperty.call(d, '_document_people_pending')) {
           (workingData as any)._document_people_pending = (d as any)._document_people_pending
+        } else if (Object.prototype.hasOwnProperty.call(processResult.extractedData || {}, '_document_people_pending')) {
+          ;(workingData as any)._document_people_pending = (processResult.extractedData as any)._document_people_pending
+        }
+        if (Array.isArray((d as any)?.personas_detectadas_no_clasificadas)) {
+          ;(workingData as any).personas_detectadas_no_clasificadas = (d as any).personas_detectadas_no_clasificadas
+        } else if (Array.isArray((processResult.extractedData as any)?.personas_detectadas_no_clasificadas)) {
+          ;(workingData as any).personas_detectadas_no_clasificadas = (processResult.extractedData as any).personas_detectadas_no_clasificadas
+        }
+        if (Array.isArray((d as any)?.conyuges_detectados)) {
+          ;(workingData as any).conyuges_detectados = (d as any).conyuges_detectados
+        } else if (Array.isArray((processResult.extractedData as any)?.conyuges_detectados)) {
+          ;(workingData as any).conyuges_detectados = (processResult.extractedData as any).conyuges_detectados
         }
 
         // S3 upload (solo 1 por archivo original)
@@ -3075,34 +3443,42 @@ export function PreavisoChat({
         const headers: HeadersInit = {}
         if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
 
-        const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number, signal?: AbortSignal) => {
+        const fetchWithTimeout = async (
+          input: RequestInfo | URL,
+          init: RequestInit,
+          timeoutMs?: number,
+          signal?: AbortSignal
+        ) => {
           const controller = new AbortController()
           const onAbort = () => controller.abort()
           if (signal) {
             if (signal.aborted) controller.abort()
             else signal.addEventListener('abort', onAbort, { once: true })
           }
-          const timer = setTimeout(() => controller.abort(), timeoutMs)
+          const hasTimeout = Number.isFinite(timeoutMs as number) && Number(timeoutMs) > 0
+          const timer = hasTimeout ? setTimeout(() => controller.abort(), Number(timeoutMs)) : null
           try {
             return await fetch(input, { ...init, signal: controller.signal })
           } finally {
-            clearTimeout(timer)
+            if (timer) clearTimeout(timer)
             if (signal) signal.removeEventListener('abort', onAbort)
           }
         }
 
         let processResponse: Response
         try {
+          console.info('[PreavisoChat] /api/ai/preaviso-process-document start', {
+            file_name: item.originalFile?.name || item.imageFile?.name || 'unknown',
+            timeout_ms: null,
+          })
           processResponse = await fetchWithTimeout('/api/ai/preaviso-process-document', {
             method: 'POST',
             headers,
             body: formData
-          }, 120_000, batchAbort.signal)
+          }, undefined, batchAbort.signal)
         } catch (e: any) {
           if (e?.name === 'AbortError') throw e
-          const msg = (e?.name === 'AbortError')
-            ? 'Timeout procesando esta página (120s).'
-            : (e?.message || 'Error desconocido procesando documento.')
+          const msg = e?.message || 'Error desconocido procesando documento.'
           return { __error: true, status: 408, text: msg }
         }
 
@@ -3134,12 +3510,27 @@ export function PreavisoChat({
               if (batchAbort.signal.aborted) return
               completedCount++
               setProcessingProgress(50 + (completedCount / Math.max(1, totalWorkItems)) * 40)
+              setProcessingFileName(`${item.originalFile.name} (${completedCount}/${totalWorkItems})`)
+              await updateDocumentJob(batchJobId, {
+                status: 'processing',
+                processedDocs: completedCount,
+                totalDocs: totalWorkItems,
+                currentDocument: item.originalFile.name,
+              })
               await onOneDone(item.index, item, result)
             } catch (e) {
               if ((e as any)?.name === 'AbortError') return
               console.error(`Error procesando ${item.originalFile.name}:`, e)
               completedCount++
               setProcessingProgress(50 + (completedCount / Math.max(1, totalWorkItems)) * 40)
+              setProcessingFileName(`${item.originalFile.name} (${completedCount}/${totalWorkItems})`)
+              await updateDocumentJob(batchJobId, {
+                status: 'processing',
+                processedDocs: completedCount,
+                failedDocs: errorCount + 1,
+                totalDocs: totalWorkItems,
+                currentDocument: item.originalFile.name,
+              })
               await onOneDone(item.index, item, { __error: true })
             }
           }
@@ -3207,6 +3598,14 @@ export function PreavisoChat({
       // OCR/Vision fallback for PDF is intentionally disabled.
 
       if (sessionExpired) {
+        await updateDocumentJob(batchJobId, {
+          status: 'failed',
+          processedDocs: completedCount,
+          failedDocs: errorCount || 1,
+          totalDocs: totalWorkItems,
+          message: 'session_expired',
+        })
+        jobFinalized = true
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id).concat([{
           id: generateMessageId('session-expired'),
           role: 'assistant',
@@ -3223,6 +3622,14 @@ export function PreavisoChat({
       }
 
       if (errorCount > 0) {
+        await updateDocumentJob(batchJobId, {
+          status: 'failed',
+          processedDocs: completedCount,
+          failedDocs: errorCount,
+          totalDocs: totalWorkItems,
+          message: 'partial_or_total_failure',
+        })
+        jobFinalized = true
         // ... (lines 2709-2720)
         const uniqueErrors = Array.from(new Set(errorMessages))
         const fallback = 'Error procesando el documento. Por favor, intenta nuevamente.'
@@ -3493,11 +3900,57 @@ export function PreavisoChat({
             return [...prev, assistantMessage]
           })
         }
+
+        const uncategorizedMessage = buildUncategorizedPeopleMessage(workingData)
+        if (uncategorizedMessage) {
+          const helperMessage: ChatMessage = {
+            id: `uncategorized-${Date.now()}`,
+            role: 'assistant',
+            content: uncategorizedMessage,
+            timestamp: new Date()
+          }
+          setMessages(prev => {
+            const exists = prev.some(m =>
+              m.role === 'assistant' &&
+              typeof m.content === 'string' &&
+              m.content.trim() === uncategorizedMessage.trim()
+            )
+            if (exists) return prev
+            return [...prev, helperMessage]
+          })
+        }
+
+        const folioCandidatesMessage = buildFolioCandidatesMessage(workingData)
+        if (folioCandidatesMessage) {
+          const helperMessage: ChatMessage = {
+            id: `folio-candidates-${Date.now()}`,
+            role: 'assistant',
+            content: folioCandidatesMessage,
+            timestamp: new Date()
+          }
+          setMessages(prev => {
+            const exists = prev.some(m =>
+              m.role === 'assistant' &&
+              typeof m.content === 'string' &&
+              m.content.trim() === folioCandidatesMessage.trim()
+            )
+            if (exists) return prev
+            return [...prev, helperMessage]
+          })
+        }
       }
 
       return { updatedData: workingData, updatedDocs: workingDocs }
     } catch (error) {
       if ((error as any)?.name === 'AbortError' || batchAbort.signal.aborted || cancelDocumentBatchRequestedRef.current) {
+        await updateDocumentJob(batchJobId, {
+          status: 'cancelled',
+          processedDocs: completedCount,
+          failedDocs: errorCount,
+          totalDocs: totalWorkItems,
+          message: 'cancelled_by_user',
+        })
+        jobFinalized = true
         // Cancelado por el usuario
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
         const cancelMessage: ChatMessage = {
@@ -3508,6 +3961,14 @@ export function PreavisoChat({
         }
         setMessages(prev => [...prev, cancelMessage])
       } else {
+        await updateDocumentJob(batchJobId, {
+          status: 'failed',
+          processedDocs: completedCount,
+          failedDocs: Math.max(1, errorCount),
+          totalDocs: totalWorkItems,
+          message: 'unexpected_processing_error',
+        })
+        jobFinalized = true
         console.error('Error procesando documento:', error)
         setMessages(prev => prev.filter(m => m.id !== processingMessage.id))
         const errorMessage: ChatMessage = {
@@ -3519,6 +3980,20 @@ export function PreavisoChat({
         setMessages(prev => [...prev, errorMessage])
       }
     } finally {
+      if (!jobFinalized && batchJobId) {
+        await updateDocumentJob(batchJobId, {
+          status: 'completed',
+          processedDocs: completedCount,
+          failedDocs: errorCount,
+          totalDocs: totalWorkItems,
+          message: 'completed',
+        })
+        jobFinalized = true
+      }
+      if (jobFinalized) {
+        currentDocumentJobIdRef.current = null
+        try { localStorage.removeItem(getJobStorageKey()) } catch {}
+      }
       setIsProcessing(false)
       setIsProcessingDocument(false)
       isSubmittingRef.current = false // Liberar lock tambien aqui por si acaso
@@ -4683,32 +5158,6 @@ export function PreavisoChat({
                       </div>
                     )}
 
-                    {pendingFolioSelection && pendingFolioSelection.options.length > 0 && (
-                      <div className="mb-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
-                        <p className="text-xs text-blue-900 mb-2">{pendingFolioSelection.prompt}</p>
-                        <div className="flex flex-wrap gap-2">
-                          {pendingFolioSelection.options.map((opt) => (
-                            <Button
-                              key={`${opt.scope || 'otros'}-${opt.folio}`}
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs border-blue-300 text-blue-800 hover:bg-blue-100"
-                              onClick={() => {
-                                if (isProcessing || isProcessingDocument) return
-                                const quickValue = opt.folio
-                                flushSync(() => setInput(quickValue))
-                                setPendingFolioSelection(null)
-                                handleSend()
-                              }}
-                            >
-                              {opt.label || opt.folio}
-                            </Button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
                     {/* Contenedor relativo para el textarea y los iconos */}
                     <div className="relative">
                       <input
@@ -4813,6 +5262,8 @@ export function PreavisoChat({
             serverState={serverState}
             isVisible={showDataPanel}
             onClose={(isMobile || isTablet) ? () => setShowDataPanel(false) : undefined}
+            onSelectFolioCandidate={handleSidebarFolioSelect}
+            onSelectUncategorizedPerson={handleSidebarPersonSelect}
             bottomActions={
               showExportButtons && exportData ? (
                 <div className="space-y-2">

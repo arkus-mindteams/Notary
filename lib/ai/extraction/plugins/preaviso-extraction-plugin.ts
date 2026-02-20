@@ -63,6 +63,7 @@ export const preavisoExtractionSchema = z.object({
       nombre: nullableString,
     }).strict()
   ).default([]),
+  personas_detectadas_no_clasificadas: z.array(personaDetectadaSchema).default([]),
   gravamenes: z.union([
     z.literal('LIBRE'),
     z.array(gravamenDetalleSchema),
@@ -90,6 +91,11 @@ export class PreavisoExtractionPlugin implements ExtractionPlugin<typeof preavis
       'No inventes datos. Si no hay evidencia textual, usa null o arreglos vacios.',
       'Responde SOLO JSON valido, sin markdown, sin explicaciones.',
       'Usa exactamente el esquema solicitado por el usuario.',
+      'REGLA CRITICA: si en el texto aparecen terminos de acta de matrimonio (p.ej. ACTA DE MATRIMONIO, CONTRAYENTES, contrajo matrimonio, conyuge/esposo/esposa), debes poblar conyuges_detectados con los nombres visibles.',
+      'REGLA CRITICA: todo nombre agregado a conyuges_detectados debe tener respaldo en source_refs con evidencia textual literal.',
+      'REGLA CRITICA: si detectas personas pero NO puedes clasificar su rol (vendedor/comprador/conyuge), agregalas en personas_detectadas_no_clasificadas.',
+      'REGLA CRITICA: no repitas nombres entre listas; evita duplicados exactos o equivalentes por mayusculas/acentos.',
+      'REGLA CRITICA (FOLIO): si en un mismo documento aparecen multiples "FOLIO REAL", NO asignes uno arbitrariamente en inmueble.folio_real; dejalo en null y reporta warning.',
     ].join('\n')
   }
 
@@ -124,6 +130,7 @@ export class PreavisoExtractionPlugin implements ExtractionPlugin<typeof preavis
   "titular_registral": { "nombre": "string|null", "rfc": "string|null", "curp": "string|null" },
   "compradores_detectados": [{ "nombre": "string|null", "rfc": "string|null", "curp": "string|null" }],
   "conyuges_detectados": [{ "nombre": "string|null" }],
+  "personas_detectadas_no_clasificadas": [{ "nombre": "string|null", "rfc": "string|null", "curp": "string|null" }],
   "gravamenes": "LIBRE | [{ institucion, monto, moneda, tipo }] | null",
   "confidence": 0.0,
   "warnings": ["string"],
@@ -131,6 +138,15 @@ export class PreavisoExtractionPlugin implements ExtractionPlugin<typeof preavis
 }`
     return [
       'Extrae los campos minimos para el wizard de preaviso.',
+      'Instrucciones criticas adicionales:',
+      '- Si el texto fuente contiene datos de matrimonio/contrayentes, NO omitas conyuges_detectados.',
+      '- Si detectas 2 contrayentes, devuelve 2 entradas en conyuges_detectados (nombre completo o la mejor lectura posible).',
+      '- Si no hay evidencia textual clara, deja conyuges_detectados como [] (no inventar).',
+      '- Si detectas personas sin rol claro, agregalas en personas_detectadas_no_clasificadas.',
+      '- Evita nombres duplicados entre titular_registral, compradores_detectados, conyuges_detectados y personas_detectadas_no_clasificadas.',
+      '- Incluye source_refs para los campos importantes, especialmente conyuges_detectados cuando aplique.',
+      '- Folio real: si hay mas de un folio en el texto, NO elijas uno; devuelve inmueble.folio_real = null y agrega warning.',
+      '- Solo puedes asignar inmueble.folio_real cuando hay evidencia unica y consistente (ej. unidad/letra/numero oficial coinciden de forma explicita).',
       'Schema de salida requerido:',
       schemaExample,
       'Metadatos del archivo:',
@@ -149,6 +165,9 @@ export class PreavisoExtractionPlugin implements ExtractionPlugin<typeof preavis
       'Tu salida JSON anterior fue invalida.',
       'Corrigela y devuelve SOLO JSON valido que cumpla el schema.',
       `Errores de validacion: ${args.validationErrors.join(' | ')}`,
+      'No omitas conyuges_detectados si el texto fuente contiene contrayentes/acta de matrimonio.',
+      'Incluye personas_detectadas_no_clasificadas cuando haya nombres sin rol claro y elimina duplicados de nombres.',
+      'Si hay multiples folios reales en el texto, NO asignes inmueble.folio_real; dejalo en null y agrega warning.',
       'Salida anterior:',
       args.lastModelOutput,
       'Texto fuente:',

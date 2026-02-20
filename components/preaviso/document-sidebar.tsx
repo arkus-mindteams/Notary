@@ -1,5 +1,6 @@
 "use client"
 import type { ReactNode } from 'react'
+import { useState } from 'react'
 
 import {
     CheckCircle2,
@@ -10,7 +11,9 @@ import {
     Users,
     FileCheck2,
     FolderOpen,
-    EyeOff
+    EyeOff,
+    ChevronDown,
+    ChevronUp
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
@@ -26,10 +29,21 @@ interface DocumentSidebarProps {
     isVisible: boolean
     onClose?: () => void
     bottomActions?: ReactNode
+    onSelectFolioCandidate?: (folio: string) => void
+    onSelectUncategorizedPerson?: (name: string) => void
 }
 
-export function DocumentSidebar({ data, serverState, isVisible, onClose, bottomActions }: DocumentSidebarProps) {
+export function DocumentSidebar({
+    data,
+    serverState,
+    isVisible,
+    onClose,
+    bottomActions,
+    onSelectFolioCandidate,
+    onSelectUncategorizedPerson,
+}: DocumentSidebarProps) {
     if (!isVisible) return null
+    const [showDetectedDetails, setShowDetectedDetails] = useState(false)
 
     const getStepStatus = (stateId: string): 'pending' | 'completed' | 'blocked' => {
         const wizardStep = serverState?.wizard_state?.steps?.find((s) => s.state_id === stateId)
@@ -70,6 +84,56 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose, bottomA
         if (!str) return ''
         return str.toLowerCase().trim().replace(/\s+/g, ' ')
     }
+
+    const uncategorizedPeople = (() => {
+        const pendingPersons = Array.isArray((data as any)?._document_people_pending?.persons)
+            ? (data as any)._document_people_pending.persons
+            : []
+        const rawUncategorized = Array.isArray((data as any)?.personas_detectadas_no_clasificadas)
+            ? (data as any).personas_detectadas_no_clasificadas
+            : []
+        const detectedSpouses = Array.isArray((data as any)?.conyuges_detectados)
+            ? (data as any).conyuges_detectados
+            : []
+        const merged = [...pendingPersons, ...rawUncategorized, ...detectedSpouses]
+        const dedup = new Map<string, { name: string; rfc?: string | null; curp?: string | null }>()
+        for (const person of merged) {
+            const name = String(person?.name || person?.nombre || '').trim()
+            if (!name) continue
+            const key = normalizeName(name)
+            if (!key) continue
+            if (!dedup.has(key)) {
+                dedup.set(key, {
+                    name,
+                    rfc: person?.rfc ?? null,
+                    curp: person?.curp ?? null
+                })
+            }
+        }
+        return Array.from(dedup.values())
+    })()
+
+    const folioCandidates = (() => {
+        const candidates = Array.isArray((data as any)?.folios?.candidates)
+            ? (data as any).folios.candidates
+            : []
+        const dedup = new Set<string>()
+        for (const c of candidates) {
+            const folio = String(c?.folio || '').replace(/\D/g, '').trim()
+            if (!folio) continue
+            dedup.add(folio)
+        }
+        return Array.from(dedup.values())
+    })()
+
+    const hasSellerName =
+        Boolean(data?.vendedores?.[0]?.persona_fisica?.nombre) ||
+        Boolean(data?.vendedores?.[0]?.persona_moral?.denominacion_social)
+
+    const sellerStepStatus: 'pending' | 'completed' | 'blocked' =
+        getStepStatus('ESTADO_3') === 'completed' && !hasSellerName
+            ? 'pending'
+            : getStepStatus('ESTADO_3')
 
     return (
         <Card className={`${onClose
@@ -215,13 +279,63 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose, bottomA
                                     {!data.inmueble?.folio_real && (!data.inmueble?.partidas || data.inmueble.partidas.length === 0) && (
                                         <div className="text-gray-400 italic">Pendiente</div>
                                     )}
+                                    {(folioCandidates.length > 0 || uncategorizedPeople.length > 0) && (
+                                        <div className="pt-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowDetectedDetails((prev) => !prev)}
+                                                className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 hover:text-blue-900"
+                                            >
+                                                {showDetectedDetails ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                                                {showDetectedDetails ? 'Ocultar candidatos detectados' : 'Ver candidatos detectados'}
+                                            </button>
+                                            {showDetectedDetails && (
+                                                <div className="mt-2 rounded border border-blue-200 bg-blue-50 p-2 space-y-2">
+                                                    {folioCandidates.length > 0 && (
+                                                        <div>
+                                                            <div className="text-[11px] font-semibold text-blue-900">Folios candidatos</div>
+                                                            <div className="mt-1 flex flex-wrap gap-1">
+                                                                {folioCandidates.map((folio) => (
+                                                                    <button
+                                                                        key={folio}
+                                                                        type="button"
+                                                                        onClick={() => onSelectFolioCandidate?.(folio)}
+                                                                        className="rounded border border-blue-300 bg-white px-1.5 py-0.5 text-[10px] text-blue-900 hover:bg-blue-100"
+                                                                    >
+                                                                        {folio}
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                    {uncategorizedPeople.length > 0 && (
+                                                        <div>
+                                                            <div className="text-[11px] font-semibold text-blue-900">Personas detectadas</div>
+                                                            <div className="mt-1 space-y-1">
+                                                                {uncategorizedPeople.map((person, idx) => (
+                                                                    <button
+                                                                        key={`${normalizeName(person.name)}-${idx}`}
+                                                                        type="button"
+                                                                        onClick={() => onSelectUncategorizedPerson?.(person.name)}
+                                                                        className="w-full text-left rounded bg-white/70 px-2 py-1 text-[10px] text-blue-900 hover:bg-white"
+                                                                    >
+                                                                        {person.name}
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
 
                             {/* PASO 3 – VENDEDOR(ES) */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
-                                    {getStepStatus('ESTADO_3') === 'completed' ? (
+                                    {sellerStepStatus === 'completed' ? (
                                         <CheckCircle2 className="h-4 w-4 text-green-500" />
                                     ) : (
                                         <AlertCircle className="h-4 w-4 text-gray-400" />
@@ -365,6 +479,41 @@ export function DocumentSidebar({ data, serverState, isVisible, onClose, bottomA
                                     )}
                                 </div>
                             </div>
+
+                            {uncategorizedPeople.length > 0 && (
+                                <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3">
+                                    <div className="flex items-center space-x-2">
+                                        <AlertCircle className="h-4 w-4 text-amber-600" />
+                                        <h4 className={`font-medium ${onClose ? 'text-[13px]' : 'text-sm'} text-amber-900`}>
+                                            Informacion extra detectada (sin categorizar)
+                                        </h4>
+                                    </div>
+                                    <div className={`${onClose ? 'text-[11px]' : 'text-xs'} text-amber-900 space-y-1`}>
+                                        <div>
+                                            Se detectaron personas en documentos, pero aun no se confirmo su rol.
+                                            Puedes indicar: "X es comprador" o "Y es vendedor".
+                                        </div>
+                                        <div className="space-y-1 pt-1">
+                                            {uncategorizedPeople.map((person, idx) => (
+                                                <button
+                                                    key={`${normalizeName(person.name)}-${idx}`}
+                                                    type="button"
+                                                    onClick={() => onSelectUncategorizedPerson?.(person.name)}
+                                                    className="w-full text-left rounded bg-white/60 px-2 py-1 hover:bg-white"
+                                                >
+                                                    <span className="font-medium">{person.name}</span>
+                                                    {(person.rfc || person.curp) && (
+                                                        <span className="text-gray-700">
+                                                            {person.rfc ? ` | RFC: ${person.rfc}` : ''}
+                                                            {person.curp ? ` | CURP: ${person.curp}` : ''}
+                                                        </span>
+                                                    )}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
 
                             {/* PASO 5 – CRÉDITO DEL COMPRADOR */}
                             <div className="space-y-2">

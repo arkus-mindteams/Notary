@@ -112,7 +112,7 @@ export async function POST(req: Request) {
 
         const { data, error } = await supabase
           .from('chat_session_documents')
-          .insert({
+          .upsert({
             session_id: sessionId,
             documento_id: documento.id,
             uploaded_by: currentUser.auth_user_id || null,
@@ -121,6 +121,9 @@ export async function POST(req: Request) {
               original_type: tipo,
               tramite_id: tramiteId
             }
+          }, {
+            onConflict: 'session_id,documento_id',
+            ignoreDuplicates: true
           })
           .select()
 
