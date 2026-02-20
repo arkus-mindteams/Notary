@@ -1,6 +1,6 @@
 "use client"
 import type { ReactNode } from 'react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import {
     CheckCircle2,
@@ -43,7 +43,13 @@ export function DocumentSidebar({
     onSelectUncategorizedPerson,
 }: DocumentSidebarProps) {
     if (!isVisible) return null
-    const [showDetectedDetails, setShowDetectedDetails] = useState(false)
+    const [showDetectedDetails, setShowDetectedDetails] = useState(true)
+    const [showPeopleDetected, setShowPeopleDetected] = useState(true)
+
+    const folioConfirmed = Boolean(
+        (data as any)?.folios?.selection?.confirmed_by_user ||
+        data?.inmueble?.folio_real_confirmed
+    )
 
     const getStepStatus = (stateId: string): 'pending' | 'completed' | 'blocked' => {
         const wizardStep = serverState?.wizard_state?.steps?.find((s) => s.state_id === stateId)
@@ -54,6 +60,19 @@ export function DocumentSidebar({
         if (raw === 'incomplete') return 'blocked'
         return 'pending'
     }
+    const buyerStepCompleted = getStepStatus('ESTADO_4') === 'completed'
+
+    useEffect(() => {
+        if (folioConfirmed) {
+            setShowDetectedDetails(false)
+        }
+    }, [folioConfirmed])
+
+    useEffect(() => {
+        if (buyerStepCompleted) {
+            setShowPeopleDetected(false)
+        }
+    }, [buyerStepCompleted])
 
     const progress = (() => {
         if (serverState?.wizard_state) {
@@ -279,7 +298,7 @@ export function DocumentSidebar({
                                     {!data.inmueble?.folio_real && (!data.inmueble?.partidas || data.inmueble.partidas.length === 0) && (
                                         <div className="text-gray-400 italic">Pendiente</div>
                                     )}
-                                    {(folioCandidates.length > 0 || uncategorizedPeople.length > 0) && (
+                                    {folioCandidates.length > 0 && (
                                         <div className="pt-2">
                                             <button
                                                 type="button"
@@ -287,7 +306,7 @@ export function DocumentSidebar({
                                                 className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 hover:text-blue-900"
                                             >
                                                 {showDetectedDetails ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                                                {showDetectedDetails ? 'Ocultar candidatos detectados' : 'Ver candidatos detectados'}
+                                                {showDetectedDetails ? 'Ocultar datos detectados' : 'Ver datos detectados'}
                                             </button>
                                             {showDetectedDetails && (
                                                 <div className="mt-2 rounded border border-blue-200 bg-blue-50 p-2 space-y-2">
@@ -303,23 +322,6 @@ export function DocumentSidebar({
                                                                         className="rounded border border-blue-300 bg-white px-1.5 py-0.5 text-[10px] text-blue-900 hover:bg-blue-100"
                                                                     >
                                                                         {folio}
-                                                                    </button>
-                                                                ))}
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                    {uncategorizedPeople.length > 0 && (
-                                                        <div>
-                                                            <div className="text-[11px] font-semibold text-blue-900">Personas detectadas</div>
-                                                            <div className="mt-1 space-y-1">
-                                                                {uncategorizedPeople.map((person, idx) => (
-                                                                    <button
-                                                                        key={`${normalizeName(person.name)}-${idx}`}
-                                                                        type="button"
-                                                                        onClick={() => onSelectUncategorizedPerson?.(person.name)}
-                                                                        className="w-full text-left rounded bg-white/70 px-2 py-1 text-[10px] text-blue-900 hover:bg-white"
-                                                                    >
-                                                                        {person.name}
                                                                     </button>
                                                                 ))}
                                                             </div>
@@ -481,37 +483,33 @@ export function DocumentSidebar({
                             </div>
 
                             {uncategorizedPeople.length > 0 && (
-                                <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3">
-                                    <div className="flex items-center space-x-2">
-                                        <AlertCircle className="h-4 w-4 text-amber-600" />
-                                        <h4 className={`font-medium ${onClose ? 'text-[13px]' : 'text-sm'} text-amber-900`}>
-                                            Informacion extra detectada (sin categorizar)
-                                        </h4>
-                                    </div>
-                                    <div className={`${onClose ? 'text-[11px]' : 'text-xs'} text-amber-900 space-y-1`}>
-                                        <div>
-                                            Se detectaron personas en documentos, pero aun no se confirmo su rol.
-                                            Puedes indicar: "X es comprador" o "Y es vendedor".
+                                <div className="pt-1 ml-6">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowPeopleDetected((prev) => !prev)}
+                                        className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 hover:text-blue-900"
+                                    >
+                                        {showPeopleDetected ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                                        {showPeopleDetected ? 'Ocultar conyuges/personas detectadas' : 'Ver conyuges/personas detectadas'}
+                                    </button>
+                                    {showPeopleDetected && (
+                                        <div className="mt-2 rounded border border-blue-200 bg-blue-50 p-2 space-y-2">
+                                            <div className="text-[11px] font-semibold text-blue-900">Conyuges / personas detectadas</div>
+                                            <div className={`${onClose ? 'text-[11px]' : 'text-xs'} text-blue-900`}>Puedes clasificar con click y ajustar el texto antes de enviar.</div>
+                                            <div className="space-y-1 pt-1">
+                                                {uncategorizedPeople.map((person, idx) => (
+                                                    <button
+                                                        key={`${normalizeName(person.name)}-${idx}`}
+                                                        type="button"
+                                                        onClick={() => onSelectUncategorizedPerson?.(person.name)}
+                                                        className="w-full text-left rounded border border-blue-300 bg-white px-2 py-1 text-[10px] text-blue-900 hover:bg-blue-100"
+                                                    >
+                                                        {person.name}
+                                                    </button>
+                                                ))}
+                                            </div>
                                         </div>
-                                        <div className="space-y-1 pt-1">
-                                            {uncategorizedPeople.map((person, idx) => (
-                                                <button
-                                                    key={`${normalizeName(person.name)}-${idx}`}
-                                                    type="button"
-                                                    onClick={() => onSelectUncategorizedPerson?.(person.name)}
-                                                    className="w-full text-left rounded bg-white/60 px-2 py-1 hover:bg-white"
-                                                >
-                                                    <span className="font-medium">{person.name}</span>
-                                                    {(person.rfc || person.curp) && (
-                                                        <span className="text-gray-700">
-                                                            {person.rfc ? ` | RFC: ${person.rfc}` : ''}
-                                                            {person.curp ? ` | CURP: ${person.curp}` : ''}
-                                                        </span>
-                                                    )}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
+                                    )}
                                 </div>
                             )}
 
@@ -563,7 +561,6 @@ export function DocumentSidebar({
                                     )}
                                 </div>
                             </div>
-
                             {/* PASO 6 – CANCELACIÓN DE HIPOTECA */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
@@ -630,4 +627,5 @@ export function DocumentSidebar({
         </Card>
     )
 }
+
 

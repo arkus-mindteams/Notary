@@ -510,13 +510,6 @@ export class DocumentTextExtractor {
       }
       return pages.join('\n\n').trim()
     }
-    const extractWithPdfParse = async (): Promise<string> => {
-      const mod: any = await import('pdf-parse/lib/pdf-parse.js')
-      const pdfParse = mod?.default || mod
-      const parsed = await pdfParse(Buffer.from(bytes))
-      return String(parsed?.text || '').replace(/\s+\n/g, '\n').trim()
-    }
-
     try {
       const legacyPdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
       const legacyText = await extractWithPdfjs(legacyPdfjs)
@@ -524,8 +517,6 @@ export class DocumentTextExtractor {
       const modernPdfjs = await import('pdfjs-dist/build/pdf.mjs')
       const modernText = await extractWithPdfjs(modernPdfjs)
       if (modernText.trim()) return modernText
-      const parsedText = await extractWithPdfParse()
-      if (parsedText.trim()) return parsedText
       return ''
     } catch (error: any) {
       try {
@@ -537,17 +528,6 @@ export class DocumentTextExtractor {
           console.error('[DocumentTextExtractor] pdf_text_extraction_fallback_failed', {
             message: String(fallbackError?.message || fallbackError),
             stack: String(fallbackError?.stack || '').slice(0, 1200),
-          })
-        }
-      }
-      try {
-        const parsedText = await extractWithPdfParse()
-        if (parsedText.trim()) return parsedText
-      } catch (pdfParseError: any) {
-        if (DOCUMENT_TEXT_DEBUG) {
-          console.error('[DocumentTextExtractor] pdf_text_extraction_pdf_parse_failed', {
-            message: String(pdfParseError?.message || pdfParseError),
-            stack: String(pdfParseError?.stack || '').slice(0, 1200),
           })
         }
       }

@@ -2023,20 +2023,21 @@ export function PreavisoChat({
   }
 
   const handleSidebarFolioSelect = (folio: string) => {
-    sendQuickChatMessage(String(folio || '').replace(/\D/g, ''))
+    const cleanFolio = String(folio || '').replace(/\D/g, '')
+    if (!cleanFolio) return
+    sendQuickChatMessage(`el folio real es ${cleanFolio}`)
   }
 
   const handleSidebarPersonSelect = (name: string) => {
     const cleanName = String(name || '').trim()
     if (!cleanName) return
-    const suggested = `${cleanName} es comprador`
-    const custom = window.prompt(
-      `Clasifica a "${cleanName}".\nEjemplos:\n- ${cleanName} es vendedor\n- ${cleanName} es comprador\n- ${cleanName} es conyuge de comprador`,
-      suggested
-    )
-    if (custom === null) return
-    const finalText = String(custom || '').trim() || suggested
-    sendQuickChatMessage(finalText)
+    const draft = `${cleanName} es `
+    flushSync(() => setInput(draft))
+    setTimeout(() => {
+      textInputRef.current?.focus()
+      const end = draft.length
+      textInputRef.current?.setSelectionRange(end, end)
+    }, 0)
   }
 
   const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false, skipUserMessage = false, userText: string | null = null) => {
@@ -2638,14 +2639,21 @@ export function PreavisoChat({
         const conyugesDetectados = Array.isArray(structured?.conyuges_detectados)
           ? structured.conyuges_detectados
           : []
-        for (const p of conyugesDetectados) {
-          const n = normalizeName(p?.nombre)
-          if (n) classifiedNames.add(n)
-        }
+        // Persistir conyuges detectados para UI (panel derecho + acciones)
+        ;(next as any).conyuges_detectados = conyugesDetectados
 
-        const noClasificadasRaw = Array.isArray(structured?.personas_detectadas_no_clasificadas)
+        const rawNoClasificadas = Array.isArray(structured?.personas_detectadas_no_clasificadas)
           ? structured.personas_detectadas_no_clasificadas
           : []
+        // Persistir personas no clasificadas para UI
+        ;(next as any).personas_detectadas_no_clasificadas = rawNoClasificadas
+
+        for (const p of conyugesDetectados) {
+          // Importante: NO marcar automaticamente como "clasificado".
+          // Deben seguir visibles para que usuario asigne rol.
+        }
+
+        const noClasificadasRaw = rawNoClasificadas
         const dedupNoClasificadas = new Map<string, any>()
         for (const person of noClasificadasRaw) {
           const n = normalizeName(person?.nombre)
@@ -2655,6 +2663,19 @@ export function PreavisoChat({
               name: String(person?.nombre || '').trim(),
               rfc: person?.rfc ?? null,
               curp: person?.curp ?? null,
+              source: 'documento'
+            })
+          }
+        }
+        // Tambien agregar conyuges detectados a lista accionable (si no estan duplicados)
+        for (const spouse of conyugesDetectados) {
+          const n = normalizeName(spouse?.nombre)
+          if (!n || classifiedNames.has(n)) continue
+          if (!dedupNoClasificadas.has(n)) {
+            dedupNoClasificadas.set(n, {
+              name: String(spouse?.nombre || '').trim(),
+              rfc: null,
+              curp: null,
               source: 'documento'
             })
           }
@@ -2669,6 +2690,47 @@ export function PreavisoChat({
         }
 
         return next
+      }
+
+      const applyConsolidatedFolioHints = (
+        base: PreavisoData,
+        inputs: Array<{ intakeRules?: any; intakeFacts?: any[]; documentId: string; fileName: string }>
+      ): PreavisoData => {
+        const next: any = { ...(base as any) }
+        const prevFolios = next.folios || {
+          candidates: [],
+          selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false }
+        }
+
+        const map = new Map<string, any>()
+        for (const c of Array.isArray(prevFolios?.candidates) ? prevFolios.candidates : []) {
+          const folio = String(c?.folio || '').replace(/\D/g, '')
+          const scope = c?.scope || 'otros'
+          if (!folio) continue
+          map.set(`${scope}:${folio}`, { ...c, folio, scope })
+        }
+
+        for (const item of inputs || []) {
+          const conflicts = Array.isArray(item?.intakeRules?.conflicts) ? item.intakeRules.conflicts : []
+          const folioConflict = conflicts.find((x: any) => String(x?.key || '').toLowerCase() === 'folio_real')
+          const values = Array.isArray(folioConflict?.values) ? folioConflict.values : []
+          for (const v of values) {
+            const folio = String(v || '').replace(/\D/g, '')
+            if (!folio) continue
+            map.set(`unidades:${folio}`, {
+              folio,
+              scope: 'unidades',
+              attrs: {},
+              sources: [{ docName: item?.fileName || null, docType: 'inscripcion' }]
+            })
+          }
+        }
+
+        next.folios = {
+          candidates: Array.from(map.values()),
+          selection: prevFolios.selection || { selected_folio: null, selected_scope: null, confirmed_by_user: false }
+        }
+        return next as PreavisoData
       }
 
       const buildUncategorizedPeopleMessage = (current: any): string | null => {
@@ -3722,7 +3784,8 @@ export function PreavisoChat({
               })
               if (extractJson?.structured) {
                 setData(prev => {
-                  const merged = mergeStructuredExtractionIntoData(prev, extractJson.structured)
+                  const mergedStructured = mergeStructuredExtractionIntoData(prev, extractJson.structured)
+                  const merged = applyConsolidatedFolioHints(mergedStructured, consolidatedExtractionInputs)
                   workingData = merged
                   dataRef.current = merged
                   return merged

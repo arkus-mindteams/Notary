@@ -1360,6 +1360,33 @@ function reconcileLegacyCapturedData(args: {
     ),
   }
 
+  // Si el usuario confirma/escribe explicitamente un folio en el chat,
+  // tratarlo como confirmacion manual aunque no venga de boton de seleccion.
+  const folioFromUserMessage = extractFolioFromText(message)
+  if (folioFromUserMessage) {
+    console.info('[api/ai/chat] folio_confirmed_from_user_message', {
+      folio: folioFromUserMessage,
+      message_preview: String(message || '').slice(0, 120),
+    })
+    const inmueble = { ...(merged.inmueble || {}) } as Record<string, any>
+    inmueble.folio_real = folioFromUserMessage
+    inmueble.folio_real_confirmed = true
+    merged.inmueble = inmueble
+
+    const prevFolios = (merged as any).folios || {
+      candidates: [],
+      selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false },
+    }
+    ;(merged as any).folios = {
+      ...prevFolios,
+      selection: {
+        ...(prevFolios.selection || {}),
+        selected_folio: folioFromUserMessage,
+        confirmed_by_user: true,
+      },
+    }
+  }
+
   if (Array.isArray(prev.vendedores) && prev.vendedores.length > 0 && (!Array.isArray(next.vendedores) || next.vendedores.length === 0)) {
     merged.vendedores = prev.vendedores
   }
@@ -1368,6 +1395,40 @@ function reconcileLegacyCapturedData(args: {
   }
   if (Array.isArray(prev.documentos) && prev.documentos.length > 0 && (!Array.isArray(next.documentos) || next.documentos.length === 0)) {
     merged.documentos = prev.documentos
+  }
+
+  // Captura determinista de roles escritos en chat:
+  // "NOMBRE es comprador|vendedor", "comprador: NOMBRE", etc.
+  const labeledFromMessage = extractLabeledPartiesFromText(message)
+  if (labeledFromMessage.comprador || labeledFromMessage.vendedor) {
+    console.info('[api/ai/chat] role_detected_from_message', {
+      comprador: labeledFromMessage.comprador || null,
+      vendedor: labeledFromMessage.vendedor || null,
+      message_preview: String(message || '').slice(0, 140),
+    })
+  }
+  if (labeledFromMessage.comprador) {
+    const compradores = Array.isArray(merged.compradores) ? [...merged.compradores] : []
+    if (compradores.length === 0) {
+      compradores[0] = buildPartyFromLabel('comprador_1', labeledFromMessage.comprador)
+    } else {
+      const base = { ...(compradores[0] || {}) }
+      const inferred = buildPartyFromLabel(base.party_id || 'comprador_1', labeledFromMessage.comprador)
+      compradores[0] = { ...base, ...inferred, party_id: base.party_id || 'comprador_1' }
+    }
+    merged.compradores = compradores
+  }
+
+  if (labeledFromMessage.vendedor) {
+    const vendedores = Array.isArray(merged.vendedores) ? [...merged.vendedores] : []
+    if (vendedores.length === 0) {
+      vendedores[0] = buildPartyFromLabel('vendedor_1', labeledFromMessage.vendedor)
+    } else {
+      const base = { ...(vendedores[0] || {}) }
+      const inferred = buildPartyFromLabel(base.party_id || 'vendedor_1', labeledFromMessage.vendedor)
+      vendedores[0] = { ...base, ...inferred, party_id: base.party_id || 'vendedor_1' }
+    }
+    merged.vendedores = vendedores
   }
 
   const saysNoCredit = /\b(sin credito|sin crédito|no credito|no crédito|de contado|pago de contado|contado)\b/.test(normalized)
@@ -1621,25 +1682,62 @@ function hydrateCriticalFieldsFromHistory(
 
 function extractFolioFromText(message: string): string | null {
   const text = String(message || '')
-  const match = text.match(/\bfolio(?:\s+real)?(?:\s+no\.?)?\s*[:#]?\s*([A-Z0-9-]{5,})\b/i)
-  if (!match) return null
-  return String(match[1] || '')
-    .trim()
-    .replace(/[.,;:]+$/, '')
+  const match = text.match(/\bfolio(?:\s+real)?(?:\s+no\.?)?(?:\s+(?:es|seria|sería|corresponde|confirmo|confirmamos))?\s*[:#]?\s*([A-Z0-9-]{5,})\b/i)
+  if (match) {
+    return String(match[1] || '')
+      .trim()
+      .replace(/[.,;:]+$/, '')
+  }
+
+  // Permitir respuesta corta solo con numero cuando el usuario responde al prompt de folio.
+  const compact = text.trim().replace(/[.,;:\s]+$/g, '')
+  if (/^\d{5,}$/.test(compact)) {
+    return compact
+  }
+  return null
 }
 
 function extractLabeledPartiesFromText(text: string): { comprador: string | null; vendedor: string | null } {
   const source = String(text || '')
+  let comprador: string | null = null
+  let vendedor: string | null = null
+
+  const assignRole = (roleRaw: string, valueRaw: string) => {
+    const role = String(roleRaw || '').toLowerCase()
+    const value = sanitizePartyLabel(valueRaw)
+    if (!value) return
+    if (role.startsWith('comprador')) comprador = value
+    if (role.startsWith('vendedor')) vendedor = value
+  }
+
+  // Formato legacy: "comprador: NOMBRE" / "vendedor- NOMBRE"
   const compradorMatch = source.match(/\bcomprador(?:\s*[:\-])\s*([^\n\r]+)/i)
   const vendedorMatch = source.match(/\bvendedor(?:\s*[:\-])\s*([^\n\r]+)/i)
+  if (compradorMatch?.[1]) assignRole('comprador', compradorMatch[1])
+  if (vendedorMatch?.[1]) assignRole('vendedor', vendedorMatch[1])
+
+  // Formato natural: "NOMBRE es comprador|vendedor"
+  const naturalRolePattern = /([A-ZÁÉÍÓÚÑ0-9][A-ZÁÉÍÓÚÑ0-9\s.'"-]{3,}?)\s+es\s+(?:el\s+|la\s+)?(comprador(?:a)?|vendedor(?:a)?)\b/gi
+  for (const match of source.matchAll(naturalRolePattern)) {
+    assignRole(match[2] || '', match[1] || '')
+  }
+
+  // Variante: "comprador es NOMBRE" / "vendedor es NOMBRE"
+  const invertedRolePattern = /\b(comprador(?:a)?|vendedor(?:a)?)\b\s*(?::|-|es)\s*([^\n\r.,;]+)/gi
+  for (const match of source.matchAll(invertedRolePattern)) {
+    assignRole(match[1] || '', match[2] || '')
+  }
+
   return {
-    comprador: compradorMatch ? sanitizePartyLabel(compradorMatch[1]) : null,
-    vendedor: vendedorMatch ? sanitizePartyLabel(vendedorMatch[1]) : null,
+    comprador,
+    vendedor,
   }
 }
 
 function sanitizePartyLabel(value: string): string | null {
   const cleaned = String(value || '')
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/^(el|la)\s+/i, '')
     .replace(/\s+/g, ' ')
     .replace(/[.,;:]+$/, '')
     .trim()
