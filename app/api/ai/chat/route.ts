@@ -405,6 +405,45 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
 
       let usedLegacyStateFallback = false
 
+      const shouldAnswerMissingFromState =
+        isPreavisoPlugin &&
+        !confirmationRequested &&
+        containsNoEvidenceMessage(String(routed.answer || '')) &&
+        isMissingDataQuestion(body.message)
+
+      if (shouldAnswerMissingFromState) {
+        const [tramiteData, freshState] = await Promise.all([
+          deps.loadTramiteData(body.tramiteId),
+          deps.getTramiteStateSnapshot(body.tramiteId),
+        ])
+        tramiteState = freshState
+        const guidance = buildMissingDataGuidance(
+          Array.isArray(freshState.required_missing) ? freshState.required_missing : [],
+          Array.isArray(freshState.blocking_reasons) ? freshState.blocking_reasons : []
+        )
+        const docsHint = buildMissingDocumentsHint(guidance.required_missing)
+
+        responsePayload = {
+          ...routed,
+          intent: 'UPDATE_STATE',
+          agent_used: 'ProposeStateUpdateAgent',
+          answer: docsHint
+            ? `${guidance.message}\n\n${docsHint}`
+            : guidance.message,
+          actions: [
+            {
+              type: 'request_missing_field',
+              required_missing: guidance.required_missing,
+              blocking_reasons: guidance.blocking_reasons,
+              next_questions: guidance.next_questions,
+            },
+          ],
+          state: freshState,
+          data: (tramiteData || {}) as Record<string, unknown>,
+        }
+        responsePayload = appendFolioSelectionActionIfNeeded(responsePayload, (tramiteData || {}) as Record<string, any>)
+      }
+
       if (shouldDirectLegacyStateUpdate && !confirmationRequested) {
         const [tramiteData, recentMessages] = await Promise.all([
           deps.loadTramiteData(body.tramiteId),
@@ -473,10 +512,13 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
       }
 
       if (
-        shouldUseLegacyStateUpdateFallback ||
-        shouldRecoverFromQnaMisroute ||
-        shouldRecoverFromUnknownMisroute ||
-        shouldRecoverFromExtractMissingPayload
+        !shouldAnswerMissingFromState &&
+        (
+          shouldUseLegacyStateUpdateFallback ||
+          shouldRecoverFromQnaMisroute ||
+          shouldRecoverFromUnknownMisroute ||
+          shouldRecoverFromExtractMissingPayload
+        )
       ) {
         const [tramiteData, recentMessages] = await Promise.all([
           deps.loadTramiteData(body.tramiteId),
@@ -1158,7 +1200,32 @@ function mergeStructuredExtractionIntoTramiteData(
     next.compradores = compradores
   }
 
-  const conyuge = String(extracted?.conyuges_detectados?.[0]?.nombre || '').trim()
+  const buyerName = String(
+    next?.compradores?.[0]?.persona_fisica?.nombre ||
+      next?.compradores?.[0]?.persona_moral?.denominacion_social ||
+      ''
+  ).trim()
+  const normalizedBuyer = buyerName
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+  const conyugeCandidates = Array.isArray(extracted?.conyuges_detectados)
+    ? extracted.conyuges_detectados
+        .map((p: any) => String(p?.nombre || '').trim())
+        .filter(Boolean)
+    : []
+  const conyuge =
+    conyugeCandidates.find((name: string) => {
+      const normalized = name
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim()
+      return normalized && normalized !== normalizedBuyer
+    }) || null
   if (conyuge && Array.isArray(next.compradores) && next.compradores.length > 0) {
     const compradores = [...next.compradores]
     const c0 = { ...(compradores[0] || {}) }
@@ -1235,6 +1302,9 @@ function isLikelyPersonNameReply(message: string): boolean {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
 
+  // Evita aceptar borradores incompletos como "NOMBRE es"
+  if (/\bes\s*$/.test(normalized)) return false
+
   const words = normalized.split(/\s+/).filter(Boolean)
   if (words.length < 2 || words.length > 5) return false
   if (!words.every((w) => /^[a-z.'-]+$/.test(w))) return false
@@ -1251,7 +1321,45 @@ function containsNoEvidenceMessage(answer?: string): boolean {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
 
-  return normalized.includes('no encontre evidencia relevante')
+  return (
+    normalized.includes('no encontre evidencia relevante') ||
+    normalized.includes('no encontre suficiente evidencia')
+  )
+}
+
+function isMissingDataQuestion(message: string): boolean {
+  const normalized = String(message || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return false
+  return (
+    /\b(que|cuales)\b/.test(normalized) &&
+    /\b(falta|faltan|faltante|requiero|requieres|requiere|obligatorio|obligatorios)\b/.test(normalized)
+  ) || /\b(documentos?\s+faltan)\b/.test(normalized)
+}
+
+function buildMissingDocumentsHint(requiredMissing: string[]): string {
+  const fields = Array.from(new Set((requiredMissing || []).filter(Boolean)))
+  const hints: string[] = []
+  if (fields.some((f) => f === 'inmueble.folio_real' || f.startsWith('inmueble.'))) {
+    hints.push('Documento sugerido: hoja de inscripcion/escritura para folio real, partida y datos del inmueble.')
+  }
+  if (fields.some((f) => f.startsWith('compradores'))) {
+    hints.push('Documento sugerido: identificacion oficial del comprador (INE/pasaporte/licencia).')
+  }
+  if (fields.some((f) => f.startsWith('vendedores'))) {
+    hints.push('Documento sugerido: hoja de inscripcion/escritura para titular registral o identificacion del vendedor.')
+  }
+  if (fields.some((f) => f.startsWith('creditos'))) {
+    hints.push('Documento sugerido: estado de cuenta/carta de credito o datos del banco e institucion.')
+  }
+  if (fields.some((f) => f.startsWith('gravamenes'))) {
+    hints.push('Documento sugerido: constancia/certificado de gravamen o informacion de cancelacion de hipoteca.')
+  }
+  return hints.join(' ')
 }
 
 function isExtractionMissingPayload(actions: unknown): boolean {

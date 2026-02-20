@@ -2608,7 +2608,19 @@ export function PreavisoChat({
           next.compradores = existing
         }
 
-        const conyuge = String(structured?.conyuges_detectados?.[0]?.nombre || '').trim()
+        const buyerName = String(
+          next?.compradores?.[0]?.persona_fisica?.nombre ||
+          next?.compradores?.[0]?.persona_moral?.denominacion_social ||
+          ''
+        ).trim()
+        const normalizedBuyer = normalizeName(buyerName)
+        const conyugeCandidates = Array.isArray(structured?.conyuges_detectados)
+          ? structured.conyuges_detectados
+            .map((p: any) => String(p?.nombre || '').trim())
+            .filter(Boolean)
+          : []
+        const conyuge =
+          conyugeCandidates.find((name: string) => normalizeName(name) !== normalizedBuyer) || null
         if (conyuge) {
           const compradores = Array.isArray(next.compradores) ? [...next.compradores] : []
           const c0 = { ...(compradores[0] || {}) } as any
