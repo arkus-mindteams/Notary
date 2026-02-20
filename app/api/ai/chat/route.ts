@@ -1374,7 +1374,8 @@ function inferShortRoleConfirmation(normalizedMessage: string): 'vendedor' | 'co
 
 function applyPendingPersonRole(
   merged: Record<string, any>,
-  role: 'vendedor' | 'comprador' | 'conyuge'
+  role: 'vendedor' | 'comprador' | 'conyuge',
+  preferredName?: string | null
 ): void {
   const pending =
     (Array.isArray((merged as any)?._document_people_pending?.persons)
@@ -1389,12 +1390,25 @@ function applyPendingPersonRole(
       ? (merged as any).conyuges_detectados
       : []) as Array<any>
 
+  const norm = (v: unknown) =>
+    String(v || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const preferred = String(preferredName || '').trim()
+  const preferredNorm = norm(preferred)
+  const allCandidates = [...pending, ...uncategorized, ...spouses]
   const first =
+    (preferredNorm
+      ? allCandidates.find((p: any) => norm(p?.name || p?.nombre) === preferredNorm)
+      : null) ||
     pending[0] ||
     uncategorized[0] ||
     spouses[0] ||
     null
-  const name = String(first?.name || first?.nombre || '').trim()
+  const name = String(preferred || first?.name || first?.nombre || '').trim()
   if (!name) return
 
   if (role === 'vendedor') {
@@ -1458,16 +1472,12 @@ function applyPendingPersonRole(
     }
   }
 
-  const norm = (v: unknown) =>
-    String(v || '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
   const target = norm(name)
   if ((merged as any)?._document_people_pending?.persons) {
     ;(merged as any)._document_people_pending.persons = pending.filter((p: any) => norm(p?.name || p?.nombre) !== target)
+    if ((merged as any)._document_people_pending.persons.length === 0) {
+      ;(merged as any)._document_people_pending = null
+    }
   }
   if (Array.isArray((merged as any)?.personas_detectadas_no_clasificadas)) {
     ;(merged as any).personas_detectadas_no_clasificadas = uncategorized.filter((p: any) => norm(p?.name || p?.nombre) !== target)
@@ -1475,6 +1485,42 @@ function applyPendingPersonRole(
   if (Array.isArray((merged as any)?.conyuges_detectados)) {
     ;(merged as any).conyuges_detectados = spouses.filter((p: any) => norm(p?.name || p?.nombre) !== target)
   }
+}
+
+function extractExplicitRoleAssignment(
+  text: string
+): { role: 'vendedor' | 'comprador' | 'conyuge'; name: string | null } | null {
+  const source = String(text || '').trim()
+  if (!source) return null
+
+  const roleFromRaw = (raw: string): 'vendedor' | 'comprador' | 'conyuge' | null => {
+    const normalized = String(raw || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+    if (normalized.includes('vendedor')) return 'vendedor'
+    if (normalized.includes('comprador')) return 'comprador'
+    if (normalized.includes('conyuge') || normalized.includes('esposa') || normalized.includes('esposo')) return 'conyuge'
+    return null
+  }
+
+  const natural = /([A-ZÁÉÍÓÚÑ0-9][A-ZÁÉÍÓÚÑ0-9\s.'"-]{3,}?)\s+es\s+(?:el\s+|la\s+)?(comprador(?:a)?|vendedor(?:a)?|c[oó]nyuge|conyuge|espos[oa])\b/i
+  const naturalMatch = source.match(natural)
+  if (naturalMatch) {
+    const role = roleFromRaw(naturalMatch[2] || '')
+    const name = sanitizePartyLabel(naturalMatch[1] || '')
+    if (role) return { role, name }
+  }
+
+  const inverted = /\b(comprador(?:a)?|vendedor(?:a)?|c[oó]nyuge|conyuge|espos[oa])\b\s*(?::|-|es)\s*([^\n\r.,;]+)/i
+  const invertedMatch = source.match(inverted)
+  if (invertedMatch) {
+    const role = roleFromRaw(invertedMatch[1] || '')
+    const name = sanitizePartyLabel(invertedMatch[2] || '')
+    if (role) return { role, name }
+  }
+
+  return null
 }
 
 function isMissingDataQuestion(message: string): boolean {
@@ -1688,9 +1734,13 @@ function reconcileLegacyCapturedData(args: {
     }
     merged.vendedores = vendedores
   }
+  const explicitRoleAssignment = extractExplicitRoleAssignment(message)
+  if (explicitRoleAssignment) {
+    applyPendingPersonRole(merged, explicitRoleAssignment.role, explicitRoleAssignment.name)
+  }
   const shortRole = inferShortRoleConfirmation(normalized)
-  if (!labeledFromMessage.comprador && !labeledFromMessage.vendedor && shortRole) {
-    applyPendingPersonRole(merged, shortRole)
+  if (!labeledFromMessage.comprador && !labeledFromMessage.vendedor && shortRole && !explicitRoleAssignment) {
+    applyPendingPersonRole(merged, shortRole, null)
   }
   const saysNoCredit = /\b(sin credito|sin crédito|no credito|no crédito|de contado|pago de contado|contado)\b/.test(normalized)
   const saysWithCredit = /\b(con credito|con crédito|credito|crédito)\b/.test(normalized) && !/\b(sin credito|sin crédito|no credito|no crédito)\b/.test(normalized)
