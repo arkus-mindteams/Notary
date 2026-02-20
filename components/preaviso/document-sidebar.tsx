@@ -131,6 +131,17 @@ export function DocumentSidebar({
     }
 
     const uncategorizedPeople = (() => {
+        const classified = new Set<string>()
+        for (const v of Array.isArray(data?.vendedores) ? data.vendedores : []) {
+            const n = normalizeName(v?.persona_fisica?.nombre || v?.persona_moral?.denominacion_social)
+            if (n) classified.add(n)
+        }
+        for (const c of Array.isArray(data?.compradores) ? data.compradores : []) {
+            const n = normalizeName(c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social)
+            if (n) classified.add(n)
+            const spouse = normalizeName(c?.persona_fisica?.conyuge?.nombre)
+            if (spouse) classified.add(spouse)
+        }
         const pendingPersons = Array.isArray((data as any)?._document_people_pending?.persons)
             ? (data as any)._document_people_pending.persons
             : []
@@ -148,6 +159,7 @@ export function DocumentSidebar({
             if (!name) continue
             const key = normalizeName(name)
             if (!key) continue
+            if (classified.has(key)) continue
             if (!dedup.has(key)) {
                 dedup.set(key, {
                     name,
@@ -171,6 +183,12 @@ export function DocumentSidebar({
         }
         return Array.from(dedup.values())
     })()
+    const normalizedSelectedFolio = String(data?.inmueble?.folio_real || '').replace(/\D/g, '').trim()
+    const hasResolvedSingleFolioCandidate =
+        folioCandidates.length === 1 &&
+        Boolean(normalizedSelectedFolio) &&
+        normalizedSelectedFolio === folioCandidates[0]
+    const shouldRenderFolioCandidates = folioCandidates.length > 0 && !hasResolvedSingleFolioCandidate
 
     const hasSellerName =
         Boolean(data?.vendedores?.[0]?.persona_fisica?.nombre) ||
@@ -325,7 +343,7 @@ export function DocumentSidebar({
                                     {!data.inmueble?.folio_real && (!data.inmueble?.partidas || data.inmueble.partidas.length === 0) && (
                                         <div className="text-gray-400 italic">Pendiente</div>
                                     )}
-                                    {folioCandidates.length > 0 && (
+                                    {shouldRenderFolioCandidates && (
                                         <div className="pt-2">
                                             <button
                                                 type="button"

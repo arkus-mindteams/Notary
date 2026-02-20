@@ -2674,24 +2674,48 @@ export function PreavisoChat({
           const n = normalizeName(p?.nombre)
           if (n) classifiedNames.add(n)
         }
+        const vendedoresActuales = Array.isArray(next?.vendedores) ? next.vendedores : []
+        for (const v of vendedoresActuales) {
+          const n = normalizeName(v?.persona_fisica?.nombre || v?.persona_moral?.denominacion_social)
+          if (n) classifiedNames.add(n)
+        }
+        const compradoresActuales = Array.isArray(next?.compradores) ? next.compradores : []
+        for (const c of compradoresActuales) {
+          const n = normalizeName(c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social)
+          if (n) classifiedNames.add(n)
+        }
         const conyugesDetectados = Array.isArray(structured?.conyuges_detectados)
           ? structured.conyuges_detectados
           : []
-        // Persistir conyuges detectados para UI (panel derecho + acciones)
-        ;(next as any).conyuges_detectados = conyugesDetectados
+        const conyugesDetectadosFiltrados = conyugesDetectados.filter((p: any) => {
+          const name = String(p?.nombre || '').trim()
+          if (!isValidDetectedPersonName(name)) return false
+          const n = normalizeName(name)
+          if (!n) return false
+          return !classifiedNames.has(n)
+        })
+        // Persistir conyuges detectados accionables para UI.
+        ;(next as any).conyuges_detectados = conyugesDetectadosFiltrados
 
         const rawNoClasificadas = Array.isArray(structured?.personas_detectadas_no_clasificadas)
           ? structured.personas_detectadas_no_clasificadas
           : []
-        // Persistir personas no clasificadas para UI
-        ;(next as any).personas_detectadas_no_clasificadas = rawNoClasificadas
+        const rawNoClasificadasFiltradas = rawNoClasificadas.filter((person: any) => {
+          const name = String(person?.nombre || '').trim()
+          if (!isValidDetectedPersonName(name)) return false
+          const n = normalizeName(name)
+          if (!n) return false
+          return !classifiedNames.has(n)
+        })
+        // Persistir solo personas realmente no clasificadas para UI.
+        ;(next as any).personas_detectadas_no_clasificadas = rawNoClasificadasFiltradas
 
         for (const p of conyugesDetectados) {
           // Importante: NO marcar automaticamente como "clasificado".
           // Deben seguir visibles para que usuario asigne rol.
         }
 
-        const noClasificadasRaw = rawNoClasificadas
+        const noClasificadasRaw = rawNoClasificadasFiltradas
         const dedupNoClasificadas = new Map<string, any>()
         for (const person of noClasificadasRaw) {
           if (!isValidDetectedPersonName(person?.nombre)) continue
@@ -2707,7 +2731,7 @@ export function PreavisoChat({
           }
         }
         // Tambien agregar conyuges detectados a lista accionable (si no estan duplicados)
-        for (const spouse of conyugesDetectados) {
+        for (const spouse of conyugesDetectadosFiltrados) {
           if (!isValidDetectedPersonName(spouse?.nombre)) continue
           const n = normalizeName(spouse?.nombre)
           if (!n || classifiedNames.has(n)) continue
@@ -2727,6 +2751,8 @@ export function PreavisoChat({
             source: 'documento',
             persons: pendingPersons
           }
+        } else {
+          next._document_people_pending = null
         }
 
         return next
@@ -2774,6 +2800,25 @@ export function PreavisoChat({
       }
 
       const buildUncategorizedPeopleMessage = (current: any): string | null => {
+        const classifiedNames = new Set<string>()
+        const normalize = (value: unknown) =>
+          String(value || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim()
+        for (const v of Array.isArray(current?.vendedores) ? current.vendedores : []) {
+          const n = normalize(v?.persona_fisica?.nombre || v?.persona_moral?.denominacion_social)
+          if (n) classifiedNames.add(n)
+        }
+        for (const c of Array.isArray(current?.compradores) ? current.compradores : []) {
+          const n = normalize(c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social)
+          if (n) classifiedNames.add(n)
+          const conyuge = normalize(c?.persona_fisica?.conyuge?.nombre)
+          if (conyuge) classifiedNames.add(conyuge)
+        }
+
         const pending = Array.isArray(current?._document_people_pending?.persons)
           ? current._document_people_pending.persons
           : []
@@ -2789,12 +2834,8 @@ export function PreavisoChat({
           const name = String(p?.name || p?.nombre || '').trim()
           if (!isValidDetectedPersonName(name)) continue
           if (!name) continue
-          const key = name
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .toLowerCase()
-            .replace(/\s+/g, ' ')
-            .trim()
+          const key = normalize(name)
+          if (classifiedNames.has(key)) continue
           if (!key || dedup.has(key)) continue
           dedup.set(key, name)
         }

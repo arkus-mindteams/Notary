@@ -140,14 +140,26 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
     }
   }
 
-  if (structured?.titular_registral?.nombre) {
+  const derivedSellerName = String(structured?.__derived?.vendedor_nombre || '').trim()
+  const sellerNameForContext = derivedSellerName || String(structured?.titular_registral?.nombre || '').trim()
+  if (sellerNameForContext) {
+    const sellerLooksMoral = looksLikePersonaMoralName(sellerNameForContext)
     const vendedor = {
       party_id: 'vendedor_1',
-      persona_fisica: {
-        nombre: structured.titular_registral.nombre,
-        rfc: structured?.titular_registral?.rfc ?? null,
-        curp: structured?.titular_registral?.curp ?? null,
-      },
+      tipo_persona: sellerLooksMoral ? 'persona_moral' : 'persona_fisica',
+      persona_fisica: sellerLooksMoral
+        ? undefined
+        : {
+            nombre: sellerNameForContext,
+            rfc: structured?.titular_registral?.rfc ?? null,
+            curp: structured?.titular_registral?.curp ?? null,
+          },
+      persona_moral: sellerLooksMoral
+        ? {
+            denominacion_social: sellerNameForContext,
+            rfc: structured?.titular_registral?.rfc ?? null,
+          }
+        : undefined,
       titular_registral_confirmado: true,
     }
     const existing = Array.isArray(next.vendedores) ? next.vendedores : []
@@ -157,11 +169,19 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
   const compradoresDetectados = Array.isArray(structured?.compradores_detectados)
     ? structured.compradores_detectados.filter((p: any) => p?.nombre)
     : []
-  if (compradoresDetectados.length > 0) {
+  const compradoresDerivados = Array.isArray(structured?.__derived?.compradores_nombres)
+    ? structured.__derived.compradores_nombres
+        .map((nombre: unknown) => String(nombre || '').trim())
+        .filter((nombre: string) => Boolean(nombre))
+        .map((nombre: string) => ({ nombre, rfc: null, curp: null }))
+    : []
+  const compradoresInput =
+    compradoresDerivados.length > 0 ? compradoresDerivados : compradoresDetectados
+  if (compradoresInput.length > 0) {
     const existing = Array.isArray(next.compradores) ? next.compradores : []
     const merged = [...existing]
-    for (let i = 0; i < compradoresDetectados.length; i++) {
-      const buyer = compradoresDetectados[i]
+    for (let i = 0; i < compradoresInput.length; i++) {
+      const buyer = compradoresInput[i]
       const prev = merged[i] || {}
       merged[i] = {
         ...prev,
@@ -178,6 +198,7 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
   }
 
   const derivedBuyerName = String(structured?.__derived?.acreditado_nombre || '').trim()
+  const derivedCoBuyerName = String(structured?.__derived?.coacreditado_nombre || '').trim()
   const derivedBuyerEstadoCivil = String(structured?.__derived?.buyer_estado_civil || '').trim()
   const derivedCreditInstitution = String(structured?.__derived?.credit_institucion || '').trim()
 
@@ -257,6 +278,46 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
             nombre: buyerName,
             rol: 'acreditado'
           }
+        ]
+      }
+    }
+    if (derivedBuyerName) {
+      const hasAcreditado = participantes.some(
+        (p: any) => String(p?.rol || '').toLowerCase() === 'acreditado'
+      )
+      if (!hasAcreditado) {
+        participantes = [
+          ...participantes,
+          {
+            party_id: 'comprador_1',
+            nombre: derivedBuyerName,
+            rol: 'acreditado',
+          },
+        ]
+      }
+    }
+    if (derivedCoBuyerName) {
+      const normalizedCoBuyer = derivedCoBuyerName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .trim()
+      const alreadyExists = participantes.some((p: any) => {
+        const n = String(p?.nombre || '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toUpperCase()
+          .trim()
+        return n && n === normalizedCoBuyer
+      })
+      if (!alreadyExists) {
+        participantes = [
+          ...participantes,
+          {
+            party_id: 'comprador_2',
+            nombre: derivedCoBuyerName,
+            rol: 'coacreditado',
+          },
         ]
       }
     }
@@ -636,6 +697,36 @@ function looksLikePersonaMoralName(name: string | null | undefined): boolean {
   return /\b(SA|S\.A\.|SAPI|SOCIEDAD|CV|C\.V\.|S DE RL|S\. DE R\.L\.)\b/.test(upper)
 }
 
+function cleanInlineValue(value: string | null | undefined): string | null {
+  const cleaned = String(value || '').replace(/\s+/g, ' ').trim()
+  return cleaned || null
+}
+
+function extractFirstLineValue(rawText: string, labelRegex: RegExp): string | null {
+  const match = String(rawText || '').match(labelRegex)
+  if (!match) return null
+  return cleanInlineValue(match[1])
+}
+
+function splitBuyerNamesFromInlineValue(value: string | null | undefined): string[] {
+  const input = cleanInlineValue(value)
+  if (!input) return []
+  const normalized = input
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+
+  if (!/\s+Y\s+/.test(normalized)) return [input]
+  const parts = input
+    .split(/\s+Y\s+/i)
+    .map((p) => cleanInlineValue(p))
+    .filter((p): p is string => Boolean(p))
+
+  if (parts.length < 2) return [input]
+  const allLookLikePersonaFisica = parts.every((p) => !looksLikePersonaMoralName(p) && p.split(' ').length >= 2)
+  return allLookLikePersonaFisica ? parts : [input]
+}
+
 function buildRawTextFromIntakePages(
   pages: Array<{ pageNumber: number; text: string }> | null | undefined
 ): string {
@@ -656,6 +747,9 @@ function enrichStructuredExtractionFromText(args: {
   const sourceDocumentType = normalizeExtractionDocumentType(args.documentType)
   const rawText = String(args.rawText || '')
   const next = { ...(args.structured || {}) } as any
+  const isFinalPreavisoSource =
+    /\bSOLICITUD\s+DE\s+CERTIFICADO\s+CON\s+EFECTO\s+DE\s+PRE[\s-]*AVISO\b/i.test(rawText) ||
+    /\bCONTRATO\s+DE\s+COMPRAVENTA\b/i.test(rawText)
   const normalizedFolioCandidates = Array.from(
     new Set(
       Array.from(rawText.matchAll(/\bFOLIO(?:\s+REAL)?\s*[:#\-]?\s*([0-9]{5,})\b/gi))
@@ -668,14 +762,60 @@ function enrichStructuredExtractionFromText(args: {
   next.source_document_type = sourceDocumentType
 
   // Derivaciones deterministas de certificados/correos operativos
-  const acreditadoMatch = rawText.match(/\bACREDITADO\s*[:\-]\s*([^\n\r]+)/i)
-  const acreditadoNombre = acreditadoMatch ? String(acreditadoMatch[1] || '').replace(/\s+/g, ' ').trim() : null
+  const vendedorNombre = extractFirstLineValue(rawText, /\bVENDEDOR(?:A|ES)?\s*[:\-]\s*([^\n\r]+)/i)
+  const compradorInline = extractFirstLineValue(rawText, /\bCOMPRADOR(?:A|ES)?\s*[:\-]\s*([^\n\r]+)/i)
+  const compradoresDesdeLinea = splitBuyerNamesFromInlineValue(compradorInline)
+  const acreditadoNombre = extractFirstLineValue(rawText, /\bACREDITADO\s*[:\-]\s*([^\n\r]+)/i)
+  const coacreditadoNombre = extractFirstLineValue(rawText, /\bCOACREDITADO\s*[:\-]\s*([^\n\r]+)/i)
+  const acreditanteNombre = extractFirstLineValue(rawText, /\bACREDITANTE\s*[:\-]\s*([^\n\r]+)/i)
+  const acreedorCancelacion = extractFirstLineValue(rawText, /\bACREEDOR(?:ES)?\s*[:\-]\s*([^\n\r]+)/i)
+
+  if ((!Array.isArray(next.compradores_detectados) || next.compradores_detectados.length === 0) && compradoresDesdeLinea.length > 0) {
+    next.compradores_detectados = compradoresDesdeLinea.map((nombre) => ({ nombre, rfc: null, curp: null }))
+  }
+
   if ((!Array.isArray(next.compradores_detectados) || next.compradores_detectados.length === 0) && acreditadoNombre) {
     next.compradores_detectados = [{ nombre: acreditadoNombre, rfc: null, curp: null }]
+  }
+  if (
+    Array.isArray(next.compradores_detectados) &&
+    next.compradores_detectados.length > 0 &&
+    coacreditadoNombre
+  ) {
+    const normalizedExisting = new Set(
+      next.compradores_detectados.map((b: any) =>
+        String(b?.nombre || '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toUpperCase()
+          .trim()
+      )
+    )
+    const normalizedCoacreditado = coacreditadoNombre
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .trim()
+    if (normalizedCoacreditado && !normalizedExisting.has(normalizedCoacreditado)) {
+      next.compradores_detectados = [
+        ...next.compradores_detectados,
+        { nombre: coacreditadoNombre, rfc: null, curp: null },
+      ]
+    }
+  }
+
+  if (!next?.titular_registral?.nombre && vendedorNombre) {
+    next.titular_registral = {
+      ...(next.titular_registral || {}),
+      nombre: vendedorNombre,
+      rfc: next?.titular_registral?.rfc ?? null,
+      curp: next?.titular_registral?.curp ?? null,
+    }
   }
 
   const creditMatch = rawText.match(/\bCREDITO\s*[:\-]\s*([^\n\r]+)/i)
   const creditoInstitucion =
+    normalizeInstitutionName(acreditanteNombre) ||
     normalizeInstitutionName(creditMatch ? creditMatch[1] : null) ||
     detectInstitutionFromText(rawText)
 
@@ -688,7 +828,12 @@ function enrichStructuredExtractionFromText(args: {
 
   next.__derived = {
     ...(next.__derived || {}),
+    is_final_preaviso_source: isFinalPreavisoSource,
+    vendedor_nombre: vendedorNombre,
+    compradores_nombres: compradoresDesdeLinea,
     acreditado_nombre: acreditadoNombre,
+    coacreditado_nombre: coacreditadoNombre,
+    acreedor_cancelacion: acreedorCancelacion,
     credit_institucion: creditoInstitucion,
     buyer_estado_civil: buyerEstadoCivil,
     folio_real_candidates: normalizedFolioCandidates,
