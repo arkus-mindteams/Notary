@@ -343,6 +343,24 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
     next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
   }
 
+  // Regla notarial pragmatica:
+  // Si ya existe acreedor de gravamen y también crédito del comprador,
+  // asumimos que el gravamen se cancelará con la operación actual.
+  // En este sistema: cancelacion_confirmada=false => "se cancelará en la escritura/trámite".
+  if (next?.inmueble?.existe_hipoteca === true && Array.isArray(next?.gravamenes) && next.gravamenes.length > 0) {
+    const gravamenes = [...next.gravamenes]
+    const g0 = { ...(gravamenes[0] || {}) }
+    const hasAcreedor = Boolean(String(g0?.institucion || '').trim())
+    const hasBuyerCredit =
+      (Array.isArray(next?.creditos) && next.creditos.length > 0) ||
+      next?.actosNotariales?.aperturaCreditoComprador === true
+    if (hasAcreedor && hasBuyerCredit && (g0?.cancelacion_confirmada === null || g0?.cancelacion_confirmada === undefined)) {
+      g0.cancelacion_confirmada = false
+      gravamenes[0] = g0
+      next.gravamenes = gravamenes
+    }
+  }
+
   const normalizeName = (value: unknown): string =>
     String(value || '')
       .normalize('NFD')
@@ -837,6 +855,30 @@ function enrichStructuredExtractionFromText(args: {
     credit_institucion: creditoInstitucion,
     buyer_estado_civil: buyerEstadoCivil,
     folio_real_candidates: normalizedFolioCandidates,
+  }
+
+  const hasCancellationSection = /\bCANCELACION\s+DE\s+HIPOTECA\b/i.test(rawText)
+  const shouldForceEncumbranceFromPreaviso =
+    isFinalPreavisoSource && (hasCancellationSection || Boolean(acreedorCancelacion))
+
+  if (shouldForceEncumbranceFromPreaviso) {
+    const currentGravamenes = Array.isArray(next?.gravamenes) ? [...next.gravamenes] : []
+    const g0 = { ...(currentGravamenes[0] || {}) }
+    const institucion = cleanInlineValue(acreedorCancelacion) || cleanInlineValue(g0?.institucion)
+    currentGravamenes[0] = {
+      gravamen_id: g0?.gravamen_id ?? null,
+      tipo: g0?.tipo || 'hipoteca',
+      institucion: institucion || null,
+      numero_credito: g0?.numero_credito ?? null,
+      monto: g0?.monto ?? null,
+      moneda: g0?.moneda ?? null,
+      cancelacion_confirmada:
+        g0?.cancelacion_confirmada === true || g0?.cancelacion_confirmada === false
+          ? g0.cancelacion_confirmada
+          : false,
+    }
+    next.gravamenes = currentGravamenes
+    next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
   }
 
   if (normalizedFolioCandidates.length > 0) {

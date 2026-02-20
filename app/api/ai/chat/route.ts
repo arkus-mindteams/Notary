@@ -1101,6 +1101,7 @@ function mergeStructuredExtractionIntoTramiteData(
   const prev = prevData || {}
   const extracted = extractedData || {}
   const next: Record<string, any> = { ...prev }
+  const rawText = String(extracted?.textoCompleto || '')
 
   const inmueble = extracted?.inmueble || {}
   const direccion = inmueble?.direccion || {}
@@ -1255,6 +1256,39 @@ function mergeStructuredExtractionIntoTramiteData(
   } else if (Array.isArray(extracted?.gravamenes) && extracted.gravamenes.length > 0) {
     next.gravamenes = extracted.gravamenes
     next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
+  }
+
+  const derivedAcreedor = String(extracted?.__derived?.acreedor_cancelacion || '').trim()
+  const hasCancellationSection = /\bCANCELACION\s+DE\s+HIPOTECA\b/i.test(rawText)
+  if (derivedAcreedor || hasCancellationSection) {
+    const gravamenes = Array.isArray(next?.gravamenes) ? [...next.gravamenes] : []
+    const g0 = { ...(gravamenes[0] || {}) }
+    gravamenes[0] = {
+      gravamen_id: g0?.gravamen_id ?? null,
+      tipo: g0?.tipo || 'hipoteca',
+      institucion: derivedAcreedor || g0?.institucion || null,
+      numero_credito: g0?.numero_credito ?? null,
+      cancelacion_confirmada:
+        g0?.cancelacion_confirmada === true || g0?.cancelacion_confirmada === false
+          ? g0.cancelacion_confirmada
+          : false,
+    }
+    next.gravamenes = gravamenes
+    next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
+  }
+
+  // Si hay gravamen con acreedor y también crédito del comprador,
+  // asumir "se cancelará en esta operación" cuando aún no venga definido.
+  if (next?.inmueble?.existe_hipoteca === true && Array.isArray(next?.gravamenes) && next.gravamenes.length > 0) {
+    const gravamenes = [...next.gravamenes]
+    const g0 = { ...(gravamenes[0] || {}) }
+    const hasAcreedor = Boolean(String(g0?.institucion || '').trim())
+    const hasBuyerCredit = Array.isArray(next?.creditos) && next.creditos.length > 0
+    if (hasAcreedor && hasBuyerCredit && (g0?.cancelacion_confirmada === null || g0?.cancelacion_confirmada === undefined)) {
+      g0.cancelacion_confirmada = false
+      gravamenes[0] = g0
+      next.gravamenes = gravamenes
+    }
   }
 
   return next
