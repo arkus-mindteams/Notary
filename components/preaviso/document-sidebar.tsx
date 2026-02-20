@@ -189,6 +189,10 @@ export function DocumentSidebar({
         Boolean(normalizedSelectedFolio) &&
         normalizedSelectedFolio === folioCandidates[0]
     const shouldRenderFolioCandidates = folioCandidates.length > 0 && !hasResolvedSingleFolioCandidate
+    const hasMultipleUnresolvedFolios =
+        folioCandidates.length > 1 &&
+        !folioConfirmed &&
+        !normalizedSelectedFolio
 
     const hasSellerName =
         Boolean(data?.vendedores?.[0]?.persona_fisica?.nombre) ||
@@ -301,6 +305,13 @@ export function DocumentSidebar({
                                         }</div>
                                     )}
                                     {(() => {
+                                        if (hasMultipleUnresolvedFolios) {
+                                            return (
+                                                <div className="text-gray-400 italic">
+                                                    Objeto de compraventa: pendiente hasta confirmar el folio real.
+                                                </div>
+                                            )
+                                        }
                                         const d = data.inmueble?.direccion
                                         const dc = data.inmueble?.datos_catastrales
                                         if (typeof d === 'string' && d.trim()) {
