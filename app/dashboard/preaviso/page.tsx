@@ -1,7 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, Suspense } from 'react'
-import { renderAsync } from 'docx-preview'
+import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { ProtectedRoute } from '@/components/protected-route'
@@ -122,9 +121,6 @@ function PreavisoPageContent() {
   const [showExportButtons, setShowExportButtons] = useState(false)
   const [exportData, setExportData] = useState<PreavisoData | null>(null)
   const [showNewPreavisoDialog, setShowNewPreavisoDialog] = useState(false)
-  const [previewLoading, setPreviewLoading] = useState(false)
-  const [previewError, setPreviewError] = useState<string | null>(null)
-  const docxPreviewContainerRef = useRef<HTMLDivElement>(null)
 
   // Tras refresh con ?action=view_document o ?action=edit_document, estamos en chat (sin documento en memoria): sincronizar URL quitando action
   useEffect(() => {
@@ -135,42 +131,6 @@ function PreavisoPageContent() {
       )
     }
   }, [appState, searchParams])
-
-  // Vista previa con docx-preview: renderizar el mismo .docx que se descarga para que formato sea idéntico
-  useEffect(() => {
-    if (appState !== 'document' || !document || !preavisoData || !docxPreviewContainerRef.current) return
-
-    let revoked = false
-    setPreviewError(null)
-    setPreviewLoading(true)
-
-    const run = async () => {
-      try {
-        const simplifiedData = PreavisoTemplateRenderer.convertFromPreavisoData(preavisoData)
-        const url = await PreavisoTemplateRenderer.renderToWord(simplifiedData, {
-          customRenderedText: document.text || undefined,
-        })
-        if (revoked) return
-        const blob = await fetch(url).then((r) => r.blob())
-        URL.revokeObjectURL(url)
-        revoked = true
-        if (!docxPreviewContainerRef.current) return
-        docxPreviewContainerRef.current.innerHTML = ''
-        await renderAsync(blob, docxPreviewContainerRef.current)
-        setPreviewLoading(false)
-      } catch (e) {
-        console.error('Error rendering docx preview:', e)
-        setPreviewError(e instanceof Error ? e.message : 'Error al generar la vista previa')
-        setPreviewLoading(false)
-      }
-    }
-
-    run()
-    return () => {
-      revoked = true
-      if (docxPreviewContainerRef.current) docxPreviewContainerRef.current.innerHTML = ''
-    }
-  }, [appState, document, preavisoData])
 
   const handleDataComplete = (data: PreavisoData) => {
     setPreavisoData(data)
@@ -533,29 +493,11 @@ function PreavisoPageContent() {
               </CardHeader>
               <CardContent>
                 <div className="rounded-lg border bg-muted/20 p-2">
-                  {previewError ? (
-                    <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-amber-800">
-                      <p className="text-sm">{previewError}</p>
-                      <p className="mt-2 text-xs text-amber-700">Se muestra la versión en HTML como respaldo.</p>
-                      <iframe
-                        title="Vista previa del documento (respaldo)"
-                        srcDoc={document.html}
-                        className="mt-3 h-[600px] w-full rounded border bg-white"
-                      />
-                    </div>
-                  ) : (
-                    <div className="relative rounded-md border bg-white">
-                      {previewLoading && (
-                        <div className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-white/90">
-                          <p className="text-gray-500">Generando vista previa del documento...</p>
-                        </div>
-                      )}
-                      <div
-                        ref={docxPreviewContainerRef}
-                        className="docx-preview-wrapper h-[900px] w-full overflow-auto p-6"
-                      />
-                    </div>
-                  )}
+                  <iframe
+                    title="Vista previa del documento"
+                    srcDoc={document.html}
+                    className="h-[900px] w-full rounded-md border bg-white"
+                  />
                 </div>
               </CardContent>
             </Card>
