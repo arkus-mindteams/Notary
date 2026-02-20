@@ -2462,6 +2462,32 @@ export function PreavisoChat({
       }> = []
       const successfulOriginalKeys = new Set<string>()
 
+      const isValidDetectedPersonName = (value: unknown): boolean => {
+        const raw = String(value || '').trim()
+        if (!raw) return false
+        const normalized = raw
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .trim()
+        if (!normalized) return false
+        if (
+          normalized.includes('[redacted]') ||
+          normalized.includes('redacted') ||
+          normalized === 'n/a' ||
+          normalized === 'na' ||
+          normalized === 'null' ||
+          normalized === 'undefined' ||
+          normalized === 'desconocido' ||
+          normalized === 'sin dato' ||
+          normalized === 'no disponible'
+        ) {
+          return false
+        }
+        return /[a-z]/i.test(raw)
+      }
+
       const mergeStructuredExtractionIntoData = (base: PreavisoData, structured: any): PreavisoData => {
         if (!structured || typeof structured !== 'object') return base
         const next: PreavisoData = { ...base }
@@ -2617,7 +2643,7 @@ export function PreavisoChat({
         const conyugeCandidates = Array.isArray(structured?.conyuges_detectados)
           ? structured.conyuges_detectados
             .map((p: any) => String(p?.nombre || '').trim())
-            .filter(Boolean)
+            .filter((name: string) => isValidDetectedPersonName(name))
           : []
         const conyuge =
           conyugeCandidates.find((name: string) => normalizeName(name) !== normalizedBuyer) || null
@@ -2668,6 +2694,7 @@ export function PreavisoChat({
         const noClasificadasRaw = rawNoClasificadas
         const dedupNoClasificadas = new Map<string, any>()
         for (const person of noClasificadasRaw) {
+          if (!isValidDetectedPersonName(person?.nombre)) continue
           const n = normalizeName(person?.nombre)
           if (!n || classifiedNames.has(n)) continue
           if (!dedupNoClasificadas.has(n)) {
@@ -2681,6 +2708,7 @@ export function PreavisoChat({
         }
         // Tambien agregar conyuges detectados a lista accionable (si no estan duplicados)
         for (const spouse of conyugesDetectados) {
+          if (!isValidDetectedPersonName(spouse?.nombre)) continue
           const n = normalizeName(spouse?.nombre)
           if (!n || classifiedNames.has(n)) continue
           if (!dedupNoClasificadas.has(n)) {
@@ -2759,6 +2787,7 @@ export function PreavisoChat({
         const dedup = new Map<string, string>()
         for (const p of all) {
           const name = String(p?.name || p?.nombre || '').trim()
+          if (!isValidDetectedPersonName(name)) continue
           if (!name) continue
           const key = name
             .normalize('NFD')

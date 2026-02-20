@@ -104,6 +104,32 @@ export function DocumentSidebar({
         return str.toLowerCase().trim().replace(/\s+/g, ' ')
     }
 
+    const isValidDetectedPersonName = (value: unknown): boolean => {
+        const raw = String(value || '').trim()
+        if (!raw) return false
+        const normalized = raw
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim()
+        if (!normalized) return false
+        if (
+            normalized.includes('[redacted]') ||
+            normalized.includes('redacted') ||
+            normalized === 'n/a' ||
+            normalized === 'na' ||
+            normalized === 'null' ||
+            normalized === 'undefined' ||
+            normalized === 'desconocido' ||
+            normalized === 'sin dato' ||
+            normalized === 'no disponible'
+        ) {
+            return false
+        }
+        return /[a-z]/i.test(raw)
+    }
+
     const uncategorizedPeople = (() => {
         const pendingPersons = Array.isArray((data as any)?._document_people_pending?.persons)
             ? (data as any)._document_people_pending.persons
@@ -118,6 +144,7 @@ export function DocumentSidebar({
         const dedup = new Map<string, { name: string; rfc?: string | null; curp?: string | null }>()
         for (const person of merged) {
             const name = String(person?.name || person?.nombre || '').trim()
+            if (!isValidDetectedPersonName(name)) continue
             if (!name) continue
             const key = normalizeName(name)
             if (!key) continue

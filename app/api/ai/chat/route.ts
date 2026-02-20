@@ -481,7 +481,7 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
           agent_used: 'ProposeStateUpdateAgent',
           answer: hasMissing
             ? guidance.message
-            : 'Datos actualizados desde tu respuesta.',
+            : 'Datos actualizados desde tu respuesta. Si deseas, puedo revisar ahora mismo que datos faltan para finalizar.',
           proposed_updates: [],
           actions: [
             ...(Array.isArray(routed.actions) ? routed.actions : []),
@@ -1327,6 +1327,122 @@ function containsNoEvidenceMessage(answer?: string): boolean {
   )
 }
 
+function inferShortRoleConfirmation(normalizedMessage: string): 'vendedor' | 'comprador' | 'conyuge' | null {
+  const text = String(normalizedMessage || '').trim()
+  if (!text) return null
+  const isAffirmative = /\b(si|s[ií]|correcto|confirmo|afirmativo)\b/.test(text)
+  if (!isAffirmative) return null
+  if (/\bvendedor(a)?\b/.test(text)) return 'vendedor'
+  if (/\bcomprador(a)?\b/.test(text)) return 'comprador'
+  if (/\bconyuge\b|\bc[oó]nyuge\b|\besposa\b|\besposo\b/.test(text)) return 'conyuge'
+  return null
+}
+
+function applyPendingPersonRole(
+  merged: Record<string, any>,
+  role: 'vendedor' | 'comprador' | 'conyuge'
+): void {
+  const pending =
+    (Array.isArray((merged as any)?._document_people_pending?.persons)
+      ? (merged as any)._document_people_pending.persons
+      : []) as Array<any>
+  const uncategorized =
+    (Array.isArray((merged as any)?.personas_detectadas_no_clasificadas)
+      ? (merged as any).personas_detectadas_no_clasificadas
+      : []) as Array<any>
+  const spouses =
+    (Array.isArray((merged as any)?.conyuges_detectados)
+      ? (merged as any).conyuges_detectados
+      : []) as Array<any>
+
+  const first =
+    pending[0] ||
+    uncategorized[0] ||
+    spouses[0] ||
+    null
+  const name = String(first?.name || first?.nombre || '').trim()
+  if (!name) return
+
+  if (role === 'vendedor') {
+    const vendedores = Array.isArray(merged.vendedores) ? [...merged.vendedores] : []
+    const first = vendedores[0]
+    const firstName = String(first?.persona_fisica?.nombre || first?.persona_moral?.denominacion_social || '').trim()
+    if (vendedores.length === 0 || !firstName) {
+      const party = buildPartyFromLabel('vendedor_1', name)
+      vendedores[0] = { ...(first || {}), ...party, party_id: (first as any)?.party_id || 'vendedor_1' }
+      merged.vendedores = vendedores
+    } else {
+    const exists = vendedores.some((v: any) => {
+      const current = String(v?.persona_fisica?.nombre || v?.persona_moral?.denominacion_social || '')
+      return current.trim().toLowerCase() === name.toLowerCase()
+    })
+    if (!exists) {
+      const party = buildPartyFromLabel(`vendedor_${vendedores.length + 1}`, name)
+      vendedores.push(party)
+      merged.vendedores = vendedores
+    }
+    }
+  } else if (role === 'comprador') {
+    const compradores = Array.isArray(merged.compradores) ? [...merged.compradores] : []
+    const first = compradores[0]
+    const firstName = String(first?.persona_fisica?.nombre || first?.persona_moral?.denominacion_social || '').trim()
+    if (compradores.length === 0 || !firstName) {
+      const party = buildPartyFromLabel('comprador_1', name)
+      compradores[0] = { ...(first || {}), ...party, party_id: (first as any)?.party_id || 'comprador_1' }
+      merged.compradores = compradores
+    } else {
+    const exists = compradores.some((c: any) => {
+      const current = String(c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social || '')
+      return current.trim().toLowerCase() === name.toLowerCase()
+    })
+    if (!exists) {
+      const party = buildPartyFromLabel(`comprador_${compradores.length + 1}`, name)
+      compradores.push(party)
+      merged.compradores = compradores
+    }
+    }
+  } else if (role === 'conyuge') {
+    const compradores = Array.isArray(merged.compradores) ? [...merged.compradores] : []
+    if (compradores.length > 0) {
+      const c0 = { ...(compradores[0] || {}) }
+      c0.party_id = c0.party_id || 'comprador_1'
+      c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
+      c0.persona_fisica = {
+        ...(c0.persona_fisica || {}),
+        nombre: c0.persona_fisica?.nombre || null,
+        estado_civil: c0.persona_fisica?.estado_civil || 'casado',
+        conyuge: {
+          ...(c0.persona_fisica?.conyuge || {}),
+          nombre: name,
+          rfc: c0.persona_fisica?.conyuge?.rfc || null,
+          curp: c0.persona_fisica?.conyuge?.curp || null,
+          participa: c0.persona_fisica?.conyuge?.participa ?? false,
+        },
+      }
+      compradores[0] = c0
+      merged.compradores = compradores
+    }
+  }
+
+  const norm = (v: unknown) =>
+    String(v || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const target = norm(name)
+  if ((merged as any)?._document_people_pending?.persons) {
+    ;(merged as any)._document_people_pending.persons = pending.filter((p: any) => norm(p?.name || p?.nombre) !== target)
+  }
+  if (Array.isArray((merged as any)?.personas_detectadas_no_clasificadas)) {
+    ;(merged as any).personas_detectadas_no_clasificadas = uncategorized.filter((p: any) => norm(p?.name || p?.nombre) !== target)
+  }
+  if (Array.isArray((merged as any)?.conyuges_detectados)) {
+    ;(merged as any).conyuges_detectados = spouses.filter((p: any) => norm(p?.name || p?.nombre) !== target)
+  }
+}
+
 function isMissingDataQuestion(message: string): boolean {
   const normalized = String(message || '')
     .toLowerCase()
@@ -1538,7 +1654,10 @@ function reconcileLegacyCapturedData(args: {
     }
     merged.vendedores = vendedores
   }
-
+  const shortRole = inferShortRoleConfirmation(normalized)
+  if (!labeledFromMessage.comprador && !labeledFromMessage.vendedor && shortRole) {
+    applyPendingPersonRole(merged, shortRole)
+  }
   const saysNoCredit = /\b(sin credito|sin crédito|no credito|no crédito|de contado|pago de contado|contado)\b/.test(normalized)
   const saysWithCredit = /\b(con credito|con crédito|credito|crédito)\b/.test(normalized) && !/\b(sin credito|sin crédito|no credito|no crédito)\b/.test(normalized)
   const saysNoLien = /\b(sin gravamen|sin hipoteca|no hay gravamen|no tiene gravamen|ni gravamen|sin ningun gravamen|libre de gravamen|libre de hipoteca)\b/.test(normalized)
@@ -2022,3 +2141,4 @@ function mergeObjectPreservingNonEmpty(
   }
   return out
 }
+
