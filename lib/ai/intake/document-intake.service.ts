@@ -19,6 +19,35 @@ import {
 } from '@/lib/ai/intake/document-intake.prompts'
 
 const MAX_ATTEMPTS = 3
+const INTAKE_DEBUG = process.env.INTAKE_DEBUG === '1'
+const INTAKE_DEBUG_MAX_CHARS = Number(process.env.INTAKE_DEBUG_MAX_CHARS || 12000)
+const STATE_FOLIO_REAL_RULES: Record<string, number[]> = {
+  'BAJA CALIFORNIA': [7],
+}
+
+function clipForDebug(value: string): string {
+  const text = String(value || '')
+  if (text.length <= INTAKE_DEBUG_MAX_CHARS) return text
+  return `${text.slice(0, INTAKE_DEBUG_MAX_CHARS)}\n...[truncated ${text.length - INTAKE_DEBUG_MAX_CHARS} chars]`
+}
+
+function detectStateFromText(rawText: string): string | null {
+  const normalized = String(rawText || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  if (normalized.includes('BAJA CALIFORNIA')) return 'BAJA CALIFORNIA'
+  return null
+}
+
+function isFolioAllowedByState(state: string | null, folio: string): boolean {
+  const digits = String(folio || '').replace(/\D/g, '')
+  if (!digits) return false
+  if (!state) return true
+  const allowed = STATE_FOLIO_REAL_RULES[state]
+  if (!allowed || allowed.length === 0) return true
+  return allowed.includes(digits.length)
+}
 
 function sanitizeSnippet(text: string, max: number = 160): string {
   const cleaned = String(text || '').replace(/\s+/g, ' ').trim()
@@ -52,6 +81,9 @@ function extractRegexFact(
 function addDerivedFacts(doc: DocumentIntakeItem): DocumentIntakeItem {
   const facts: DocumentIntakeFact[] = Array.isArray(doc.facts) ? [...doc.facts] : []
   const seen = new Set(facts.map((f) => `${f.key}:${f.value}:${f.evidence.pageNumber}`))
+  const FOLIO_REAL_MIN_DIGITS = Number(process.env.FOLIO_REAL_MIN_DIGITS || 7)
+  const docText = (doc.pages || []).map((p) => String(p?.text || '')).join('\n')
+  const detectedState = detectStateFromText(docText)
 
   const pushFact = (fact: DocumentIntakeFact | null) => {
     if (!fact) return
@@ -68,7 +100,29 @@ function addDerivedFacts(doc: DocumentIntakeItem): DocumentIntakeItem {
     pushFact(extractRegexFact(/\b(?:CORRESPONDE\s+AL\s+NUMERO|NUMERO\s+OFICIAL|NO\.?\s+OFICIAL|NUM\.?\s+OFICIAL)\s*[:\-]?\s*([0-9]{1,10})\b/i, 'numero_oficial', page.pageNumber, txt, 0.83))
     pushFact(extractRegexFact(/\b(?:INT\.?|UNIDAD|DEPTO|DEPARTAMENTO)\s*[:\-]?\s*([A-Z]?\d+[A-Z]?|\d+)\b/i, 'unidad', page.pageNumber, txt, 0.85))
     pushFact(extractRegexFact(/\bLETRA\s*[:\-]?\s*([A-Z])\b/i, 'letra_unidad', page.pageNumber, txt, 0.85))
-    pushFact(extractRegexFact(/\bFOLIO(?:\s+REAL)?\s*[:#\-]?\s*([0-9]{5,})\b/i, 'folio_real', page.pageNumber, txt, 0.82))
+    const partidaValues = new Set(
+      Array.from(txt.matchAll(/\bPARTIDA\s*[:#\-]?\s*([0-9]{5,})\b/gi))
+        .map((m) => String(m?.[1] || '').replace(/\D/g, ''))
+        .filter(Boolean)
+    )
+    const folioMatches = Array.from(
+      txt.matchAll(new RegExp(`\\bFOLIO\\s+REAL\\s*[:#\\-]?\\s*([0-9]{${Math.max(6, FOLIO_REAL_MIN_DIGITS)},})\\b`, 'gi'))
+    )
+    for (const match of folioMatches) {
+      const rawValue = String(match?.[1] || '').replace(/\D/g, '')
+      if (!rawValue) continue
+      if (partidaValues.has(rawValue)) continue
+      if (!isFolioAllowedByState(detectedState, rawValue)) continue
+      pushFact({
+        key: 'folio_real',
+        value: rawValue,
+        confidence: 0.84,
+        evidence: {
+          pageNumber: page.pageNumber,
+          snippet: sanitizeSnippet(String(match?.[0] || `FOLIO REAL: ${rawValue}`)),
+        },
+      })
+    }
   }
 
   return {
@@ -205,6 +259,22 @@ export class DocumentIntakeService {
               lastModelOutput: lastRawText,
             })
 
+      if (INTAKE_DEBUG) {
+        console.log('[DocumentIntakeService][request]', {
+          trace_id: traceId,
+          attempt,
+          is_repair: attempt > 1,
+          files_count: Array.isArray(args.documents) ? args.documents.length : 0,
+          files: (args.documents || []).map((f) => ({
+            documentId: f.documentId,
+            filename: f.filename,
+            mimeType: f.mimeType,
+          })),
+          system_prompt: clipForDebug(systemPrompt),
+          user_prompt: clipForDebug(userPrompt),
+        })
+      }
+
       try {
         providerResult = await provider.processDocuments({
           files: args.documents,
@@ -219,10 +289,29 @@ export class DocumentIntakeService {
       }
 
       lastRawText = String(providerResult?.rawText || '')
+      if (INTAKE_DEBUG) {
+        console.log('[DocumentIntakeService][response]', {
+          trace_id: traceId,
+          attempt,
+          model: providerResult?.model || null,
+          usage: providerResult?.usage || null,
+          raw_text: clipForDebug(lastRawText),
+          documents_count: Array.isArray(providerResult?.result?.documents)
+            ? providerResult.result.documents.length
+            : null,
+        })
+      }
 
       const parsed = documentIntakeProviderResponseSchema.safeParse(providerResult?.result)
       if (!parsed.success) {
         validationErrors = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`)
+        if (INTAKE_DEBUG) {
+          console.warn('[DocumentIntakeService][validation_error]', {
+            trace_id: traceId,
+            attempt,
+            validation_errors: validationErrors,
+          })
+        }
         if (attempt < MAX_ATTEMPTS) continue
         throw new Error(`AI_OUTPUT_INVALID: ${validationErrors.join(' | ')}`)
       }

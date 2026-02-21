@@ -2067,9 +2067,32 @@ function enrichInmuebleFromFolioCandidates(data: Record<string, any>): Record<st
   if (candidates.length === 0) return next
 
   const selectedFolio = String(folios?.selection?.selected_folio || '').replace(/\D/g, '')
+  const selectedScope = String(folios?.selection?.selected_scope || '').trim().toLowerCase()
+  const folioConfirmed = Boolean(
+    folios?.selection?.confirmed_by_user ||
+    inmueble?.folio_real_confirmed
+  )
+
+  const countAttrs = (candidate: any): number => {
+    const attrs = candidate?.attrs && typeof candidate.attrs === 'object' ? candidate.attrs : {}
+    const keys = ['unidad', 'condominio', 'lote', 'manzana', 'fraccionamiento', 'colonia', 'superficie', 'ubicacion', 'partida']
+    return keys.reduce((acc, key) => (attrs?.[key] ? acc + 1 : acc), 0)
+  }
+
   let target: any = null
   if (selectedFolio) {
-    target = candidates.find((c: any) => String(c?.folio || '').replace(/\D/g, '') === selectedFolio) || null
+    const sameFolio = candidates.filter(
+      (c: any) => String(c?.folio || '').replace(/\D/g, '') === selectedFolio
+    )
+    if (sameFolio.length > 0) {
+      const scopeMatch =
+        selectedScope
+          ? sameFolio.filter((c: any) => String(c?.scope || '').toLowerCase() === selectedScope)
+          : []
+      const source = scopeMatch.length > 0 ? scopeMatch : sameFolio
+      source.sort((a: any, b: any) => countAttrs(b) - countAttrs(a))
+      target = source[0] || null
+    }
   }
 
   if (!target) {
@@ -2082,6 +2105,13 @@ function enrichInmuebleFromFolioCandidates(data: Record<string, any>): Record<st
   const attrsDireccion = (attrs.direccion || {}) as Record<string, any>
 
   const isEmpty = (v: unknown) => v === null || v === undefined || (typeof v === 'string' && !v.trim())
+  const hasUsefulAttrs = (() => {
+    const keys = ['unidad', 'condominio', 'lote', 'manzana', 'fraccionamiento', 'superficie', 'ubicacion', 'partida']
+    if (keys.some((k) => !isEmpty(attrs?.[k]))) return true
+    return ['calle', 'numero', 'colonia', 'municipio', 'estado', 'codigo_postal'].some(
+      (k) => !isEmpty(attrsDireccion?.[k])
+    )
+  })()
   const hasManyFolios = candidates.length > 1
 
   // Solo autoasignar folio cuando no hay ambigüedad clara.
@@ -2098,27 +2128,50 @@ function enrichInmuebleFromFolioCandidates(data: Record<string, any>): Record<st
     if (partida) inmueble.partidas = [partida]
   }
 
-  if (isEmpty(direccion.calle)) {
+  // Si el usuario ya confirmo folio, priorizar attrs del folio seleccionado y pisar valores ambiguos previos.
+  if (folioConfirmed && selectedFolio && hasUsefulAttrs) {
     const fromCalle = String(attrsDireccion.calle || '').trim()
     const fromUbicacion = String(attrs.ubicacion || '').trim()
     direccion.calle = fromCalle || fromUbicacion || direccion.calle || null
-  }
-  if (isEmpty(direccion.numero) && !isEmpty(attrsDireccion.numero)) direccion.numero = attrsDireccion.numero
-  if (isEmpty(direccion.colonia) && !isEmpty(attrsDireccion.colonia)) direccion.colonia = attrsDireccion.colonia
-  if (isEmpty(direccion.municipio) && !isEmpty(attrsDireccion.municipio)) direccion.municipio = attrsDireccion.municipio
-  if (isEmpty(direccion.estado) && !isEmpty(attrsDireccion.estado)) direccion.estado = attrsDireccion.estado
-  if (isEmpty(direccion.codigo_postal) && !isEmpty(attrsDireccion.codigo_postal)) direccion.codigo_postal = attrsDireccion.codigo_postal
+    direccion.numero = !isEmpty(attrsDireccion.numero) ? attrsDireccion.numero : (direccion.numero || null)
+    direccion.colonia = !isEmpty(attrsDireccion.colonia) ? attrsDireccion.colonia : (direccion.colonia || null)
+    if (!isEmpty(attrsDireccion.municipio)) direccion.municipio = attrsDireccion.municipio
+    if (!isEmpty(attrsDireccion.estado)) direccion.estado = attrsDireccion.estado
+    direccion.codigo_postal = !isEmpty(attrsDireccion.codigo_postal) ? attrsDireccion.codigo_postal : (direccion.codigo_postal || null)
 
-  if (isEmpty(inmueble.superficie) && !isEmpty(attrs.superficie)) {
-    inmueble.superficie = attrs.superficie
-  }
+    if (!isEmpty(attrs.superficie)) {
+      inmueble.superficie = attrs.superficie
+    }
 
-  if (isEmpty(dc.lote) && !isEmpty(attrs.lote)) dc.lote = String(attrs.lote)
-  if (isEmpty(dc.manzana) && !isEmpty(attrs.manzana)) dc.manzana = String(attrs.manzana)
-  if (isEmpty(dc.fraccionamiento) && !isEmpty(attrs.fraccionamiento)) dc.fraccionamiento = String(attrs.fraccionamiento)
-  if (isEmpty(dc.condominio) && !isEmpty(attrs.condominio)) dc.condominio = String(attrs.condominio)
-  if (isEmpty(dc.unidad) && !isEmpty(attrs.unidad)) dc.unidad = String(attrs.unidad)
-  if (isEmpty(dc.modulo) && !isEmpty(attrs.modulo)) dc.modulo = String(attrs.modulo)
+    if (!isEmpty(attrs.lote)) dc.lote = String(attrs.lote)
+    if (!isEmpty(attrs.manzana)) dc.manzana = String(attrs.manzana)
+    if (!isEmpty(attrs.fraccionamiento)) dc.fraccionamiento = String(attrs.fraccionamiento)
+    if (!isEmpty(attrs.condominio)) dc.condominio = String(attrs.condominio)
+    if (!isEmpty(attrs.unidad)) dc.unidad = String(attrs.unidad)
+    if (!isEmpty(attrs.modulo)) dc.modulo = String(attrs.modulo)
+  } else {
+    if (isEmpty(direccion.calle)) {
+      const fromCalle = String(attrsDireccion.calle || '').trim()
+      const fromUbicacion = String(attrs.ubicacion || '').trim()
+      direccion.calle = fromCalle || fromUbicacion || direccion.calle || null
+    }
+    if (isEmpty(direccion.numero) && !isEmpty(attrsDireccion.numero)) direccion.numero = attrsDireccion.numero
+    if (isEmpty(direccion.colonia) && !isEmpty(attrsDireccion.colonia)) direccion.colonia = attrsDireccion.colonia
+    if (isEmpty(direccion.municipio) && !isEmpty(attrsDireccion.municipio)) direccion.municipio = attrsDireccion.municipio
+    if (isEmpty(direccion.estado) && !isEmpty(attrsDireccion.estado)) direccion.estado = attrsDireccion.estado
+    if (isEmpty(direccion.codigo_postal) && !isEmpty(attrsDireccion.codigo_postal)) direccion.codigo_postal = attrsDireccion.codigo_postal
+
+    if (isEmpty(inmueble.superficie) && !isEmpty(attrs.superficie)) {
+      inmueble.superficie = attrs.superficie
+    }
+
+    if (isEmpty(dc.lote) && !isEmpty(attrs.lote)) dc.lote = String(attrs.lote)
+    if (isEmpty(dc.manzana) && !isEmpty(attrs.manzana)) dc.manzana = String(attrs.manzana)
+    if (isEmpty(dc.fraccionamiento) && !isEmpty(attrs.fraccionamiento)) dc.fraccionamiento = String(attrs.fraccionamiento)
+    if (isEmpty(dc.condominio) && !isEmpty(attrs.condominio)) dc.condominio = String(attrs.condominio)
+    if (isEmpty(dc.unidad) && !isEmpty(attrs.unidad)) dc.unidad = String(attrs.unidad)
+    if (isEmpty(dc.modulo) && !isEmpty(attrs.modulo)) dc.modulo = String(attrs.modulo)
+  }
 
   inmueble.direccion = direccion
   inmueble.datos_catastrales = dc
