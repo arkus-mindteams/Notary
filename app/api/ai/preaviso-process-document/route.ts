@@ -298,6 +298,70 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
     next.compradores = merged
   }
 
+  // Inferencia deductiva: si el ultimo dato faltante era comprador y se sube identificacion,
+  // usar un candidato unico de persona detectada para poblar compradores[0].
+  const lastQuestionIntent = String(context?._last_question_intent || next?._last_question_intent || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+  const looksIdentification =
+    String(structured?.source_document_type || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase() === 'identificacion'
+  const buyersMissing =
+    !Array.isArray(next?.compradores) ||
+    next.compradores.length === 0 ||
+    !String(next?.compradores?.[0]?.persona_fisica?.nombre || next?.compradores?.[0]?.persona_moral?.denominacion_social || '').trim()
+
+  if (looksIdentification && buyersMissing && lastQuestionIntent.includes('comprador')) {
+    const normalizePerson = (value: unknown): string =>
+      String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+    const candidates = new Map<string, string>()
+    const addCandidate = (value: unknown) => {
+      const name = normalizePerson(value)
+      if (!name) return
+      const key = name
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+      if (!candidates.has(key)) candidates.set(key, name)
+    }
+
+    for (const p of Array.isArray(structured?.compradores_detectados) ? structured.compradores_detectados : []) {
+      addCandidate(p?.nombre)
+    }
+    for (const p of Array.isArray(structured?.personas_detectadas_no_clasificadas) ? structured.personas_detectadas_no_clasificadas : []) {
+      addCandidate(p?.nombre)
+    }
+    addCandidate(structured?.titular_registral?.nombre)
+
+    if (candidates.size === 1) {
+      const inferredName = Array.from(candidates.values())[0]
+      const inferredLooksMoral = looksLikePersonaMoralName(inferredName)
+      next.compradores = [
+        {
+          party_id: 'comprador_1',
+          tipo_persona: inferredLooksMoral ? 'persona_moral' : 'persona_fisica',
+          persona_fisica: inferredLooksMoral
+            ? undefined
+            : { nombre: inferredName, rfc: null, curp: null },
+          persona_moral: inferredLooksMoral
+            ? { denominacion_social: inferredName, rfc: null }
+            : undefined,
+        },
+      ]
+      console.info('[preaviso-process-document] inferred_buyer_from_identification', {
+        trace_id: context?.trace_id || null,
+        inferred_name: inferredName,
+        last_question_intent: lastQuestionIntent,
+      })
+    }
+  }
+
   const derivedBuyerName = String(structured?.__derived?.acreditado_nombre || '').trim()
   const derivedCoBuyerName = String(structured?.__derived?.coacreditado_nombre || '').trim()
   const derivedBuyerEstadoCivil = String(structured?.__derived?.buyer_estado_civil || '').trim()

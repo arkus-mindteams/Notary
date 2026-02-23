@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+﻿import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { randomUUID } from 'crypto'
 import { createServerClient } from '@/lib/supabase'
@@ -29,6 +29,8 @@ const requestSchema = z
         uiAction: z.string().trim().optional(),
         currentStep: z.string().trim().optional(),
         pluginType: z.string().trim().optional(),
+        lastQuestionIntent: z.string().trim().nullable().optional(),
+        detectedPeople: z.array(z.string().trim().min(1)).optional(),
         documentId: z.string().trim().optional(),
         rawText: z.string().optional(),
         fileMeta: z.record(z.unknown()).optional(),
@@ -341,6 +343,33 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         shouldFallbackToLegacyStateUpdate(body.message) &&
         shouldBypassRouterForShortUpdate(body.message, body.uiContext?.uiAction)
 
+      let tramiteState = await deps.getTramiteStateSnapshot(body.tramiteId)
+      const requiredMissingForRouting = Array.isArray(tramiteState?.required_missing)
+        ? (tramiteState.required_missing as string[])
+        : []
+      const hintedIntent =
+        String(body.uiContext?.lastQuestionIntent || '').trim() ||
+        deriveLastQuestionIntent(requiredMissingForRouting) ||
+        null
+      const hintedPeople = Array.isArray(body.uiContext?.detectedPeople)
+        ? body.uiContext?.detectedPeople
+            .map((v) => String(v || '').trim())
+            .filter((v) => v.length > 0)
+            .slice(0, 6)
+        : []
+      const routingMessage = buildRoutingMessageWithCollectionHint(
+        body.message,
+        hintedIntent,
+        hintedPeople
+      )
+      if (routingMessage !== body.message) {
+        console.info('[api/ai/chat] routing_collection_hint', {
+          hinted_intent: hintedIntent,
+          detected_people_count: hintedPeople.length,
+          message_preview: String(body.message || '').slice(0, 120),
+        })
+      }
+
       const routed = shouldDirectLegacyStateUpdate
         ? ({
             intent: 'UPDATE_STATE',
@@ -353,7 +382,7 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         : await deps.route({
             chatId: body.chatId,
             tramiteId: body.tramiteId,
-            message: body.message,
+            message: routingMessage,
             uiContext: {
               ...(body.uiContext || {}),
               pluginType: resolvedPluginType,
@@ -361,8 +390,6 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
             },
             userAuthId: currentUser.auth_user_id,
           })
-
-      let tramiteState = await deps.getTramiteStateSnapshot(body.tramiteId)
 
       let responsePayload: Record<string, unknown> = { ...routed }
 
@@ -641,8 +668,8 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
             intent: 'UPDATE_STATE',
             agent_used: 'ProposeStateUpdateAgent',
             answer: hasMissing
-              ? `Reprocesé la información del documento "${latestDocExtraction.fileName || 'reciente'}". ${guidance.message}`
-              : `Reprocesé la información del documento "${latestDocExtraction.fileName || 'reciente'}" y actualicé el trámite.`,
+              ? `ReprocesÃƒÆ’Ã‚Â© la informaciÃƒÆ’Ã‚Â³n del documento "${latestDocExtraction.fileName || 'reciente'}". ${guidance.message}`
+              : `ReprocesÃƒÆ’Ã‚Â© la informaciÃƒÆ’Ã‚Â³n del documento "${latestDocExtraction.fileName || 'reciente'}" y actualicÃƒÆ’Ã‚Â© el trÃƒÆ’Ã‚Â¡mite.`,
             proposed_updates: [],
             actions: [
               ...(Array.isArray(routed.actions) ? routed.actions : []),
@@ -867,6 +894,35 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         }
       }
 
+      const requiredMissingForIntent = Array.isArray((responsePayload as any)?.state?.required_missing)
+        ? ((responsePayload as any).state.required_missing as string[])
+        : (
+            Array.isArray((responsePayload as any)?.actions)
+              ? ((responsePayload as any).actions as any[])
+                  .filter((a: any) => a?.type === 'request_missing_field')
+                  .flatMap((a: any) => (Array.isArray(a?.required_missing) ? a.required_missing : []))
+              : []
+          )
+      const nextQuestionsForIntent = Array.isArray((responsePayload as any)?.actions)
+        ? ((responsePayload as any).actions as any[])
+            .filter((a: any) => a?.type === 'request_missing_field')
+            .flatMap((a: any) => (Array.isArray(a?.next_questions) ? a.next_questions : []))
+            .map((q: any) => String(q || '').trim())
+            .filter(Boolean)
+        : []
+      const nextLastIntent =
+        deriveLastQuestionIntent(requiredMissingForIntent) ||
+        deriveIntentFromNextQuestions(nextQuestionsForIntent)
+      if (nextLastIntent) {
+        const currentData = ((responsePayload as any)?.data && typeof (responsePayload as any).data === 'object')
+          ? ((responsePayload as any).data as Record<string, unknown>)
+          : {}
+        ;(responsePayload as any).data = {
+          ...currentData,
+          _last_question_intent: nextLastIntent,
+        }
+      }
+
       await Promise.all([
         deps.insertChatMessage(body.chatId, 'user', body.message, {
           source: 'unified_ai_chat',
@@ -1001,6 +1057,51 @@ function mapBlockingReasonToHint(reason: string): string {
   if (normalized === 'titular_registral_missing') return 'falta el titular registral del inmueble.'
   if (normalized === 'vendedor_titular_mismatch') return 'el vendedor no coincide con el titular registral; se requiere aclaracion.'
   return `resolver conflicto: ${normalized}.`
+}
+
+function deriveLastQuestionIntent(requiredMissing: string[]): string | null {
+  const set = new Set((requiredMissing || []).map((v) => String(v || '')))
+  if (Array.from(set).some((f) => f.startsWith('compradores'))) return 'comprador'
+  if (Array.from(set).some((f) => f.startsWith('vendedores'))) return 'vendedor'
+  if (set.has('inmueble.folio_real')) return 'folio_real'
+  if (set.has('inmueble.partidas')) return 'partidas'
+  if (set.has('inmueble.direccion')) return 'direccion'
+  if (set.has('existencia_credito') || set.has('creditos[]') || Array.from(set).some((f) => f.startsWith('creditos['))) return 'credito'
+  if (set.has('gravamenes[]') || Array.from(set).some((f) => f.startsWith('gravamenes['))) return 'gravamen'
+  return null
+}
+
+function deriveIntentFromNextQuestions(questions: string[]): string | null {
+  const first = String((questions || []).find((q) => String(q || '').trim()) || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+  if (!first) return null
+  if (/\bcomprador/.test(first)) return 'comprador'
+  if (/\bvendedor/.test(first)) return 'vendedor'
+  if (/\bconyuge|conyuge|esposa|esposo/.test(first)) return 'conyuge'
+  if (/\bfolio real|folio\b/.test(first)) return 'folio_real'
+  if (/\bpartida/.test(first)) return 'partidas'
+  if (/\bdireccion/.test(first)) return 'direccion'
+  if (/\bcredito|contado|institucion/.test(first)) return 'credito'
+  if (/\bgravamen|hipoteca|cancelacion/.test(first)) return 'gravamen'
+  return null
+}
+
+function buildRoutingMessageWithCollectionHint(
+  originalMessage: string,
+  intent: string | null,
+  detectedPeople: string[]
+): string {
+  const raw = String(originalMessage || '').trim()
+  const cleanIntent = String(intent || '').trim().toLowerCase()
+  if (!raw || !cleanIntent) return raw
+  const peopleHint =
+    Array.isArray(detectedPeople) && detectedPeople.length > 0
+      ? `\n[PERSONAS_DETECTADAS_NO_CLASIFICADAS]: ${detectedPeople.join(' | ')}`
+      : ''
+  return `${raw}\n[OBJETIVO_DE_CAPTURA]: ${cleanIntent}${peopleHint}`
 }
 
 function shouldFallbackToLegacyStateUpdate(message: string): boolean {
@@ -1277,8 +1378,8 @@ function mergeStructuredExtractionIntoTramiteData(
     next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
   }
 
-  // Si hay gravamen con acreedor y también crédito del comprador,
-  // asumir "se cancelará en esta operación" cuando aún no venga definido.
+  // Si hay gravamen con acreedor y tambiÃƒÆ’Ã‚Â©n crÃƒÆ’Ã‚Â©dito del comprador,
+  // asumir "se cancelarÃƒÆ’Ã‚Â¡ en esta operaciÃƒÆ’Ã‚Â³n" cuando aÃƒÆ’Ã‚Âºn no venga definido.
   if (next?.inmueble?.existe_hipoteca === true && Array.isArray(next?.gravamenes) && next.gravamenes.length > 0) {
     const gravamenes = [...next.gravamenes]
     const g0 = { ...(gravamenes[0] || {}) }
@@ -1504,19 +1605,21 @@ function extractExplicitRoleAssignment(
     return null
   }
 
-  const natural = /([A-ZÁÉÍÓÚÑ0-9][A-ZÁÉÍÓÚÑ0-9\s.'"-]{3,}?)\s+es\s+(?:el\s+|la\s+)?(comprador(?:a)?|vendedor(?:a)?|c[oó]nyuge|conyuge|espos[oa])\b/i
-  const naturalMatch = source.match(natural)
-  if (naturalMatch) {
-    const role = roleFromRaw(naturalMatch[2] || '')
-    const name = sanitizePartyLabel(naturalMatch[1] || '')
-    if (role) return { role, name }
-  }
-
-  const inverted = /\b(comprador(?:a)?|vendedor(?:a)?|c[oó]nyuge|conyuge|espos[oa])\b\s*(?::|-|es)\s*([^\n\r.,;]+)/i
+  // Priorizar "comprador/vendedor/conyuge es NOMBRE" para no invertir frases.
+  const inverted = /\b(comprador(?:a)?|vendedor(?:a)?|c[oÃƒÂ³]nyuge|conyuge|espos[oa])\b\s*(?::|-|es)\s*([^\n\r.,;]+)/i
   const invertedMatch = source.match(inverted)
   if (invertedMatch) {
     const role = roleFromRaw(invertedMatch[1] || '')
     const name = sanitizePartyLabel(invertedMatch[2] || '')
+    if (role) return { role, name }
+  }
+
+  const natural = /([A-ZÃƒÂÃƒâ€°ÃƒÂÃƒâ€œÃƒÅ¡Ãƒâ€˜0-9][A-ZÃƒÂÃƒâ€°ÃƒÂÃƒâ€œÃƒÅ¡Ãƒâ€˜0-9\s.'"-]{3,}?)\s+es\s+(?:el\s+|la\s+)?(comprador(?:a)?|vendedor(?:a)?|c[oÃƒÂ³]nyuge|conyuge|espos[oa])\b/i
+  const naturalMatch = source.match(natural)
+  if (naturalMatch) {
+    const role = roleFromRaw(naturalMatch[2] || '')
+    const left = sanitizePartyLabel(naturalMatch[1] || '')
+    const name = isRoleKeyword(left) ? null : left
     if (role) return { role, name }
   }
 
@@ -1591,7 +1694,7 @@ function appendFolioSelectionActionIfNeeded(
       if (!folio) return null
       const scope = String(c?.scope || 'otros')
       const unidad = String(c?.attrs?.unidad || '').trim()
-      const label = unidad ? `${folio} (${scope} · unidad ${unidad})` : `${folio} (${scope})`
+      const label = unidad ? `${folio} (${scope} Ãƒâ€šÃ‚Â· unidad ${unidad})` : `${folio} (${scope})`
       return { folio, scope, label }
     })
     .filter(Boolean)
@@ -1736,14 +1839,18 @@ function reconcileLegacyCapturedData(args: {
   }
   const explicitRoleAssignment = extractExplicitRoleAssignment(message)
   if (explicitRoleAssignment) {
-    applyPendingPersonRole(merged, explicitRoleAssignment.role, explicitRoleAssignment.name)
+    const resolvedName =
+      explicitRoleAssignment.name ||
+      resolvePreferredNameFromReference(message, merged)
+    applyPendingPersonRole(merged, explicitRoleAssignment.role, resolvedName)
   }
   const shortRole = inferShortRoleConfirmation(normalized)
   if (!labeledFromMessage.comprador && !labeledFromMessage.vendedor && shortRole && !explicitRoleAssignment) {
     applyPendingPersonRole(merged, shortRole, null)
   }
-  const saysNoCredit = /\b(sin credito|sin crédito|no credito|no crédito|de contado|pago de contado|contado)\b/.test(normalized)
-  const saysWithCredit = /\b(con credito|con crédito|credito|crédito)\b/.test(normalized) && !/\b(sin credito|sin crédito|no credito|no crédito)\b/.test(normalized)
+  promoteUnclassifiedToSpouseWhenMarriageContext(merged)
+  const saysNoCredit = /\b(sin credito|sin crÃƒÆ’Ã‚Â©dito|no credito|no crÃƒÆ’Ã‚Â©dito|de contado|pago de contado|contado)\b/.test(normalized)
+  const saysWithCredit = /\b(con credito|con crÃƒÆ’Ã‚Â©dito|credito|crÃƒÆ’Ã‚Â©dito)\b/.test(normalized) && !/\b(sin credito|sin crÃƒÆ’Ã‚Â©dito|no credito|no crÃƒÆ’Ã‚Â©dito)\b/.test(normalized)
   const saysNoLien = /\b(sin gravamen|sin hipoteca|no hay gravamen|no tiene gravamen|ni gravamen|sin ningun gravamen|libre de gravamen|libre de hipoteca)\b/.test(normalized)
   const saysWithLienByExplicitPhrase = /\b(con gravamen|con hipoteca|existe hipoteca)\b/.test(normalized)
   const saysWithLienByTiene = /\btiene gravamen\b/.test(normalized) && !/\bno tiene gravamen\b/.test(normalized)
@@ -1975,7 +2082,7 @@ function hydrateCriticalFieldsFromHistory(
     (!Array.isArray(merged.compradores) || merged.compradores.length === 0) &&
     labeledParties.comprador
   ) {
-    // Corrige caso típico donde el comprador quedó mal asignado como vendedor.
+    // Corrige caso tÃƒÆ’Ã‚Â­pico donde el comprador quedÃƒÆ’Ã‚Â³ mal asignado como vendedor.
     const onlySeller = merged.vendedores[0]
     const sellerName = String(onlySeller?.persona_fisica?.nombre || onlySeller?.persona_moral?.denominacion_social || '')
       .toUpperCase()
@@ -1993,7 +2100,7 @@ function hydrateCriticalFieldsFromHistory(
 
 function extractFolioFromText(message: string): string | null {
   const text = String(message || '')
-  const match = text.match(/\bfolio(?:\s+real)?(?:\s+no\.?)?(?:\s+(?:es|seria|sería|corresponde|confirmo|confirmamos))?\s*[:#]?\s*([A-Z0-9-]{5,})\b/i)
+  const match = text.match(/\bfolio(?:\s+real)?(?:\s+no\.?)?(?:\s+(?:es|seria|serÃƒÆ’Ã‚Â­a|corresponde|confirmo|confirmamos))?\s*[:#]?\s*([A-Z0-9-]{5,})\b/i)
   if (match) {
     return String(match[1] || '')
       .trim()
@@ -2028,7 +2135,7 @@ function extractLabeledPartiesFromText(text: string): { comprador: string | null
   if (vendedorMatch?.[1]) assignRole('vendedor', vendedorMatch[1])
 
   // Formato natural: "NOMBRE es comprador|vendedor"
-  const naturalRolePattern = /([A-ZÁÉÍÓÚÑ0-9][A-ZÁÉÍÓÚÑ0-9\s.'"-]{3,}?)\s+es\s+(?:el\s+|la\s+)?(comprador(?:a)?|vendedor(?:a)?)\b/gi
+  const naturalRolePattern = /([A-ZÃƒÆ’Ã‚ÂÃƒÆ’Ã¢â‚¬Â°ÃƒÆ’Ã‚ÂÃƒÆ’Ã¢â‚¬Å“ÃƒÆ’Ã…Â¡ÃƒÆ’Ã¢â‚¬Ëœ0-9][A-ZÃƒÆ’Ã‚ÂÃƒÆ’Ã¢â‚¬Â°ÃƒÆ’Ã‚ÂÃƒÆ’Ã¢â‚¬Å“ÃƒÆ’Ã…Â¡ÃƒÆ’Ã¢â‚¬Ëœ0-9\s.'"-]{3,}?)\s+es\s+(?:el\s+|la\s+)?(comprador(?:a)?|vendedor(?:a)?)\b/gi
   for (const match of source.matchAll(naturalRolePattern)) {
     assignRole(match[2] || '', match[1] || '')
   }
@@ -2047,13 +2154,142 @@ function extractLabeledPartiesFromText(text: string): { comprador: string | null
 
 function sanitizePartyLabel(value: string): string | null {
   const cleaned = String(value || '')
-    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/^["']+|["']+$/g, '')
     .replace(/^(el|la)\s+/i, '')
     .replace(/\s+/g, ' ')
     .replace(/[.,;:]+$/, '')
     .trim()
   if (!cleaned || cleaned.length < 4) return null
+  if (isGenericPartyReference(cleaned)) return null
   return cleaned
+}
+
+function isRoleKeyword(value: string | null | undefined): boolean {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+  return /^(comprador|compradora|vendedor|vendedora|conyuge|esposo|esposa)$/.test(normalized)
+}
+
+function isGenericPartyReference(value: string): boolean {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return true
+  if (/^\[?redacted\]?$/.test(normalized)) return true
+  if (isRoleKeyword(normalized)) return true
+  if (/^(el|la)\s+(comprador|compradora|vendedor|vendedora|conyuge|esposo|esposa|hombre|mujer)$/.test(normalized)) return true
+  if (/(esposo|esposa|hombre|mujer|conyuge|comprador|vendedor).*(acta|matrimonio)/.test(normalized)) return true
+  if (/(del|de la)\s+acta(\s+de\s+matrimonio)?/.test(normalized)) return true
+  if (/(del|de la)\s+documento/.test(normalized)) return true
+  if (/documento\s+que\s+estoy\s+subiendo/.test(normalized)) return true
+  if (/^(el|la|este|esta|ese|esa|aquel|aquella)$/.test(normalized)) return true
+  return false
+}
+
+function resolvePreferredNameFromReference(
+  message: string,
+  merged: Record<string, any>
+): string | null {
+  const normalized = String(message || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return null
+
+  const spouses = Array.isArray((merged as any)?.conyuges_detectados)
+    ? (merged as any).conyuges_detectados
+        .map((p: any) => String(p?.nombre || p?.name || '').trim())
+        .filter(Boolean)
+    : []
+
+  if (spouses.length > 0) {
+    if (/\b(esposo|hombre)\b/.test(normalized)) {
+      return spouses[0] || null
+    }
+    if (/\b(esposa|mujer)\b/.test(normalized)) {
+      return spouses[1] || spouses[spouses.length - 1] || null
+    }
+  }
+
+  if (/\bella\b/.test(normalized) && spouses.length > 1) {
+    return spouses[1]
+  }
+  if (/\bel\b/.test(normalized) && spouses.length > 0) {
+    return spouses[0]
+  }
+
+  return null
+}
+
+function promoteUnclassifiedToSpouseWhenMarriageContext(merged: Record<string, any>): void {
+  const buyers = Array.isArray(merged?.compradores) ? merged.compradores : []
+  if (buyers.length === 0) return
+
+  const buyer0 = buyers[0] || {}
+  const buyerName = String(
+    buyer0?.persona_fisica?.nombre ||
+      buyer0?.persona_moral?.denominacion_social ||
+      ''
+  ).trim()
+  if (!buyerName) return
+
+  const currentSpouseName = String(buyer0?.persona_fisica?.conyuge?.nombre || '').trim()
+  if (currentSpouseName) return
+
+  const uncategorized = Array.isArray(merged?.personas_detectadas_no_clasificadas)
+    ? merged.personas_detectadas_no_clasificadas
+    : []
+  if (uncategorized.length !== 1) return
+
+  const spousePool = Array.isArray(merged?.conyuges_detectados)
+    ? merged.conyuges_detectados
+    : []
+  const hasMarriageSignal = spousePool.length > 0 || /acta\s+de\s+matrimonio/i.test(String(merged?._document_intent || ''))
+  if (!hasMarriageSignal) return
+
+  const candidateRaw = uncategorized[0]
+  const candidateName = String(candidateRaw?.nombre || candidateRaw?.name || '').trim()
+  if (!candidateName || isGenericPartyReference(candidateName)) return
+
+  const norm = (v: unknown) =>
+    String(v || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+  if (norm(candidateName) === norm(buyerName)) return
+
+  const buyersNext = [...buyers]
+  const c0 = { ...buyer0 }
+  c0.party_id = c0.party_id || 'comprador_1'
+  c0.tipo_persona = c0.tipo_persona || 'persona_fisica'
+  c0.persona_fisica = {
+    ...(c0.persona_fisica || {}),
+    nombre: c0.persona_fisica?.nombre || buyerName,
+    rfc: c0.persona_fisica?.rfc || null,
+    curp: c0.persona_fisica?.curp || null,
+    estado_civil: c0.persona_fisica?.estado_civil || 'casado',
+    conyuge: {
+      ...(c0.persona_fisica?.conyuge || {}),
+      nombre: candidateName,
+      rfc: c0.persona_fisica?.conyuge?.rfc || null,
+      curp: c0.persona_fisica?.conyuge?.curp || null,
+      participa: c0.persona_fisica?.conyuge?.participa ?? false,
+    },
+  }
+  buyersNext[0] = c0
+  merged.compradores = buyersNext
+  merged.personas_detectadas_no_clasificadas = []
 }
 
 function enrichInmuebleFromFolioCandidates(data: Record<string, any>): Record<string, any> {
@@ -2114,7 +2350,7 @@ function enrichInmuebleFromFolioCandidates(data: Record<string, any>): Record<st
   })()
   const hasManyFolios = candidates.length > 1
 
-  // Solo autoasignar folio cuando no hay ambigüedad clara.
+  // Solo autoasignar folio cuando no hay ambigÃƒÆ’Ã‚Â¼edad clara.
   if (isEmpty(inmueble.folio_real)) {
     if (!hasManyFolios && target?.folio) {
       inmueble.folio_real = String(target.folio)
@@ -2245,7 +2481,7 @@ function parsePersonAndSpouseFromLabel(rawLabel: string): {
     }
   }
 
-  const marriedHint = /\b(espos[ao]s?|conyuge|c[oó]nyuge|matrimonio)\b/.test(normalized)
+  const marriedHint = /\b(espos[ao]s?|conyuge|c[oÃƒÆ’Ã‚Â³]nyuge|matrimonio)\b/.test(normalized)
   return {
     personName: raw,
     spouseName: null,
@@ -2278,4 +2514,7 @@ function mergeObjectPreservingNonEmpty(
   }
   return out
 }
+
+
+
 

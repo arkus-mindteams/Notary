@@ -1803,6 +1803,13 @@ export function PreavisoChat({
               uiAction: 'chat_message',
               currentStep: serverState?.current_state || undefined,
               hasDocument: false,
+              lastQuestionIntent: (data as any)?._last_question_intent ?? undefined,
+              detectedPeople: Array.isArray((data as any)?.personas_detectadas_no_clasificadas)
+                ? ((data as any).personas_detectadas_no_clasificadas as any[])
+                    .map((p: any) => String(p?.nombre || '').trim())
+                    .filter(Boolean)
+                    .slice(0, 6)
+                : [],
             },
           })
         })
@@ -3669,6 +3676,7 @@ export function PreavisoChat({
           _defer_structured_extraction: totalFiles > 1,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
+          _last_question_intent: (workingData as any)._last_question_intent ?? null,
           _document_people_pending: (workingData as any)._document_people_pending ?? null,
           tramiteId: effectiveTramiteId,
           forceReprocess: forceReprocess || undefined,
@@ -4090,6 +4098,13 @@ export function PreavisoChat({
             uiAction: 'chat_after_document_process',
             currentStep: serverState?.current_state || undefined,
             hasDocument: false,
+            lastQuestionIntent: (workingData as any)?._last_question_intent ?? undefined,
+            detectedPeople: Array.isArray((workingData as any)?.personas_detectadas_no_clasificadas)
+              ? ((workingData as any).personas_detectadas_no_clasificadas as any[])
+                  .map((p: any) => String(p?.nombre || '').trim())
+                  .filter(Boolean)
+                  .slice(0, 6)
+              : [],
           },
         })
       })
