@@ -1113,7 +1113,7 @@ function shouldFallbackToLegacyStateUpdate(message: string): boolean {
     .replace(/[\u0300-\u036f]/g, '')
 
   const hasDomainShortSignal =
-    /\b(credito|contado|gravamen|hipoteca|folio|partida|direccion|comprador|vendedor|persona|fisica|moral|estado civil|casado|soltero|divorciado|viudo|union libre|cancela|cancelado|cancelacion)\b/.test(lower) &&
+    /\b(credito|contado|gravamen|hipoteca|folio|partida|direccion|comprador|vendedor|conyuge|esposo|esposa|persona|fisica|moral|estado civil|casado|soltero|divorciado|viudo|union libre|cancela|cancelado|cancelacion)\b/.test(lower) &&
     /\b(es|si|sin|con|confirmo|indico|indica|sera|se)\b/.test(lower)
   const hasCancellationReply =
     /\bcancel/.test(lower) &&
@@ -1174,7 +1174,7 @@ function shouldBypassRouterForShortUpdate(message: string, uiAction?: string): b
     if (/\b(compra|pago|forma de pago)\b/.test(normalized) && /\b(contado|credito)\b/.test(normalized)) return true
     if (/\bde contado\b/.test(normalized)) return true
     if (/\b(es|si|sin|con|confirmo|indico|indica)\b/.test(normalized) &&
-      /\b(credito|contado|gravamen|hipoteca|folio|partida|direccion|comprador|vendedor)\b/.test(normalized)) {
+      /\b(credito|contado|gravamen|hipoteca|folio|partida|direccion|comprador|vendedor|conyuge|esposo|esposa)\b/.test(normalized)) {
       return true
     }
   }
