@@ -1803,6 +1803,13 @@ export function PreavisoChat({
               uiAction: 'chat_message',
               currentStep: serverState?.current_state || undefined,
               hasDocument: false,
+              lastQuestionIntent: (data as any)?._last_question_intent ?? undefined,
+              detectedPeople: Array.isArray((data as any)?.personas_detectadas_no_clasificadas)
+                ? ((data as any).personas_detectadas_no_clasificadas as any[])
+                    .map((p: any) => String(p?.nombre || '').trim())
+                    .filter(Boolean)
+                    .slice(0, 6)
+                : [],
             },
           })
         })
@@ -2023,20 +2030,21 @@ export function PreavisoChat({
   }
 
   const handleSidebarFolioSelect = (folio: string) => {
-    sendQuickChatMessage(String(folio || '').replace(/\D/g, ''))
+    const cleanFolio = String(folio || '').replace(/\D/g, '')
+    if (!cleanFolio) return
+    sendQuickChatMessage(`el folio real es ${cleanFolio}`)
   }
 
   const handleSidebarPersonSelect = (name: string) => {
     const cleanName = String(name || '').trim()
     if (!cleanName) return
-    const suggested = `${cleanName} es comprador`
-    const custom = window.prompt(
-      `Clasifica a "${cleanName}".\nEjemplos:\n- ${cleanName} es vendedor\n- ${cleanName} es comprador\n- ${cleanName} es conyuge de comprador`,
-      suggested
-    )
-    if (custom === null) return
-    const finalText = String(custom || '').trim() || suggested
-    sendQuickChatMessage(finalText)
+    const draft = `${cleanName} es `
+    flushSync(() => setInput(draft))
+    setTimeout(() => {
+      textInputRef.current?.focus()
+      const end = draft.length
+      textInputRef.current?.setSelectionRange(end, end)
+    }, 0)
   }
 
   const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false, skipUserMessage = false, userText: string | null = null) => {
@@ -2458,8 +2466,37 @@ export function PreavisoChat({
         intakeRules?: any
         intakeDetectedType?: string | null
         intakeConfidence?: number | null
+        sourceDocumentType?: string | null
+        sourceWarnings?: string[]
+        sourceRefs?: Array<{ field?: string; evidence?: string }>
       }> = []
       const successfulOriginalKeys = new Set<string>()
+
+      const isValidDetectedPersonName = (value: unknown): boolean => {
+        const raw = String(value || '').trim()
+        if (!raw) return false
+        const normalized = raw
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .trim()
+        if (!normalized) return false
+        if (
+          normalized.includes('[redacted]') ||
+          normalized.includes('redacted') ||
+          normalized === 'n/a' ||
+          normalized === 'na' ||
+          normalized === 'null' ||
+          normalized === 'undefined' ||
+          normalized === 'desconocido' ||
+          normalized === 'sin dato' ||
+          normalized === 'no disponible'
+        ) {
+          return false
+        }
+        return /[a-z]/i.test(raw)
+      }
 
       const mergeStructuredExtractionIntoData = (base: PreavisoData, structured: any): PreavisoData => {
         if (!structured || typeof structured !== 'object') return base
@@ -2607,7 +2644,19 @@ export function PreavisoChat({
           next.compradores = existing
         }
 
-        const conyuge = String(structured?.conyuges_detectados?.[0]?.nombre || '').trim()
+        const buyerName = String(
+          next?.compradores?.[0]?.persona_fisica?.nombre ||
+          next?.compradores?.[0]?.persona_moral?.denominacion_social ||
+          ''
+        ).trim()
+        const normalizedBuyer = normalizeName(buyerName)
+        const conyugeCandidates = Array.isArray(structured?.conyuges_detectados)
+          ? structured.conyuges_detectados
+            .map((p: any) => String(p?.nombre || '').trim())
+            .filter((name: string) => isValidDetectedPersonName(name))
+          : []
+        const conyuge =
+          conyugeCandidates.find((name: string) => normalizeName(name) !== normalizedBuyer) || null
         if (conyuge) {
           const compradores = Array.isArray(next.compradores) ? [...next.compradores] : []
           const c0 = { ...(compradores[0] || {}) } as any
@@ -2635,19 +2684,51 @@ export function PreavisoChat({
           const n = normalizeName(p?.nombre)
           if (n) classifiedNames.add(n)
         }
+        const vendedoresActuales = Array.isArray(next?.vendedores) ? next.vendedores : []
+        for (const v of vendedoresActuales) {
+          const n = normalizeName(v?.persona_fisica?.nombre || v?.persona_moral?.denominacion_social)
+          if (n) classifiedNames.add(n)
+        }
+        const compradoresActuales = Array.isArray(next?.compradores) ? next.compradores : []
+        for (const c of compradoresActuales) {
+          const n = normalizeName(c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social)
+          if (n) classifiedNames.add(n)
+        }
         const conyugesDetectados = Array.isArray(structured?.conyuges_detectados)
           ? structured.conyuges_detectados
           : []
-        for (const p of conyugesDetectados) {
-          const n = normalizeName(p?.nombre)
-          if (n) classifiedNames.add(n)
-        }
+        const conyugesDetectadosFiltrados = conyugesDetectados.filter((p: any) => {
+          const name = String(p?.nombre || '').trim()
+          if (!isValidDetectedPersonName(name)) return false
+          const n = normalizeName(name)
+          if (!n) return false
+          return !classifiedNames.has(n)
+        })
+        // Persistir conyuges detectados accionables para UI.
+        ;(next as any).conyuges_detectados = conyugesDetectadosFiltrados
 
-        const noClasificadasRaw = Array.isArray(structured?.personas_detectadas_no_clasificadas)
+        const rawNoClasificadas = Array.isArray(structured?.personas_detectadas_no_clasificadas)
           ? structured.personas_detectadas_no_clasificadas
           : []
+        const rawNoClasificadasFiltradas = rawNoClasificadas.filter((person: any) => {
+          const name = String(person?.nombre || '').trim()
+          if (!isValidDetectedPersonName(name)) return false
+          const n = normalizeName(name)
+          if (!n) return false
+          return !classifiedNames.has(n)
+        })
+        // Persistir solo personas realmente no clasificadas para UI.
+        ;(next as any).personas_detectadas_no_clasificadas = rawNoClasificadasFiltradas
+
+        for (const p of conyugesDetectados) {
+          // Importante: NO marcar automaticamente como "clasificado".
+          // Deben seguir visibles para que usuario asigne rol.
+        }
+
+        const noClasificadasRaw = rawNoClasificadasFiltradas
         const dedupNoClasificadas = new Map<string, any>()
         for (const person of noClasificadasRaw) {
+          if (!isValidDetectedPersonName(person?.nombre)) continue
           const n = normalizeName(person?.nombre)
           if (!n || classifiedNames.has(n)) continue
           if (!dedupNoClasificadas.has(n)) {
@@ -2659,6 +2740,20 @@ export function PreavisoChat({
             })
           }
         }
+        // Tambien agregar conyuges detectados a lista accionable (si no estan duplicados)
+        for (const spouse of conyugesDetectadosFiltrados) {
+          if (!isValidDetectedPersonName(spouse?.nombre)) continue
+          const n = normalizeName(spouse?.nombre)
+          if (!n || classifiedNames.has(n)) continue
+          if (!dedupNoClasificadas.has(n)) {
+            dedupNoClasificadas.set(n, {
+              name: String(spouse?.nombre || '').trim(),
+              rfc: null,
+              curp: null,
+              source: 'documento'
+            })
+          }
+        }
         const pendingPersons = Array.from(dedupNoClasificadas.values())
         if (pendingPersons.length > 0) {
           next._document_people_pending = {
@@ -2666,12 +2761,158 @@ export function PreavisoChat({
             source: 'documento',
             persons: pendingPersons
           }
+        } else {
+          next._document_people_pending = null
         }
 
         return next
       }
 
+      const applyConsolidatedFolioHints = (
+        base: PreavisoData,
+        inputs: Array<{
+          intakeRules?: any
+          intakeFacts?: any[]
+          documentId: string
+          fileName: string
+          rawText?: string
+          sourceWarnings?: string[]
+          sourceRefs?: Array<{ field?: string; evidence?: string }>
+        }>
+      ): PreavisoData => {
+        const next: any = { ...(base as any) }
+        const prevFolios = next.folios || {
+          candidates: [],
+          selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false }
+        }
+        const extractFolios = (text: string): string[] => {
+          const raw = String(text || '')
+          if (!raw) return []
+          const found = new Set<string>()
+          const re = /\bfolio\s*real\s*[:#-]?\s*([0-9]{6,})\b/gi
+          for (const m of raw.matchAll(re)) {
+            const folio = String(m?.[1] || '').replace(/\D/g, '')
+            if (folio) found.add(folio)
+          }
+          return Array.from(found)
+        }
+        const extractFoliosFromWarnings = (warnings: string[]): string[] => {
+          const found = new Set<string>()
+          for (const w of warnings) {
+            const text = String(w || '')
+            if (!/folio/i.test(text)) continue
+            const nums = text.match(/\b[0-9]{6,}\b/g) || []
+            for (const n of nums) {
+              const folio = String(n || '').replace(/\D/g, '')
+              if (folio) found.add(folio)
+            }
+          }
+          return Array.from(found)
+        }
+        const extractFolioContext = (text: string): Record<string, any> => {
+          const raw = String(text || '')
+          const out: Record<string, any> = { direccion: {} }
+          if (!raw) return out
+          const unidad = raw.match(/\bUNIDAD\s*[:\-]?\s*([A-Z0-9]+)\b/i)
+          if (unidad?.[1]) out.unidad = unidad[1].trim().toUpperCase()
+          const cond = raw.match(/\bCONJ\.?\s*HABITACIONAL\s*[:\-]?\s*([^\n\r]+)/i)
+          if (cond?.[1]) out.condominio = cond[1].replace(/\s+/g, ' ').trim()
+          const lote = raw.match(/\bLOTE\s*[:\-]?\s*([^\n\r,;]+)/i)
+          if (lote?.[1]) out.lote = lote[1].replace(/\s+/g, ' ').trim()
+          const manzana = raw.match(/\bMANZANA\s*[:\-]?\s*([A-Z0-9]+)\b/i)
+          if (manzana?.[1]) out.manzana = manzana[1].trim().toUpperCase()
+          const frac = raw.match(/\b(DESARROLLO\s+HABITACIONAL\s+[A-Z0-9\sÁÉÍÓÚÑ.-]+)\b/i)
+          if (frac?.[1]) out.fraccionamiento = frac[1].replace(/\s+/g, ' ').trim()
+          const mun = raw.match(/\bMUNICIPIO\s*[:\-]?\s*([A-ZÁÉÍÓÚÑ\s]+)\b/i)
+          if (mun?.[1]) out.direccion.municipio = mun[1].replace(/\s+/g, ' ').trim().toUpperCase()
+          if (/\bBAJA\s+CALIFORNIA\b/i.test(raw)) out.direccion.estado = 'BAJA CALIFORNIA'
+          const sup = raw.match(/\bSUPERFICIE\s*[:\-]?\s*([0-9.,]+\s*M2)\b/i)
+          if (sup?.[1]) out.superficie = sup[1].replace(/\s+/g, ' ').trim().toUpperCase()
+          const ubic = raw.match(/\bCONJ\.?\s*HABITACIONAL\s*[:\-]?\s*([^\n\r]+)/i)
+          if (ubic?.[1]) out.ubicacion = ubic[1].replace(/\s+/g, ' ').trim()
+          return out
+        }
+        const extractFolioContextsByRawText = (text: string): Map<string, Record<string, any>> => {
+          const raw = String(text || '')
+          const out = new Map<string, Record<string, any>>()
+          if (!raw) return out
+          const re = /\bfolio\s*real\s*[:#-]?\s*([0-9]{6,})\b/gi
+          const matches = Array.from(raw.matchAll(re))
+          for (let i = 0; i < matches.length; i++) {
+            const folio = String(matches[i]?.[1] || '').replace(/\D/g, '')
+            if (!folio) continue
+            const start = matches[i]?.index ?? 0
+            const nextStart = matches[i + 1]?.index ?? raw.length
+            const block = raw.slice(start, Math.min(nextStart, start + 1400))
+            out.set(folio, extractFolioContext(block))
+          }
+          return out
+        }
+
+        const map = new Map<string, any>()
+        for (const c of Array.isArray(prevFolios?.candidates) ? prevFolios.candidates : []) {
+          const folio = String(c?.folio || '').replace(/\D/g, '')
+          const scope = c?.scope || 'otros'
+          if (!folio) continue
+          map.set(`${scope}:${folio}`, { ...c, folio, scope })
+        }
+
+        for (const item of inputs || []) {
+          const contextsByFolio = extractFolioContextsByRawText(String(item?.rawText || ''))
+          const conflicts = Array.isArray(item?.intakeRules?.conflicts) ? item.intakeRules.conflicts : []
+          const folioConflict = conflicts.find((x: any) => String(x?.key || '').toLowerCase() === 'folio_real')
+          const values = Array.isArray(folioConflict?.values) ? folioConflict.values : []
+          const fromFacts = Array.isArray(item?.intakeFacts)
+            ? item.intakeFacts
+              .filter((f: any) => String(f?.key || '').toLowerCase().includes('folio'))
+              .map((f: any) => String(f?.value || ''))
+            : []
+          const fromRawText = extractFolios(String(item?.rawText || ''))
+          const fromWarnings = extractFoliosFromWarnings(Array.isArray(item?.sourceWarnings) ? item.sourceWarnings : [])
+          const fromSourceRefs = Array.isArray(item?.sourceRefs)
+            ? item.sourceRefs.flatMap((r) => extractFolios(String(r?.evidence || '')))
+            : []
+          const allValues = Array.from(new Set([...values, ...fromFacts, ...fromRawText, ...fromWarnings, ...fromSourceRefs]))
+          for (const v of allValues) {
+            const folio = String(v || '').replace(/\D/g, '')
+            if (!folio) continue
+            const attrs = contextsByFolio.get(folio) || {}
+            map.set(`unidades:${folio}`, {
+              folio,
+              scope: 'unidades',
+              attrs,
+              sources: [{ docName: item?.fileName || null, docType: 'inscripcion' }]
+            })
+          }
+        }
+
+        next.folios = {
+          candidates: Array.from(map.values()),
+          selection: prevFolios.selection || { selected_folio: null, selected_scope: null, confirmed_by_user: false }
+        }
+        return next as PreavisoData
+      }
+
       const buildUncategorizedPeopleMessage = (current: any): string | null => {
+        const classifiedNames = new Set<string>()
+        const normalize = (value: unknown) =>
+          String(value || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim()
+        for (const v of Array.isArray(current?.vendedores) ? current.vendedores : []) {
+          const n = normalize(v?.persona_fisica?.nombre || v?.persona_moral?.denominacion_social)
+          if (n) classifiedNames.add(n)
+        }
+        for (const c of Array.isArray(current?.compradores) ? current.compradores : []) {
+          const n = normalize(c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social)
+          if (n) classifiedNames.add(n)
+          const conyuge = normalize(c?.persona_fisica?.conyuge?.nombre)
+          if (conyuge) classifiedNames.add(conyuge)
+        }
+
         const pending = Array.isArray(current?._document_people_pending?.persons)
           ? current._document_people_pending.persons
           : []
@@ -2685,13 +2926,10 @@ export function PreavisoChat({
         const dedup = new Map<string, string>()
         for (const p of all) {
           const name = String(p?.name || p?.nombre || '').trim()
+          if (!isValidDetectedPersonName(name)) continue
           if (!name) continue
-          const key = name
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .toLowerCase()
-            .replace(/\s+/g, ' ')
-            .trim()
+          const key = normalize(name)
+          if (classifiedNames.has(key)) continue
           if (!key || dedup.has(key)) continue
           dedup.set(key, name)
         }
@@ -3284,6 +3522,23 @@ export function PreavisoChat({
                       const tramiteIdForExtraction = effectiveTramiteId
                       if (tramiteIdForExtraction && rawTextForExtraction && !requiresOcrFallback) {
                         const intakeDebug = processResult?.extractedData?._intake_debug || null
+                        const extractedSourceType =
+                          typeof processResult?.extractedData?.source_document_type === 'string'
+                            ? processResult.extractedData.source_document_type
+                            : null
+                        const extractedWarnings = Array.isArray(processResult?.extractedData?.warnings)
+                          ? processResult.extractedData.warnings
+                          : []
+                        console.info('[PreavisoChat] consolidated_input_doc', {
+                          document_id: docId,
+                          file_name: item.originalFile.name,
+                          doc_type: item.docType,
+                          raw_text_length: rawTextForExtraction.length,
+                          intake_detected_type: intakeDebug?.detected_type || null,
+                          intake_summary_count: Array.isArray(intakeDebug?.summary) ? intakeDebug.summary.length : 0,
+                          extracted_source_document_type: extractedSourceType,
+                          extracted_warnings_count: extractedWarnings.length,
+                        })
                         consolidatedExtractionInputs.push({
                           documentId: docId,
                           rawText: rawTextForExtraction,
@@ -3295,6 +3550,11 @@ export function PreavisoChat({
                           intakeDetectedType: intakeDebug?.detected_type || null,
                           intakeConfidence:
                             typeof intakeDebug?.confidence === 'number' ? intakeDebug.confidence : null,
+                          sourceDocumentType: extractedSourceType,
+                          sourceWarnings: extractedWarnings,
+                          sourceRefs: Array.isArray(processResult?.extractedData?.source_refs)
+                            ? processResult.extractedData.source_refs
+                            : [],
                         })
                       }
                     } catch (extractError) {
@@ -3416,6 +3676,7 @@ export function PreavisoChat({
           _defer_structured_extraction: totalFiles > 1,
           tipoOperacion: workingData.tipoOperacion,
           _document_intent: (workingData as any)._document_intent ?? null,
+          _last_question_intent: (workingData as any)._last_question_intent ?? null,
           _document_people_pending: (workingData as any)._document_people_pending ?? null,
           tramiteId: effectiveTramiteId,
           forceReprocess: forceReprocess || undefined,
@@ -3658,17 +3919,32 @@ export function PreavisoChat({
           const primaryDocumentId = consolidatedExtractionInputs[0]?.documentId
           const consolidatedRawText = consolidatedExtractionInputs
             .map((item, idx) => {
-              const docHeader = `--- DOCUMENTO ${idx + 1} ---\n` +
+              const docBody = String(item.rawText || '').trim()
+              const docHeader =
+                `<<<DOCUMENT_START>>>\n` +
+                `index: ${idx + 1}\n` +
                 `documentId: ${item.documentId}\n` +
                 `fileName: ${item.fileName}\n` +
                 `docType: ${item.docType}\n` +
-                `detectedType: ${item.intakeDetectedType || 'N/A'}\n`
-              return `${docHeader}\n${String(item.rawText || '').trim()}`
+                `detectedType: ${item.intakeDetectedType || 'N/A'}\n` +
+                `textLength: ${docBody.length}\n`
+              const docFooter = `\n<<<DOCUMENT_END>>>`
+              return `${docHeader}\n${docBody}${docFooter}`
             })
             .join('\n\n')
             .trim()
 
           if (primaryDocumentId && consolidatedRawText) {
+            console.info('[PreavisoChat] consolidated_input_batch', {
+              documents_count: consolidatedExtractionInputs.length,
+              consolidated_text_length: consolidatedRawText.length,
+              docs: consolidatedExtractionInputs.map((d) => ({
+                documentId: d.documentId,
+                fileName: d.fileName,
+                docType: d.docType,
+                rawTextLength: String(d.rawText || '').length,
+              })),
+            })
             const consolidatedRequestId = `extract-batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
             const { data: { session } } = await supabase.auth.getSession()
             const headers: HeadersInit = { 'Content-Type': 'application/json' }
@@ -3696,6 +3972,8 @@ export function PreavisoChat({
                       intakeSummary: item.intakeSummary || [],
                       intakeDetectedType: item.intakeDetectedType || null,
                       intakeConfidence: item.intakeConfidence ?? null,
+                      sourceDocumentType: item.sourceDocumentType || null,
+                      sourceWarnings: Array.isArray(item.sourceWarnings) ? item.sourceWarnings : [],
                     })),
                     consolidated_facts: consolidatedExtractionInputs.flatMap((item) =>
                       Array.isArray(item.intakeFacts)
@@ -3722,7 +4000,8 @@ export function PreavisoChat({
               })
               if (extractJson?.structured) {
                 setData(prev => {
-                  const merged = mergeStructuredExtractionIntoData(prev, extractJson.structured)
+                  const mergedStructured = mergeStructuredExtractionIntoData(prev, extractJson.structured)
+                  const merged = applyConsolidatedFolioHints(mergedStructured, consolidatedExtractionInputs)
                   workingData = merged
                   dataRef.current = merged
                   return merged
@@ -3819,6 +4098,13 @@ export function PreavisoChat({
             uiAction: 'chat_after_document_process',
             currentStep: serverState?.current_state || undefined,
             hasDocument: false,
+            lastQuestionIntent: (workingData as any)?._last_question_intent ?? undefined,
+            detectedPeople: Array.isArray((workingData as any)?.personas_detectadas_no_clasificadas)
+              ? ((workingData as any).personas_detectadas_no_clasificadas as any[])
+                  .map((p: any) => String(p?.nombre || '').trim())
+                  .filter(Boolean)
+                  .slice(0, 6)
+              : [],
           },
         })
       })

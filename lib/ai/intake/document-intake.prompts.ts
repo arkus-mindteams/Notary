@@ -16,6 +16,9 @@ export function buildDocumentIntakeSystemPrompt(): string {
     '- Si el documento esta borroso/ilegible, indicalo en issues[] y baja confidence.',
     '- evidence[].snippet debe ser literal y maximo 160 caracteres.',
     '- Usa filename solo como pista auxiliar para clasificacion; la evidencia textual visible manda.',
+    '- Para folios reales: SOLO extrae valores que aparezcan inmediatamente despues de la etiqueta literal "FOLIO REAL:".',
+    '- NO confundas PARTIDA, VOLANTE, RECIBO, CODIGO DE AUTENTICIDAD o numeracion de pie de pagina con folio real.',
+    '- Si hay duda en un numero de folio por baja legibilidad, no lo inventes: omite ese valor y agrega issue.',
   ].join('\n')
 }
 
@@ -86,6 +89,7 @@ export function buildDocumentIntakeUserPrompt(args: {
     '- Mantener documentId/filename exactamente como vienen en metadata.',
     '- Si no puedes leer algo, deja valores null y agrega issue.',
     '- Si filename sugiere un tipo y el contenido visible sugiere otro, deja trazabilidad en issues[].',
+    '- Si reportas folios reales, cada folio debe venir respaldado por un snippet que contenga la cadena "FOLIO REAL".',
   ].join('\n')
 }
 

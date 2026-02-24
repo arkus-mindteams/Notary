@@ -68,6 +68,92 @@ function buildProcessingFingerprint(params: {
     .digest('hex')
 }
 
+function normalizeFileNameForMatch(name: string | null | undefined): string {
+  return String(name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+async function findExistingDocumentoInSessionByFile(
+  supabase: any,
+  sessionId: string,
+  file: File
+): Promise<any | null> {
+  const { data: links, error: linksError } = await supabase
+    .from('chat_session_documents')
+    .select('documento_id, uploaded_at')
+    .eq('session_id', sessionId)
+    .order('uploaded_at', { ascending: false })
+    .limit(30)
+
+  if (linksError || !Array.isArray(links) || links.length === 0) {
+    return null
+  }
+
+  const docIds = Array.from(
+    new Set(
+      links
+        .map((l: any) => String(l?.documento_id || '').trim())
+        .filter(Boolean)
+    )
+  )
+  if (docIds.length === 0) return null
+
+  const { data: docs, error: docsError } = await supabase
+    .from('documentos')
+    .select('id, nombre, mime_type, metadata, uploaded_at')
+    .in('id', docIds)
+
+  if (docsError || !Array.isArray(docs) || docs.length === 0) {
+    return null
+  }
+
+  const targetName = normalizeFileNameForMatch(file.name)
+  const targetMime = String(file.type || '').trim().toLowerCase()
+
+  const linkedAtMap = new Map<string, string>()
+  for (const l of links) {
+    const id = String(l?.documento_id || '')
+    const ts = String(l?.uploaded_at || '')
+    if (!id) continue
+    if (!linkedAtMap.has(id)) linkedAtMap.set(id, ts)
+  }
+
+  const getDocOriginalName = (doc: any): string => {
+    const metadata = doc?.metadata && typeof doc.metadata === 'object' ? doc.metadata : {}
+    return normalizeFileNameForMatch(
+      metadata?.original_name ||
+      metadata?.fileName ||
+      metadata?.filename ||
+      metadata?.name ||
+      ''
+    )
+  }
+
+  const candidates = docs.filter((doc: any) => {
+    const docName = normalizeFileNameForMatch(doc?.nombre)
+    const originalName = getDocOriginalName(doc)
+    const nameMatches = targetName && (docName === targetName || originalName === targetName)
+    if (!nameMatches) return false
+    const docMime = String(doc?.mime_type || '').trim().toLowerCase()
+    if (targetMime && docMime && targetMime !== docMime) return false
+    return true
+  })
+
+  if (candidates.length === 0) return null
+
+  candidates.sort((a: any, b: any) => {
+    const aLinked = Date.parse(linkedAtMap.get(String(a?.id || '')) || String(a?.uploaded_at || '0')) || 0
+    const bLinked = Date.parse(linkedAtMap.get(String(b?.id || '')) || String(b?.uploaded_at || '0')) || 0
+    return bLinked - aLinked
+  })
+
+  return candidates[0] || null
+}
+
 function mergeExtractedIntoContext(context: any, structured: any): any {
   const next = { ...(context || {}) }
   const inmueble = structured?.inmueble || {}
@@ -111,20 +197,35 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
   }
 
   if (derivedFolioCandidates.length > 0) {
+    const folioContextMap =
+      structured?.__derived?.folio_context_map && typeof structured.__derived.folio_context_map === 'object'
+        ? structured.__derived.folio_context_map
+        : {}
     const prevFolios = next?.folios || {
       candidates: [],
       selection: { selected_folio: null, selected_scope: null, confirmed_by_user: false },
     }
     const map = new Map<string, any>()
-    for (const c of [...(prevFolios.candidates || []), ...derivedFolioCandidates.map((folio: string) => ({
-      folio: String(folio || '').replace(/\D/g, ''),
-      scope: 'unidades',
-      attrs: {
-        unidad: structured?.__derived?.unidad_detectada || structured?.inmueble?.datos_catastrales?.unidad || null,
-        condominio: structured?.inmueble?.datos_catastrales?.condominio || null,
-      },
-      sources: [{ docName: structured?.__derived?.source_file_name || null, docType: structured?.source_document_type || null }],
-    }))]) {
+    for (const c of [...(prevFolios.candidates || []), ...derivedFolioCandidates.map((folio: string) => {
+      const normalizedFolio = String(folio || '').replace(/\D/g, '')
+      const ctx = folioContextMap?.[normalizedFolio] || {}
+      const ctxAttrs = ctx?.attrs && typeof ctx.attrs === 'object' ? ctx.attrs : {}
+      const scope = String(ctx?.scope || 'unidades').toLowerCase()
+      return {
+        folio: normalizedFolio,
+        scope: scope === 'inmuebles_afectados' || scope === 'otros' ? scope : 'unidades',
+        attrs: {
+          unidad: ctxAttrs?.unidad ?? structured?.__derived?.unidad_detectada ?? structured?.inmueble?.datos_catastrales?.unidad ?? null,
+          condominio: ctxAttrs?.condominio ?? structured?.inmueble?.datos_catastrales?.condominio ?? null,
+          lote: ctxAttrs?.lote ?? structured?.inmueble?.datos_catastrales?.lote ?? null,
+          manzana: ctxAttrs?.manzana ?? structured?.inmueble?.datos_catastrales?.manzana ?? null,
+          fraccionamiento: ctxAttrs?.fraccionamiento ?? structured?.inmueble?.datos_catastrales?.fraccionamiento ?? null,
+          superficie: ctxAttrs?.superficie ?? structured?.inmueble?.superficie ?? null,
+          direccion: ctxAttrs?.direccion ?? {},
+        },
+        sources: [{ docName: structured?.__derived?.source_file_name || null, docType: structured?.source_document_type || null }],
+      }
+    })]) {
       const folio = String(c?.folio || '').replace(/\D/g, '')
       const scope = c?.scope || 'otros'
       if (!folio) continue
@@ -140,14 +241,26 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
     }
   }
 
-  if (structured?.titular_registral?.nombre) {
+  const derivedSellerName = String(structured?.__derived?.vendedor_nombre || '').trim()
+  const sellerNameForContext = derivedSellerName || String(structured?.titular_registral?.nombre || '').trim()
+  if (sellerNameForContext) {
+    const sellerLooksMoral = looksLikePersonaMoralName(sellerNameForContext)
     const vendedor = {
       party_id: 'vendedor_1',
-      persona_fisica: {
-        nombre: structured.titular_registral.nombre,
-        rfc: structured?.titular_registral?.rfc ?? null,
-        curp: structured?.titular_registral?.curp ?? null,
-      },
+      tipo_persona: sellerLooksMoral ? 'persona_moral' : 'persona_fisica',
+      persona_fisica: sellerLooksMoral
+        ? undefined
+        : {
+            nombre: sellerNameForContext,
+            rfc: structured?.titular_registral?.rfc ?? null,
+            curp: structured?.titular_registral?.curp ?? null,
+          },
+      persona_moral: sellerLooksMoral
+        ? {
+            denominacion_social: sellerNameForContext,
+            rfc: structured?.titular_registral?.rfc ?? null,
+          }
+        : undefined,
       titular_registral_confirmado: true,
     }
     const existing = Array.isArray(next.vendedores) ? next.vendedores : []
@@ -157,11 +270,19 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
   const compradoresDetectados = Array.isArray(structured?.compradores_detectados)
     ? structured.compradores_detectados.filter((p: any) => p?.nombre)
     : []
-  if (compradoresDetectados.length > 0) {
+  const compradoresDerivados = Array.isArray(structured?.__derived?.compradores_nombres)
+    ? structured.__derived.compradores_nombres
+        .map((nombre: unknown) => String(nombre || '').trim())
+        .filter((nombre: string) => Boolean(nombre))
+        .map((nombre: string) => ({ nombre, rfc: null, curp: null }))
+    : []
+  const compradoresInput =
+    compradoresDerivados.length > 0 ? compradoresDerivados : compradoresDetectados
+  if (compradoresInput.length > 0) {
     const existing = Array.isArray(next.compradores) ? next.compradores : []
     const merged = [...existing]
-    for (let i = 0; i < compradoresDetectados.length; i++) {
-      const buyer = compradoresDetectados[i]
+    for (let i = 0; i < compradoresInput.length; i++) {
+      const buyer = compradoresInput[i]
       const prev = merged[i] || {}
       merged[i] = {
         ...prev,
@@ -177,7 +298,72 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
     next.compradores = merged
   }
 
+  // Inferencia deductiva: si el ultimo dato faltante era comprador y se sube identificacion,
+  // usar un candidato unico de persona detectada para poblar compradores[0].
+  const lastQuestionIntent = String(context?._last_question_intent || next?._last_question_intent || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+  const looksIdentification =
+    String(structured?.source_document_type || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase() === 'identificacion'
+  const buyersMissing =
+    !Array.isArray(next?.compradores) ||
+    next.compradores.length === 0 ||
+    !String(next?.compradores?.[0]?.persona_fisica?.nombre || next?.compradores?.[0]?.persona_moral?.denominacion_social || '').trim()
+
+  if (looksIdentification && buyersMissing && lastQuestionIntent.includes('comprador')) {
+    const normalizePerson = (value: unknown): string =>
+      String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+    const candidates = new Map<string, string>()
+    const addCandidate = (value: unknown) => {
+      const name = normalizePerson(value)
+      if (!name) return
+      const key = name
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+      if (!candidates.has(key)) candidates.set(key, name)
+    }
+
+    for (const p of Array.isArray(structured?.compradores_detectados) ? structured.compradores_detectados : []) {
+      addCandidate(p?.nombre)
+    }
+    for (const p of Array.isArray(structured?.personas_detectadas_no_clasificadas) ? structured.personas_detectadas_no_clasificadas : []) {
+      addCandidate(p?.nombre)
+    }
+    addCandidate(structured?.titular_registral?.nombre)
+
+    if (candidates.size === 1) {
+      const inferredName = Array.from(candidates.values())[0]
+      const inferredLooksMoral = looksLikePersonaMoralName(inferredName)
+      next.compradores = [
+        {
+          party_id: 'comprador_1',
+          tipo_persona: inferredLooksMoral ? 'persona_moral' : 'persona_fisica',
+          persona_fisica: inferredLooksMoral
+            ? undefined
+            : { nombre: inferredName, rfc: null, curp: null },
+          persona_moral: inferredLooksMoral
+            ? { denominacion_social: inferredName, rfc: null }
+            : undefined,
+        },
+      ]
+      console.info('[preaviso-process-document] inferred_buyer_from_identification', {
+        trace_id: context?.trace_id || null,
+        inferred_name: inferredName,
+        last_question_intent: lastQuestionIntent,
+      })
+    }
+  }
+
   const derivedBuyerName = String(structured?.__derived?.acreditado_nombre || '').trim()
+  const derivedCoBuyerName = String(structured?.__derived?.coacreditado_nombre || '').trim()
   const derivedBuyerEstadoCivil = String(structured?.__derived?.buyer_estado_civil || '').trim()
   const derivedCreditInstitution = String(structured?.__derived?.credit_institucion || '').trim()
 
@@ -260,6 +446,46 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
         ]
       }
     }
+    if (derivedBuyerName) {
+      const hasAcreditado = participantes.some(
+        (p: any) => String(p?.rol || '').toLowerCase() === 'acreditado'
+      )
+      if (!hasAcreditado) {
+        participantes = [
+          ...participantes,
+          {
+            party_id: 'comprador_1',
+            nombre: derivedBuyerName,
+            rol: 'acreditado',
+          },
+        ]
+      }
+    }
+    if (derivedCoBuyerName) {
+      const normalizedCoBuyer = derivedCoBuyerName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .trim()
+      const alreadyExists = participantes.some((p: any) => {
+        const n = String(p?.nombre || '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toUpperCase()
+          .trim()
+        return n && n === normalizedCoBuyer
+      })
+      if (!alreadyExists) {
+        participantes = [
+          ...participantes,
+          {
+            party_id: 'comprador_2',
+            nombre: derivedCoBuyerName,
+            rol: 'coacreditado',
+          },
+        ]
+      }
+    }
     creditos[0] = {
       credito_id: c0.credito_id ?? null,
       institucion: c0.institucion || derivedCreditInstitution,
@@ -282,6 +508,24 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
     next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
   }
 
+  // Regla notarial pragmatica:
+  // Si ya existe acreedor de gravamen y también crédito del comprador,
+  // asumimos que el gravamen se cancelará con la operación actual.
+  // En este sistema: cancelacion_confirmada=false => "se cancelará en la escritura/trámite".
+  if (next?.inmueble?.existe_hipoteca === true && Array.isArray(next?.gravamenes) && next.gravamenes.length > 0) {
+    const gravamenes = [...next.gravamenes]
+    const g0 = { ...(gravamenes[0] || {}) }
+    const hasAcreedor = Boolean(String(g0?.institucion || '').trim())
+    const hasBuyerCredit =
+      (Array.isArray(next?.creditos) && next.creditos.length > 0) ||
+      next?.actosNotariales?.aperturaCreditoComprador === true
+    if (hasAcreedor && hasBuyerCredit && (g0?.cancelacion_confirmada === null || g0?.cancelacion_confirmada === undefined)) {
+      g0.cancelacion_confirmada = false
+      gravamenes[0] = g0
+      next.gravamenes = gravamenes
+    }
+  }
+
   const normalizeName = (value: unknown): string =>
     String(value || '')
       .normalize('NFD')
@@ -290,6 +534,11 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
       .replace(/\s+/g, ' ')
       .trim()
       .toUpperCase()
+  const excludedNames = new Set<string>(
+    (Array.isArray(structured?.__derived?.excluded_person_names) ? structured.__derived.excluded_person_names : [])
+      .map((n: unknown) => normalizeName(n))
+      .filter(Boolean)
+  )
 
   const classifiedNames = new Set<string>()
   const titularName = structured?.titular_registral?.nombre
@@ -309,6 +558,9 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
   for (const p of conyugesDetectadosRaw) {
     const n = normalizeName(p?.nombre)
     if (n) classifiedNames.add(n)
+  }
+  for (const n of excludedNames) {
+    classifiedNames.add(n)
   }
 
   const noClasificadasRaw = Array.isArray(structured?.personas_detectadas_no_clasificadas)
@@ -351,6 +603,7 @@ async function extractPdfTextWithAsyncOcr(
   reason: string | null
   elapsed_ms: number
 }> {
+  const FIXED_OCR_TIMEOUT_MS = 120000
   const startedAt = Date.now()
   const awsRegion = process.env.AWS_REGION
   const awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID
@@ -416,12 +669,7 @@ async function extractPdfTextWithAsyncOcr(
         job_id: jobId || null,
       })
       if (jobId) {
-        const configuredTimeoutMs = Number(
-          process.env.OCR_ASYNC_TIMEOUT_MS || process.env.OPENAI_DOC_TIMEOUT_BULK_MS || 120000
-        )
-        const timeoutMs = Number.isFinite(configuredTimeoutMs)
-          ? Math.max(60000, configuredTimeoutMs)
-          : 120000
+        const timeoutMs = FIXED_OCR_TIMEOUT_MS
         for (;;) {
           const resp = await textract.send(new GetDocumentTextDetectionCommand({ JobId: jobId }))
           const status = String(resp.JobStatus || '')
@@ -532,11 +780,8 @@ async function extractPdfTextWithAsyncOcr(
 function detectFoliosFromText(rawText: string): string[] {
   const text = String(rawText || '')
   if (!text) return []
-  const patterns = [
-    /\bfolio\s*real\s*[:#-]?\s*([0-9]{5,})\b/gi,
-    /\bfolio\s*[:#-]?\s*([0-9]{5,})\b/gi,
-    /\bmatr[ií]cula\s*[:#-]?\s*([0-9]{5,})\b/gi,
-  ]
+  const folioMinDigits = Number(process.env.FOLIO_REAL_MIN_DIGITS || 7)
+  const patterns = [new RegExp(`\\bfolio\\s*real\\s*[:#-]?\\s*([0-9]{${Math.max(6, folioMinDigits)},})\\b`, 'gi')]
   const found = new Set<string>()
   for (const re of patterns) {
     for (const match of text.matchAll(re)) {
@@ -545,6 +790,116 @@ function detectFoliosFromText(rawText: string): string[] {
     }
   }
   return Array.from(found)
+}
+
+const STATE_FOLIO_REAL_RULES: Record<string, number[]> = {
+  'BAJA CALIFORNIA': [7],
+}
+
+function detectStateFromText(rawText: string): string | null {
+  const normalized = String(rawText || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  if (normalized.includes('BAJA CALIFORNIA')) return 'BAJA CALIFORNIA'
+  return null
+}
+
+function isFolioAllowedByState(state: string | null, folio: string): boolean {
+  const digits = String(folio || '').replace(/\D/g, '')
+  if (!digits) return false
+  if (!state) return true
+  const allowed = STATE_FOLIO_REAL_RULES[state]
+  if (!allowed || allowed.length === 0) return true
+  return allowed.includes(digits.length)
+}
+
+function extractFolioRealCandidatesNearUnidad(rawText: string): string[] {
+  const text = String(rawText || '')
+  if (!text) return []
+  const folioMinDigits = Number(process.env.FOLIO_REAL_MIN_DIGITS || 7)
+  const re = new RegExp(`\\bFOLIO\\s+REAL\\s*[:#\\-]?\\s*([0-9]{${Math.max(6, folioMinDigits)},})\\b`, 'gi')
+  const out = new Set<string>()
+  for (const match of text.matchAll(re)) {
+    const value = String(match?.[1] || '').replace(/\D/g, '')
+    if (!value) continue
+    const idx = Number(match.index || 0)
+    const start = Math.max(0, idx - 80)
+    const end = Math.min(text.length, idx + String(match[0] || '').length + 220)
+    const window = text.slice(start, end)
+    if (/\bUNIDAD\s*[:\-]?\s*[A-Z0-9]/i.test(window)) {
+      out.add(value)
+    }
+  }
+  return Array.from(out.values())
+}
+
+function extractFolioContextByBlocks(rawText: string): Record<string, {
+  scope: 'unidades' | 'inmuebles_afectados' | 'otros'
+  attrs: Record<string, any>
+}> {
+  const text = String(rawText || '')
+  if (!text) return {}
+  const folioMinDigits = Number(process.env.FOLIO_REAL_MIN_DIGITS || 7)
+  const re = new RegExp(`\\bFOLIO\\s+REAL\\s*[:#\\-]?\\s*([0-9]{${Math.max(6, folioMinDigits)},})\\b`, 'gi')
+  const matches = Array.from(text.matchAll(re))
+  if (matches.length === 0) return {}
+
+  const out: Record<string, {
+    scope: 'unidades' | 'inmuebles_afectados' | 'otros'
+    attrs: Record<string, any>
+  }> = {}
+
+  const getMatchStart = (m: RegExpMatchArray) => Number(m.index || 0)
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i]
+    const folio = String(m?.[1] || '').replace(/\D/g, '')
+    if (!folio) continue
+    const start = getMatchStart(m)
+    const nextStart = i + 1 < matches.length ? getMatchStart(matches[i + 1]) : text.length
+    const block = text.slice(start, Math.min(nextStart, start + 1600))
+    const headerContext = text.slice(Math.max(0, start - 400), start)
+
+    const unidad = (block.match(/\bUNIDAD\s*[:\-]?\s*([A-Z]?\d+[A-Z]?)/i)?.[1] || '').trim() || null
+    const condominio =
+      (block.match(/\bCONJ\.?\s*HABITACIONAL\s*[:\-]?\s*([^\n\r]+)/i)?.[1] || '').trim() ||
+      (block.match(/\bCONDOMINIO\s+([A-Z0-9\-]+)/i)?.[1] || '').trim() ||
+      null
+    const lote = (block.match(/\bLOTE\s*[:\-]?\s*([^\n\r]+)/i)?.[1] || '').trim() || null
+    const manzana = (block.match(/\bMANZANA\s*[:\-]?\s*([A-Z0-9]+)/i)?.[1] || '').trim() || null
+    const municipio = (block.match(/\bMUNICIPIO\s*[:\-]?\s*([A-Z\s]+)\b/i)?.[1] || '').trim() || null
+    const superficie =
+      (block.match(/\bSUPERFICIE\s*[:\-]?\s*([0-9.,]+\s*M2)\b/i)?.[1] || '').trim() ||
+      (block.match(/\bTOTAL\s+PRIVATIVA\s*([0-9.,]+\s*M2)\b/i)?.[1] || '').trim() ||
+      null
+
+    const fraccFromLabel =
+      (block.match(/\bFRACCIONAMIENTO\s*[:\-]?\s*([^\n\r]+)/i)?.[1] || '').trim() || null
+    const fraccFromPhrase =
+      (block.match(/\bDESARROLLO\s+HABITACIONAL\s+([A-Z0-9\s\-]+)/i)?.[1] || '').trim() || null
+    const fraccionamiento = fraccFromLabel || fraccFromPhrase
+
+    const hasInmueblesAfectadosHeader = /\bINMUEBLE\(S\)\s+AFECTADO\(S\)\b/i.test(headerContext)
+    const scope: 'unidades' | 'inmuebles_afectados' | 'otros' =
+      hasInmueblesAfectadosHeader ? 'inmuebles_afectados' : (unidad ? 'unidades' : 'otros')
+
+    out[folio] = {
+      scope,
+      attrs: {
+        unidad,
+        condominio,
+        lote,
+        manzana,
+        fraccionamiento,
+        superficie,
+        direccion: {
+          municipio,
+          estado: detectStateFromText(text),
+        },
+      },
+    }
+  }
+  return out
 }
 
 function normalizeExtractionDocumentType(documentType: string | null | undefined): 'inscripcion' | 'escritura' | 'identificacion' | 'acta_matrimonio' | 'otro' {
@@ -636,6 +991,94 @@ function looksLikePersonaMoralName(name: string | null | undefined): boolean {
   return /\b(SA|S\.A\.|SAPI|SOCIEDAD|CV|C\.V\.|S DE RL|S\. DE R\.L\.)\b/.test(upper)
 }
 
+function extractAdministrativePeopleFromText(rawText: string): string[] {
+  const text = String(rawText || '')
+  if (!text) return []
+  const roles = [
+    'ANALISTA',
+    'ASALTA',
+    'SUBREGISTRADOR',
+    'SUBREGISTRADORA',
+    'DIRECTOR',
+    'DIRECTORA',
+    'NOTARIO',
+    'NOTARIA',
+    'APODERADO',
+    'APODERADA',
+    'OFICIAL DEL REGISTRO CIVIL',
+    'OFICIALIA',
+  ]
+  const people = new Set<string>()
+  for (const role of roles) {
+    const re = new RegExp(`\\b${role.replace(/\s+/g, '\\s+')}\\s*[:\\-]\\s*([^\\n\\r]+)`, 'gi')
+    for (const match of text.matchAll(re)) {
+      const value = String(match?.[1] || '')
+        .replace(/\s+/g, ' ')
+        .replace(/[.,;:]+$/, '')
+        .trim()
+      if (!value) continue
+      if (value.length < 5) continue
+      if (!/[A-Za-zÁÉÍÓÚÑáéíóúñ]/.test(value)) continue
+      people.add(value)
+    }
+  }
+  return Array.from(people.values())
+}
+
+function cleanInlineValue(value: string | null | undefined): string | null {
+  const cleaned = String(value || '').replace(/\s+/g, ' ').trim()
+  return cleaned || null
+}
+
+function extractFirstLineValue(rawText: string, labelRegex: RegExp): string | null {
+  const match = String(rawText || '').match(labelRegex)
+  if (!match) return null
+  return cleanInlineValue(match[1])
+}
+
+function extractLabeledValue(rawText: string, label: string): string | null {
+  const text = String(rawText || '')
+  if (!text) return null
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const inline = text.match(new RegExp(`\\b${escapedLabel}\\b\\s*[:\\-]\\s*([^\\n\\r]+)`, 'i'))
+  if (inline) return cleanInlineValue(inline[1])
+  const multiline = text.match(new RegExp(`\\b${escapedLabel}\\b\\s*(?:\\n|\\r\\n)+\\s*([^\\n\\r]{4,})`, 'i'))
+  if (multiline) return cleanInlineValue(multiline[1])
+  return null
+}
+
+function collectIntakeFactValues(intakeFacts: any[] | null | undefined, keys: string[]): string[] {
+  if (!Array.isArray(intakeFacts) || intakeFacts.length === 0) return []
+  const keySet = new Set(keys.map((k) => String(k || '').trim().toLowerCase()))
+  const out = new Set<string>()
+  for (const fact of intakeFacts) {
+    const k = String(fact?.key || '').trim().toLowerCase()
+    if (!keySet.has(k)) continue
+    const value = String(fact?.value || '').replace(/\D/g, '')
+    if (value) out.add(value)
+  }
+  return Array.from(out.values())
+}
+
+function splitBuyerNamesFromInlineValue(value: string | null | undefined): string[] {
+  const input = cleanInlineValue(value)
+  if (!input) return []
+  const normalized = input
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+
+  if (!/\s+Y\s+/.test(normalized)) return [input]
+  const parts = input
+    .split(/\s+Y\s+/i)
+    .map((p) => cleanInlineValue(p))
+    .filter((p): p is string => Boolean(p))
+
+  if (parts.length < 2) return [input]
+  const allLookLikePersonaFisica = parts.every((p) => !looksLikePersonaMoralName(p) && p.split(' ').length >= 2)
+  return allLookLikePersonaFisica ? parts : [input]
+}
+
 function buildRawTextFromIntakePages(
   pages: Array<{ pageNumber: number; text: string }> | null | undefined
 ): string {
@@ -652,30 +1095,150 @@ function enrichStructuredExtractionFromText(args: {
   structured: any
   rawText: string
   documentType: string | null
+  intakeFacts?: any[]
+  traceId?: string
 }): any {
   const sourceDocumentType = normalizeExtractionDocumentType(args.documentType)
   const rawText = String(args.rawText || '')
+  const detectedState = detectStateFromText(rawText)
+  const folioContextMap = extractFolioContextByBlocks(rawText)
   const next = { ...(args.structured || {}) } as any
-  const normalizedFolioCandidates = Array.from(
+  const isFinalPreavisoSource =
+    /\bSOLICITUD\s+DE\s+CERTIFICADO\s+CON\s+EFECTO\s+DE\s+PRE[\s-]*AVISO\b/i.test(rawText) ||
+    /\bCONTRATO\s+DE\s+COMPRAVENTA\b/i.test(rawText)
+  const strictFolioRealCandidates = Array.from(
     new Set(
-      Array.from(rawText.matchAll(/\bFOLIO(?:\s+REAL)?\s*[:#\-]?\s*([0-9]{5,})\b/gi))
+      Array.from(rawText.matchAll(new RegExp(`\\bFOLIO\\s+REAL\\s*[:#\\-]?\\s*([0-9]{${Math.max(6, Number(process.env.FOLIO_REAL_MIN_DIGITS || 7))},})\\b`, 'gi')))
         .map((m) => String(m?.[1] || '').replace(/\D/g, ''))
         .filter(Boolean)
     )
   )
+  const partidaSet = new Set(
+    Array.from(rawText.matchAll(/\bPARTIDA\s*[:#\-]?\s*([0-9]{5,})\b/gi))
+      .map((m) => String(m?.[1] || '').replace(/\D/g, ''))
+      .filter(Boolean)
+  )
+  const normalizedFolioCandidates = strictFolioRealCandidates
+    .filter((folio) => !partidaSet.has(folio))
+    .filter((folio) => isFolioAllowedByState(detectedState, folio))
+  const folioCandidatesNearUnidad = extractFolioRealCandidatesNearUnidad(rawText)
+    .filter((folio) => !partidaSet.has(folio))
+    .filter((folio) => isFolioAllowedByState(detectedState, folio))
+  const excludedAdministrativePeople = extractAdministrativePeopleFromText(rawText)
+  const intakeFacts = Array.isArray(args.intakeFacts) ? args.intakeFacts : []
+  const intakeFolioCandidates = collectIntakeFactValues(intakeFacts, [
+    'folio_real',
+    'folio_real_principal',
+    'folio_real_secundario_1',
+    'folio_real_secundario_2',
+    'foliorealprincipal',
+    'foliorealsecundario1',
+    'foliorealsecundario2',
+  ])
+    .filter((folio) => !partidaSet.has(folio))
+    .filter((folio) => isFolioAllowedByState(detectedState, folio))
+  const allPartidas = Array.from(
+    new Set(
+      Array.from(rawText.matchAll(/\bPARTIDA\s*[:#\-]?\s*([0-9]{5,})\b/gi))
+        .map((m) => String(m?.[1] || '').replace(/\D/g, ''))
+        .filter(Boolean)
+    )
+  )
+  const anotacionesText = rawText.split(/\bANOTACIONES\b/i)[1] || ''
+  const anotacionesPartidas = new Set(
+    Array.from(anotacionesText.matchAll(/\bPARTIDA\s*[:#\-]?\s*([0-9]{5,})\b/gi))
+      .map((m) => String(m?.[1] || '').replace(/\D/g, ''))
+      .filter(Boolean)
+  )
+  const headerPartidas = allPartidas.filter((p) => !anotacionesPartidas.has(p))
+  const primaryPartida = headerPartidas[0] || allPartidas[0] || null
+  let canonicalFolioCandidates = normalizedFolioCandidates
+  if (folioCandidatesNearUnidad.length > 0) {
+    if (intakeFolioCandidates.length > 0) {
+      const intakeSet = new Set(intakeFolioCandidates)
+      const intersection = folioCandidatesNearUnidad.filter((f) => intakeSet.has(f))
+      canonicalFolioCandidates = intersection.length > 0 ? intersection : folioCandidatesNearUnidad
+    } else {
+      canonicalFolioCandidates = folioCandidatesNearUnidad
+    }
+  } else if (intakeFolioCandidates.length > 0) {
+    canonicalFolioCandidates = intakeFolioCandidates
+  }
+  canonicalFolioCandidates = Array.from(new Set(canonicalFolioCandidates))
+
+  const droppedFolios = normalizedFolioCandidates.filter((f) => !canonicalFolioCandidates.includes(f))
+  if (droppedFolios.length > 0) {
+    console.warn('[preaviso-process-document] folio_candidate_filtered', {
+      trace_id: args.traceId || null,
+      state: detectedState,
+      dropped: droppedFolios,
+      kept: canonicalFolioCandidates,
+      reason: folioCandidatesNearUnidad.length > 0
+        ? 'prioritize_folio_real_near_unidad'
+        : 'prioritize_intake_facts',
+    })
+  }
 
   // El backend ya conoce el tipo real del archivo; evitar deriva del modelo.
   next.source_document_type = sourceDocumentType
 
   // Derivaciones deterministas de certificados/correos operativos
-  const acreditadoMatch = rawText.match(/\bACREDITADO\s*[:\-]\s*([^\n\r]+)/i)
-  const acreditadoNombre = acreditadoMatch ? String(acreditadoMatch[1] || '').replace(/\s+/g, ' ').trim() : null
+  const vendedorNombre = extractLabeledValue(rawText, 'VENDEDOR') || extractLabeledValue(rawText, 'VENDEDORES')
+  const propietarioNombre = extractLabeledValue(rawText, 'PROPIETARIO(S)') || extractLabeledValue(rawText, 'PROPIETARIO')
+  const compradorInline = extractLabeledValue(rawText, 'COMPRADOR') || extractLabeledValue(rawText, 'COMPRADORES')
+  const compradoresDesdeLinea = splitBuyerNamesFromInlineValue(compradorInline)
+  const acreditadoNombre = extractFirstLineValue(rawText, /\bACREDITADO\s*[:\-]\s*([^\n\r]+)/i)
+  const coacreditadoNombre = extractFirstLineValue(rawText, /\bCOACREDITADO\s*[:\-]\s*([^\n\r]+)/i)
+  const acreditanteNombre = extractFirstLineValue(rawText, /\bACREDITANTE\s*[:\-]\s*([^\n\r]+)/i)
+  const acreedorCancelacion = extractFirstLineValue(rawText, /\bACREEDOR(?:ES)?\s*[:\-]\s*([^\n\r]+)/i)
+
+  if ((!Array.isArray(next.compradores_detectados) || next.compradores_detectados.length === 0) && compradoresDesdeLinea.length > 0) {
+    next.compradores_detectados = compradoresDesdeLinea.map((nombre) => ({ nombre, rfc: null, curp: null }))
+  }
+
   if ((!Array.isArray(next.compradores_detectados) || next.compradores_detectados.length === 0) && acreditadoNombre) {
     next.compradores_detectados = [{ nombre: acreditadoNombre, rfc: null, curp: null }]
+  }
+  if (
+    Array.isArray(next.compradores_detectados) &&
+    next.compradores_detectados.length > 0 &&
+    coacreditadoNombre
+  ) {
+    const normalizedExisting = new Set(
+      next.compradores_detectados.map((b: any) =>
+        String(b?.nombre || '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toUpperCase()
+          .trim()
+      )
+    )
+    const normalizedCoacreditado = coacreditadoNombre
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .trim()
+    if (normalizedCoacreditado && !normalizedExisting.has(normalizedCoacreditado)) {
+      next.compradores_detectados = [
+        ...next.compradores_detectados,
+        { nombre: coacreditadoNombre, rfc: null, curp: null },
+      ]
+    }
+  }
+
+  const sellerLikeName = vendedorNombre || propietarioNombre
+  if (!next?.titular_registral?.nombre && sellerLikeName) {
+    next.titular_registral = {
+      ...(next.titular_registral || {}),
+      nombre: sellerLikeName,
+      rfc: next?.titular_registral?.rfc ?? null,
+      curp: next?.titular_registral?.curp ?? null,
+    }
   }
 
   const creditMatch = rawText.match(/\bCREDITO\s*[:\-]\s*([^\n\r]+)/i)
   const creditoInstitucion =
+    normalizeInstitutionName(acreditanteNombre) ||
     normalizeInstitutionName(creditMatch ? creditMatch[1] : null) ||
     detectInstitutionFromText(rawText)
 
@@ -688,25 +1251,86 @@ function enrichStructuredExtractionFromText(args: {
 
   next.__derived = {
     ...(next.__derived || {}),
+    is_final_preaviso_source: isFinalPreavisoSource,
+    vendedor_nombre: vendedorNombre,
+    propietario_nombre: propietarioNombre,
+    compradores_nombres: compradoresDesdeLinea,
     acreditado_nombre: acreditadoNombre,
+    coacreditado_nombre: coacreditadoNombre,
+    acreedor_cancelacion: acreedorCancelacion,
     credit_institucion: creditoInstitucion,
     buyer_estado_civil: buyerEstadoCivil,
-    folio_real_candidates: normalizedFolioCandidates,
+    folio_real_candidates: canonicalFolioCandidates,
+    folio_context_map: folioContextMap,
+    excluded_person_names: excludedAdministrativePeople,
   }
 
-  if (normalizedFolioCandidates.length > 0) {
+  const hasCancellationSection = /\bCANCELACION\s+DE\s+HIPOTECA\b/i.test(rawText)
+  const shouldForceEncumbranceFromPreaviso =
+    isFinalPreavisoSource && (hasCancellationSection || Boolean(acreedorCancelacion))
+
+  if (shouldForceEncumbranceFromPreaviso) {
+    const currentGravamenes = Array.isArray(next?.gravamenes) ? [...next.gravamenes] : []
+    const g0 = { ...(currentGravamenes[0] || {}) }
+    const institucion = cleanInlineValue(acreedorCancelacion) || cleanInlineValue(g0?.institucion)
+    currentGravamenes[0] = {
+      gravamen_id: g0?.gravamen_id ?? null,
+      tipo: g0?.tipo || 'hipoteca',
+      institucion: institucion || null,
+      numero_credito: g0?.numero_credito ?? null,
+      monto: g0?.monto ?? null,
+      moneda: g0?.moneda ?? null,
+      cancelacion_confirmada:
+        g0?.cancelacion_confirmada === true || g0?.cancelacion_confirmada === false
+          ? g0.cancelacion_confirmada
+          : false,
+    }
+    next.gravamenes = currentGravamenes
+    next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
+  }
+
+  if (canonicalFolioCandidates.length > 0) {
     next.inmueble = {
       ...(next.inmueble || {}),
       folio_real:
-        normalizedFolioCandidates.length > 1
+        canonicalFolioCandidates.length > 1
           ? null
-          : (next?.inmueble?.folio_real || normalizedFolioCandidates[0] || null),
+          : (next?.inmueble?.folio_real || canonicalFolioCandidates[0] || null),
     }
-    if (normalizedFolioCandidates.length > 1) {
+    if (canonicalFolioCandidates.length > 1) {
       const warnings = Array.isArray(next.warnings) ? [...next.warnings] : []
-      const msg = `Se detectaron multiples folios reales en el documento (${normalizedFolioCandidates.join(', ')}). Requiere confirmacion humana.`
+      const msg = `Se detectaron multiples folios reales en el documento (${canonicalFolioCandidates.join(', ')}). Requiere confirmacion humana.`
       if (!warnings.includes(msg)) warnings.push(msg)
       next.warnings = warnings
+    }
+  }
+
+  if (sourceDocumentType === 'inscripcion') {
+    const existingPartidas = Array.isArray(next?.inmueble?.partidas) ? next.inmueble.partidas : []
+    const existingNormalized = existingPartidas
+      .map((p: unknown) => String(p || '').replace(/\D/g, ''))
+      .filter(Boolean)
+    const partidaToKeep = primaryPartida || existingNormalized[0] || null
+    const existingValor = String(next?.inmueble?.valor || '').trim()
+    let derivedValor: string | null = existingValor || null
+    if (!derivedValor) {
+      const montoLine =
+        rawText.match(/\bMONTO\s*[:\-]\s*(\$\s*[0-9][0-9,.\s]*\s*(?:M\.?N\.?|MXN|PESOS)?)\b/i) ||
+        rawText.match(/\bIMPORTE\s*[:\-]\s*(\$\s*[0-9][0-9,.\s]*\s*(?:M\.?N\.?|MXN|PESOS)?)\b/i)
+      const montoNumberOnly =
+        rawText.match(/\bMONTO\s*[:\-]\s*([0-9][0-9,.\s]*\s*(?:M\.?N\.?|MXN|PESOS)?)\b/i) ||
+        rawText.match(/\bIMPORTE\s*[:\-]\s*([0-9][0-9,.\s]*\s*(?:M\.?N\.?|MXN|PESOS)?)\b/i)
+      const candidate = String(montoLine?.[1] || montoNumberOnly?.[1] || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+      if (candidate) {
+        derivedValor = candidate.startsWith('$') ? candidate : `$${candidate}`
+      }
+    }
+    next.inmueble = {
+      ...(next.inmueble || {}),
+      partidas: partidaToKeep ? [partidaToKeep] : [],
+      valor: derivedValor ?? next?.inmueble?.valor ?? null,
     }
   }
 
@@ -786,6 +1410,47 @@ async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<
     })
 
     let documento = await DocumentoService.findDocumentoByProcessingFingerprint(processingFingerprint)
+    if (!documento && input.conversationId) {
+      try {
+        const existingInSession = await findExistingDocumentoInSessionByFile(
+          supabase,
+          input.conversationId,
+          input.file
+        )
+        if (existingInSession) {
+          documento = existingInSession
+          const currentMetadata =
+            existingInSession?.metadata && typeof existingInSession.metadata === 'object'
+              ? existingInSession.metadata
+              : {}
+          const mergedMetadata = {
+            ...currentMetadata,
+            extracted_data: input.extractedData,
+            processing_fingerprint: processingFingerprint,
+            trace_id: input.traceId,
+            conversation_id: input.conversationId,
+            via: currentMetadata?.via || 'preaviso_chat',
+          }
+          await supabase
+            .from('documentos')
+            .update({ metadata: mergedMetadata })
+            .eq('id', existingInSession.id)
+
+          console.info('[preaviso-process-document] dedupe_reused_session_document', {
+            trace_id: input.traceId,
+            session_id: input.conversationId,
+            documento_id: existingInSession.id,
+            file_name: input.file.name,
+          })
+        }
+      } catch (dedupeError) {
+        console.warn('[preaviso-process-document] dedupe_session_lookup_error', {
+          trace_id: input.traceId,
+          file_name: input.file.name,
+          ...toSafeError(dedupeError),
+        })
+      }
+    }
     if (!documento) {
       const { data: insertedDocumento, error: docError } = await supabase
         .from('documentos')
@@ -1055,13 +1720,28 @@ export async function POST(req: Request) {
     const textExtractor = new DocumentTextExtractor()
     const extractionAgent = new ExtractionAgent()
     const extractStartedAt = Date.now()
+    const phaseTimings: {
+      text_probe_ms: number | null
+      intake_ms: number | null
+      ocr_ms: number | null
+      extraction_ms: number | null
+      extraction_phase: 'text_first' | 'ocr_or_intake' | null
+    } = {
+      text_probe_ms: null,
+      intake_ms: null,
+      ocr_ms: null,
+      extraction_ms: null,
+      extraction_phase: null,
+    }
     let result: { data: any; commands: any[]; extractedData?: any; meta?: any }
     const fileBytes = new Uint8Array(await file.arrayBuffer())
     const fileForTextProbe = new File([fileBytes], file.name, {
       type: file.type || 'application/octet-stream',
       lastModified: Date.now(),
     })
+    const textProbeStartedAt = Date.now()
     const textResult = await textExtractor.extractFromFile(fileForTextProbe, { allowOcrFallback: false })
+    phaseTimings.text_probe_ms = Date.now() - textProbeStartedAt
     console.info('[preaviso-process-document] text_first_probe', {
       trace_id: traceId,
       file_name: file.name,
@@ -1100,6 +1780,7 @@ export async function POST(req: Request) {
           }
         }
       } else {
+        const extractionStartedAt = Date.now()
         const extraction = await extractionAgent.extract({
           tramiteType: 'preaviso',
           documentId: `adhoc:${traceId}:${file.name}`,
@@ -1116,10 +1797,13 @@ export async function POST(req: Request) {
             traceId,
           },
         })
+        phaseTimings.extraction_ms = Date.now() - extractionStartedAt
+        phaseTimings.extraction_phase = 'text_first'
         const enrichedStructured = enrichStructuredExtractionFromText({
           structured: extraction.structured,
           rawText: textResult.text,
           documentType,
+          traceId,
         })
 
         console.info('[preaviso-process-document] text_first_extraction_summary', {
@@ -1164,8 +1848,13 @@ export async function POST(req: Request) {
         let intakeRawText = ''
         let intakeMeta: any = null
 
-        if (isPdf) {
+        // Modo fijo de OCR para PoC: priorizar Textract en PDF y usar intake como fallback.
+        const preferTextractOcr = true
+        const runIntakePdfNow = async (): Promise<void> => {
+          if (!isPdf) return
+          if (String(intakeRawText || '').trim()) return
           try {
+            const intakeStartedAt = Date.now()
             const intakeService = new DocumentIntakeService()
             const intakeResult = await intakeService.processBatch({
               traceId,
@@ -1189,6 +1878,7 @@ export async function POST(req: Request) {
             })
             const intakeDoc = intakeResult.documents[0]
             intakeRawText = buildRawTextFromIntakePages(intakeDoc?.pages)
+            phaseTimings.intake_ms = Date.now() - intakeStartedAt
             intakeMeta = {
               trace_id: intakeResult.traceId,
               detected_type: intakeDoc?.detectedType || null,
@@ -1206,6 +1896,8 @@ export async function POST(req: Request) {
               pages: intakeMeta.pages,
               facts_count: Array.isArray(intakeDoc?.facts) ? intakeDoc.facts.length : 0,
               conflicts_count: Array.isArray(intakeResult.rules?.conflicts) ? intakeResult.rules.conflicts.length : 0,
+              intake_ms: phaseTimings.intake_ms,
+              mode: 'fallback_or_normal',
             })
           } catch (intakeError) {
             console.error('[preaviso-process-document] intake_pdf_error', {
@@ -1216,12 +1908,55 @@ export async function POST(req: Request) {
           }
         }
 
-        const ocrAttempt =
-          intakeRawText
-            ? { text: intakeRawText, source: 'document_intake_pdf' as const, reason: null, elapsed_ms: 0 }
-            : isPdf
-              ? await extractPdfTextWithAsyncOcr(file, traceId, fileBytes)
-              : { text: null, source: 'none' as const, reason: 'not_pdf', elapsed_ms: 0 }
+        if (isPdf && !preferTextractOcr) {
+          await runIntakePdfNow()
+        } else if (isPdf && preferTextractOcr) {
+          console.info('[preaviso-process-document] intake_pdf_skipped', {
+            trace_id: traceId,
+            file_name: file.name,
+            reason: 'pdf_ocr_source_textract_preferred',
+          })
+        }
+
+        let ocrAttempt:
+          | { text: string | null; source: 'document_intake_pdf' | 'async_textract' | 'sync_textract' | 'none'; reason: string | null; elapsed_ms: number }
+          | { text: string | null; source: 'document_intake_pdf'; reason: null; elapsed_ms: number }
+
+        if (isPdf && preferTextractOcr) {
+          const textractAttempt = await extractPdfTextWithAsyncOcr(file, traceId, fileBytes)
+          const textractText = String(textractAttempt?.text || '').trim()
+          if (textractText) {
+            ocrAttempt = textractAttempt
+            console.info('[preaviso-process-document] ocr_source_selected', {
+              trace_id: traceId,
+              file_name: file.name,
+              selected: textractAttempt.source,
+              prefer_textract: true,
+              textract_elapsed_ms: textractAttempt.elapsed_ms,
+              intake_text_available: Boolean(String(intakeRawText || '').trim()),
+            })
+          } else {
+            await runIntakePdfNow()
+            ocrAttempt = intakeRawText
+              ? { text: intakeRawText, source: 'document_intake_pdf', reason: null, elapsed_ms: 0 }
+              : textractAttempt
+            console.warn('[preaviso-process-document] ocr_source_fallback_to_intake', {
+              trace_id: traceId,
+              file_name: file.name,
+              prefer_textract: true,
+              textract_reason: textractAttempt.reason,
+              intake_text_available: Boolean(String(intakeRawText || '').trim()),
+            })
+          }
+        } else {
+          ocrAttempt =
+            intakeRawText
+              ? { text: intakeRawText, source: 'document_intake_pdf' as const, reason: null, elapsed_ms: 0 }
+              : isPdf
+                ? await extractPdfTextWithAsyncOcr(file, traceId, fileBytes)
+                : { text: null, source: 'none' as const, reason: 'not_pdf', elapsed_ms: 0 }
+        }
+        phaseTimings.ocr_ms = Number(ocrAttempt?.elapsed_ms || 0)
         const asyncOcrText = String(ocrAttempt?.text || '').trim()
         if (asyncOcrText) {
           if (deferStructuredExtraction) {
@@ -1248,6 +1983,7 @@ export async function POST(req: Request) {
               },
             }
           } else {
+            const extractionStartedAt = Date.now()
             const extraction = await extractionAgent.extract({
               tramiteType: 'preaviso',
               documentId: `adhoc:${traceId}:${file.name}`,
@@ -1268,10 +2004,14 @@ export async function POST(req: Request) {
                 traceId,
               },
             })
+            phaseTimings.extraction_ms = Date.now() - extractionStartedAt
+            phaseTimings.extraction_phase = 'ocr_or_intake'
             const enrichedStructured = enrichStructuredExtractionFromText({
               structured: extraction.structured,
               rawText: asyncOcrText,
               documentType,
+              intakeFacts: intakeMeta?.facts || [],
+              traceId,
             })
 
             result = {
@@ -1388,9 +2128,11 @@ export async function POST(req: Request) {
       file_name: file.name,
       folio_real: result?.data?.inmueble?.folio_real ?? null,
       partidas_count: Array.isArray(result?.data?.inmueble?.partidas) ? result.data.inmueble.partidas.length : 0,
+      partidas_values: Array.isArray(result?.data?.inmueble?.partidas) ? result.data.inmueble.partidas : [],
       tramite_id: result?.data?.tramiteId ?? context?.tramiteId ?? null,
       text_first: result?.meta?.text_first === true,
       extraction_source: result?.meta?.extraction_source || null,
+      phase_timings_ms: phaseTimings,
     })
 
     return NextResponse.json({
@@ -1402,7 +2144,8 @@ export async function POST(req: Request) {
       timings: {
         extract_sync_ms: extractSyncMs,
         request_total_ms: requestLatencyMs,
-        postprocess_async_state: 'queued'
+        postprocess_async_state: 'queued',
+        phase_ms: phaseTimings,
       }
     })
 
