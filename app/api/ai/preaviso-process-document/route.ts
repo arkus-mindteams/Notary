@@ -19,7 +19,6 @@ import { ActivityLogService } from '@/lib/services/activity-log-service'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import { DocumentoService } from '@/lib/services/documento-service'
 import { DocumentIndexingService } from '@/lib/services/document-indexing-service'
-import { DocumentTextExtractor } from '@/lib/services/document-text-extractor'
 import { ExtractionAgent } from '@/lib/ai/extraction/extraction-agent'
 import { DocumentIntakeService } from '@/lib/ai/intake/document-intake.service'
 
@@ -31,6 +30,13 @@ type DeferredPostProcessInput = {
   documentType: string
   file: File
   extractedData: any
+}
+
+const PREAVISO_TIMINGS_DEBUG = process.env.PREAVISO_TIMINGS_DEBUG === '1'
+
+function timingLog(event: string, payload: Record<string, unknown>): void {
+  if (!PREAVISO_TIMINGS_DEBUG) return
+  console.log('[preaviso-process-document][timing]', event, payload)
 }
 
 function toSafeError(error: unknown): { message: string; code?: string } {
@@ -354,11 +360,6 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
             : undefined,
         },
       ]
-      console.info('[preaviso-process-document] inferred_buyer_from_identification', {
-        trace_id: context?.trace_id || null,
-        inferred_name: inferredName,
-        last_question_intent: lastQuestionIntent,
-      })
     }
   }
 
@@ -609,16 +610,13 @@ async function extractPdfTextWithAsyncOcr(
   const awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID
   const awsSecretAccessKey = process.env.AWS_SECRET_ACCESS_KEY
   const bucket = process.env.AWS_S3_BUCKET || process.env.OCR_S3_BUCKET
+  timingLog('ocr_async_start', {
+    trace_id: traceId,
+    file_name: file.name,
+    file_size: file.size,
+    has_bucket: Boolean(bucket),
+  })
   if (!awsRegion || !awsAccessKeyId || !awsSecretAccessKey) {
-    console.warn('[preaviso-process-document] async_ocr_unavailable', {
-      trace_id: traceId,
-      file_name: file.name,
-      reason: 'missing_aws_credentials_or_region',
-      has_region: Boolean(awsRegion),
-      has_access_key: Boolean(awsAccessKeyId),
-      has_secret_key: Boolean(awsSecretAccessKey),
-      has_bucket: Boolean(bucket),
-    })
     return {
       text: null,
       source: 'none',
@@ -645,6 +643,7 @@ async function extractPdfTextWithAsyncOcr(
       : new Uint8Array(await file.arrayBuffer())
 
     if (bucket && key) {
+      const s3UploadStartedAt = Date.now()
       await s3.send(
         new PutObjectCommand({
           Bucket: bucket,
@@ -653,7 +652,13 @@ async function extractPdfTextWithAsyncOcr(
           ContentType: file.type || 'application/pdf',
         })
       )
+      timingLog('ocr_async_s3_uploaded', {
+        trace_id: traceId,
+        file_name: file.name,
+        elapsed_ms: Date.now() - s3UploadStartedAt,
+      })
 
+      const startDetectionAt = Date.now()
       const startResp = await textract.send(
         new StartDocumentTextDetectionCommand({
           DocumentLocation: {
@@ -662,17 +667,28 @@ async function extractPdfTextWithAsyncOcr(
         })
       )
       const jobId = startResp.JobId
-      console.info('[preaviso-process-document] async_ocr_started', {
+      timingLog('ocr_async_job_started', {
         trace_id: traceId,
         file_name: file.name,
-        has_bucket: true,
         job_id: jobId || null,
+        elapsed_ms: Date.now() - startDetectionAt,
       })
       if (jobId) {
         const timeoutMs = FIXED_OCR_TIMEOUT_MS
+        let pollCount = 0
         for (;;) {
+          pollCount += 1
           const resp = await textract.send(new GetDocumentTextDetectionCommand({ JobId: jobId }))
           const status = String(resp.JobStatus || '')
+          if (pollCount === 1 || pollCount % 5 === 0) {
+            timingLog('ocr_async_poll', {
+              trace_id: traceId,
+              file_name: file.name,
+              poll_count: pollCount,
+              status,
+              elapsed_ms: Date.now() - startedAt,
+            })
+          }
           if (status === 'SUCCEEDED') {
             let nextToken = resp.NextToken
             const allBlocks = [...(resp.Blocks || [])]
@@ -692,6 +708,13 @@ async function extractPdfTextWithAsyncOcr(
               .join('\n')
               .trim()
             if (text) {
+              timingLog('ocr_async_succeeded', {
+                trace_id: traceId,
+                file_name: file.name,
+                poll_count: pollCount,
+                text_length: text.length,
+                elapsed_ms: Date.now() - startedAt,
+              })
               return {
                 text,
                 source: 'async_textract',
@@ -702,20 +725,9 @@ async function extractPdfTextWithAsyncOcr(
             break
           }
           if (status === 'FAILED' || status === 'PARTIAL_SUCCESS') {
-            console.warn('[preaviso-process-document] async_ocr_non_success', {
-              trace_id: traceId,
-              file_name: file.name,
-              job_status: status,
-            })
             break
           }
           if (Date.now() - startedAt > timeoutMs) {
-            console.warn('[preaviso-process-document] async_ocr_timeout', {
-              trace_id: traceId,
-              file_name: file.name,
-              timeout_ms: timeoutMs,
-              elapsed_ms: Date.now() - startedAt,
-            })
             break
           }
           await new Promise((resolve) => setTimeout(resolve, 2000))
@@ -725,6 +737,7 @@ async function extractPdfTextWithAsyncOcr(
 
     // Fallback: intento síncrono con bytes para evitar vacío silencioso.
     try {
+      const syncStartedAt = Date.now()
       const syncResp = await textract.send(
         new DetectDocumentTextCommand({
           Document: { Bytes: bytes },
@@ -736,6 +749,13 @@ async function extractPdfTextWithAsyncOcr(
         .join('\n')
         .trim()
       if (syncText) {
+        timingLog('ocr_sync_fallback_succeeded', {
+          trace_id: traceId,
+          file_name: file.name,
+          text_length: syncText.length,
+          elapsed_ms: Date.now() - syncStartedAt,
+          total_elapsed_ms: Date.now() - startedAt,
+        })
         return {
           text: syncText,
           source: 'sync_textract',
@@ -744,7 +764,7 @@ async function extractPdfTextWithAsyncOcr(
         }
       }
     } catch (syncError) {
-      console.warn('[preaviso-process-document] sync_ocr_fallback_failed', {
+      console.error('[preaviso-process-document] sync_ocr_fallback_failed', {
         trace_id: traceId,
         file_name: file.name,
         ...toSafeError(syncError),
@@ -1166,19 +1186,6 @@ function enrichStructuredExtractionFromText(args: {
   }
   canonicalFolioCandidates = Array.from(new Set(canonicalFolioCandidates))
 
-  const droppedFolios = normalizedFolioCandidates.filter((f) => !canonicalFolioCandidates.includes(f))
-  if (droppedFolios.length > 0) {
-    console.warn('[preaviso-process-document] folio_candidate_filtered', {
-      trace_id: args.traceId || null,
-      state: detectedState,
-      dropped: droppedFolios,
-      kept: canonicalFolioCandidates,
-      reason: folioCandidatesNearUnidad.length > 0
-        ? 'prioritize_folio_real_near_unidad'
-        : 'prioritize_intake_facts',
-    })
-  }
-
   // El backend ya conoce el tipo real del archivo; evitar deriva del modelo.
   next.source_document_type = sourceDocumentType
 
@@ -1436,15 +1443,9 @@ async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<
             .update({ metadata: mergedMetadata })
             .eq('id', existingInSession.id)
 
-          console.info('[preaviso-process-document] dedupe_reused_session_document', {
-            trace_id: input.traceId,
-            session_id: input.conversationId,
-            documento_id: existingInSession.id,
-            file_name: input.file.name,
-          })
         }
       } catch (dedupeError) {
-        console.warn('[preaviso-process-document] dedupe_session_lookup_error', {
+        console.error('[preaviso-process-document] dedupe_session_lookup_error', {
           trace_id: input.traceId,
           file_name: input.file.name,
           ...toSafeError(dedupeError),
@@ -1555,16 +1556,6 @@ async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<
       })
     }
 
-    console.info('[preaviso-process-document] indexing debug', {
-      trace_id: input.traceId,
-      documento_id: documento.id,
-      status: indexingStatus,
-      extraction_source: indexingExtractionSource,
-      needs_ocr_reason: indexingNeedsOcrReason,
-      chunks_created: chunksCreated,
-      embeddings_created: embeddingsCreated,
-    })
-
     const postprocessAsyncMs = Date.now() - asyncStartedAt
     
     await ActivityLogService.logDocumentProcessingStage({
@@ -1616,6 +1607,9 @@ async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<
 export async function POST(req: Request) {
   const requestStartedAt = Date.now()
   const traceId = randomUUID()
+  timingLog('request_start', {
+    trace_id: traceId,
+  })
 
   // Import createServerClient here, as it's only used in fallback logic
   const { createServerClient } = await import('@/lib/supabase')
@@ -1630,6 +1624,14 @@ export async function POST(req: Request) {
     const contextRaw = formData.get('context') as string | null
     const tramiteIdRaw = (formData.get('tramiteId') as string | null) || 'preaviso'
     const needOcr = (formData.get('needOcr') as string | null) || null
+    timingLog('request_formdata_parsed', {
+      trace_id: traceId,
+      file_name: file?.name || null,
+      file_size: file?.size || 0,
+      mime_type: file?.type || null,
+      document_type: documentType || null,
+      elapsed_ms: Date.now() - requestStartedAt,
+    })
 
     let pluginId = 'preaviso'
     if (tramiteIdRaw && typeof tramiteIdRaw === 'string') {
@@ -1717,7 +1719,6 @@ export async function POST(req: Request) {
     }
 
     const tramiteSystem = getTramiteSystem()
-    const textExtractor = new DocumentTextExtractor()
     const extractionAgent = new ExtractionAgent()
     const extractStartedAt = Date.now()
     const phaseTimings: {
@@ -1735,108 +1736,28 @@ export async function POST(req: Request) {
     }
     let result: { data: any; commands: any[]; extractedData?: any; meta?: any }
     const fileBytes = new Uint8Array(await file.arrayBuffer())
-    const fileForTextProbe = new File([fileBytes], file.name, {
-      type: file.type || 'application/octet-stream',
-      lastModified: Date.now(),
-    })
-    const textProbeStartedAt = Date.now()
-    const textResult = await textExtractor.extractFromFile(fileForTextProbe, { allowOcrFallback: false })
-    phaseTimings.text_probe_ms = Date.now() - textProbeStartedAt
-    console.info('[preaviso-process-document] text_first_probe', {
+    timingLog('file_bytes_loaded', {
       trace_id: traceId,
       file_name: file.name,
-      mime_type: file.type || 'unknown',
-      source: textResult.source,
-      needs_ocr: textResult.needs_ocr,
-      reason: textResult.reason || null,
-      text_length: String(textResult.text || '').length,
-      text_debug: textResult.debug || null,
+      bytes_length: fileBytes.length,
+      elapsed_ms: Date.now() - extractStartedAt,
     })
-
-    if (!textResult.needs_ocr && textResult.text?.trim()) {
-      const regexFolios = detectFoliosFromText(textResult.text)
-      console.info('[preaviso-process-document] text_first_folio_probe', {
+    if (isImageLikeFile(file)) {
+      const imageProcessStartedAt = Date.now()
+      result = await tramiteSystem.processDocument(
+        pluginId,
+        file,
+        documentType,
+        context || {}
+      )
+      timingLog('image_process_done', {
         trace_id: traceId,
         file_name: file.name,
-        regex_folios_detected: regexFolios.length,
-        regex_folios_sample: regexFolios.slice(0, 10),
+        elapsed_ms: Date.now() - imageProcessStartedAt,
       })
-
-      if (deferStructuredExtraction) {
-        result = {
-          data: context || {},
-          commands: [],
-          extractedData: {
-            textoCompleto: textResult.text,
-            _source_extraction: textResult.source,
-            _deferred_structured_extraction: true,
-          },
-          meta: {
-            text_first: true,
-            extraction_source: textResult.source,
-            text_debug: textResult.debug || null,
-            deferred_structured_extraction: true,
-            warnings: [],
-          }
-        }
-      } else {
-        const extractionStartedAt = Date.now()
-        const extraction = await extractionAgent.extract({
-          tramiteType: 'preaviso',
-          documentId: `adhoc:${traceId}:${file.name}`,
-          rawText: textResult.text,
-          fileMeta: {
-            file_name: file.name,
-            mime_type: file.type || 'application/octet-stream',
-            source_document_type: documentType,
-            source_extraction: textResult.source,
-          },
-          auditContext: {
-            userId: authUserId || null,
-            tramiteId: context?.tramiteId || null,
-            traceId,
-          },
-        })
-        phaseTimings.extraction_ms = Date.now() - extractionStartedAt
-        phaseTimings.extraction_phase = 'text_first'
-        const enrichedStructured = enrichStructuredExtractionFromText({
-          structured: extraction.structured,
-          rawText: textResult.text,
-          documentType,
-          traceId,
-        })
-
-        console.info('[preaviso-process-document] text_first_extraction_summary', {
-          trace_id: traceId,
-          file_name: file.name,
-          folio_real: enrichedStructured?.inmueble?.folio_real ?? null,
-          partidas_count: Array.isArray(enrichedStructured?.inmueble?.partidas)
-            ? enrichedStructured.inmueble.partidas.length
-            : 0,
-          gravamenes_count: Array.isArray(enrichedStructured?.gravamenes) ? enrichedStructured.gravamenes.length : 0,
-          source_refs_count: Array.isArray(extraction?.source_refs) ? extraction.source_refs.length : 0,
-          warnings_count: Array.isArray(extraction?.warnings) ? extraction.warnings.length : 0,
-        })
-
-        result = {
-          data: mergeExtractedIntoContext(context || {}, enrichedStructured),
-          commands: [],
-          extractedData: {
-            ...(enrichedStructured || {}),
-            textoCompleto: textResult.text,
-            _source_extraction: textResult.source,
-            _trace_id: extraction.trace_id,
-          },
-          meta: {
-            text_first: true,
-            extraction_source: textResult.source,
-            text_debug: textResult.debug || null,
-            warnings: extraction.warnings || [],
-          }
-        }
-      }
     } else {
-      if (isImageLikeFile(file)) {
+      const isPdf = String(file.type || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(file.name)
+      if (!isPdf) {
         result = await tramiteSystem.processDocument(
           pluginId,
           file,
@@ -1844,14 +1765,11 @@ export async function POST(req: Request) {
           context || {}
         )
       } else {
-        const isPdf = String(file.type || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(file.name)
         let intakeRawText = ''
         let intakeMeta: any = null
 
-        // Modo fijo de OCR para PoC: priorizar Textract en PDF y usar intake como fallback.
-        const preferTextractOcr = true
+        // Textract como núcleo OCR. Intake se usa sólo como fallback.
         const runIntakePdfNow = async (): Promise<void> => {
-          if (!isPdf) return
           if (String(intakeRawText || '').trim()) return
           try {
             const intakeStartedAt = Date.now()
@@ -1888,16 +1806,13 @@ export async function POST(req: Request) {
               facts: intakeDoc?.facts || [],
               rules: intakeResult.rules,
             }
-            console.info('[preaviso-process-document] intake_pdf_summary', {
+            timingLog('intake_pdf_done', {
               trace_id: traceId,
               file_name: file.name,
-              detected_type: intakeDoc?.detectedType || null,
-              confidence: intakeDoc?.confidence || null,
               pages: intakeMeta.pages,
-              facts_count: Array.isArray(intakeDoc?.facts) ? intakeDoc.facts.length : 0,
-              conflicts_count: Array.isArray(intakeResult.rules?.conflicts) ? intakeResult.rules.conflicts.length : 0,
-              intake_ms: phaseTimings.intake_ms,
-              mode: 'fallback_or_normal',
+              detected_type: intakeMeta.detected_type,
+              confidence: intakeMeta.confidence,
+              elapsed_ms: phaseTimings.intake_ms,
             })
           } catch (intakeError) {
             console.error('[preaviso-process-document] intake_pdf_error', {
@@ -1908,63 +1823,34 @@ export async function POST(req: Request) {
           }
         }
 
-        if (isPdf && !preferTextractOcr) {
+        const ocrStartedAt = Date.now()
+        const textractAttempt = await extractPdfTextWithAsyncOcr(file, traceId, fileBytes)
+        const textractText = String(textractAttempt?.text || '').trim()
+        if (!textractText) {
           await runIntakePdfNow()
-        } else if (isPdf && preferTextractOcr) {
-          console.info('[preaviso-process-document] intake_pdf_skipped', {
-            trace_id: traceId,
-            file_name: file.name,
-            reason: 'pdf_ocr_source_textract_preferred',
-          })
         }
+        const ocrAttempt = textractText
+          ? textractAttempt
+          : intakeRawText
+            ? { text: intakeRawText, source: 'document_intake_pdf' as const, reason: null, elapsed_ms: 0 }
+            : textractAttempt
+        timingLog('ocr_done', {
+          trace_id: traceId,
+          file_name: file.name,
+          selected_source: ocrAttempt.source || 'none',
+          text_length: String(ocrAttempt.text || '').length,
+          elapsed_ms: Date.now() - ocrStartedAt,
+        })
 
-        let ocrAttempt:
-          | { text: string | null; source: 'document_intake_pdf' | 'async_textract' | 'sync_textract' | 'none'; reason: string | null; elapsed_ms: number }
-          | { text: string | null; source: 'document_intake_pdf'; reason: null; elapsed_ms: number }
-
-        if (isPdf && preferTextractOcr) {
-          const textractAttempt = await extractPdfTextWithAsyncOcr(file, traceId, fileBytes)
-          const textractText = String(textractAttempt?.text || '').trim()
-          if (textractText) {
-            ocrAttempt = textractAttempt
-            console.info('[preaviso-process-document] ocr_source_selected', {
-              trace_id: traceId,
-              file_name: file.name,
-              selected: textractAttempt.source,
-              prefer_textract: true,
-              textract_elapsed_ms: textractAttempt.elapsed_ms,
-              intake_text_available: Boolean(String(intakeRawText || '').trim()),
-            })
-          } else {
-            await runIntakePdfNow()
-            ocrAttempt = intakeRawText
-              ? { text: intakeRawText, source: 'document_intake_pdf', reason: null, elapsed_ms: 0 }
-              : textractAttempt
-            console.warn('[preaviso-process-document] ocr_source_fallback_to_intake', {
-              trace_id: traceId,
-              file_name: file.name,
-              prefer_textract: true,
-              textract_reason: textractAttempt.reason,
-              intake_text_available: Boolean(String(intakeRawText || '').trim()),
-            })
-          }
-        } else {
-          ocrAttempt =
-            intakeRawText
-              ? { text: intakeRawText, source: 'document_intake_pdf' as const, reason: null, elapsed_ms: 0 }
-              : isPdf
-                ? await extractPdfTextWithAsyncOcr(file, traceId, fileBytes)
-                : { text: null, source: 'none' as const, reason: 'not_pdf', elapsed_ms: 0 }
-        }
         phaseTimings.ocr_ms = Number(ocrAttempt?.elapsed_ms || 0)
-        const asyncOcrText = String(ocrAttempt?.text || '').trim()
-        if (asyncOcrText) {
+        const ocrText = String(ocrAttempt?.text || '').trim()
+        if (ocrText) {
           if (deferStructuredExtraction) {
             result = {
               data: context || {},
               commands: [],
               extractedData: {
-                textoCompleto: asyncOcrText,
+                textoCompleto: ocrText,
                 _source_extraction: ocrAttempt.source || 'ocr_async_pdf',
                 _ocr_debug: {
                   reason: ocrAttempt.reason,
@@ -1977,7 +1863,7 @@ export async function POST(req: Request) {
               meta: {
                 text_first: false,
                 extraction_source: ocrAttempt.source || 'ocr_async_pdf',
-                text_debug: textResult.debug || null,
+                text_debug: null,
                 deferred_structured_extraction: true,
                 warnings: [],
               },
@@ -1987,7 +1873,7 @@ export async function POST(req: Request) {
             const extraction = await extractionAgent.extract({
               tramiteType: 'preaviso',
               documentId: `adhoc:${traceId}:${file.name}`,
-              rawText: asyncOcrText,
+              rawText: ocrText,
               fileMeta: {
                 file_name: file.name,
                 mime_type: file.type || 'application/octet-stream',
@@ -2006,9 +1892,15 @@ export async function POST(req: Request) {
             })
             phaseTimings.extraction_ms = Date.now() - extractionStartedAt
             phaseTimings.extraction_phase = 'ocr_or_intake'
+            timingLog('ai_extraction_done', {
+              trace_id: traceId,
+              file_name: file.name,
+              elapsed_ms: phaseTimings.extraction_ms,
+              source: ocrAttempt.source || 'ocr_async_pdf',
+            })
             const enrichedStructured = enrichStructuredExtractionFromText({
               structured: extraction.structured,
-              rawText: asyncOcrText,
+              rawText: ocrText,
               documentType,
               intakeFacts: intakeMeta?.facts || [],
               traceId,
@@ -2019,7 +1911,7 @@ export async function POST(req: Request) {
               commands: [],
               extractedData: {
                 ...(enrichedStructured || {}),
-                textoCompleto: asyncOcrText,
+                textoCompleto: ocrText,
                 _source_extraction: ocrAttempt.source || 'ocr_async_pdf',
                 _ocr_debug: {
                   reason: ocrAttempt.reason,
@@ -2032,34 +1924,33 @@ export async function POST(req: Request) {
               meta: {
                 text_first: false,
                 extraction_source: ocrAttempt.source || 'ocr_async_pdf',
-                text_debug: textResult.debug || null,
+                text_debug: null,
                 warnings: extraction.warnings || [],
               },
             }
           }
         } else {
-          // No enviar PDFs/DOCX sin texto utilizable a Vision (espera imagen MIME).
           result = {
             data: context || {},
             commands: [],
             extractedData: {
               textoCompleto: '',
-              _source_extraction: textResult.source,
-              _needs_ocr_reason: textResult.reason || 'text_not_usable',
+              _source_extraction: ocrAttempt.source || 'none',
+              _needs_ocr_reason: ocrAttempt.reason || 'text_not_usable',
               _requires_ocr: true,
               _ocr_debug: {
                 reason: ocrAttempt.reason,
                 elapsed_ms: ocrAttempt.elapsed_ms,
                 source: ocrAttempt.source,
               },
-              _text_debug: textResult.debug || null,
+              _text_debug: null,
             },
             meta: {
               text_first: false,
               requires_ocr: true,
-              extraction_source: textResult.source,
-              needs_ocr_reason: textResult.reason || 'text_not_usable',
-              text_debug: textResult.debug || null,
+              extraction_source: ocrAttempt.source || 'none',
+              needs_ocr_reason: ocrAttempt.reason || 'text_not_usable',
+              text_debug: null,
             },
           }
         }
@@ -2123,18 +2014,13 @@ export async function POST(req: Request) {
     }
 
     const requestLatencyMs = Date.now() - requestStartedAt
-    console.info('[preaviso-process-document] response_summary', {
+    timingLog('request_done', {
       trace_id: traceId,
       file_name: file.name,
-      folio_real: result?.data?.inmueble?.folio_real ?? null,
-      partidas_count: Array.isArray(result?.data?.inmueble?.partidas) ? result.data.inmueble.partidas.length : 0,
-      partidas_values: Array.isArray(result?.data?.inmueble?.partidas) ? result.data.inmueble.partidas : [],
-      tramite_id: result?.data?.tramiteId ?? context?.tramiteId ?? null,
-      text_first: result?.meta?.text_first === true,
-      extraction_source: result?.meta?.extraction_source || null,
+      request_total_ms: requestLatencyMs,
+      extract_sync_ms: extractSyncMs,
       phase_timings_ms: phaseTimings,
     })
-
     return NextResponse.json({
       data: result.data,
       extractedData: result.extractedData || null,

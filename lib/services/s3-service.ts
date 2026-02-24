@@ -27,6 +27,25 @@ export interface S3FileInfo {
 }
 
 export class S3Service {
+  private static buildObjectUrls(key: string): {
+    region: string
+    s3Uri: string
+    httpsUrl: string
+    consoleUrl: string
+  } {
+    const region = process.env.AWS_REGION || 'us-east-1'
+    const encodedKey = key
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/')
+
+    return {
+      region,
+      s3Uri: `s3://${BUCKET}/${key}`,
+      httpsUrl: `https://${BUCKET}.s3.${region}.amazonaws.com/${encodedKey}`,
+      consoleUrl: `https://s3.console.aws.amazon.com/s3/object/${BUCKET}?region=${region}&prefix=${encodedKey}`,
+    }
+  }
   /**
    * Estructura de carpetas en S3:
    * 
@@ -191,6 +210,7 @@ export class S3Service {
    */
   static async uploadFile(options: UploadFileOptions): Promise<S3FileInfo> {
     const { file, key, contentType, metadata } = options
+    const urls = this.buildObjectUrls(key)
 
     // Verificar que el bucket existe antes de intentar subir
     await this.verifyBucket()
@@ -201,6 +221,15 @@ export class S3Service {
     const body = new Uint8Array(arrayBuffer)
 
     try {
+      console.info('[S3Service.uploadFile] uploading', {
+        bucket: BUCKET,
+        key,
+        region: urls.region,
+        s3_uri: urls.s3Uri,
+        https_url: urls.httpsUrl,
+        console_url: urls.consoleUrl,
+      })
+
       await s3Client.send(
         new PutObjectCommand({
           Bucket: BUCKET,
@@ -220,7 +249,26 @@ export class S3Service {
           ) : undefined,
         })
       )
+
+      console.info('[S3Service.uploadFile] upload_success', {
+        bucket: BUCKET,
+        key,
+        region: urls.region,
+        s3_uri: urls.s3Uri,
+        https_url: urls.httpsUrl,
+        console_url: urls.consoleUrl,
+      })
     } catch (error: any) {
+      console.error('[S3Service.uploadFile] upload_error', {
+        bucket: BUCKET,
+        key,
+        region: urls.region,
+        s3_uri: urls.s3Uri,
+        https_url: urls.httpsUrl,
+        console_url: urls.consoleUrl,
+        error_name: error?.name,
+        error_message: error?.message,
+      })
       if (error.name === 'NoSuchBucket' || error.name === 'NotFound') {
         throw new Error(
           `El bucket de S3 "${BUCKET}" no existe. ` +

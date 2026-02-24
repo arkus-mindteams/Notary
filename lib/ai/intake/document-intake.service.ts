@@ -20,15 +20,8 @@ import {
 
 const MAX_ATTEMPTS = 3
 const INTAKE_DEBUG = process.env.INTAKE_DEBUG === '1'
-const INTAKE_DEBUG_MAX_CHARS = Number(process.env.INTAKE_DEBUG_MAX_CHARS || 12000)
 const STATE_FOLIO_REAL_RULES: Record<string, number[]> = {
   'BAJA CALIFORNIA': [7],
-}
-
-function clipForDebug(value: string): string {
-  const text = String(value || '')
-  if (text.length <= INTAKE_DEBUG_MAX_CHARS) return text
-  return `${text.slice(0, INTAKE_DEBUG_MAX_CHARS)}\n...[truncated ${text.length - INTAKE_DEBUG_MAX_CHARS} chars]`
 }
 
 function detectStateFromText(rawText: string): string | null {
@@ -270,8 +263,6 @@ export class DocumentIntakeService {
             filename: f.filename,
             mimeType: f.mimeType,
           })),
-          system_prompt: clipForDebug(systemPrompt),
-          user_prompt: clipForDebug(userPrompt),
         })
       }
 
@@ -289,29 +280,10 @@ export class DocumentIntakeService {
       }
 
       lastRawText = String(providerResult?.rawText || '')
-      if (INTAKE_DEBUG) {
-        console.log('[DocumentIntakeService][response]', {
-          trace_id: traceId,
-          attempt,
-          model: providerResult?.model || null,
-          usage: providerResult?.usage || null,
-          raw_text: clipForDebug(lastRawText),
-          documents_count: Array.isArray(providerResult?.result?.documents)
-            ? providerResult.result.documents.length
-            : null,
-        })
-      }
 
       const parsed = documentIntakeProviderResponseSchema.safeParse(providerResult?.result)
       if (!parsed.success) {
         validationErrors = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`)
-        if (INTAKE_DEBUG) {
-          console.warn('[DocumentIntakeService][validation_error]', {
-            trace_id: traceId,
-            attempt,
-            validation_errors: validationErrors,
-          })
-        }
         if (attempt < MAX_ATTEMPTS) continue
         throw new Error(`AI_OUTPUT_INVALID: ${validationErrors.join(' | ')}`)
       }
