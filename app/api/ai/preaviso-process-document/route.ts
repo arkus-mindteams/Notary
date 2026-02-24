@@ -32,13 +32,6 @@ type DeferredPostProcessInput = {
   extractedData: any
 }
 
-const PREAVISO_TIMINGS_DEBUG = process.env.PREAVISO_TIMINGS_DEBUG === '1'
-
-function timingLog(event: string, payload: Record<string, unknown>): void {
-  if (!PREAVISO_TIMINGS_DEBUG) return
-  console.log('[preaviso-process-document][timing]', event, payload)
-}
-
 function toSafeError(error: unknown): { message: string; code?: string } {
   if (!error || typeof error !== 'object') {
     return { message: 'unknown_error' }
@@ -604,18 +597,12 @@ async function extractPdfTextWithAsyncOcr(
   reason: string | null
   elapsed_ms: number
 }> {
-  const FIXED_OCR_TIMEOUT_MS = 120000
+  const FIXED_OCR_TIMEOUT_MS = 300000
   const startedAt = Date.now()
   const awsRegion = process.env.AWS_REGION
   const awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID
   const awsSecretAccessKey = process.env.AWS_SECRET_ACCESS_KEY
   const bucket = process.env.AWS_S3_BUCKET || process.env.OCR_S3_BUCKET
-  timingLog('ocr_async_start', {
-    trace_id: traceId,
-    file_name: file.name,
-    file_size: file.size,
-    has_bucket: Boolean(bucket),
-  })
   if (!awsRegion || !awsAccessKeyId || !awsSecretAccessKey) {
     return {
       text: null,
@@ -643,7 +630,6 @@ async function extractPdfTextWithAsyncOcr(
       : new Uint8Array(await file.arrayBuffer())
 
     if (bucket && key) {
-      const s3UploadStartedAt = Date.now()
       await s3.send(
         new PutObjectCommand({
           Bucket: bucket,
@@ -652,13 +638,6 @@ async function extractPdfTextWithAsyncOcr(
           ContentType: file.type || 'application/pdf',
         })
       )
-      timingLog('ocr_async_s3_uploaded', {
-        trace_id: traceId,
-        file_name: file.name,
-        elapsed_ms: Date.now() - s3UploadStartedAt,
-      })
-
-      const startDetectionAt = Date.now()
       const startResp = await textract.send(
         new StartDocumentTextDetectionCommand({
           DocumentLocation: {
@@ -667,28 +646,11 @@ async function extractPdfTextWithAsyncOcr(
         })
       )
       const jobId = startResp.JobId
-      timingLog('ocr_async_job_started', {
-        trace_id: traceId,
-        file_name: file.name,
-        job_id: jobId || null,
-        elapsed_ms: Date.now() - startDetectionAt,
-      })
       if (jobId) {
         const timeoutMs = FIXED_OCR_TIMEOUT_MS
-        let pollCount = 0
         for (;;) {
-          pollCount += 1
           const resp = await textract.send(new GetDocumentTextDetectionCommand({ JobId: jobId }))
           const status = String(resp.JobStatus || '')
-          if (pollCount === 1 || pollCount % 5 === 0) {
-            timingLog('ocr_async_poll', {
-              trace_id: traceId,
-              file_name: file.name,
-              poll_count: pollCount,
-              status,
-              elapsed_ms: Date.now() - startedAt,
-            })
-          }
           if (status === 'SUCCEEDED') {
             let nextToken = resp.NextToken
             const allBlocks = [...(resp.Blocks || [])]
@@ -708,13 +670,6 @@ async function extractPdfTextWithAsyncOcr(
               .join('\n')
               .trim()
             if (text) {
-              timingLog('ocr_async_succeeded', {
-                trace_id: traceId,
-                file_name: file.name,
-                poll_count: pollCount,
-                text_length: text.length,
-                elapsed_ms: Date.now() - startedAt,
-              })
               return {
                 text,
                 source: 'async_textract',
@@ -737,7 +692,6 @@ async function extractPdfTextWithAsyncOcr(
 
     // Fallback: intento síncrono con bytes para evitar vacío silencioso.
     try {
-      const syncStartedAt = Date.now()
       const syncResp = await textract.send(
         new DetectDocumentTextCommand({
           Document: { Bytes: bytes },
@@ -749,13 +703,6 @@ async function extractPdfTextWithAsyncOcr(
         .join('\n')
         .trim()
       if (syncText) {
-        timingLog('ocr_sync_fallback_succeeded', {
-          trace_id: traceId,
-          file_name: file.name,
-          text_length: syncText.length,
-          elapsed_ms: Date.now() - syncStartedAt,
-          total_elapsed_ms: Date.now() - startedAt,
-        })
         return {
           text: syncText,
           source: 'sync_textract',
@@ -1607,9 +1554,6 @@ async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<
 export async function POST(req: Request) {
   const requestStartedAt = Date.now()
   const traceId = randomUUID()
-  timingLog('request_start', {
-    trace_id: traceId,
-  })
 
   // Import createServerClient here, as it's only used in fallback logic
   const { createServerClient } = await import('@/lib/supabase')
@@ -1624,14 +1568,6 @@ export async function POST(req: Request) {
     const contextRaw = formData.get('context') as string | null
     const tramiteIdRaw = (formData.get('tramiteId') as string | null) || 'preaviso'
     const needOcr = (formData.get('needOcr') as string | null) || null
-    timingLog('request_formdata_parsed', {
-      trace_id: traceId,
-      file_name: file?.name || null,
-      file_size: file?.size || 0,
-      mime_type: file?.type || null,
-      document_type: documentType || null,
-      elapsed_ms: Date.now() - requestStartedAt,
-    })
 
     let pluginId = 'preaviso'
     if (tramiteIdRaw && typeof tramiteIdRaw === 'string') {
@@ -1736,25 +1672,13 @@ export async function POST(req: Request) {
     }
     let result: { data: any; commands: any[]; extractedData?: any; meta?: any }
     const fileBytes = new Uint8Array(await file.arrayBuffer())
-    timingLog('file_bytes_loaded', {
-      trace_id: traceId,
-      file_name: file.name,
-      bytes_length: fileBytes.length,
-      elapsed_ms: Date.now() - extractStartedAt,
-    })
     if (isImageLikeFile(file)) {
-      const imageProcessStartedAt = Date.now()
       result = await tramiteSystem.processDocument(
         pluginId,
         file,
         documentType,
         context || {}
       )
-      timingLog('image_process_done', {
-        trace_id: traceId,
-        file_name: file.name,
-        elapsed_ms: Date.now() - imageProcessStartedAt,
-      })
     } else {
       const isPdf = String(file.type || '').toLowerCase() === 'application/pdf' || /\.pdf$/i.test(file.name)
       if (!isPdf) {
@@ -1806,14 +1730,6 @@ export async function POST(req: Request) {
               facts: intakeDoc?.facts || [],
               rules: intakeResult.rules,
             }
-            timingLog('intake_pdf_done', {
-              trace_id: traceId,
-              file_name: file.name,
-              pages: intakeMeta.pages,
-              detected_type: intakeMeta.detected_type,
-              confidence: intakeMeta.confidence,
-              elapsed_ms: phaseTimings.intake_ms,
-            })
           } catch (intakeError) {
             console.error('[preaviso-process-document] intake_pdf_error', {
               trace_id: traceId,
@@ -1823,7 +1739,6 @@ export async function POST(req: Request) {
           }
         }
 
-        const ocrStartedAt = Date.now()
         const textractAttempt = await extractPdfTextWithAsyncOcr(file, traceId, fileBytes)
         const textractText = String(textractAttempt?.text || '').trim()
         if (!textractText) {
@@ -1834,13 +1749,6 @@ export async function POST(req: Request) {
           : intakeRawText
             ? { text: intakeRawText, source: 'document_intake_pdf' as const, reason: null, elapsed_ms: 0 }
             : textractAttempt
-        timingLog('ocr_done', {
-          trace_id: traceId,
-          file_name: file.name,
-          selected_source: ocrAttempt.source || 'none',
-          text_length: String(ocrAttempt.text || '').length,
-          elapsed_ms: Date.now() - ocrStartedAt,
-        })
 
         phaseTimings.ocr_ms = Number(ocrAttempt?.elapsed_ms || 0)
         const ocrText = String(ocrAttempt?.text || '').trim()
@@ -1892,12 +1800,6 @@ export async function POST(req: Request) {
             })
             phaseTimings.extraction_ms = Date.now() - extractionStartedAt
             phaseTimings.extraction_phase = 'ocr_or_intake'
-            timingLog('ai_extraction_done', {
-              trace_id: traceId,
-              file_name: file.name,
-              elapsed_ms: phaseTimings.extraction_ms,
-              source: ocrAttempt.source || 'ocr_async_pdf',
-            })
             const enrichedStructured = enrichStructuredExtractionFromText({
               structured: extraction.structured,
               rawText: ocrText,
@@ -2014,13 +1916,6 @@ export async function POST(req: Request) {
     }
 
     const requestLatencyMs = Date.now() - requestStartedAt
-    timingLog('request_done', {
-      trace_id: traceId,
-      file_name: file.name,
-      request_total_ms: requestLatencyMs,
-      extract_sync_ms: extractSyncMs,
-      phase_timings_ms: phaseTimings,
-    })
     return NextResponse.json({
       data: result.data,
       extractedData: result.extractedData || null,

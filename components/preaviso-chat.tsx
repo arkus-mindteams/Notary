@@ -2199,6 +2199,7 @@ export function PreavisoChat({
     // Siempre establecer isProcessingDocument para mostrar la barra de progreso
     setIsProcessingDocument(true)
     setProcessingProgress(0)
+    setProcessingFileName(null)
     cancelDocumentBatchRequestedRef.current = false
     if (documentBatchAbortRef.current) {
       try { documentBatchAbortRef.current.abort() } catch { }
@@ -2437,6 +2438,7 @@ export function PreavisoChat({
           message: `Procesando ${totalFiles} documento(s)`,
           totalDocs: totalFiles,
           processedDocs: 0,
+          currentDocument: null,
         })
       }
       completedCount = 0
