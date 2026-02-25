@@ -15,11 +15,23 @@ const ALLOWED_PATHS = [
   /^compradores\[\d+\]\.persona_fisica\.rfc$/,
   /^compradores\[\d+\]\.persona_fisica\.curp$/,
   /^compradores\[\d+\]\.persona_fisica\.estado_civil$/,
+  /^compradores\[\d+\]\.tipo_persona$/,
+  /^compradores\[\d+\]\.persona_fisica\.conyuge\.nombre$/,
+  /^compradores\[\d+\]\.persona_moral\.denominacion_social$/,
+  /^vendedores\[\d+\]\.tipo_persona$/,
+  /^vendedores\[\d+\]\.persona_fisica\.nombre$/,
+  /^vendedores\[\d+\]\.persona_moral\.denominacion_social$/,
   /^creditos$/,
   /^creditos\[\d+\]\.institucion$/,
   /^creditos\[\d+\]\.participantes$/,
   /^inmueble\.folio_real$/,
+  /^inmueble\.existe_hipoteca$/,
+  /^inmueble\.partidas$/,
+  /^inmueble\.direccion$/,
   /^inmueble\.direccion\.(calle|numero|colonia|municipio|estado|codigo_postal)$/,
+  /^gravamenes$/,
+  /^actosNotariales\.aperturaCreditoComprador$/,
+  /^actosNotariales\.cancelacionCreditoVendedor$/,
 ]
 
 export class ProposedUpdateDomainViolationError extends Error {
@@ -185,6 +197,26 @@ function parsePath(path: string): Array<string | number> {
 function isMeaningfulValueForPath(path: string, value: unknown): boolean {
   if (value === null || value === undefined) return false
 
+  if (path === 'creditos') {
+    return Array.isArray(value)
+  }
+
+  if (/^creditos\[\d+\]\.participantes$/.test(path)) {
+    return Array.isArray(value) && value.length > 0
+  }
+
+  if (path === 'inmueble.partidas') {
+    return Array.isArray(value) && value.some((item) => String(item ?? '').trim().length > 0)
+  }
+
+  if (path === 'inmueble.direccion') {
+    return isPlainObject(value)
+  }
+
+  if (path === 'gravamenes') {
+    return Array.isArray(value)
+  }
+
   const str = typeof value === 'string' ? value.trim() : String(value ?? '').trim()
   if (!str) return false
 
@@ -198,6 +230,10 @@ function isMeaningfulValueForPath(path: string, value: unknown): boolean {
     return letters >= 4
   }
 
+  if (/^(compradores|vendedores)\[\d+\]\.persona_moral\.denominacion_social$/.test(path)) {
+    return str.length >= 4
+  }
+
   if (/\.persona_fisica\.rfc$/.test(path)) {
     const normalized = str.toUpperCase().replace(/\s+/g, '')
     return /^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(normalized)
@@ -208,16 +244,8 @@ function isMeaningfulValueForPath(path: string, value: unknown): boolean {
     return /^[A-Z][AEIOU][A-Z]{2}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$/.test(normalized)
   }
 
-  if (path === 'creditos') {
-    return Array.isArray(value)
-  }
-
   if (/^creditos\[\d+\]\.institucion$/.test(path)) {
     return str.length >= 3
-  }
-
-  if (/^creditos\[\d+\]\.participantes$/.test(path)) {
-    return Array.isArray(value) && value.length > 0
   }
 
   return true
@@ -227,11 +255,20 @@ function normalizeCommitPath(path: string): string {
   const raw = String(path || '').trim()
   if (!raw) return raw
   if (raw === 'compradores[].nombre') return 'compradores[0].persona_fisica.nombre'
+  if (raw === 'compradores[].tipo_persona') return 'compradores[0].tipo_persona'
+  if (raw === 'compradores[].persona_moral.denominacion_social') return 'compradores[0].persona_moral.denominacion_social'
   if (raw === 'vendedores[].nombre') return 'vendedores[0].persona_fisica.nombre'
+  if (raw === 'vendedores[].tipo_persona') return 'vendedores[0].tipo_persona'
+  if (raw === 'vendedores[].persona_moral.denominacion_social') return 'vendedores[0].persona_moral.denominacion_social'
   if (raw === 'compradores[].persona_fisica.conyuge.nombre') return 'compradores[0].persona_fisica.conyuge.nombre'
   if (raw === 'creditos[].institucion') return 'creditos[0].institucion'
   if (raw === 'creditos[].participantes[]') return 'creditos[0].participantes'
   if (raw === 'creditos[].participantes') return 'creditos[0].participantes'
+  if (raw === 'creditos[]') return 'creditos'
+  if (raw === 'existencia_credito') return 'actosNotariales.aperturaCreditoComprador'
+  if (raw === 'gravamenes[]') return 'gravamenes'
+  if (raw === 'inmueble.hipoteca') return 'inmueble.existe_hipoteca'
+  if (raw === 'inmueble.partidas[]') return 'inmueble.partidas'
   return raw
 }
 

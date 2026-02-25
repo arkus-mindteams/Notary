@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto'
 import { createServerClient } from '@/lib/supabase'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import { AgentRouter } from '@/lib/ai/routing/agent-router'
-import { ProposeStateUpdateAgent } from '@/lib/ai/routing/propose-state-update-agent'
+import { createCaptureEngine } from '@/lib/ai/routing/capture-engines/capture-engine-factory'
 import {
   PreavisoProposedUpdateService,
   ProposedUpdateDomainViolationError,
@@ -18,6 +18,8 @@ import { DomainRuleViolationError } from '@/lib/services/preaviso-domain-service
 import { getTramiteSystem } from '@/lib/tramites/tramite-system-instance'
 import { PluginRegistry } from '@/lib/tramites/plugins/plugin-registry'
 import { TramitePluginStateService } from '@/lib/services/tramite-plugin-state-service'
+import { createDirectChatGMIRouteHandler } from '@/app/api/ai/chat-gmi/route'
+import { createDirectChatGPTRouteHandler } from '@/app/api/ai/chat-gpt/route'
 
 const requestSchema = z
   .object({
@@ -44,9 +46,15 @@ const requestSchema = z
   .strict()
 
 const router = new AgentRouter()
-const proposeStateUpdateAgent = new ProposeStateUpdateAgent()
 const STATE_UPDATE_DEBUG = process.env.STATE_UPDATE_DEBUG === '1'
 const LLM_STATE_BRAIN = process.env.LLM_STATE_BRAIN !== '0'
+const CAPTURE_ENGINE = String(process.env.CAPTURE_ENGINE || 'gpt')
+  .trim()
+  .toLowerCase()
+const captureEngine = createCaptureEngine(CAPTURE_ENGINE)
+const CHAT_ROUTE_ENGINE = String(process.env.CHAT_ROUTE_ENGINE || 'legacy')
+  .trim()
+  .toLowerCase()
 
 const errorResponse = (
   status: number,
@@ -428,18 +436,37 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         })
       }
 
+      const runCaptureEngine = async () => {
+        const inputBase: Record<string, unknown> = {
+          message: routingMessage,
+          currentStep: body.uiContext?.currentStep,
+          lastQuestionIntent: hintedIntent,
+          requiredMissing: requiredMissingForRouting,
+          detectedPeople: hintedPeople,
+          recentMessages: recentMessagesContext,
+        }
+        if (CAPTURE_ENGINE === 'gmi' || CAPTURE_ENGINE === 'gemini') {
+          const collectedData = await deps.loadTramiteData(body.tramiteId)
+          const pendingQuestions = requiredMissingForRouting
+            .slice(0, 3)
+            .map((f) => mapMissingFieldToQuestion(f))
+          ;(inputBase as any).pendingQuestions = pendingQuestions
+          ;(inputBase as any).collectedData = (collectedData || {}) as Record<string, unknown>
+        }
+
+        return captureEngine.propose(inputBase as any)
+      }
+
       const forcedStateUpdateProposal = shouldForceUpdateStateAgent
-        ? await proposeStateUpdateAgent.propose({
-            message: routingMessage,
-            currentStep: body.uiContext?.currentStep,
-            lastQuestionIntent: hintedIntent,
-            requiredMissing: requiredMissingForRouting,
-            detectedPeople: hintedPeople,
-            recentMessages: recentMessagesContext,
-          })
+        ? await runCaptureEngine()
         : null
 
-      const routed = shouldDirectLegacyStateUpdate
+      const confirmationRequested =
+        body.uiContext?.uiAction === 'confirm_proposed_updates' ||
+        body.uiContext?.uiAction === 'confirm_document_generation' ||
+        isConfirmationMessage(body.message)
+
+      let routed = shouldDirectLegacyStateUpdate
         ? ({
             intent: 'UPDATE_STATE',
             agent_used: 'ProposeStateUpdateAgent',
@@ -487,12 +514,28 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
             userAuthId: currentUser.auth_user_id,
           })
 
-      let responsePayload: Record<string, unknown> = { ...routed }
+      if (
+        (CAPTURE_ENGINE === 'gmi' || CAPTURE_ENGINE === 'gemini') &&
+        isPreavisoPlugin &&
+        !confirmationRequested &&
+        !shouldDirectLegacyStateUpdate &&
+        !autoUpdateFromDocumentContext &&
+        !shouldForceUpdateStateAgent &&
+        routed.intent === 'UPDATE_STATE'
+      ) {
+        const gmi = await runCaptureEngine()
+        routed = {
+          ...routed,
+          intent: 'UPDATE_STATE',
+          agent_used: 'ProposeStateUpdateAgent',
+          answer: gmi.answer || routed.answer,
+          proposed_updates: gmi.proposed_updates || [],
+          actions: gmi.actions || [],
+          trace_id: gmi.trace_id || routed.trace_id,
+        }
+      }
 
-      const confirmationRequested =
-        body.uiContext?.uiAction === 'confirm_proposed_updates' ||
-        body.uiContext?.uiAction === 'confirm_document_generation' ||
-        isConfirmationMessage(body.message)
+      let responsePayload: Record<string, unknown> = { ...routed }
 
       const shouldUseLegacyStateUpdateFallback =
         isPreavisoPlugin &&
@@ -506,7 +549,7 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         isPreavisoPlugin &&
         !confirmationRequested &&
         routed.intent === 'QNA' &&
-        shouldTreatQnaAsStateUpdate(body.message, routed.answer)
+        shouldTreatQnaAsStateUpdate(body.message, routed.answer, requiredMissingForRouting)
       const shouldRecoverFromUnknownMisroute =
         isPreavisoPlugin &&
         !confirmationRequested &&
@@ -1171,7 +1214,19 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
 }
 
 // TODO(Fase 6): keep /api/ai/chat/rag and /api/ai/preaviso-chat for compatibility during migration.
-export const POST = createUnifiedAIChatRouteHandler()
+const legacyPOST = createUnifiedAIChatRouteHandler()
+const gmiPOST = createDirectChatGMIRouteHandler()
+const gptPOST = createDirectChatGPTRouteHandler()
+
+export async function POST(req: Request) {
+  if (CHAT_ROUTE_ENGINE === 'gmi' || CHAT_ROUTE_ENGINE === 'chatgmi') {
+    return gmiPOST(req)
+  }
+  if (CHAT_ROUTE_ENGINE === 'gpt' || CHAT_ROUTE_ENGINE === 'chatgpt') {
+    return gptPOST(req)
+  }
+  return legacyPOST(req)
+}
 
 function isConfirmationMessage(message: string): boolean {
   const normalized = String(message || '')
@@ -1730,7 +1785,7 @@ function normalizeDocTypeForMerge(value: unknown): 'inscripcion' | 'escritura' |
   return 'otro'
 }
 
-function shouldTreatQnaAsStateUpdate(message: string, answer?: string): boolean {
+function shouldTreatQnaAsStateUpdate(message: string, answer?: string, requiredMissing: string[] = []): boolean {
   const text = String(message || '').trim()
   if (!text) return false
   if (text.includes('?')) return false
@@ -1749,6 +1804,39 @@ function shouldTreatQnaAsStateUpdate(message: string, answer?: string): boolean 
     /^(casado|soltero|divorciado|viudo|union libre)$/.test(normalized)
 
   const noEvidenceAnswer = containsNoEvidenceMessage(answer)
+  const activeMissing = Array.isArray(requiredMissing) ? requiredMissing.filter(Boolean) : []
+  const hasActiveMissing = activeMissing.length > 0
+  const missingSet = new Set(activeMissing.map((m) => String(m || '').trim()))
+  const shortCaptureReply = text.length <= 64
+  const pendingIntentFromMissing = deriveLastQuestionIntent(activeMissing)
+  const directReplyToPending = isLikelyDirectReplyToPendingCapture(text, pendingIntentFromMissing)
+  const missingExpectsBuyerName =
+    missingSet.has('compradores[].nombre') || Array.from(missingSet).some((m) => /^compradores\[\d+\]\.persona_fisica\.nombre$/.test(m))
+  const missingExpectsBuyerTipo =
+    missingSet.has('compradores[].tipo_persona') || Array.from(missingSet).some((m) => /^compradores\[\d+\]\.tipo_persona$/.test(m))
+  const missingExpectsEstadoCivil =
+    missingSet.has('compradores[0].persona_fisica.estado_civil') ||
+    Array.from(missingSet).some((m) => m.includes('estado_civil'))
+  const missingExpectsCredit =
+    missingSet.has('existencia_credito') ||
+    missingSet.has('creditos[]') ||
+    Array.from(missingSet).some((m) => m.startsWith('creditos['))
+  const likelyCreditCaptureReply =
+    /\b(credito|contado|banorte|bbva|banamex|santander|infonavit|fovissste|participa)\b/.test(normalized)
+
+  if (
+    hasActiveMissing &&
+    shortCaptureReply &&
+    (
+      directReplyToPending ||
+      (missingExpectsBuyerName && isLikelyPersonNameReply(text)) ||
+      (missingExpectsBuyerTipo && /^(fisica|moral|persona fisica|persona moral)$/.test(normalized)) ||
+      (missingExpectsEstadoCivil && shortEstadoCivilReply) ||
+      (missingExpectsCredit && likelyCreditCaptureReply)
+    )
+  ) {
+    return true
+  }
 
   return domainSignal || shortTipoPersonaReply || shortEstadoCivilReply || noEvidenceAnswer
 }
