@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto'
+﻿import { randomUUID } from 'crypto'
 import { z } from 'zod'
 
 const GMI_DEBUG = process.env.GMI_CAPTURE_DEBUG === '1'
@@ -24,6 +24,26 @@ export interface GMIIndependentCaptureResult {
   trace_id: string
 }
 
+export interface GMICandidateSlot {
+  slot_id: string
+  path: string
+  question_text: string
+  allowed_values?: string[]
+  asked_at?: string | null
+  source: 'open_question' | 'required_missing' | 'global'
+}
+
+export interface GMIShortAnswerRouteResult {
+  outcome: 'applied' | 'clarify' | 'fallback'
+  selected_slot_id?: string | null
+  confidence?: number
+  normalized_value?: unknown
+  update?: Record<string, unknown> | null
+  clarify_message?: string | null
+  top_alternatives?: Array<{ slot_id: string; question_text: string }> | null
+  reason?: string
+}
+
 const selectionSchema = z.object({
   matched_required_missing: z.string().trim().nullable(),
   confidence: z.number().min(0).max(1).optional(),
@@ -38,6 +58,77 @@ const extractionSchema = z.object({
   confidence: z.number().min(0).max(1).optional(),
   reason: z.string().trim().optional(),
 })
+
+type GeminiResponseSchema = Record<string, unknown>
+
+const selectionResponseSchema: GeminiResponseSchema = {
+  type: 'OBJECT',
+  additionalProperties: false,
+  properties: {
+    matched_required_missing: { type: 'STRING', nullable: true },
+    confidence: { type: 'NUMBER' },
+    reason: { type: 'STRING' },
+  },
+  required: ['matched_required_missing'],
+}
+
+const extractionValueSchema: GeminiResponseSchema = {
+  anyOf: [
+    { type: 'STRING' },
+    { type: 'NUMBER' },
+    { type: 'BOOLEAN' },
+    { type: 'NULL' },
+    {
+      type: 'ARRAY',
+      items: {
+        anyOf: [{ type: 'STRING' }, { type: 'NUMBER' }, { type: 'BOOLEAN' }, { type: 'NULL' }],
+      },
+    },
+    {
+      type: 'OBJECT',
+      additionalProperties: true,
+    },
+  ],
+}
+
+const extractionResponseSchema: GeminiResponseSchema = {
+  type: 'OBJECT',
+  additionalProperties: false,
+  properties: {
+    applies: { type: 'BOOLEAN' },
+    op: { type: 'STRING', enum: ['set'] },
+    path: { type: 'STRING' },
+    value: extractionValueSchema,
+    confidence: { type: 'NUMBER' },
+    reason: { type: 'STRING' },
+  },
+  required: ['applies', 'op', 'path', 'value'],
+}
+
+const shortAnswerRouteSchema = z.object({
+  chosen_slot_id: z.string().trim().nullable(),
+  normalized_value: z.unknown().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  needs_clarification: z.boolean().optional(),
+  top_alternatives: z.array(z.string().trim().min(1)).max(2).optional(),
+})
+
+const shortAnswerRouteResponseSchema: GeminiResponseSchema = {
+  type: 'OBJECT',
+  additionalProperties: false,
+  properties: {
+    chosen_slot_id: { type: 'STRING', nullable: true },
+    normalized_value: extractionValueSchema,
+    confidence: { type: 'NUMBER' },
+    needs_clarification: { type: 'BOOLEAN' },
+    top_alternatives: {
+      type: 'ARRAY',
+      items: { type: 'STRING' },
+      maxItems: 2,
+    },
+  },
+  required: ['chosen_slot_id'],
+}
 
 const ALLOWED_UPDATE_PATHS = [
   /^compradores\[\d+\]\.persona_fisica\.nombre$/,
@@ -80,15 +171,25 @@ class GMIClient {
     return Boolean(this.apiKey)
   }
 
-  async json(systemPrompt: string, payload: Record<string, unknown>, maxOutputTokens = 320): Promise<unknown | null> {
+  async json(
+    systemPrompt: string,
+    payload: Record<string, unknown>,
+    maxOutputTokens = 320,
+    responseSchema?: GeminiResponseSchema
+  ): Promise<unknown | null> {
     if (!this.apiKey) return null
 
+    const generationConfig: Record<string, unknown> = {
+      temperature: 0,
+      responseMimeType: 'application/json',
+      maxOutputTokens,
+    }
+    if (responseSchema) {
+      generationConfig.responseSchema = responseSchema
+    }
+
     const body = {
-      generationConfig: {
-        temperature: 0,
-        responseMimeType: 'application/json',
-        maxOutputTokens,
-      },
+      generationConfig,
       contents: [
         {
           role: 'user',
@@ -132,6 +233,19 @@ class GMIClient {
 
 export class GMIIndependentCaptureFlow {
   private readonly gmi = new GMIClient()
+  private readonly shortRouteThreshold = Number(process.env.GMI_SHORT_ROUTE_CONFIDENCE || 0.62)
+
+  static canonicalizePath(path: string): string {
+    return canonicalizePath(path)
+  }
+
+  static targetPathFromMissing(missing: string): string | null {
+    return targetPathFromMissing(missing)
+  }
+
+  static isAllowedPath(path: string): boolean {
+    return isAllowedPath(path)
+  }
 
   async process(input: GMIIndependentCaptureInput): Promise<GMIIndependentCaptureResult> {
     const traceId = randomUUID()
@@ -152,6 +266,8 @@ export class GMIIndependentCaptureFlow {
       message,
       requiredMissing,
       collectedData: input.collectedData || {},
+      lastQuestionIntent: input.lastQuestionIntent || null,
+      pendingQuestions: Array.isArray(input.pendingQuestions) ? input.pendingQuestions : [],
     })
     if (heuristicUpdates.length > 0) {
       return {
@@ -194,9 +310,10 @@ export class GMIIndependentCaptureFlow {
       selectedMissing: selected,
     })
     if (!extracted) {
+      const selectedLabel = describeMissingField(selected)
       return this.emptyResult(
         traceId,
-        `No pude extraer un valor confiable para "${selected}".`
+        `No pude extraer un valor confiable para ${selectedLabel}.`
       )
     }
 
@@ -251,7 +368,8 @@ export class GMIIndependentCaptureFlow {
         .filter(Boolean)
         .join(' '),
       payload,
-      220
+      220,
+      selectionResponseSchema
     )
     const safe = selectionSchema.safeParse(parsed)
     if (!safe.success) return null
@@ -264,6 +382,169 @@ export class GMIIndependentCaptureFlow {
       })
     }
     return selected
+  }
+
+  async routeShortAnswer(args: {
+    message: string
+    candidateSlots: GMICandidateSlot[]
+    systemInstructions?: string
+  }): Promise<GMIShortAnswerRouteResult> {
+    const message = stripCollectionHints(String(args.message || ''))
+    const candidateSlots = Array.isArray(args.candidateSlots)
+      ? args.candidateSlots
+          .map((slot) => ({
+            ...slot,
+            slot_id: String(slot?.slot_id || '').trim(),
+            path: canonicalizePath(String(slot?.path || '').trim()),
+            question_text: String(slot?.question_text || '').trim(),
+            allowed_values: Array.isArray(slot?.allowed_values)
+              ? slot.allowed_values.map((v) => String(v || '').trim()).filter(Boolean)
+              : [],
+          }))
+          .filter((slot) => slot.slot_id && slot.path && isAllowedPath(slot.path))
+      : []
+
+    if (!this.gmi.isConfigured()) {
+      return { outcome: 'fallback', reason: 'gmi_not_configured' }
+    }
+    if (!message || candidateSlots.length === 0) {
+      return { outcome: 'fallback', reason: 'missing_message_or_slots' }
+    }
+
+    // Camino determinista: cuando exactamente un slot abierto es compatible
+    // con el mensaje corto, aplicarlo sin depender del router LLM.
+    const deterministicMatches = candidateSlots
+      .map((slot) => ({
+        slot,
+        normalized: normalizeShortAnswerValue(slot, message),
+      }))
+      .filter(
+        (item) =>
+          item.normalized !== null &&
+          item.normalized !== undefined &&
+          !(typeof item.normalized === 'string' && !item.normalized.trim())
+      )
+
+    if (deterministicMatches.length === 1) {
+      const match = deterministicMatches[0]
+      return {
+        outcome: 'applied',
+        selected_slot_id: match.slot.slot_id,
+        confidence: 0.99,
+        normalized_value: match.normalized,
+        update: {
+          op: 'set',
+          path: match.slot.path,
+          value: match.normalized,
+          reason: `Short-answer deterministico aplicado al slot compatible ${match.slot.slot_id}`,
+        },
+        reason: 'single_compatible_slot_deterministic',
+      }
+    }
+
+    // Camino determinista: si solo hay un slot abierto y el valor se normaliza
+    // correctamente, aplicar sin depender del router LLM.
+    if (candidateSlots.length === 1) {
+      const only = candidateSlots[0]
+      const normalizedSingle = normalizeShortAnswerValue(only, message)
+      if (
+        normalizedSingle !== null &&
+        normalizedSingle !== undefined &&
+        !(typeof normalizedSingle === 'string' && !normalizedSingle.trim())
+      ) {
+        return {
+          outcome: 'applied',
+          selected_slot_id: only.slot_id,
+          confidence: 0.99,
+          normalized_value: normalizedSingle,
+          update: {
+            op: 'set',
+            path: only.path,
+            value: normalizedSingle,
+            reason: `Short-answer deterministico aplicado al slot unico ${only.slot_id}`,
+          },
+          reason: 'single_open_slot_deterministic',
+        }
+      }
+    }
+
+    const payload = {
+      user_message: message,
+      candidate_slots: candidateSlots.map((slot) => ({
+        slot_id: slot.slot_id,
+        path: slot.path,
+        question_text: slot.question_text,
+        allowed_values: slot.allowed_values || [],
+        asked_at: slot.asked_at || null,
+        source: slot.source,
+      })),
+      rules: [
+        'Selecciona SOLO un slot_id de candidate_slots o null.',
+        'No inventes slot_id ni paths.',
+        'Si hay ambiguedad entre slots, needs_clarification=true.',
+      ],
+    }
+
+    const parsed = await this.gmi.json(
+      [
+        'Eres un router semantico para respuestas cortas en flujo notarial.',
+        'Debes mapear el mensaje a un slot abierto o pedir aclaracion.',
+        'Responde SOLO JSON.',
+        args.systemInstructions ? `INSTRUCCIONES_ADICIONALES: ${args.systemInstructions}` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
+      payload,
+      220,
+      shortAnswerRouteResponseSchema
+    )
+    const safe = shortAnswerRouteSchema.safeParse(parsed)
+    if (!safe.success) return { outcome: 'fallback', reason: 'invalid_router_output' }
+
+    const chosenSlotId = String(safe.data.chosen_slot_id || '').trim()
+    const confidence = Number(safe.data.confidence ?? 0)
+    const needsClarification = safe.data.needs_clarification === true
+    const slot = candidateSlots.find((item) => item.slot_id === chosenSlotId) || null
+    if (!slot) {
+      return { outcome: 'fallback', reason: 'no_slot_selected' }
+    }
+    if (!isAllowedPath(slot.path)) {
+      return { outcome: 'fallback', reason: 'selected_slot_path_not_allowed' }
+    }
+
+    const normalized = normalizeShortAnswerValue(slot, safe.data.normalized_value)
+    const alternatives = (safe.data.top_alternatives || [])
+      .map((id) => candidateSlots.find((slotItem) => slotItem.slot_id === id))
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((slotItem) => ({
+        slot_id: String(slotItem!.slot_id),
+        question_text: String(slotItem!.question_text || slotItem!.path),
+      }))
+
+    if (needsClarification || confidence < this.shortRouteThreshold || normalized === null || normalized === undefined) {
+      return {
+        outcome: 'clarify',
+        selected_slot_id: slot.slot_id,
+        confidence,
+        top_alternatives: alternatives,
+        clarify_message: buildClarifyMessage(slot, alternatives),
+        reason: normalized === null || normalized === undefined ? 'normalized_value_empty' : 'low_confidence_or_ambiguous',
+      }
+    }
+
+    return {
+      outcome: 'applied',
+      selected_slot_id: slot.slot_id,
+      confidence,
+      normalized_value: normalized,
+      update: {
+        op: 'set',
+        path: slot.path,
+        value: normalized,
+        reason: `Short-answer router aplicado al slot ${slot.slot_id}`,
+      },
+    }
   }
 
   private async extractForMissing(
@@ -324,7 +605,8 @@ export class GMIIndependentCaptureFlow {
         .filter(Boolean)
         .join(' '),
       payload,
-      280
+      280,
+      extractionResponseSchema
     )
     const safe = extractionSchema.safeParse(parsed)
     const normalizedExtraction = normalizeExtractionCandidate(parsed, targetPath)
@@ -401,6 +683,31 @@ function normalizeRequiredMissing(requiredMissing?: string[]): string[] {
     : []
 }
 
+function describeMissingField(field: string): string {
+  const normalized = String(field || '').trim()
+  if (!normalized) return 'ese campo'
+  if (normalized === 'inmueble.folio_real') return 'el folio real del inmueble'
+  if (normalized === 'existencia_credito') return 'si la compra sera con credito o de contado'
+  if (normalized === 'vendedores[]') return 'quien es el vendedor'
+  if (normalized === 'vendedores[].tipo_persona') return 'si el vendedor es persona fisica o moral'
+  if (normalized === 'compradores[].nombre') return 'el nombre completo del comprador'
+  if (normalized === 'compradores[].tipo_persona') return 'si el comprador es persona fisica o moral'
+  if (normalized === 'compradores[].persona_fisica.conyuge.nombre') return 'el nombre completo del conyuge del comprador'
+  if (/^compradores\[\d+\]\.persona_fisica\.conyuge\.nombre$/.test(normalized))
+    return 'el nombre completo del conyuge del comprador'
+  if (/^compradores\[\d+\]\.persona_fisica\.estado_civil$/.test(normalized))
+    return 'el estado civil del comprador'
+  if (/^compradores\[\d+\]\.persona_fisica\.nombre$/.test(normalized))
+    return 'el nombre completo del comprador'
+  if (/^vendedores\[\d+\]\.persona_fisica\.nombre$/.test(normalized))
+    return 'el nombre completo del vendedor'
+  if (/^compradores\[\d+\]\.tipo_persona$/.test(normalized))
+    return 'si el comprador es persona fisica o moral'
+  if (/^vendedores\[\d+\]\.tipo_persona$/.test(normalized))
+    return 'si el vendedor es persona fisica o moral'
+  return `"${normalized}"`
+}
+
 function canonicalizePath(path: string): string {
   const raw = String(path || '').trim()
   if (!raw) return raw
@@ -473,6 +780,87 @@ function normalizeValue(path: string, value: unknown): unknown {
     return value.trim() ? [value.trim()] : []
   }
   return value
+}
+
+function normalizeShortAnswerValue(slot: GMICandidateSlot, value: unknown): unknown {
+  const path = canonicalizePath(String(slot.path || ''))
+  const allowed = Array.isArray(slot.allowed_values) ? slot.allowed_values : []
+
+  const normalizeStringToken = (input: string): string =>
+    String(input || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+
+  const resolveAllowed = (raw: unknown): string | null => {
+    if (raw === null || raw === undefined) return null
+    const rawNormalized = normalizeStringToken(String(raw))
+    if (!rawNormalized) return null
+    const exact = allowed.find((item) => normalizeStringToken(item) === rawNormalized)
+    return exact || null
+  }
+
+  if (/\.tipo_persona$/.test(path)) {
+    const candidate = resolveAllowed(value)
+    if (candidate) return candidate
+    return null
+  }
+  if (/\.estado_civil$/.test(path)) {
+    const candidate = resolveAllowed(value)
+    if (candidate) return candidate
+    return null
+  }
+  if (path === 'inmueble.existe_hipoteca') {
+    if (typeof value === 'boolean') return value
+    const candidate = resolveAllowed(value)
+    if (candidate === 'si') return true
+    if (candidate === 'no') return false
+    return null
+  }
+  if (path === 'actosNotariales.aperturaCreditoComprador') {
+    if (typeof value === 'boolean') return value
+    const candidate = resolveAllowed(value)
+    if (candidate === 'credito') return true
+    if (candidate === 'contado') return false
+    return null
+  }
+  if (path === 'creditos') {
+    if (Array.isArray(value)) return value
+    const candidate = resolveAllowed(value)
+    if (candidate === 'contado') return []
+    if (candidate === 'credito') return [{ institucion: null, participantes: [] }]
+    return null
+  }
+  if (path.startsWith('creditos[') && path.endsWith('.institucion')) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  if (path.startsWith('compradores[') && path.includes('.nombre')) {
+    if (typeof value === 'string' && value.trim()) return inferShortNameCandidate(value)
+  }
+  if (path.startsWith('vendedores[') && path.includes('.nombre')) {
+    if (typeof value === 'string' && value.trim()) return inferShortNameCandidate(value)
+  }
+
+  return normalizeValue(path, value)
+}
+
+function buildClarifyMessage(
+  slot: GMICandidateSlot,
+  alternatives: Array<{ slot_id: string; question_text: string }>
+): string {
+  const options = [slot, ...alternatives.map((x) => ({ slot_id: x.slot_id, question_text: x.question_text } as any))]
+    .slice(0, 2)
+    .map((item: any) => String(item?.question_text || '').trim())
+    .filter(Boolean)
+  if (options.length === 0) {
+    return 'Para evitar errores, confirma a que dato corresponde tu respuesta.'
+  }
+  if (options.length === 1) {
+    return `Para evitar errores, confirma: ${options[0]}`
+  }
+  return `Tu respuesta puede corresponder a dos campos. Confirma cual aplica: 1) ${options[0]} 2) ${options[1]}`
 }
 
 function extractGeminiText(payload: any): string {
@@ -563,6 +951,8 @@ function inferHeuristicUpdates(args: {
   message: string
   requiredMissing: string[]
   collectedData: Record<string, unknown>
+  lastQuestionIntent?: string | null
+  pendingQuestions?: string[]
 }): Array<Record<string, unknown>> {
   const message = String(args.message || '')
   const requiredMissing = Array.isArray(args.requiredMissing) ? args.requiredMissing : []
@@ -576,8 +966,40 @@ function inferHeuristicUpdates(args: {
   }
 
   const updates: Array<Record<string, unknown>> = []
+  const shortNameCandidate = inferShortNameCandidate(message)
+  const nameIntentScope = detectNameIntentScope({
+    requiredMissing,
+    lastQuestionIntent: args.lastQuestionIntent || null,
+    pendingQuestions: Array.isArray(args.pendingQuestions) ? args.pendingQuestions : [],
+  })
+
+  if (shortNameCandidate && nameIntentScope !== null) {
+    if (
+      (nameIntentScope === 'comprador' || nameIntentScope === 'any') &&
+      shouldCapturePath('compradores[0].persona_fisica.nombre')
+    ) {
+      updates.push({
+        op: 'set',
+        path: 'compradores[0].persona_fisica.nombre',
+        value: shortNameCandidate,
+        reason: 'Nombre corto capturado segun la ultima pregunta activa del chat',
+      })
+    }
+    if (
+      (nameIntentScope === 'vendedor' || nameIntentScope === 'any') &&
+      shouldCapturePath('vendedores[0].persona_fisica.nombre')
+    ) {
+      updates.push({
+        op: 'set',
+        path: 'vendedores[0].persona_fisica.nombre',
+        value: shortNameCandidate,
+        reason: 'Nombre corto capturado segun la ultima pregunta activa del chat',
+      })
+    }
+  }
 
   const paymentModeHint = inferShortPaymentModeHint(message)
+  const estadoCivilHint = inferShortEstadoCivilHint(message)
   if (paymentModeHint === 'contado') {
     if (shouldCapturePath('creditos')) {
       updates.push({
@@ -611,6 +1033,25 @@ function inferHeuristicUpdates(args: {
         path: 'actosNotariales.aperturaCreditoComprador',
         value: true,
         reason: 'Modo de pago con credito capturado por respuesta corta',
+      })
+    }
+  }
+
+  if (estadoCivilHint) {
+    if (shouldCapturePath('compradores[0].persona_fisica.estado_civil')) {
+      updates.push({
+        op: 'set',
+        path: 'compradores[0].persona_fisica.estado_civil',
+        value: estadoCivilHint,
+        reason: 'Estado civil del comprador capturado por respuesta corta',
+      })
+    }
+    if (shouldCapturePath('vendedores[0].persona_fisica.estado_civil')) {
+      updates.push({
+        op: 'set',
+        path: 'vendedores[0].persona_fisica.estado_civil',
+        value: estadoCivilHint,
+        reason: 'Estado civil del vendedor capturado por respuesta corta',
       })
     }
   }
@@ -1021,6 +1462,78 @@ function inferShortPaymentModeHint(message: string): 'contado' | 'credito' | nul
   return null
 }
 
+function inferShortEstadoCivilHint(
+  message: string
+): 'casado' | 'soltero' | 'divorciado' | 'viudo' | 'union_libre' | null {
+  const normalized = String(message || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return null
+
+  if (/^(casado|casada|es casado|es casada|si, casado|si casado)$/.test(normalized)) return 'casado'
+  if (/^(soltero|soltera|es soltero|es soltera|si, soltero|si soltero)$/.test(normalized)) return 'soltero'
+  if (/^(divorciado|divorciada|es divorciado|es divorciada)$/.test(normalized)) return 'divorciado'
+  if (/^(viudo|viuda|es viudo|es viuda)$/.test(normalized)) return 'viudo'
+  if (/^(union libre|en union libre|concubinato)$/.test(normalized)) return 'union_libre'
+  return null
+}
+
+function inferShortNameCandidate(message: string): string | null {
+  const raw = String(message || '').trim()
+  if (!raw) return null
+  if (raw.length < 6 || raw.length > 90) return null
+  if (/\d/.test(raw)) return null
+  if (/[:#\-]/.test(raw)) return null
+  if (/[,.]/.test(raw)) return null
+  if (/\b(fisica|moral|credito|contado|folio|partida|casad[oa]|solter[oa]|gravamen|hipoteca)\b/i.test(raw)) {
+    return null
+  }
+  if (!/^[\p{L}'\s]+$/u.test(raw)) return null
+  const tokens = raw.split(/\s+/).filter(Boolean)
+  if (tokens.length < 2 || tokens.length > 6) return null
+  const cleaned = cleanName(raw)
+  return cleaned || null
+}
+
+function detectNameIntentScope(args: {
+  requiredMissing: string[]
+  lastQuestionIntent: string | null
+  pendingQuestions: string[]
+}): 'comprador' | 'vendedor' | 'any' | null {
+  const hasBuyerNameMissing = args.requiredMissing.some((m) =>
+    matchesMissing('compradores[0].persona_fisica.nombre', m)
+  )
+  const hasSellerNameMissing = args.requiredMissing.some((m) =>
+    matchesMissing('vendedores[0].persona_fisica.nombre', m)
+  )
+
+  const normalizedIntent = String(args.lastQuestionIntent || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  const pendingText = (args.pendingQuestions || [])
+    .join(' ')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  const asksNombre = /\bnombre\b/.test(pendingText)
+  const asksBuyer = /\bcomprador\b/.test(pendingText) || /\bcomprador\b/.test(normalizedIntent)
+  const asksSeller = /\bvendedor\b/.test(pendingText) || /\bvendedor\b/.test(normalizedIntent)
+
+  if (asksNombre && asksBuyer) return 'comprador'
+  if (asksNombre && asksSeller) return 'vendedor'
+  if (hasBuyerNameMissing && hasSellerNameMissing) return 'any'
+  if (hasBuyerNameMissing && (asksBuyer || asksNombre || normalizedIntent.includes('comprador'))) return 'comprador'
+  if (hasSellerNameMissing && (asksSeller || asksNombre || normalizedIntent.includes('vendedor'))) return 'vendedor'
+  if (hasBuyerNameMissing) return 'comprador'
+  if (hasSellerNameMissing) return 'vendedor'
+  return null
+}
+
 function resolveBuyerReferenceFromContext(
   message: string,
   collectedData: Record<string, unknown>
@@ -1168,3 +1681,4 @@ function inferGravamenAndCreditSemantics(message: string): {
     hasContadoSignal: contado,
   }
 }
+

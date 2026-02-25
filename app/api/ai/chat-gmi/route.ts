@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { createServerClient } from '@/lib/supabase'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
-import { GMIIndependentCaptureFlow } from '@/lib/ai/routing/gmi-independent-capture-flow'
+import { GMIIndependentCaptureFlow, type GMICandidateSlot } from '@/lib/ai/routing/gmi-independent-capture-flow'
 import {
   PreavisoProposedUpdateService,
   ProposedUpdateDomainViolationError,
@@ -10,6 +10,7 @@ import {
 import { TramiteService } from '@/lib/services/tramite-service'
 import { PluginRegistry } from '@/lib/tramites/plugins/plugin-registry'
 import { TramitePluginStateService } from '@/lib/services/tramite-plugin-state-service'
+import { getPathValue, hasMeaningfulValue } from '@/lib/tramites/plugins/shared-schemas'
 
 const requestSchema = z
   .object({
@@ -91,13 +92,19 @@ const defaultDeps = {
     const supabase = createServerClient()
     const { data, error } = await supabase
       .from('chat_messages')
-      .select('role,content,created_at')
+      .select('id,role,content,metadata,created_at')
       .eq('session_id', chatId)
       .order('created_at', { ascending: true })
       .limit(limit)
     if (error) throw new Error(`Error loading chat history: ${error.message}`)
-    return (data || []) as Array<{ role: string; content: string; created_at: string }>
+    return (data || []) as Array<{ id?: string; role: string; content: string; metadata?: Record<string, unknown> | null; created_at: string }>
   },
+  routeShortAnswer: async (args: {
+    message: string
+    candidateSlots: GMICandidateSlot[]
+    systemInstructions?: string
+  }) => gmiCapture.routeShortAnswer(args),
+  runCapture: async (input: Parameters<GMIIndependentCaptureFlow['process']>[0]) => gmiCapture.process(input),
   commitProposedUpdates: PreavisoProposedUpdateService.commit,
   insertChatMessage: async (chatId: string, role: string, content: string, metadata: Record<string, unknown>) => {
     const supabase = createServerClient()
@@ -164,7 +171,7 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
       const [tramiteData, stateSnapshot, recentMessages] = await Promise.all([
         deps.loadTramiteData(body.tramiteId),
         deps.getTramiteStateSnapshot(body.tramiteId),
-        deps.findRecentChatMessages(body.chatId, 8),
+        deps.findRecentChatMessages(body.chatId, 24),
       ])
       const requiredMissing = Array.isArray(stateSnapshot.required_missing) ? stateSnapshot.required_missing : []
       const blockingReasons = Array.isArray(stateSnapshot.blocking_reasons) ? stateSnapshot.blocking_reasons : []
@@ -180,8 +187,84 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
         blockingReasons,
         folioCandidates,
       })
+      const candidateSlots = buildCandidateSlots({
+        requiredMissing,
+        recentMessages,
+        collectedData: tramiteData,
+      })
+      const shortAnswerMeta = detectShortAnswerSignal(body.message, candidateSlots.length)
+      console.log('[chat-gmi][short-router] detect', {
+        token_count: shortAnswerMeta.token_count,
+        low_structure_reason: shortAnswerMeta.reason,
+        short_answer_detected: shortAnswerMeta.detected,
+        candidate_slots_count: candidateSlots.length,
+        candidate_slots: candidateSlots.map((slot) => ({ slot_id: slot.slot_id, path: slot.path, source: slot.source })),
+      })
 
-      const proposal = await gmiCapture.process({
+      let proposal: Awaited<ReturnType<GMIIndependentCaptureFlow['process']>> = {
+        intent: 'UPDATE_STATE',
+        agent_used: 'GMIIndependentCaptureFlow',
+        answer: 'No pude mapear el mensaje a un campo faltante especifico.',
+        proposed_updates: [],
+        actions: [{ type: 'request_missing_field', reason: 'No se detectaron cambios estructurados claros para aplicar como propuesta' }],
+        trace_id: `trace-${Date.now()}`,
+      }
+      let routerOutcome: 'applied' | 'clarify' | 'fallback' = 'fallback'
+
+      if (shortAnswerMeta.detected && candidateSlots.length > 0) {
+        const shortRoute = await deps.routeShortAnswer({
+          message: body.message,
+          candidateSlots,
+          systemInstructions,
+        })
+        routerOutcome = shortRoute.outcome
+        console.log('[chat-gmi][short-router] outcome', {
+          router_outcome: shortRoute.outcome,
+          router_selected_slot_id: shortRoute.selected_slot_id || null,
+          router_confidence: shortRoute.confidence ?? null,
+          alternatives: shortRoute.top_alternatives || [],
+        })
+
+        if (shortRoute.outcome === 'applied' && shortRoute.update) {
+          proposal = {
+            intent: 'UPDATE_STATE',
+            agent_used: 'GMIIndependentCaptureFlow',
+            answer: 'Genere una propuesta de actualizacion alineada a una respuesta corta del usuario.',
+            proposed_updates: [shortRoute.update],
+            actions: [
+              {
+                type: 'review_proposed_updates',
+                requires_domain_commit: true,
+                source: 'gmi_short_answer_router',
+              },
+            ],
+            trace_id: randomTraceId(),
+          }
+        } else if (shortRoute.outcome === 'clarify') {
+          const clarifyQuestions = (shortRoute.top_alternatives || []).map((x) => x.question_text).slice(0, 2)
+          proposal = {
+            intent: 'UPDATE_STATE',
+            agent_used: 'GMIIndependentCaptureFlow',
+            answer:
+              String(shortRoute.clarify_message || '').trim() ||
+              'Tu respuesta parece ambigua. Confirma a que dato corresponde.',
+            proposed_updates: [],
+            actions: [
+              {
+                type: 'request_missing_field',
+                reason: 'short_answer_ambiguous',
+                next_questions: clarifyQuestions,
+                selected_slot_id: shortRoute.selected_slot_id || null,
+                confidence: shortRoute.confidence ?? null,
+              },
+            ],
+            trace_id: randomTraceId(),
+          }
+        }
+      }
+
+      if (routerOutcome === 'fallback') {
+        proposal = await deps.runCapture({
         message: body.message,
         currentStep: body.uiContext?.currentStep,
         lastQuestionIntent: body.uiContext?.lastQuestionIntent || null,
@@ -192,6 +275,7 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
         detectedPeople: body.uiContext?.detectedPeople || [],
         recentMessages: recentMessages.map((m) => ({ role: m.role, content: m.content })),
       })
+      }
 
       let responsePayload: Record<string, unknown> = {
         intent: 'UPDATE_STATE',
@@ -236,7 +320,12 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
       const blockingReasonsFinal = Array.isArray((finalState as any).blocking_reasons)
         ? ((finalState as any).blocking_reasons as string[])
         : []
-      if (requiredMissingFinal.length > 0 || blockingReasonsFinal.length > 0) {
+      const hasShortClarifyAction = Array.isArray((responsePayload as any).actions)
+        ? ((responsePayload as any).actions as any[]).some(
+            (action) => String(action?.reason || '') === 'short_answer_ambiguous'
+          )
+        : false
+      if (!hasShortClarifyAction && (requiredMissingFinal.length > 0 || blockingReasonsFinal.length > 0)) {
         const guidance = buildMissingDataGuidance(requiredMissingFinal, blockingReasonsFinal)
         responsePayload = {
           ...responsePayload,
@@ -286,6 +375,170 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
 
 export const POST = createDirectChatGMIRouteHandler()
 
+function randomTraceId(): string {
+  return `gmi-short-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function buildCandidateSlots(args: {
+  requiredMissing: string[]
+  recentMessages: Array<{ id?: string; role: string; content: string; metadata?: Record<string, unknown> | null; created_at: string }>
+  collectedData: Record<string, unknown>
+}): GMICandidateSlot[] {
+  const slots = new Map<string, GMICandidateSlot>()
+  const recent = Array.isArray(args.recentMessages) ? args.recentMessages.slice(-24) : []
+  const assistantMsgs = recent.filter((m) => String(m?.role || '') === 'assistant')
+  const recentAssistantWindow = assistantMsgs.slice(-12)
+  const knownGlobal = buildGlobalShortSlots(args.requiredMissing)
+
+  for (const message of recentAssistantWindow) {
+    const actions = Array.isArray((message?.metadata as any)?.actions)
+      ? ((message?.metadata as any).actions as any[])
+      : []
+    for (const action of actions) {
+      if (String(action?.type || '') !== 'request_missing_field') continue
+      const fields = Array.isArray(action?.required_missing) ? action.required_missing : []
+      const questions = Array.isArray(action?.next_questions) ? action.next_questions : []
+      for (let i = 0; i < fields.length; i++) {
+        const missing = String(fields[i] || '').trim()
+        const path = GMIIndependentCaptureFlow.targetPathFromMissing(missing)
+        if (!path) continue
+        const canonicalPath = GMIIndependentCaptureFlow.canonicalizePath(path)
+        if (!GMIIndependentCaptureFlow.isAllowedPath(canonicalPath)) continue
+        if (hasMeaningfulValue(getPathValue(args.collectedData || {}, canonicalPath))) continue
+        const slotId = `slot:${canonicalPath}`
+        if (!slots.has(slotId)) {
+          slots.set(slotId, {
+            slot_id: slotId,
+            path: canonicalPath,
+            question_text: String(questions[i] || mapMissingFieldToQuestion(missing)),
+            allowed_values: inferAllowedValues(canonicalPath),
+            asked_at: String(message?.created_at || ''),
+            source: 'open_question',
+          })
+        }
+      }
+    }
+  }
+
+  for (const missing of args.requiredMissing || []) {
+    const path = GMIIndependentCaptureFlow.targetPathFromMissing(String(missing || ''))
+    if (!path) continue
+    const canonicalPath = GMIIndependentCaptureFlow.canonicalizePath(path)
+    if (!GMIIndependentCaptureFlow.isAllowedPath(canonicalPath)) continue
+    if (hasMeaningfulValue(getPathValue(args.collectedData || {}, canonicalPath))) continue
+    const slotId = `slot:${canonicalPath}`
+    if (!slots.has(slotId)) {
+      slots.set(slotId, {
+        slot_id: slotId,
+        path: canonicalPath,
+        question_text: mapMissingFieldToQuestion(String(missing || '')),
+        allowed_values: inferAllowedValues(canonicalPath),
+        asked_at: null,
+        source: 'required_missing',
+      })
+    }
+  }
+
+  for (const globalSlot of knownGlobal) {
+    const canonicalPath = GMIIndependentCaptureFlow.canonicalizePath(globalSlot.path)
+    if (!GMIIndependentCaptureFlow.isAllowedPath(canonicalPath)) continue
+    if (hasMeaningfulValue(getPathValue(args.collectedData || {}, canonicalPath))) continue
+    const slotId = `slot:${canonicalPath}`
+    if (!slots.has(slotId)) {
+      slots.set(slotId, {
+        slot_id: slotId,
+        path: canonicalPath,
+        question_text: globalSlot.question_text,
+        allowed_values: globalSlot.allowed_values,
+        asked_at: null,
+        source: 'global',
+      })
+    }
+  }
+
+  const sourceRank: Record<string, number> = {
+    open_question: 3,
+    required_missing: 2,
+    global: 1,
+  }
+  return Array.from(slots.values()).sort((a, b) => {
+    const aTs = Date.parse(String(a.asked_at || '')) || 0
+    const bTs = Date.parse(String(b.asked_at || '')) || 0
+    if (bTs !== aTs) return bTs - aTs
+    return (sourceRank[b.source] || 0) - (sourceRank[a.source] || 0)
+  })
+}
+
+function buildGlobalShortSlots(requiredMissing: string[]): Array<Pick<GMICandidateSlot, 'path' | 'question_text' | 'allowed_values'>> {
+  const missingSet = new Set((requiredMissing || []).map((m) => String(m || '').trim()))
+  const entries: Array<Pick<GMICandidateSlot, 'path' | 'question_text' | 'allowed_values'>> = []
+  if (missingSet.has('compradores[0].persona_fisica.estado_civil')) {
+    entries.push({
+      path: 'compradores[0].persona_fisica.estado_civil',
+      question_text: mapMissingFieldToQuestion('compradores[0].persona_fisica.estado_civil'),
+      allowed_values: ['casado', 'soltero', 'divorciado', 'viudo', 'union_libre'],
+    })
+  }
+  if (missingSet.has('compradores[].tipo_persona') || missingSet.has('vendedores[].tipo_persona')) {
+    entries.push({
+      path: missingSet.has('compradores[].tipo_persona') ? 'compradores[0].tipo_persona' : 'vendedores[0].tipo_persona',
+      question_text: missingSet.has('compradores[].tipo_persona')
+        ? mapMissingFieldToQuestion('compradores[].tipo_persona')
+        : mapMissingFieldToQuestion('vendedores[].tipo_persona'),
+      allowed_values: ['persona_fisica', 'persona_moral'],
+    })
+  }
+  if (missingSet.has('existencia_credito') || missingSet.has('creditos[]')) {
+    entries.push({
+      path: 'creditos',
+      question_text: mapMissingFieldToQuestion('existencia_credito'),
+      allowed_values: ['credito', 'contado'],
+    })
+  }
+  if (missingSet.has('inmueble.existe_hipoteca') || missingSet.has('gravamenes')) {
+    entries.push({
+      path: 'inmueble.existe_hipoteca',
+      question_text: 'Confirma si el inmueble tiene hipoteca o esta libre de gravamen.',
+      allowed_values: ['si', 'no'],
+    })
+  }
+  return entries
+}
+
+function inferAllowedValues(path: string): string[] | undefined {
+  const p = GMIIndependentCaptureFlow.canonicalizePath(String(path || ''))
+  if (/\.estado_civil$/.test(p)) return ['casado', 'soltero', 'divorciado', 'viudo', 'union_libre']
+  if (/\.tipo_persona$/.test(p)) return ['persona_fisica', 'persona_moral']
+  if (p === 'creditos' || p === 'actosNotariales.aperturaCreditoComprador') return ['credito', 'contado']
+  if (p === 'inmueble.existe_hipoteca') return ['si', 'no']
+  return undefined
+}
+
+function detectShortAnswerSignal(message: string, candidateSlotsCount: number): {
+  detected: boolean
+  token_count: number
+  reason: string
+} {
+  const text = String(message || '').trim()
+  const tokens = text ? text.split(/\s+/).filter(Boolean) : []
+  const tokenCount = tokens.length
+  if (!text || candidateSlotsCount < 1) {
+    return { detected: false, token_count: tokenCount, reason: 'missing_text_or_slots' }
+  }
+  const hasDocStructure =
+    /[\r\n]/.test(text) ||
+    /[:;]/.test(text) ||
+    /\b\d{5,}\b/.test(text) ||
+    text.length > 120
+  if (hasDocStructure) {
+    return { detected: false, token_count: tokenCount, reason: 'document_like_structure' }
+  }
+  if (tokenCount <= 5) {
+    return { detected: true, token_count: tokenCount, reason: 'token_threshold' }
+  }
+  return { detected: false, token_count: tokenCount, reason: 'not_short_enough' }
+}
+
 function mapMissingFieldToQuestion(field: string): string {
   const normalized = String(field || '')
   if (normalized === 'inmueble.folio_real') return 'Indica cual folio real corresponde al inmueble de esta operacion.'
@@ -296,7 +549,21 @@ function mapMissingFieldToQuestion(field: string): string {
   if (normalized === 'vendedores[].tipo_persona') return 'Confirma si el vendedor es persona fisica o moral.'
   if (normalized === 'compradores[].nombre') return 'Indica el nombre completo del comprador.'
   if (normalized === 'compradores[].tipo_persona') return 'Confirma si el comprador es persona fisica o moral.'
+  if (normalized === 'compradores[].persona_fisica.conyuge.nombre')
+    return 'Indica el nombre completo del conyuge del comprador.'
+  if (/^compradores\[\d+\]\.persona_fisica\.conyuge\.nombre$/.test(normalized))
+    return 'Indica el nombre completo del conyuge del comprador.'
   if (normalized === 'compradores[0].persona_fisica.estado_civil') return 'Indica el estado civil del comprador.'
+  if (/^compradores\[\d+\]\.persona_fisica\.estado_civil$/.test(normalized))
+    return 'Indica el estado civil del comprador.'
+  if (/^compradores\[\d+\]\.persona_fisica\.nombre$/.test(normalized))
+    return 'Indica el nombre completo del comprador.'
+  if (/^vendedores\[\d+\]\.persona_fisica\.nombre$/.test(normalized))
+    return 'Indica el nombre completo del vendedor.'
+  if (/^compradores\[\d+\]\.tipo_persona$/.test(normalized))
+    return 'Confirma si el comprador es persona fisica o moral.'
+  if (/^vendedores\[\d+\]\.tipo_persona$/.test(normalized))
+    return 'Confirma si el vendedor es persona fisica o moral.'
   return `Completa: ${normalized}`
 }
 
