@@ -141,6 +141,10 @@ export interface PreavisoData {
         tipo: string;
         informacionExtraida: any;
     }>;
+    conyuges_detectados?: Array<{
+        nombre: string;
+        sexo?: 'hombre' | 'mujer' | null;
+    }>;
     folios?: {
         candidates: Array<{
             folio: string;

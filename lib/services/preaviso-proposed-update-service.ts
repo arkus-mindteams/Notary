@@ -64,6 +64,9 @@ export class PreavisoProposedUpdateService {
       if (!isAllowedPath(path)) {
         throw new ProposedUpdateDomainViolationError(`Path no permitido para commit: ${path}`)
       }
+      if (!isMeaningfulValueForPath(path, raw?.value)) {
+        continue
+      }
       setByPath(currentData, path, raw?.value)
       applied += 1
     }
@@ -71,6 +74,8 @@ export class PreavisoProposedUpdateService {
     if (applied === 0) {
       throw new ProposedUpdateDomainViolationError('No hubo updates aplicables en proposed_updates')
     }
+
+    normalizeDerivedPreavisoData(currentData, args.proposedUpdates)
 
     const updated = await TramiteService.updateTramite(args.tramiteId, {
       datos: currentData,
@@ -168,5 +173,266 @@ function parsePath(path: string): Array<string | number> {
     if (match[2]) out.push(Number(match[2]))
   }
   return out
+}
+
+function isMeaningfulValueForPath(path: string, value: unknown): boolean {
+  if (value === null || value === undefined) return false
+
+  const str = typeof value === 'string' ? value.trim() : String(value ?? '').trim()
+  if (!str) return false
+
+  if (path === 'inmueble.folio_real') {
+    const digits = str.replace(/\D/g, '')
+    return digits.length >= 5
+  }
+
+  if (/\.persona_fisica\.nombre$/.test(path)) {
+    const letters = (str.match(/[A-Za-zÁÉÍÓÚÑáéíóúñ]/g) || []).length
+    return letters >= 4
+  }
+
+  if (/\.persona_fisica\.rfc$/.test(path)) {
+    const normalized = str.toUpperCase().replace(/\s+/g, '')
+    return /^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(normalized)
+  }
+
+  if (/\.persona_fisica\.curp$/.test(path)) {
+    const normalized = str.toUpperCase().replace(/\s+/g, '')
+    return /^[A-Z][AEIOU][A-Z]{2}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$/.test(normalized)
+  }
+
+  return true
+}
+
+function normalizeDerivedPreavisoData(data: Record<string, any>, updates: ProposedUpdate[]) {
+  const touchedPaths = new Set(
+    (updates || [])
+      .map((u) => String(u?.path || '').trim())
+      .filter(Boolean)
+  )
+
+  normalizeBuyerNameAliases(data, touchedPaths)
+
+  if (!touchedPaths.has('inmueble.folio_real')) return
+
+  const inmueble = isPlainObject(data.inmueble) ? { ...(data.inmueble as Record<string, unknown>) } : {}
+  const folioRaw = String((inmueble as any).folio_real || '').trim()
+  const folioDigits = folioRaw.replace(/\D/g, '')
+  const selectedFolio = folioDigits || folioRaw
+  if (!selectedFolio) return
+
+  ;(inmueble as any).folio_real = selectedFolio
+  ;(inmueble as any).folio_real_confirmed = true
+  data.inmueble = inmueble
+
+  const prevFolios = isPlainObject(data.folios) ? (data.folios as Record<string, unknown>) : {}
+  const prevSelection = isPlainObject((prevFolios as any).selection)
+    ? ((prevFolios as any).selection as Record<string, unknown>)
+    : {}
+
+  data.folios = {
+    ...prevFolios,
+    selection: {
+      ...prevSelection,
+      selected_folio: selectedFolio,
+      confirmed_by_user: true,
+    },
+  }
+
+  enrichInmuebleFromSelectedFolioCandidate(data, selectedFolio)
+}
+
+function normalizeBuyerNameAliases(data: Record<string, any>, touchedPaths: Set<string>) {
+  for (const path of touchedPaths) {
+    const match = path.match(/^compradores\[(\d+)\]\.persona_fisica\.nombre$/)
+    if (!match) continue
+    const index = Number(match[1])
+    if (!Number.isFinite(index) || index < 0) continue
+
+    const buyers = Array.isArray(data.compradores) ? data.compradores : []
+    const buyer = isPlainObject(buyers[index]) ? { ...buyers[index] } : {}
+    const persona = isPlainObject((buyer as any).persona_fisica) ? { ...((buyer as any).persona_fisica as Record<string, any>) } : {}
+    const rawName = String(persona.nombre || '').trim()
+    if (!rawName) continue
+
+    const resolved = resolveRoleAliasToDetectedParty(rawName, data)
+    if (resolved) {
+      persona.nombre = resolved.buyerName
+      persona.estado_civil = persona.estado_civil || 'casado'
+      if (resolved.spouseName) {
+        const prevConyuge = isPlainObject(persona.conyuge) ? (persona.conyuge as Record<string, any>) : {}
+        persona.conyuge = {
+          ...prevConyuge,
+          nombre: resolved.spouseName,
+          rfc: prevConyuge.rfc ?? null,
+          curp: prevConyuge.curp ?? null,
+          participa: prevConyuge.participa ?? false,
+        }
+      }
+      removeUnclassifiedDetectedNames(data, [resolved.buyerName, resolved.spouseName || null])
+    } else if (isRoleAliasInsteadOfName(rawName)) {
+      delete persona.nombre
+    }
+
+    ;(buyer as any).tipo_persona = (buyer as any).tipo_persona || 'persona_fisica'
+    ;(buyer as any).persona_fisica = persona
+    buyers[index] = buyer
+    data.compradores = buyers
+  }
+}
+
+function resolveRoleAliasToDetectedParty(
+  inputName: string,
+  data: Record<string, any>
+): { buyerName: string; spouseName: string | null } | null {
+  if (!isRoleAliasInsteadOfName(inputName)) return null
+  const normalized = normalizeText(inputName)
+  const spouses = normalizeDetectedSpouses(data)
+  if (spouses.length === 0) return null
+
+  const male = spouses.find((p) => p.sexo === 'hombre') || null
+  const female = spouses.find((p) => p.sexo === 'mujer') || null
+
+  if (/\b(esposo|hombre)\b/.test(normalized)) {
+    const buyer = male || spouses[0]
+    const spouse = spouses.find((p) => p.nombre !== buyer.nombre) || null
+    return { buyerName: buyer.nombre, spouseName: spouse?.nombre || null }
+  }
+
+  if (/\b(esposa|mujer)\b/.test(normalized)) {
+    const buyer = female || spouses[0]
+    const spouse = spouses.find((p) => p.nombre !== buyer.nombre) || null
+    return { buyerName: buyer.nombre, spouseName: spouse?.nombre || null }
+  }
+
+  if (/\bconyuge\b/.test(normalized)) {
+    if (spouses.length === 1) return { buyerName: spouses[0].nombre, spouseName: null }
+    const buyer = spouses[0]
+    const spouse = spouses[1]
+    return { buyerName: buyer.nombre, spouseName: spouse?.nombre || null }
+  }
+
+  return null
+}
+
+function normalizeDetectedSpouses(data: Record<string, any>): Array<{ nombre: string; sexo: 'hombre' | 'mujer' | null }> {
+  const raw = Array.isArray(data?.conyuges_detectados) ? data.conyuges_detectados : []
+  return raw
+    .map((item: any) => {
+      const nombre = String(item?.nombre || item?.name || '').trim()
+      if (!nombre) return null
+      const sexoRaw = normalizeText(String(item?.sexo || ''))
+      const sexo =
+        sexoRaw === 'hombre' || sexoRaw === 'masculino'
+          ? 'hombre'
+          : sexoRaw === 'mujer' || sexoRaw === 'femenino'
+            ? 'mujer'
+            : null
+      return { nombre, sexo }
+    })
+    .filter(Boolean) as Array<{ nombre: string; sexo: 'hombre' | 'mujer' | null }>
+}
+
+function removeUnclassifiedDetectedNames(data: Record<string, any>, names: Array<string | null>) {
+  if (!Array.isArray(data?.personas_detectadas_no_clasificadas)) return
+  const toRemove = new Set(
+    names
+      .map((n) => normalizeText(String(n || '')))
+      .filter(Boolean)
+  )
+  if (toRemove.size === 0) return
+  data.personas_detectadas_no_clasificadas = (data.personas_detectadas_no_clasificadas as any[]).filter((p: any) => {
+    const n = normalizeText(String(p?.nombre || p?.name || ''))
+    return !toRemove.has(n)
+  })
+}
+
+function enrichInmuebleFromSelectedFolioCandidate(data: Record<string, any>, selectedFolio: string) {
+  const folios = isPlainObject(data.folios) ? (data.folios as Record<string, any>) : {}
+  const candidates = Array.isArray(folios.candidates) ? folios.candidates : []
+  if (candidates.length === 0) return
+
+  const selectedScope = String(folios?.selection?.selected_scope || '').trim().toLowerCase()
+  const selectedDigits = String(selectedFolio || '').replace(/\D/g, '')
+  if (!selectedDigits) return
+
+  const sameFolio = candidates.filter(
+    (c: any) => String(c?.folio || '').replace(/\D/g, '') === selectedDigits
+  )
+  if (sameFolio.length === 0) return
+
+  const scoped = selectedScope
+    ? sameFolio.filter((c: any) => String(c?.scope || '').toLowerCase() === selectedScope)
+    : []
+  const pool = scoped.length > 0 ? scoped : sameFolio
+  pool.sort((a: any, b: any) => countCandidateAttrs(b) - countCandidateAttrs(a))
+  const target = pool[0]
+  if (!target || !isPlainObject(target.attrs)) return
+
+  const attrs = target.attrs as Record<string, any>
+  const attrsDireccion = isPlainObject(attrs.direccion) ? (attrs.direccion as Record<string, any>) : {}
+
+  const inmueble = isPlainObject(data.inmueble) ? { ...(data.inmueble as Record<string, any>) } : {}
+  const direccion = isPlainObject(inmueble.direccion) ? { ...(inmueble.direccion as Record<string, any>) } : {}
+  const catastrales = isPlainObject(inmueble.datos_catastrales)
+    ? { ...(inmueble.datos_catastrales as Record<string, any>) }
+    : {}
+
+  const fromCalle = String(attrsDireccion.calle || '').trim()
+  const fromUbicacion = String(attrs.ubicacion || '').trim()
+  if (fromCalle || fromUbicacion) direccion.calle = fromCalle || fromUbicacion
+  if (hasValue(attrsDireccion.numero)) direccion.numero = attrsDireccion.numero
+  if (hasValue(attrsDireccion.colonia)) direccion.colonia = attrsDireccion.colonia
+  if (hasValue(attrsDireccion.municipio)) direccion.municipio = attrsDireccion.municipio
+  if (hasValue(attrsDireccion.estado)) direccion.estado = attrsDireccion.estado
+  if (hasValue(attrsDireccion.codigo_postal)) direccion.codigo_postal = attrsDireccion.codigo_postal
+
+  if (hasValue(attrs.superficie)) inmueble.superficie = attrs.superficie
+  if (hasValue(attrs.partida) && (!Array.isArray(inmueble.partidas) || inmueble.partidas.length === 0)) {
+    inmueble.partidas = [String(attrs.partida)]
+  }
+
+  if (hasValue(attrs.lote)) catastrales.lote = String(attrs.lote)
+  if (hasValue(attrs.manzana)) catastrales.manzana = String(attrs.manzana)
+  if (hasValue(attrs.fraccionamiento)) catastrales.fraccionamiento = String(attrs.fraccionamiento)
+  if (hasValue(attrs.condominio)) catastrales.condominio = String(attrs.condominio)
+  if (hasValue(attrs.unidad)) catastrales.unidad = String(attrs.unidad)
+  if (hasValue(attrs.modulo)) catastrales.modulo = String(attrs.modulo)
+
+  inmueble.direccion = direccion
+  inmueble.datos_catastrales = catastrales
+  data.inmueble = inmueble
+}
+
+function countCandidateAttrs(candidate: Record<string, any>): number {
+  const attrs = isPlainObject(candidate?.attrs) ? (candidate.attrs as Record<string, unknown>) : {}
+  const keys = ['unidad', 'condominio', 'lote', 'manzana', 'fraccionamiento', 'colonia', 'superficie', 'ubicacion', 'partida']
+  return keys.reduce((acc, key) => (hasValue(attrs[key]) ? acc + 1 : acc), 0)
+}
+
+function hasValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false
+  if (typeof value === 'string') return value.trim().length > 0
+  return true
+}
+
+function normalizeText(value: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isRoleAliasInsteadOfName(value: string): boolean {
+  const normalized = normalizeText(value)
+  if (!normalized) return false
+  if (/^(el|la)\s+(esposo|esposa|conyuge|comprador|compradora|vendedor|vendedora)$/.test(normalized)) return true
+  if (/^(esposo|esposa|conyuge|comprador|compradora|vendedor|vendedora)$/.test(normalized)) return true
+  if (/^(el|la)\s+(esposo|esposa|conyuge)\s+es\s+(el|la)\s+(comprador|compradora|vendedor|vendedora)$/.test(normalized)) return true
+  if (/^(el|la)\s+(comprador|compradora|vendedor|vendedora)\s+es\s+(el|la)\s+(esposo|esposa|conyuge)$/.test(normalized)) return true
+  if (/\b(esposo|esposa|conyuge)\b/.test(normalized) && /\b(comprador|compradora|vendedor|vendedora)\b/.test(normalized)) return true
+  return false
 }
 

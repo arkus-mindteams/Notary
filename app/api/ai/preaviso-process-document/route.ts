@@ -494,10 +494,15 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
     }
   }
 
-  if (structured?.gravamenes === 'LIBRE') {
+  const extractedDocType = normalizeExtractionDocumentType(structured?.source_document_type)
+  const canOverrideEncumbrance =
+    extractedDocType === 'inscripcion' ||
+    extractedDocType === 'escritura' ||
+    extractedDocType === 'otro'
+  if (canOverrideEncumbrance && structured?.gravamenes === 'LIBRE') {
     next.gravamenes = []
     next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: false }
-  } else if (Array.isArray(structured?.gravamenes) && structured.gravamenes.length > 0) {
+  } else if (canOverrideEncumbrance && Array.isArray(structured?.gravamenes) && structured.gravamenes.length > 0) {
     next.gravamenes = structured.gravamenes
     next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
   }
@@ -549,6 +554,32 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
   const conyugesDetectadosRaw = Array.isArray(structured?.conyuges_detectados)
     ? structured.conyuges_detectados
     : []
+  if (conyugesDetectadosRaw.length > 0) {
+    const dedupConyuges = new Map<string, any>()
+    for (const p of conyugesDetectadosRaw) {
+      const nombre = String(p?.nombre || '').trim()
+      const n = normalizeName(nombre)
+      if (!n) continue
+      const sexoRaw = String(p?.sexo || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+      const sexo =
+        sexoRaw === 'hombre' || sexoRaw === 'masculino'
+          ? 'hombre'
+          : sexoRaw === 'mujer' || sexoRaw === 'femenino'
+            ? 'mujer'
+            : null
+      const prev = dedupConyuges.get(n)
+      if (!prev) {
+        dedupConyuges.set(n, { nombre, sexo })
+      } else if (!prev.sexo && sexo) {
+        dedupConyuges.set(n, { ...prev, sexo })
+      }
+    }
+    next.conyuges_detectados = Array.from(dedupConyuges.values())
+  }
   for (const p of conyugesDetectadosRaw) {
     const n = normalizeName(p?.nombre)
     if (n) classifiedNames.add(n)

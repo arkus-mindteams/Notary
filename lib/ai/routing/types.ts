@@ -10,6 +10,9 @@ export interface RouterUIContext {
   hasDocument?: boolean
   uiAction?: string
   currentStep?: string
+  lastQuestionIntent?: string | null
+  detectedPeople?: string[]
+  recentMessages?: Array<{ role: string; content: string }>
   pluginType?: string
   documentId?: string
   rawText?: string

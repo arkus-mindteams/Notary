@@ -1,9 +1,10 @@
-﻿import { NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { randomUUID } from 'crypto'
 import { createServerClient } from '@/lib/supabase'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import { AgentRouter } from '@/lib/ai/routing/agent-router'
+import { ProposeStateUpdateAgent } from '@/lib/ai/routing/propose-state-update-agent'
 import {
   PreavisoProposedUpdateService,
   ProposedUpdateDomainViolationError,
@@ -43,6 +44,9 @@ const requestSchema = z
   .strict()
 
 const router = new AgentRouter()
+const proposeStateUpdateAgent = new ProposeStateUpdateAgent()
+const STATE_UPDATE_DEBUG = process.env.STATE_UPDATE_DEBUG === '1'
+const LLM_STATE_BRAIN = process.env.LLM_STATE_BRAIN !== '0'
 
 const errorResponse = (
   status: number,
@@ -337,18 +341,21 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
       }
       const isPreavisoPlugin = resolvedPluginType === 'preaviso'
 
-      const shouldDirectLegacyStateUpdate =
-        isPreavisoPlugin &&
-        !isConfirmationMessage(body.message) &&
-        shouldFallbackToLegacyStateUpdate(body.message) &&
-        shouldBypassRouterForShortUpdate(body.message, body.uiContext?.uiAction)
+      const recentMessagesForRouting = await deps.findRecentChatMessages(body.chatId, 5)
+      const recentMessagesContext = recentMessagesForRouting.map((m) => ({
+        role: String(m.role || ''),
+        content: String(m.content || ''),
+      }))
 
       let tramiteState = await deps.getTramiteStateSnapshot(body.tramiteId)
       const requiredMissingForRouting = Array.isArray(tramiteState?.required_missing)
         ? (tramiteState.required_missing as string[])
         : []
       const hintedIntent =
-        String(body.uiContext?.lastQuestionIntent || '').trim() ||
+        resolveActiveCaptureIntent(
+          String(body.uiContext?.lastQuestionIntent || '').trim() || null,
+          requiredMissingForRouting
+        ) ||
         deriveLastQuestionIntent(requiredMissingForRouting) ||
         null
       const hintedPeople = Array.isArray(body.uiContext?.detectedPeople)
@@ -357,18 +364,79 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
             .filter((v) => v.length > 0)
             .slice(0, 6)
         : []
-      const routingMessage = buildRoutingMessageWithCollectionHint(
-        body.message,
-        hintedIntent,
-        hintedPeople
-      )
-      if (routingMessage !== body.message) {
+      const shouldDirectByLegacySignal =
+        shouldFallbackToLegacyStateUpdate(body.message) &&
+        shouldBypassRouterForShortUpdate(body.message, body.uiContext?.uiAction)
+      const shouldDirectByPendingCaptureReply =
+        isLikelyDirectReplyToPendingCapture(body.message, hintedIntent)
+      const shouldPreferAgentStateUpdate =
+        Boolean(hintedIntent) ||
+        String(body.uiContext?.uiAction || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .includes('chat_after_document_process')
+      const shouldDirectLegacyStateUpdate =
+        isPreavisoPlugin &&
+        !isConfirmationMessage(body.message) &&
+        shouldDirectByLegacySignal &&
+        !shouldPreferAgentStateUpdate &&
+        !LLM_STATE_BRAIN
+      const shouldForceUpdateStateAgent =
+        isPreavisoPlugin &&
+        !isConfirmationMessage(body.message) &&
+        !shouldDirectLegacyStateUpdate &&
+        (
+          shouldDirectByPendingCaptureReply ||
+          (shouldPreferAgentStateUpdate && shouldFallbackToLegacyStateUpdate(body.message)) ||
+          (LLM_STATE_BRAIN && shouldFallbackToLegacyStateUpdate(body.message))
+        )
+      const routingMessage = String(body.message || '')
+      if (hintedIntent || hintedPeople.length > 0) {
         console.info('[api/ai/chat] routing_collection_hint', {
           hinted_intent: hintedIntent,
           detected_people_count: hintedPeople.length,
           message_preview: String(body.message || '').slice(0, 120),
         })
       }
+      if (STATE_UPDATE_DEBUG) {
+        console.info('[api/ai/chat] state_update_route_decision', {
+          should_direct_legacy_state_update: shouldDirectLegacyStateUpdate,
+          should_force_update_state_agent: shouldForceUpdateStateAgent,
+          reason_legacy_signal: shouldDirectByLegacySignal,
+          reason_pending_capture_reply: shouldDirectByPendingCaptureReply,
+          prefer_agent_state_update: shouldPreferAgentStateUpdate,
+          llm_state_brain: LLM_STATE_BRAIN,
+          hinted_intent: hintedIntent,
+          ui_action: body.uiContext?.uiAction || null,
+          message_preview: String(body.message || '').slice(0, 120),
+        })
+      }
+
+      const autoUpdateFromDocumentContext = inferAutoUpdateFromDocumentContext({
+        uiAction: String(body.uiContext?.uiAction || ''),
+        hintedIntent,
+        detectedPeople: hintedPeople,
+        requiredMissing: requiredMissingForRouting,
+      })
+      if (STATE_UPDATE_DEBUG && autoUpdateFromDocumentContext) {
+        console.info('[api/ai/chat] auto_update_from_document_context', {
+          ui_action: body.uiContext?.uiAction || null,
+          hinted_intent: hintedIntent,
+          path: String((autoUpdateFromDocumentContext as any)?.path || ''),
+          value_preview: String((autoUpdateFromDocumentContext as any)?.value || '').slice(0, 120),
+        })
+      }
+
+      const forcedStateUpdateProposal = shouldForceUpdateStateAgent
+        ? await proposeStateUpdateAgent.propose({
+            message: routingMessage,
+            currentStep: body.uiContext?.currentStep,
+            lastQuestionIntent: hintedIntent,
+            detectedPeople: hintedPeople,
+            recentMessages: recentMessagesContext,
+          })
+        : null
 
       const routed = shouldDirectLegacyStateUpdate
         ? ({
@@ -379,14 +447,40 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
             actions: [],
             trace_id: randomUUID(),
           } as any)
+        : autoUpdateFromDocumentContext
+          ? ({
+              intent: 'UPDATE_STATE',
+              agent_used: 'ProposeStateUpdateAgent',
+              answer: 'Detecte una persona en el documento y la asocie automaticamente al dato pendiente.',
+              proposed_updates: [autoUpdateFromDocumentContext],
+              actions: [
+                {
+                  type: 'review_proposed_updates',
+                  requires_domain_commit: true,
+                },
+              ],
+              trace_id: randomUUID(),
+            } as any)
+        : shouldForceUpdateStateAgent
+          ? ({
+              intent: 'UPDATE_STATE',
+              agent_used: 'ProposeStateUpdateAgent',
+              answer: forcedStateUpdateProposal?.answer || '',
+              proposed_updates: forcedStateUpdateProposal?.proposed_updates || [],
+              actions: forcedStateUpdateProposal?.actions || [],
+              trace_id: forcedStateUpdateProposal?.trace_id || randomUUID(),
+            } as any)
         : await deps.route({
             chatId: body.chatId,
             tramiteId: body.tramiteId,
             message: routingMessage,
             uiContext: {
               ...(body.uiContext || {}),
+              lastQuestionIntent: hintedIntent,
+              detectedPeople: hintedPeople,
               pluginType: resolvedPluginType,
               tramiteType: resolvedPluginType,
+              recentMessages: recentMessagesContext,
             },
             userAuthId: currentUser.auth_user_id,
           })
@@ -403,7 +497,8 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         !confirmationRequested &&
         !shouldDirectLegacyStateUpdate &&
         routed.intent === 'UPDATE_STATE' &&
-        shouldFallbackToLegacyStateUpdate(body.message)
+        shouldFallbackToLegacyStateUpdate(body.message) &&
+        !LLM_STATE_BRAIN
 
       const shouldRecoverFromQnaMisroute =
         isPreavisoPlugin &&
@@ -484,7 +579,9 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         })
         const normalizedWithHistory = hydrateCriticalFieldsFromHistory(
           normalizedLegacyData,
-          recentMessages.map((m) => String(m.content || ''))
+          recentMessages
+            .filter((m) => String(m.role || '').toLowerCase() === 'user')
+            .map((m) => String(m.content || ''))
         )
         const normalizedEnriched = enrichInmuebleFromFolioCandidates(normalizedWithHistory)
 
@@ -575,7 +672,9 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         })
         const normalizedWithHistory = hydrateCriticalFieldsFromHistory(
           normalizedLegacyData,
-          recentMessages.map((m) => String(m.content || ''))
+          recentMessages
+            .filter((m) => String(m.role || '').toLowerCase() === 'user')
+            .map((m) => String(m.content || ''))
         )
         const normalizedEnriched = enrichInmuebleFromFolioCandidates(normalizedWithHistory)
 
@@ -645,7 +744,9 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
           )
           const normalizedWithHistory = hydrateCriticalFieldsFromHistory(
             mergedFromDoc,
-            recentMessages.map((m) => String(m.content || ''))
+            recentMessages
+              .filter((m) => String(m.role || '').toLowerCase() === 'user')
+              .map((m) => String(m.content || ''))
           )
           const normalizedEnriched = enrichInmuebleFromFolioCandidates(normalizedWithHistory)
 
@@ -731,7 +832,9 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
           })
           const normalizedWithHistory = hydrateCriticalFieldsFromHistory(
             normalizedLegacyData,
-            recentMessages.map((m) => String(m.content || ''))
+            recentMessages
+              .filter((m) => String(m.role || '').toLowerCase() === 'user')
+              .map((m) => String(m.content || ''))
           )
           const normalizedEnriched = enrichInmuebleFromFolioCandidates(normalizedWithHistory)
           await deps.persistTramiteData(body.tramiteId, normalizedEnriched)
@@ -779,8 +882,9 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
 
       if (confirmationRequested) {
         const updatesFromRoute = Array.isArray(routed.proposed_updates) ? routed.proposed_updates : []
-        const updatesToCommit =
+        const updatesToCommitRaw =
           updatesFromRoute.length > 0 ? updatesFromRoute : await deps.findLatestAssistantProposals(body.chatId)
+        const updatesToCommit = sanitizeProposedUpdatesForCommit(updatesToCommitRaw)
         const latestActions = await deps.findLatestAssistantActions(body.chatId)
         const pendingDocumentGeneration = latestActions.find((a: any) => a?.type === 'prepare_document_generation')
 
@@ -792,20 +896,31 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
             proposedUpdates: updatesToCommit,
           })
 
+          const commitFromPendingQueue = updatesFromRoute.length === 0
           const currentAnswer =
             routed.intent === 'UPDATE_STATE' && routed.agent_used === 'ProposeStateUpdateAgent'
               ? String(routed.answer || '').trim()
               : ''
+          const shouldUseCurrentAnswer =
+            !commitFromPendingQueue &&
+            !!currentAnswer &&
+            !isNonActionableStateUpdateAnswer(currentAnswer)
           responsePayload = {
             ...routed,
             intent: 'UPDATE_STATE',
             agent_used: 'ProposeStateUpdateAgent',
-            answer: currentAnswer
+            answer: shouldUseCurrentAnswer
               ? `${currentAnswer}\n\nCambios aplicados correctamente al tramite.`
               : 'Cambios aplicados correctamente al tramite.',
             proposed_updates: [],
             actions: [
-              ...(routed.intent === 'UPDATE_STATE' && Array.isArray(routed.actions) ? routed.actions : []),
+              ...(
+                !commitFromPendingQueue &&
+                routed.intent === 'UPDATE_STATE' &&
+                Array.isArray(routed.actions)
+                  ? routed.actions
+                  : []
+              ),
               {
                 type: 'commit_applied',
                 applied_updates: committed.applied_updates,
@@ -817,6 +932,29 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
             },
             data: committed.data,
             state: committed.state,
+          }
+
+          const committedMissing = Array.isArray((committed.state as any)?.required_missing)
+            ? (((committed.state as any).required_missing as string[]) || [])
+            : []
+          const committedBlocking = Array.isArray((committed.state as any)?.blocking_reasons)
+            ? (((committed.state as any).blocking_reasons as string[]) || [])
+            : []
+          if (committedMissing.length > 0 || committedBlocking.length > 0) {
+            const guidance = buildMissingDataGuidance(committedMissing, committedBlocking)
+            responsePayload = {
+              ...responsePayload,
+              answer: `${String((responsePayload as any).answer || '').trim()}\n\n${guidance.message}`.trim(),
+              actions: [
+                ...(Array.isArray((responsePayload as any).actions) ? ((responsePayload as any).actions as any[]) : []),
+                {
+                  type: 'request_missing_field',
+                  required_missing: guidance.required_missing,
+                  blocking_reasons: guidance.blocking_reasons,
+                  next_questions: guidance.next_questions,
+                },
+              ],
+            }
           }
         } else if (pendingDocumentGeneration) {
           if (!tramiteState?.wizard_state?.can_finalize) {
@@ -871,7 +1009,7 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
           responsePayload = {
             ...routed,
             intent: 'UPDATE_STATE',
-            answer: 'No hay propuestas pendientes para aplicar. Indica un cambio y luego confirma con "ejecuta".',
+            answer: 'No hay propuestas pendientes para aplicar. Indica un cambio puntual para actualizar el tramite.',
             actions: [
               ...(Array.isArray(routed.actions) ? routed.actions : []),
               { type: 'no_pending_proposals' },
@@ -884,13 +1022,78 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
         Array.isArray(routed.proposed_updates) &&
         routed.proposed_updates.length > 0
       ) {
+        const updatesToCommit = sanitizeProposedUpdatesForCommit(routed.proposed_updates as Array<Record<string, unknown>>)
+        if (updatesToCommit.length > 0) {
+          const committed = await deps.commitProposedUpdates({
+            tramiteId: body.tramiteId,
+            userId: currentUser.auth_user_id,
+            traceId: routed.trace_id,
+            proposedUpdates: updatesToCommit,
+          })
+          responsePayload = {
+            ...routed,
+            intent: 'UPDATE_STATE',
+            agent_used: 'ProposeStateUpdateAgent',
+            answer: 'Cambios aplicados correctamente al tramite.',
+            proposed_updates: [],
+            actions: [
+              {
+                type: 'commit_applied',
+                applied_updates: committed.applied_updates,
+                mode: 'auto',
+              },
+            ],
+            commit: {
+              applied_updates: committed.applied_updates,
+              committed: true,
+              mode: 'auto',
+            },
+            data: committed.data,
+            state: committed.state,
+          }
+
+          const committedMissing = Array.isArray((committed.state as any)?.required_missing)
+            ? (((committed.state as any).required_missing as string[]) || [])
+            : []
+          const committedBlocking = Array.isArray((committed.state as any)?.blocking_reasons)
+            ? (((committed.state as any).blocking_reasons as string[]) || [])
+            : []
+          if (committedMissing.length > 0 || committedBlocking.length > 0) {
+            const guidance = buildMissingDataGuidance(committedMissing, committedBlocking)
+            responsePayload = {
+              ...responsePayload,
+              answer: `${String((responsePayload as any).answer || '').trim()}\n\n${guidance.message}`.trim(),
+              actions: [
+                ...(Array.isArray((responsePayload as any).actions) ? ((responsePayload as any).actions as any[]) : []),
+                {
+                  type: 'request_missing_field',
+                  required_missing: guidance.required_missing,
+                  blocking_reasons: guidance.blocking_reasons,
+                  next_questions: guidance.next_questions,
+                },
+              ],
+            }
+          }
+        } else {
+          responsePayload = {
+            ...routed,
+            intent: 'UPDATE_STATE',
+            answer: 'No se detectaron cambios validos para aplicar automaticamente.',
+            actions: [
+              ...(Array.isArray(routed.actions) ? routed.actions : []),
+              { type: 'no_pending_proposals' },
+            ],
+          }
+        }
+      } else if (
+        !usedLegacyStateFallback &&
+        routed.intent === 'UPDATE_STATE' &&
+        Array.isArray(routed.proposed_updates) &&
+        routed.proposed_updates.length === 0
+      ) {
         responsePayload = {
           ...routed,
-          answer: `${String(routed.answer || '').trim()}\n\nSi deseas aplicarlos escribe "ejecuta".`.trim(),
-          actions: [
-            ...(Array.isArray(routed.actions) ? routed.actions : []),
-            { type: 'confirm_commit' },
-          ],
+          answer: String(routed.answer || '').trim() || 'No se detectaron cambios para aplicar en este mensaje.',
         }
       }
 
@@ -1089,19 +1292,106 @@ function deriveIntentFromNextQuestions(questions: string[]): string | null {
   return null
 }
 
-function buildRoutingMessageWithCollectionHint(
-  originalMessage: string,
-  intent: string | null,
+function resolveActiveCaptureIntent(intent: string | null, requiredMissing: string[]): string | null {
+  const normalizedIntent = String(intent || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+  if (!normalizedIntent) return null
+  const set = new Set((requiredMissing || []).map((v) => String(v || '').trim()))
+  if (normalizedIntent.includes('comprador')) {
+    return Array.from(set).some((f) => f.startsWith('compradores')) ? 'comprador' : null
+  }
+  if (normalizedIntent.includes('vendedor')) {
+    return Array.from(set).some((f) => f.startsWith('vendedores')) ? 'vendedor' : null
+  }
+  if (normalizedIntent.includes('conyuge') || normalizedIntent.includes('esposo') || normalizedIntent.includes('esposa')) {
+    return set.has('compradores[].persona_fisica.conyuge.nombre') ? 'conyuge' : null
+  }
+  if (normalizedIntent.includes('folio')) {
+    return set.has('inmueble.folio_real') ? 'folio_real' : null
+  }
+  if (normalizedIntent.includes('partida')) {
+    return set.has('inmueble.partidas') ? 'partidas' : null
+  }
+  if (normalizedIntent.includes('direccion')) {
+    return set.has('inmueble.direccion') ? 'direccion' : null
+  }
+  if (normalizedIntent.includes('credito') || normalizedIntent.includes('contado') || normalizedIntent.includes('institucion')) {
+    return (
+      set.has('existencia_credito') ||
+      set.has('creditos[]') ||
+      Array.from(set).some((f) => f.startsWith('creditos['))
+    )
+      ? 'credito'
+      : null
+  }
+  if (normalizedIntent.includes('gravamen') || normalizedIntent.includes('hipoteca') || normalizedIntent.includes('cancelacion')) {
+    return (set.has('gravamenes[]') || Array.from(set).some((f) => f.startsWith('gravamenes['))) ? 'gravamen' : null
+  }
+  return null
+}
+
+function inferAutoUpdateFromDocumentContext(args: {
+  uiAction: string
+  hintedIntent: string | null
   detectedPeople: string[]
-): string {
-  const raw = String(originalMessage || '').trim()
-  const cleanIntent = String(intent || '').trim().toLowerCase()
-  if (!raw || !cleanIntent) return raw
-  const peopleHint =
-    Array.isArray(detectedPeople) && detectedPeople.length > 0
-      ? `\n[PERSONAS_DETECTADAS_NO_CLASIFICADAS]: ${detectedPeople.join(' | ')}`
-      : ''
-  return `${raw}\n[OBJETIVO_DE_CAPTURA]: ${cleanIntent}${peopleHint}`
+  requiredMissing: string[]
+}): Record<string, unknown> | null {
+  const action = String(args.uiAction || '').trim().toLowerCase()
+  if (action !== 'chat_after_document_process') return null
+  const intent = String(args.hintedIntent || '').trim().toLowerCase()
+  if (intent !== 'comprador') return null
+  const people = Array.isArray(args.detectedPeople)
+    ? args.detectedPeople.map((v) => String(v || '').trim()).filter(Boolean)
+    : []
+  if (people.length !== 1) return null
+  const onlyPerson = people[0]
+  if (!onlyPerson || isGenericPartyReference(onlyPerson)) return null
+
+  const missingSet = new Set((args.requiredMissing || []).map((v) => String(v || '').trim()))
+  const buyerMissing =
+    missingSet.has('compradores[]') ||
+    missingSet.has('compradores[].nombre') ||
+    missingSet.has('compradores[].tipo_persona') ||
+    Array.from(missingSet).some((f) => f.startsWith('compradores'))
+  if (!buyerMissing) return null
+
+  return {
+    op: 'set',
+    path: 'compradores[0].persona_fisica.nombre',
+    value: onlyPerson,
+    reason: 'Inferido automaticamente desde documento de identificacion y intent pendiente del flujo',
+  }
+}
+
+function isLikelyDirectReplyToPendingCapture(message: string, intent: string | null): boolean {
+  const raw = String(message || '').trim()
+  if (!raw || !intent) return false
+  const normalized = raw
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+
+  if (/^(ejecuta|ok|dale|si|confirmo|confirma)$/.test(normalized)) return false
+
+  if (intent === 'comprador' || intent === 'vendedor' || intent === 'conyuge') {
+    if (/\d/.test(raw)) return false
+    const compact = raw.replace(/\s+/g, ' ').trim()
+    const tokens = compact.split(' ').filter(Boolean)
+    if (tokens.length < 2 || tokens.length > 7) return false
+    const letters = (compact.match(/[A-Za-zÁÉÍÓÚÑáéíóúñ]/g) || []).length
+    return letters >= 6
+  }
+
+  if (intent === 'folio_real') {
+    const compact = raw.replace(/\s+/g, '')
+    return /^\d{5,10}$/.test(compact) || /\bfolio\b/i.test(raw)
+  }
+
+  return false
 }
 
 function shouldFallbackToLegacyStateUpdate(message: string): boolean {
@@ -1201,6 +1491,7 @@ function mergeStructuredExtractionIntoTramiteData(
 ): Record<string, any> {
   const prev = prevData || {}
   const extracted = extractedData || {}
+  const extractionDocType = normalizeDocTypeForMerge(extracted?.source_document_type)
   const next: Record<string, any> = { ...prev }
   const rawText = String(extracted?.textoCompleto || '')
 
@@ -1302,6 +1593,30 @@ function mergeStructuredExtractionIntoTramiteData(
     next.compradores = compradores
   }
 
+  const conyuges = Array.isArray(extracted?.conyuges_detectados)
+    ? extracted.conyuges_detectados
+        .map((p: any) => {
+          const nombre = String(p?.nombre || '').trim()
+          if (!nombre) return null
+          const sexoRaw = String(p?.sexo || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .trim()
+          const sexo =
+            sexoRaw === 'hombre' || sexoRaw === 'masculino'
+              ? 'hombre'
+              : sexoRaw === 'mujer' || sexoRaw === 'femenino'
+                ? 'mujer'
+                : null
+          return { nombre, sexo }
+        })
+        .filter(Boolean)
+    : []
+  if (conyuges.length > 0) {
+    next.conyuges_detectados = conyuges
+  }
+
   const buyerName = String(
     next?.compradores?.[0]?.persona_fisica?.nombre ||
       next?.compradores?.[0]?.persona_moral?.denominacion_social ||
@@ -1351,10 +1666,14 @@ function mergeStructuredExtractionIntoTramiteData(
     }
   }
 
-  if (extracted?.gravamenes === 'LIBRE') {
+  const canOverrideEncumbrance =
+    extractionDocType === 'inscripcion' ||
+    extractionDocType === 'escritura' ||
+    extractionDocType === 'otro'
+  if (canOverrideEncumbrance && extracted?.gravamenes === 'LIBRE') {
     next.gravamenes = []
     next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: false }
-  } else if (Array.isArray(extracted?.gravamenes) && extracted.gravamenes.length > 0) {
+  } else if (canOverrideEncumbrance && Array.isArray(extracted?.gravamenes) && extracted.gravamenes.length > 0) {
     next.gravamenes = extracted.gravamenes
     next.inmueble = { ...(next.inmueble || {}), existe_hipoteca: true }
   }
@@ -1395,6 +1714,20 @@ function mergeStructuredExtractionIntoTramiteData(
   return next
 }
 
+function normalizeDocTypeForMerge(value: unknown): 'inscripcion' | 'escritura' | 'identificacion' | 'acta_matrimonio' | 'otro' {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+  if (!normalized) return 'otro'
+  if (normalized.includes('inscrip')) return 'inscripcion'
+  if (normalized.includes('escritur')) return 'escritura'
+  if (normalized.includes('ident')) return 'identificacion'
+  if (normalized.includes('matrimonio') || normalized.includes('acta_matrimonio')) return 'acta_matrimonio'
+  return 'otro'
+}
+
 function shouldTreatQnaAsStateUpdate(message: string, answer?: string): boolean {
   const text = String(message || '').trim()
   if (!text) return false
@@ -1406,12 +1739,16 @@ function shouldTreatQnaAsStateUpdate(message: string, answer?: string): boolean 
     .replace(/[\u0300-\u036f]/g, '')
 
   const domainSignal =
-    /\b(credito|credito|contado|gravamen|hipoteca|folio|partida|direccion|direccion|comprador|vendedor|estado civil|casado|soltero)\b/.test(normalized) &&
+    /\b(credito|credito|contado|gravamen|hipoteca|folio|partida|direccion|direccion|comprador|vendedor|estado civil|casado|soltero|persona fisica|persona moral|fisica|moral)\b/.test(normalized) &&
     /\b(es|son|sin|con|confirmo|indico|indica)\b/.test(normalized)
+  const shortTipoPersonaReply =
+    /^(fisica|moral|persona fisica|persona moral)$/.test(normalized)
+  const shortEstadoCivilReply =
+    /^(casado|soltero|divorciado|viudo|union libre)$/.test(normalized)
 
   const noEvidenceAnswer = containsNoEvidenceMessage(answer)
 
-  return domainSignal || noEvidenceAnswer
+  return domainSignal || shortTipoPersonaReply || shortEstadoCivilReply || noEvidenceAnswer
 }
 
 function shouldTreatUnknownAsStateUpdate(message: string, answer?: string): boolean {
@@ -1842,7 +2179,8 @@ function reconcileLegacyCapturedData(args: {
     const resolvedName =
       explicitRoleAssignment.name ||
       resolvePreferredNameFromReference(message, merged)
-    applyPendingPersonRole(merged, explicitRoleAssignment.role, resolvedName)
+    const adjustedRole = adjustRoleByPendingIntent(explicitRoleAssignment.role, message, merged)
+    applyPendingPersonRole(merged, adjustedRole, resolvedName)
   }
   const shortRole = inferShortRoleConfirmation(normalized)
   if (!labeledFromMessage.comprador && !labeledFromMessage.vendedor && shortRole && !explicitRoleAssignment) {
@@ -1980,7 +2318,33 @@ function reconcileLegacyCapturedData(args: {
     }
   }
 
+  scrubGenericPartyNames(merged)
   return merged
+}
+
+function adjustRoleByPendingIntent(
+  role: 'vendedor' | 'comprador' | 'conyuge',
+  message: string,
+  merged: Record<string, any>
+): 'vendedor' | 'comprador' | 'conyuge' {
+  if (role !== 'conyuge') return role
+  const pendingIntent = String((merged as any)?._last_question_intent || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+  if (!pendingIntent) return role
+  const normalizedMessage = String(message || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const spouseReference = /\b(esposo|esposa|conyuge)\b/.test(normalizedMessage)
+  if (!spouseReference) return role
+  if (pendingIntent === 'comprador') return 'comprador'
+  if (pendingIntent === 'vendedor') return 'vendedor'
+  return role
 }
 
 function extractPartidaFromText(message: string): string | null {
@@ -2183,6 +2547,10 @@ function isGenericPartyReference(value: string): boolean {
   if (!normalized) return true
   if (/^\[?redacted\]?$/.test(normalized)) return true
   if (isRoleKeyword(normalized)) return true
+  if (/^(indica|indique|dime|proporciona|proporcione|confirma|confirme|captura|capturalo|escribe|selecciona)\b/.test(normalized)) return true
+  if (/\b(para continuar|para avanzar|si ese dato no aparece|puedes capturarlo manualmente)\b/.test(normalized)) return true
+  if (/\b(quien es|quienes son|quien)\b/.test(normalized)) return true
+  if (/\b(es el|es la)\s+(comprador|compradora|vendedor|vendedora)\b/.test(normalized)) return true
   if (/^(el|la)\s+(comprador|compradora|vendedor|vendedora|conyuge|esposo|esposa|hombre|mujer)$/.test(normalized)) return true
   if (/(esposo|esposa|hombre|mujer|conyuge|comprador|vendedor).*(acta|matrimonio)/.test(normalized)) return true
   if (/(del|de la)\s+acta(\s+de\s+matrimonio)?/.test(normalized)) return true
@@ -2190,6 +2558,49 @@ function isGenericPartyReference(value: string): boolean {
   if (/documento\s+que\s+estoy\s+subiendo/.test(normalized)) return true
   if (/^(el|la|este|esta|ese|esa|aquel|aquella)$/.test(normalized)) return true
   return false
+}
+
+function isNonActionableStateUpdateAnswer(answer: string): boolean {
+  const normalized = String(answer || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+  if (!normalized) return true
+  if (normalized.includes('no pude inferir un cambio exacto')) return true
+  if (normalized.includes('indica el campo y valor para proponer una actualizacion')) return true
+  return false
+}
+
+function scrubGenericPartyNames(merged: Record<string, any>): void {
+  const cleanPartyArray = (items: any[]): any[] => {
+    return items.map((party) => {
+      const next = { ...(party || {}) }
+      const pf = { ...(next.persona_fisica || {}) }
+      const pm = { ...(next.persona_moral || {}) }
+
+      const fisicaName = String(pf.nombre || '').trim()
+      if (fisicaName && isGenericPartyReference(fisicaName)) {
+        pf.nombre = null
+      }
+
+      const moralName = String(pm.denominacion_social || '').trim()
+      if (moralName && isGenericPartyReference(moralName)) {
+        pm.denominacion_social = null
+      }
+
+      if (Object.keys(pf).length > 0) next.persona_fisica = pf
+      if (Object.keys(pm).length > 0) next.persona_moral = pm
+      return next
+    })
+  }
+
+  if (Array.isArray(merged?.compradores) && merged.compradores.length > 0) {
+    merged.compradores = cleanPartyArray(merged.compradores)
+  }
+  if (Array.isArray(merged?.vendedores) && merged.vendedores.length > 0) {
+    merged.vendedores = cleanPartyArray(merged.vendedores)
+  }
 }
 
 function resolvePreferredNameFromReference(
@@ -2206,24 +2617,42 @@ function resolvePreferredNameFromReference(
 
   const spouses = Array.isArray((merged as any)?.conyuges_detectados)
     ? (merged as any).conyuges_detectados
-        .map((p: any) => String(p?.nombre || p?.name || '').trim())
+        .map((p: any) => {
+          const nombre = String(p?.nombre || p?.name || '').trim()
+          const sexoRaw = String(p?.sexo || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .trim()
+          const sexo =
+            sexoRaw === 'hombre' || sexoRaw === 'masculino'
+              ? 'hombre'
+              : sexoRaw === 'mujer' || sexoRaw === 'femenino'
+                ? 'mujer'
+                : null
+          return nombre ? { nombre, sexo } : null
+        })
         .filter(Boolean)
     : []
 
   if (spouses.length > 0) {
     if (/\b(esposo|hombre)\b/.test(normalized)) {
-      return spouses[0] || null
+      const male = spouses.find((p: any) => p?.sexo === 'hombre')
+      return (male?.nombre || spouses[0]?.nombre) || null
     }
     if (/\b(esposa|mujer)\b/.test(normalized)) {
-      return spouses[1] || spouses[spouses.length - 1] || null
+      const female = spouses.find((p: any) => p?.sexo === 'mujer')
+      return (female?.nombre || spouses[1]?.nombre || spouses[spouses.length - 1]?.nombre) || null
     }
   }
 
   if (/\bella\b/.test(normalized) && spouses.length > 1) {
-    return spouses[1]
+    const female = spouses.find((p: any) => p?.sexo === 'mujer')
+    return female?.nombre || spouses[1]?.nombre || null
   }
   if (/\bel\b/.test(normalized) && spouses.length > 0) {
-    return spouses[0]
+    const male = spouses.find((p: any) => p?.sexo === 'hombre')
+    return male?.nombre || spouses[0]?.nombre || null
   }
 
   return null
@@ -2511,6 +2940,23 @@ function mergeObjectPreservingNonEmpty(
     if (value === null || value === undefined) continue
     if (typeof value === 'string' && !value.trim()) continue
     out[key] = value
+  }
+  return out
+}
+
+function sanitizeProposedUpdatesForCommit(
+  rawUpdates: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  if (!Array.isArray(rawUpdates) || rawUpdates.length === 0) return []
+  const out: Array<Record<string, unknown>> = []
+  for (const u of rawUpdates) {
+    const op = String(u?.op || '').trim().toLowerCase()
+    const path = String(u?.path || '').trim()
+    const value = (u as any)?.value
+    if (op !== 'set' || !path) continue
+    if (value === null || value === undefined) continue
+    if (typeof value === 'string' && !value.trim()) continue
+    out.push(u)
   }
   return out
 }

@@ -129,6 +129,9 @@ export class AgentRouter {
         const proposal = await this.deps.proposeStateUpdateAgent.propose({
           message: args.message,
           currentStep: args.uiContext?.currentStep,
+          lastQuestionIntent: args.uiContext?.lastQuestionIntent,
+          detectedPeople: args.uiContext?.detectedPeople,
+          recentMessages: args.uiContext?.recentMessages,
         })
         stageLatencies.agent_ms = this.deps.now() - agentStart
         traceId = proposal.trace_id

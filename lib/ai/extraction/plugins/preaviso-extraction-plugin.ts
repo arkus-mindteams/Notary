@@ -27,6 +27,8 @@ const personaDetectadaSchema = z.object({
   curp: nullableString.optional(),
 }).strict()
 
+const sexoSchema = z.enum(['hombre', 'mujer']).nullable()
+
 const gravamenDetalleSchema = z.object({
   institucion: nullableString.optional(),
   monto: nullableString.optional(),
@@ -61,6 +63,7 @@ export const preavisoExtractionSchema = z.object({
   conyuges_detectados: z.array(
     z.object({
       nombre: nullableString,
+      sexo: sexoSchema.optional(),
     }).strict()
   ).default([]),
   personas_detectadas_no_clasificadas: z.array(personaDetectadaSchema).default([]),
@@ -134,7 +137,7 @@ export class PreavisoExtractionPlugin implements ExtractionPlugin<typeof preavis
   },
   "titular_registral": { "nombre": "string|null", "rfc": "string|null", "curp": "string|null" },
   "compradores_detectados": [{ "nombre": "string|null", "rfc": "string|null", "curp": "string|null" }],
-  "conyuges_detectados": [{ "nombre": "string|null" }],
+  "conyuges_detectados": [{ "nombre": "string|null", "sexo": "hombre|mujer|null" }],
   "personas_detectadas_no_clasificadas": [{ "nombre": "string|null", "rfc": "string|null", "curp": "string|null" }],
   "gravamenes": "LIBRE | [{ institucion, monto, moneda, tipo }] | null",
   "confidence": 0.0,
@@ -152,6 +155,8 @@ export class PreavisoExtractionPlugin implements ExtractionPlugin<typeof preavis
       '- No descartes un bloque por haber identificado otro tipo de documento al inicio.',
       '- Si el texto fuente contiene datos de matrimonio/contrayentes, NO omitas conyuges_detectados.',
       '- Si detectas 2 contrayentes, devuelve 2 entradas en conyuges_detectados (nombre completo o la mejor lectura posible).',
+      '- Si el documento explicita sexo/genero (HOMBRE/MUJER, MASCULINO/FEMENINO, ESPOSO/ESPOSA), completa conyuges_detectados[].sexo con "hombre" o "mujer".',
+      '- Si el sexo no aparece de forma textual clara, usa sexo: null (no inferir por nombre).',
       '- Si no hay evidencia textual clara, deja conyuges_detectados como [] (no inventar).',
       '- Si detectas personas sin rol claro, agregalas en personas_detectadas_no_clasificadas.',
       '- Evita nombres duplicados entre titular_registral, compradores_detectados, conyuges_detectados y personas_detectadas_no_clasificadas.',
