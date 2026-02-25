@@ -176,6 +176,17 @@ function buildStateSummary(raw: Record<string, any>): Record<string, unknown> {
   const compradores = Array.isArray(raw?.compradores) ? raw.compradores : []
   const creditos = Array.isArray(raw?.creditos) ? raw.creditos : []
   const gravamenes = Array.isArray(raw?.gravamenes) ? raw.gravamenes : []
+  const comprador0 = compradores[0] || {}
+  const vendedor0 = vendedores[0] || {}
+  const credito0 = creditos[0] || {}
+  const compradorNombre = String(
+    comprador0?.persona_fisica?.nombre || comprador0?.persona_moral?.denominacion_social || ''
+  ).trim()
+  const vendedorNombre = String(
+    vendedor0?.persona_fisica?.nombre || vendedor0?.persona_moral?.denominacion_social || ''
+  ).trim()
+  const creditoInstitucion = String(credito0?.institucion || '').trim()
+  const creditoParticipantes = Array.isArray(credito0?.participantes) ? credito0.participantes : []
 
   return {
     tipo_operacion: raw?.tipoOperacion || null,
@@ -184,6 +195,25 @@ function buildStateSummary(raw: Record<string, any>): Record<string, unknown> {
       folio_real: inmueble?.folio_real || null,
       direccion: inmueble?.direccion || null,
       partidas_count: Array.isArray(inmueble?.partidas) ? inmueble.partidas.length : 0,
+    },
+    entidades_clave: {
+      comprador_principal: {
+        nombre: compradorNombre || null,
+        tipo_persona: comprador0?.tipo_persona || null,
+        estado_civil: comprador0?.persona_fisica?.estado_civil || null,
+      },
+      vendedor_principal: {
+        nombre: vendedorNombre || null,
+        tipo_persona: vendedor0?.tipo_persona || null,
+      },
+      credito_principal: {
+        institucion: creditoInstitucion || null,
+        participantes_count: creditoParticipantes.length,
+        participantes_preview: creditoParticipantes
+          .map((p: any) => String(p || '').trim())
+          .filter(Boolean)
+          .slice(0, 3),
+      },
     },
     counts: {
       vendedores: vendedores.length,

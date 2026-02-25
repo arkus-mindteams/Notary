@@ -15,6 +15,9 @@ const ALLOWED_PATHS = [
   /^compradores\[\d+\]\.persona_fisica\.rfc$/,
   /^compradores\[\d+\]\.persona_fisica\.curp$/,
   /^compradores\[\d+\]\.persona_fisica\.estado_civil$/,
+  /^creditos$/,
+  /^creditos\[\d+\]\.institucion$/,
+  /^creditos\[\d+\]\.participantes$/,
   /^inmueble\.folio_real$/,
   /^inmueble\.direccion\.(calle|numero|colonia|municipio|estado|codigo_postal)$/,
 ]
@@ -58,7 +61,7 @@ export class PreavisoProposedUpdateService {
 
     for (const raw of args.proposedUpdates) {
       const op = String(raw?.op || '').trim().toLowerCase()
-      const path = String(raw?.path || '').trim()
+      const path = normalizeCommitPath(String(raw?.path || '').trim())
       if (op !== 'set') continue
       if (!path) continue
       if (!isAllowedPath(path)) {
@@ -146,8 +149,12 @@ function setByPath(target: Record<string, any>, path: string, value: unknown) {
       continue
     }
 
-    if (!isPlainObject(node[key])) {
-      node[key] = typeof nextKey === 'number' ? [] : {}
+    if (typeof nextKey === 'number') {
+      if (!Array.isArray(node[key])) {
+        node[key] = []
+      }
+    } else if (!isPlainObject(node[key])) {
+      node[key] = {}
     }
     node = node[key]
   }
@@ -201,7 +208,31 @@ function isMeaningfulValueForPath(path: string, value: unknown): boolean {
     return /^[A-Z][AEIOU][A-Z]{2}\d{6}[HM][A-Z]{5}[A-Z0-9]\d$/.test(normalized)
   }
 
+  if (path === 'creditos') {
+    return Array.isArray(value)
+  }
+
+  if (/^creditos\[\d+\]\.institucion$/.test(path)) {
+    return str.length >= 3
+  }
+
+  if (/^creditos\[\d+\]\.participantes$/.test(path)) {
+    return Array.isArray(value) && value.length > 0
+  }
+
   return true
+}
+
+function normalizeCommitPath(path: string): string {
+  const raw = String(path || '').trim()
+  if (!raw) return raw
+  if (raw === 'compradores[].nombre') return 'compradores[0].persona_fisica.nombre'
+  if (raw === 'vendedores[].nombre') return 'vendedores[0].persona_fisica.nombre'
+  if (raw === 'compradores[].persona_fisica.conyuge.nombre') return 'compradores[0].persona_fisica.conyuge.nombre'
+  if (raw === 'creditos[].institucion') return 'creditos[0].institucion'
+  if (raw === 'creditos[].participantes[]') return 'creditos[0].participantes'
+  if (raw === 'creditos[].participantes') return 'creditos[0].participantes'
+  return raw
 }
 
 function normalizeDerivedPreavisoData(data: Record<string, any>, updates: ProposedUpdate[]) {
@@ -212,6 +243,7 @@ function normalizeDerivedPreavisoData(data: Record<string, any>, updates: Propos
   )
 
   normalizeBuyerNameAliases(data, touchedPaths)
+  normalizeCreditosConsistency(data, touchedPaths)
 
   if (!touchedPaths.has('inmueble.folio_real')) return
 
@@ -240,6 +272,22 @@ function normalizeDerivedPreavisoData(data: Record<string, any>, updates: Propos
   }
 
   enrichInmuebleFromSelectedFolioCandidate(data, selectedFolio)
+}
+
+function normalizeCreditosConsistency(data: Record<string, any>, touchedPaths: Set<string>) {
+  const touchedCreditos =
+    touchedPaths.has('creditos') ||
+    Array.from(touchedPaths).some((path) => path.startsWith('creditos['))
+  if (!touchedCreditos) return
+
+  if (!Array.isArray(data.creditos)) {
+    data.creditos = []
+  }
+
+  data.actosNotariales = {
+    ...(isPlainObject(data.actosNotariales) ? data.actosNotariales : {}),
+    aperturaCreditoComprador: data.creditos.length > 0,
+  }
 }
 
 function normalizeBuyerNameAliases(data: Record<string, any>, touchedPaths: Set<string>) {

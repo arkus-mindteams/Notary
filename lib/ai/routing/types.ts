@@ -11,6 +11,7 @@ export interface RouterUIContext {
   uiAction?: string
   currentStep?: string
   lastQuestionIntent?: string | null
+  requiredMissing?: string[]
   detectedPeople?: string[]
   recentMessages?: Array<{ role: string; content: string }>
   pluginType?: string

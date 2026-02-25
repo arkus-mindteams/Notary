@@ -130,6 +130,7 @@ export class AgentRouter {
           message: args.message,
           currentStep: args.uiContext?.currentStep,
           lastQuestionIntent: args.uiContext?.lastQuestionIntent,
+          requiredMissing: args.uiContext?.requiredMissing,
           detectedPeople: args.uiContext?.detectedPeople,
           recentMessages: args.uiContext?.recentMessages,
         })

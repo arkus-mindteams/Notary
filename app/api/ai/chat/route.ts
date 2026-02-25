@@ -433,6 +433,7 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
             message: routingMessage,
             currentStep: body.uiContext?.currentStep,
             lastQuestionIntent: hintedIntent,
+            requiredMissing: requiredMissingForRouting,
             detectedPeople: hintedPeople,
             recentMessages: recentMessagesContext,
           })
@@ -477,6 +478,7 @@ export function createUnifiedAIChatRouteHandler(deps: RouteDeps = defaultDeps) {
             uiContext: {
               ...(body.uiContext || {}),
               lastQuestionIntent: hintedIntent,
+              requiredMissing: requiredMissingForRouting,
               detectedPeople: hintedPeople,
               pluginType: resolvedPluginType,
               tramiteType: resolvedPluginType,
