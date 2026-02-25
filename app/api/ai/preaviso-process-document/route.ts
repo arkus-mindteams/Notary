@@ -27,6 +27,7 @@ type DeferredPostProcessInput = {
   authUserId: string | null
   conversationId: string | null
   tramiteId: string | null
+  documentoId?: string | null
   documentType: string
   file: File
   extractedData: any
@@ -1394,7 +1395,21 @@ async function runDeferredPostProcess(input: DeferredPostProcessInput): Promise<
       extractedData: input.extractedData
     })
 
-    let documento = await DocumentoService.findDocumentoByProcessingFingerprint(processingFingerprint)
+    let documento: any = null
+    if (input.documentoId) {
+      const { data: documentoById } = await supabase
+        .from('documentos')
+        .select('*')
+        .eq('id', input.documentoId)
+        .single()
+      if (documentoById) {
+        documento = documentoById
+      }
+    }
+
+    if (!documento) {
+      documento = await DocumentoService.findDocumentoByProcessingFingerprint(processingFingerprint)
+    }
     if (!documento && input.conversationId) {
       try {
         const existingInSession = await findExistingDocumentoInSessionByFile(
@@ -1594,7 +1609,9 @@ export async function POST(req: Request) {
     let authUserId: string | null = usuario?.auth_user_id || null
 
     const formData = await req.formData()
-    const file = formData.get('file') as File | null
+    let file = formData.get('file') as File | null
+    const documentoIdRaw = formData.get('documentoId') as string | null
+    const documentoId = String(documentoIdRaw || '').trim() || null
     const documentType = formData.get('documentType') as string | null
     const contextRaw = formData.get('context') as string | null
     const tramiteIdRaw = (formData.get('tramiteId') as string | null) || 'preaviso'
@@ -1623,9 +1640,46 @@ export async function POST(req: Request) {
       }
     }
 
+    if (!file && documentoId) {
+      try {
+        const supabase = createServerClient()
+        const { data: documento, error: documentoError } = await supabase
+          .from('documentos')
+          .select('id, nombre, mime_type')
+          .eq('id', documentoId)
+          .single()
+
+        if (documentoError || !documento) {
+          return NextResponse.json(
+            { error: 'not_found', message: 'documentoId not found' },
+            { status: 404 }
+          )
+        }
+
+        const signedUrl = await DocumentoService.getDocumentoUrl(documentoId, 900)
+        const downloadResp = await fetch(signedUrl)
+        if (!downloadResp.ok) {
+          return NextResponse.json(
+            { error: 'bad_request', message: 'failed to download documentoId from storage' },
+            { status: 400 }
+          )
+        }
+        const downloadedBytes = new Uint8Array(await downloadResp.arrayBuffer())
+        file = new File([downloadedBytes], String(documento.nombre || `documento-${documentoId}.pdf`), {
+          type: String(documento.mime_type || downloadResp.headers.get('content-type') || 'application/pdf'),
+          lastModified: Date.now(),
+        })
+      } catch (resolveError) {
+        return NextResponse.json(
+          { error: 'bad_request', message: `failed to resolve documentoId: ${toSafeError(resolveError).message}` },
+          { status: 400 }
+        )
+      }
+    }
+
     if (!file) {
       return NextResponse.json(
-        { error: 'bad_request', message: 'file is required' },
+        { error: 'bad_request', message: 'file or documentoId is required' },
         { status: 400 }
       )
     }
@@ -1930,6 +1984,7 @@ export async function POST(req: Request) {
         authUserId,
         conversationId,
         tramiteId,
+        documentoId,
         documentType,
         file,
         extractedData: result.extractedData || null

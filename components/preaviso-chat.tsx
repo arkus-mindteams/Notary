@@ -2452,6 +2452,7 @@ export function PreavisoChat({
       const extractedOriginalFilesThisBatch = new Set<string>()
       // OCR/RAG: mapear originalKey -> documentoId para persistir texto por página
       const documentoIdByOriginalKey = new Map<string, string>()
+      const uploadInFlightByOriginalKey = new Map<string, Promise<string | null>>()
       // OCR pendiente cuando aún no existe documentoId (ej. primeras páginas antes del upload)
       const pendingOcrByOriginalKey = new Map<string, Array<{ pageNumber: number, text: string, metadata?: any }>>()
 
@@ -2473,6 +2474,74 @@ export function PreavisoChat({
         sourceRefs?: Array<{ field?: string; evidence?: string }>
       }> = []
       const successfulOriginalKeys = new Set<string>()
+
+      const uploadOriginalIfNeeded = async (
+        item: ImgItem,
+        effectiveTramiteId: string | null,
+        serverData?: any
+      ): Promise<string | null> => {
+        const existingDocId = documentoIdByOriginalKey.get(item.originalKey)
+        if (existingDocId) return existingDocId
+        if (!effectiveTramiteId) return null
+
+        const inFlight = uploadInFlightByOriginalKey.get(item.originalKey)
+        if (inFlight) return await inFlight
+
+        const uploadPromise = (async () => {
+          try {
+            const mapToExpedienteTipo = (t: string, dataHint?: any): string => {
+              if (t === 'inscripcion') return 'escritura'
+              if (t === 'escritura') return 'escritura'
+              if (t === 'plano') return 'plano'
+              if (t === 'identificacion') {
+                if (dataHint && Object.prototype.hasOwnProperty.call(dataHint, 'compradores')) return 'ine_comprador'
+                if (dataHint && Object.prototype.hasOwnProperty.call(dataHint, 'vendedores')) return 'ine_vendedor'
+                return 'ine_comprador'
+              }
+              return 'escritura'
+            }
+            const expedienteTipo = mapToExpedienteTipo(item.docType, serverData)
+
+            const { data: { session } } = await supabase.auth.getSession()
+            const headers: HeadersInit = {}
+            if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
+
+            const uploadFormData = new FormData()
+            uploadFormData.append('file', item.originalFile)
+            uploadFormData.append('compradorId', '')
+            uploadFormData.append('tipo', expedienteTipo)
+            uploadFormData.append('tramiteId', effectiveTramiteId || '')
+            uploadFormData.append('sessionId', conversationIdRef.current || '')
+            uploadFormData.append('metadata', JSON.stringify({
+              preaviso_subtype: item.docType,
+              original_name: item.originalFile.name,
+            }))
+
+            const uploadResp = await fetch('/api/expedientes/documentos/upload', {
+              method: 'POST',
+              headers,
+              body: uploadFormData,
+            })
+            if (!uploadResp.ok) return null
+
+            const uploadedDoc = await uploadResp.json()
+            const docId = uploadedDoc?.id ? String(uploadedDoc.id) : null
+            if (!docId) return null
+
+            documentoIdByOriginalKey.set(item.originalKey, docId)
+            uploadedOriginalFilesThisBatch.add(item.originalKey)
+            return docId
+          } catch (error) {
+            console.error(`Error subiendo documento ${item.originalFile.name} a S3:`, error)
+            return null
+          } finally {
+            uploadInFlightByOriginalKey.delete(item.originalKey)
+          }
+        })()
+
+        uploadInFlightByOriginalKey.set(item.originalKey, uploadPromise)
+        return await uploadPromise
+      }
 
       const isValidDetectedPersonName = (value: unknown): boolean => {
         const raw = String(value || '').trim()
@@ -3592,6 +3661,71 @@ export function PreavisoChat({
           }
         }
 
+        const currentDocId = documentoIdByOriginalKey.get(item.originalKey) || null
+        if (effectiveTramiteId && currentDocId && !extractedOriginalFilesThisBatch.has(item.originalKey)) {
+          extractedOriginalFilesThisBatch.add(item.originalKey)
+          try {
+            const rawTextFromExtraction =
+              typeof processResult?.extractedData?.textoCompleto === 'string'
+                ? processResult.extractedData.textoCompleto.trim()
+                : ''
+            const requiresOcrFallback = processResult?.extractedData?._requires_ocr === true
+            const rawTextFromOcr =
+              typeof processResult?.ocrText === 'string'
+                ? processResult.ocrText.trim()
+                : ''
+            const rawTextForExtraction = rawTextFromExtraction || rawTextFromOcr
+            if (rawTextForExtraction && !requiresOcrFallback) {
+              const intakeDebug = processResult?.extractedData?._intake_debug || null
+              const extractedSourceType =
+                typeof processResult?.extractedData?.source_document_type === 'string'
+                  ? processResult.extractedData.source_document_type
+                  : null
+              const extractedWarnings = Array.isArray(processResult?.extractedData?.warnings)
+                ? processResult.extractedData.warnings
+                : []
+              consolidatedExtractionInputs.push({
+                documentId: currentDocId,
+                rawText: rawTextForExtraction,
+                docType: item.docType,
+                fileName: item.originalFile.name,
+                intakeSummary: Array.isArray(intakeDebug?.summary) ? intakeDebug.summary : [],
+                intakeFacts: Array.isArray(intakeDebug?.facts) ? intakeDebug.facts : [],
+                intakeRules: intakeDebug?.rules || null,
+                intakeDetectedType: intakeDebug?.detected_type || null,
+                intakeConfidence:
+                  typeof intakeDebug?.confidence === 'number' ? intakeDebug.confidence : null,
+                sourceDocumentType: extractedSourceType,
+                sourceWarnings: extractedWarnings,
+                sourceRefs: Array.isArray(processResult?.extractedData?.source_refs)
+                  ? processResult.extractedData.source_refs
+                  : [],
+              })
+            }
+          } catch (extractError) {
+            console.warn('[PreavisoChat] Error preparing consolidated extraction', extractError)
+          }
+        }
+
+        if (effectiveTramiteId && currentDocId) {
+          const pend = pendingOcrByOriginalKey.get(item.originalKey) || []
+          if (pend.length > 0) {
+            for (const p of pend) {
+              try {
+                await postJsonWithTimeout('/api/ai/preaviso-ocr-cache/upsert', {
+                  tramiteId: effectiveTramiteId,
+                  docName: item.originalFile.name,
+                  docSubtype: item.docType,
+                  docRole: null,
+                  pageNumber: p.pageNumber,
+                  text: p.text,
+                }, 15_000)
+              } catch { }
+            }
+            pendingOcrByOriginalKey.delete(item.originalKey)
+          }
+        }
+
         try {
           if (effectiveTramiteId && processResult?.ocrText && typeof processResult.ocrText === 'string') {
             const text = processResult.ocrText.trim()
@@ -3663,11 +3797,16 @@ export function PreavisoChat({
         // Contexto actual (snapshot) para que el backend devuelva merge + state.
         // Para PDFs (inscripción/escritura/plano) la dependencia de contexto es baja.
         // Para identificaciones dejamos concurrencia=1 (ver pool abajo).
+        const effectiveTramiteId = batchTramiteIdRef.current ?? activeTramiteId
+        const uploadedDocId = await uploadOriginalIfNeeded(item, effectiveTramiteId)
         const formData = new FormData()
-        formData.append('file', item.imageFile)
+        if (uploadedDocId) {
+          formData.append('documentoId', uploadedDocId)
+        } else {
+          formData.append('file', item.imageFile)
+        }
         formData.append('documentType', item.docType)
         formData.append('needOcr', '1')
-        const effectiveTramiteId = batchTramiteIdRef.current ?? activeTramiteId
         const forceReprocess =
           earlyAlreadyProcessedRef.current?.choice === 'reprocess' &&
           earlyAlreadyProcessedRef.current.fileNames.includes(item.originalFile.name)
@@ -3688,15 +3827,7 @@ export function PreavisoChat({
           gravamenes: workingData.gravamenes || [],
           inmueble: workingData.inmueble,
           folios: workingData.folios,
-          documentos: workingData.documentos,
-          documentosProcesados: workingData.documentosProcesados || workingDocs
-            .filter(d => d.processed && d.extractedData)
-            .map(d => ({
-              nombre: d.name,
-              tipo: d.documentType || 'desconocido',
-              informacionExtraida: d.extractedData
-            })),
-          expedienteExistente: expedienteExistente || undefined
+          documentos: workingData.documentos
         }))
 
         const { data: { session } } = await supabase.auth.getSession()
