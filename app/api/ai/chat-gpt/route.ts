@@ -277,10 +277,26 @@ function mapMissingFieldToQuestion(field: string): string {
   if (/^creditos\[\d+\]\.institucion$/.test(normalized)) return 'Indica la institucion del credito.'
   if (/^creditos\[\d+\]\.participantes\[\]$/.test(normalized)) return 'Indica quienes participan en el credito.'
   if (normalized === 'vendedores[]') return 'Indica quien es el vendedor.'
+  if (normalized === 'compradores[]') return 'Indica quien es el comprador.'
+  if (normalized === 'vendedores[].nombre') return 'Indica el nombre completo del vendedor.'
   if (normalized === 'vendedores[].tipo_persona') return 'Confirma si el vendedor es persona fisica o moral.'
   if (normalized === 'compradores[].nombre') return 'Indica el nombre completo del comprador.'
   if (normalized === 'compradores[].tipo_persona') return 'Confirma si el comprador es persona fisica o moral.'
+  if (normalized === 'compradores[].persona_fisica.conyuge.nombre')
+    return 'Indica el nombre completo del conyuge del comprador.'
+  if (/^compradores\[\d+\]\.persona_fisica\.conyuge\.nombre$/.test(normalized))
+    return 'Indica el nombre completo del conyuge del comprador.'
   if (normalized === 'compradores[0].persona_fisica.estado_civil') return 'Indica el estado civil del comprador.'
+  if (/^compradores\[\d+\]\.persona_fisica\.estado_civil$/.test(normalized))
+    return 'Indica el estado civil del comprador.'
+  if (/^compradores\[\d+\]\.persona_fisica\.nombre$/.test(normalized))
+    return 'Indica el nombre completo del comprador.'
+  if (/^vendedores\[\d+\]\.persona_fisica\.nombre$/.test(normalized))
+    return 'Indica el nombre completo del vendedor.'
+  if (/^compradores\[\d+\]\.tipo_persona$/.test(normalized))
+    return 'Confirma si el comprador es persona fisica o moral.'
+  if (/^vendedores\[\d+\]\.tipo_persona$/.test(normalized))
+    return 'Confirma si el vendedor es persona fisica o moral.'
   return `Completa: ${normalized}`
 }
 

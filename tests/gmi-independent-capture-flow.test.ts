@@ -287,3 +287,33 @@ test('GMIIndependentCaptureFlow resuelve comprador por referencia a INE/constanc
     else process.env.GMI_API_KEY = prevApiKey
   }
 })
+
+test('GMIIndependentCaptureFlow asigna rol comprador desde personas detectadas cuando usuario dice "es el comprador"', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para asignacion de rol comprador')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'es el comprador',
+      lastQuestionIntent: 'comprador',
+      pendingQuestions: ['Indica quien es el comprador.'],
+      requiredMissing: ['compradores[]', 'compradores[].tipo_persona'],
+      collectedData: {
+        personas_detectadas_no_clasificadas: [{ nombre: 'JOSE GUADALUPE SANDOVAL MURILLO' }],
+      },
+    })
+
+    const map = toUpdateMap(result)
+    assert.equal(map.get('compradores[0].persona_fisica.nombre'), 'JOSE GUADALUPE SANDOVAL MURILLO')
+    assert.equal(map.get('compradores[0].tipo_persona'), 'persona_fisica')
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})

@@ -689,7 +689,9 @@ function describeMissingField(field: string): string {
   if (normalized === 'inmueble.folio_real') return 'el folio real del inmueble'
   if (normalized === 'existencia_credito') return 'si la compra sera con credito o de contado'
   if (normalized === 'vendedores[]') return 'quien es el vendedor'
+  if (normalized === 'compradores[]') return 'quien es el comprador'
   if (normalized === 'vendedores[].tipo_persona') return 'si el vendedor es persona fisica o moral'
+  if (normalized === 'vendedores[].nombre') return 'el nombre completo del vendedor'
   if (normalized === 'compradores[].nombre') return 'el nombre completo del comprador'
   if (normalized === 'compradores[].tipo_persona') return 'si el comprador es persona fisica o moral'
   if (normalized === 'compradores[].persona_fisica.conyuge.nombre') return 'el nombre completo del conyuge del comprador'
@@ -1000,6 +1002,71 @@ function inferHeuristicUpdates(args: {
 
   const paymentModeHint = inferShortPaymentModeHint(message)
   const estadoCivilHint = inferShortEstadoCivilHint(message)
+  const roleAssignment = resolveDetectedPersonRoleAssignment({
+    message,
+    requiredMissing,
+    lastQuestionIntent: args.lastQuestionIntent || null,
+    pendingQuestions: Array.isArray(args.pendingQuestions) ? args.pendingQuestions : [],
+    collectedData: args.collectedData,
+  })
+
+  if (roleAssignment) {
+    if (roleAssignment.role === 'comprador') {
+      if (shouldCapturePath('compradores[0].tipo_persona')) {
+        updates.push({
+          op: 'set',
+          path: 'compradores[0].tipo_persona',
+          value: 'persona_fisica',
+          reason: 'Persona detectada clasificada como comprador por referencia del usuario',
+        })
+      }
+      if (shouldCapturePath('compradores[0].persona_fisica.nombre')) {
+        updates.push({
+          op: 'set',
+          path: 'compradores[0].persona_fisica.nombre',
+          value: roleAssignment.personName,
+          reason: 'Comprador asignado desde personas detectadas no clasificadas',
+        })
+      }
+    }
+    if (roleAssignment.role === 'vendedor') {
+      if (shouldCapturePath('vendedores[0].tipo_persona')) {
+        updates.push({
+          op: 'set',
+          path: 'vendedores[0].tipo_persona',
+          value: 'persona_fisica',
+          reason: 'Persona detectada clasificada como vendedor por referencia del usuario',
+        })
+      }
+      if (shouldCapturePath('vendedores[0].persona_fisica.nombre')) {
+        updates.push({
+          op: 'set',
+          path: 'vendedores[0].persona_fisica.nombre',
+          value: roleAssignment.personName,
+          reason: 'Vendedor asignado desde personas detectadas no clasificadas',
+        })
+      }
+    }
+    if (roleAssignment.role === 'conyuge') {
+      if (shouldCapturePath('compradores[0].persona_fisica.conyuge.nombre')) {
+        updates.push({
+          op: 'set',
+          path: 'compradores[0].persona_fisica.conyuge.nombre',
+          value: roleAssignment.personName,
+          reason: 'Conyuge asignado desde personas detectadas no clasificadas',
+        })
+      }
+      if (shouldCapturePath('compradores[0].persona_fisica.estado_civil')) {
+        updates.push({
+          op: 'set',
+          path: 'compradores[0].persona_fisica.estado_civil',
+          value: 'casado',
+          reason: 'Estado civil inferido por asignacion explicita de conyuge',
+        })
+      }
+    }
+  }
+
   if (paymentModeHint === 'contado') {
     if (shouldCapturePath('creditos')) {
       updates.push({
@@ -1498,6 +1565,69 @@ function inferShortNameCandidate(message: string): string | null {
   return cleaned || null
 }
 
+function resolveDetectedPersonRoleAssignment(args: {
+  message: string
+  requiredMissing: string[]
+  lastQuestionIntent: string | null
+  pendingQuestions: string[]
+  collectedData: Record<string, unknown>
+}): { role: 'comprador' | 'vendedor' | 'conyuge'; personName: string } | null {
+  const normalized = String(args.message || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return null
+
+  const hasBuyer = /\bcomprador(?:es)?\b/.test(normalized)
+  const hasSeller = /\bvendedor(?:es)?\b/.test(normalized)
+  const hasSpouse = /\b(conyuge|esposa|esposo)\b/.test(normalized)
+
+  let role: 'comprador' | 'vendedor' | 'conyuge' | null = null
+  if (hasSpouse) role = 'conyuge'
+  else if (hasBuyer && !hasSeller) role = 'comprador'
+  else if (hasSeller && !hasBuyer) role = 'vendedor'
+
+  const pendingText = String((args.pendingQuestions || []).join(' ') || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  const lastIntent = String(args.lastQuestionIntent || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  if (!role && /^(es|si|correcto|ok)\b/.test(normalized)) {
+    if (/\bconyuge|conyuge|esposa|esposo\b/.test(pendingText) || /\bconyuge\b/.test(lastIntent)) role = 'conyuge'
+    else if (/\bcomprador\b/.test(pendingText) || /\bcomprador\b/.test(lastIntent)) role = 'comprador'
+    else if (/\bvendedor\b/.test(pendingText) || /\bvendedor\b/.test(lastIntent)) role = 'vendedor'
+  }
+
+  if (!role) return null
+
+  const detected = extractUnclassifiedPeople(args.collectedData)
+  if (detected.length === 0) return null
+
+  if (detected.length === 1) {
+    return { role, personName: detected[0].nombre }
+  }
+
+  const messageNorm = normalized
+  const matched = detected.filter((p) => {
+    const personNorm = String(p.nombre || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    return personNorm && messageNorm.includes(personNorm)
+  })
+  if (matched.length === 1) return { role, personName: matched[0].nombre }
+
+  return null
+}
+
 function detectNameIntentScope(args: {
   requiredMissing: string[]
   lastQuestionIntent: string | null
@@ -1566,7 +1696,9 @@ function resolveBuyerReferenceFromContext(
     }
   }
 
-  const docReference = /\b(ine|identidad|constancia|situacion fiscal|csf)\b/.test(normalized)
+  const docReference = /\b(ine|identidad|identificacion|identificacion oficial|credencial|constancia|situacion fiscal|csf)\b/.test(
+    normalized
+  )
   if (docReference) {
     const detected = extractUnclassifiedPeople(collectedData)
     if (detected.length === 1) {

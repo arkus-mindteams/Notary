@@ -208,6 +208,42 @@ test('sin candidate_slots el short router no se activa y se mantiene flujo gener
   assert.equal(runCaptureCalled, 1)
 })
 
+test('guidance de faltantes no expone path tecnico compradores[] al usuario', async () => {
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_4',
+      state_status: {},
+      required_missing: ['compradores[]'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 4, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    runCapture: async () => ({
+      intent: 'UPDATE_STATE',
+      agent_used: 'GMIIndependentCaptureFlow',
+      answer: 'No pude mapear el mensaje a un campo faltante especifico.',
+      proposed_updates: [],
+      actions: [],
+      trace_id: 'trace-guidance',
+    }),
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'ok',
+      uiContext: {},
+    })
+  )
+
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  const answer = String(json?.answer || '')
+  assert.equal(answer.includes('compradores[]'), false)
+  assert.equal(answer.includes('Indica quien es el comprador.'), true)
+})
+
 test('short answer router aplica deterministicamente nombre de conyuge con slot unico', async () => {
   const originalApiKey = process.env.GMI_API_KEY
   process.env.GMI_API_KEY = process.env.GMI_API_KEY || 'test-key'
