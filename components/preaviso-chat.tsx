@@ -2503,28 +2503,60 @@ export function PreavisoChat({
             const expedienteTipo = mapToExpedienteTipo(item.docType, serverData)
 
             const { data: { session } } = await supabase.auth.getSession()
-            const headers: HeadersInit = {}
+            const headers: HeadersInit = { 'Content-Type': 'application/json' }
             if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
 
-            const uploadFormData = new FormData()
-            uploadFormData.append('file', item.originalFile)
-            uploadFormData.append('compradorId', '')
-            uploadFormData.append('tipo', expedienteTipo)
-            uploadFormData.append('tramiteId', effectiveTramiteId || '')
-            uploadFormData.append('sessionId', conversationIdRef.current || '')
-            uploadFormData.append('metadata', JSON.stringify({
-              preaviso_subtype: item.docType,
-              original_name: item.originalFile.name,
-            }))
-
-            const uploadResp = await fetch('/api/expedientes/documentos/upload', {
+            const initResp = await fetch('/api/expedientes/documentos/direct-upload/init', {
               method: 'POST',
               headers,
-              body: uploadFormData,
+              body: JSON.stringify({
+                fileName: item.originalFile.name,
+                fileType: item.originalFile.type || 'application/octet-stream',
+                fileSize: item.originalFile.size,
+                tipo: expedienteTipo,
+                tramiteId: effectiveTramiteId || null,
+                sessionId: conversationIdRef.current || null,
+                compradorId: null,
+              }),
             })
-            if (!uploadResp.ok) return null
+            if (!initResp.ok) return null
+            const initJson = await initResp.json()
+            const uploadUrl = String(initJson?.uploadUrl || '')
+            const key = String(initJson?.key || '')
+            const bucket = String(initJson?.bucket || '')
+            if (!uploadUrl || !key || !bucket) return null
 
-            const uploadedDoc = await uploadResp.json()
+            const s3PutResp = await fetch(uploadUrl, {
+              method: 'PUT',
+              headers: {
+                'Content-Type': item.originalFile.type || 'application/octet-stream',
+              },
+              body: item.originalFile,
+            })
+            if (!s3PutResp.ok) return null
+
+            const completeResp = await fetch('/api/expedientes/documentos/direct-upload/complete', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                key,
+                bucket,
+                fileName: item.originalFile.name,
+                fileType: item.originalFile.type || 'application/octet-stream',
+                fileSize: item.originalFile.size,
+                tipo: expedienteTipo,
+                tramiteId: effectiveTramiteId || null,
+                sessionId: conversationIdRef.current || null,
+                compradorId: null,
+                metadata: {
+                  preaviso_subtype: item.docType,
+                  original_name: item.originalFile.name,
+                },
+              }),
+            })
+            if (!completeResp.ok) return null
+
+            const uploadedDoc = await completeResp.json()
             const docId = uploadedDoc?.id ? String(uploadedDoc.id) : null
             if (!docId) return null
 
@@ -3513,151 +3545,12 @@ export function PreavisoChat({
           ;(workingData as any).conyuges_detectados = (processResult.extractedData as any).conyuges_detectados
         }
 
-        // S3 upload (solo 1 por archivo original)
+        // S3 upload fallback (solo si algo anterior no subió el original)
         if (effectiveTramiteId && !uploadedOriginalFilesThisBatch.has(item.originalKey)) {
-          // marcar antes para evitar carreras
-          uploadedOriginalFilesThisBatch.add(item.originalKey)
           try {
-            const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit, timeoutMs: number, signal?: AbortSignal) => {
-              const controller = new AbortController()
-              const onAbort = () => controller.abort()
-              if (signal) {
-                if (signal.aborted) controller.abort()
-                else signal.addEventListener('abort', onAbort, { once: true })
-              }
-              const timer = setTimeout(() => controller.abort(), timeoutMs)
-              try {
-                return await fetch(input, { ...init, signal: controller.signal })
-              } finally {
-                clearTimeout(timer)
-                if (signal) signal.removeEventListener('abort', onAbort)
-              }
-            }
-
-            const mapToExpedienteTipo = (t: string, serverData?: any): string => {
-              if (t === 'inscripcion') return 'escritura'
-              if (t === 'escritura') return 'escritura'
-              if (t === 'plano') return 'plano'
-              if (t === 'identificacion') {
-                if (serverData && Object.prototype.hasOwnProperty.call(serverData, 'compradores')) return 'ine_comprador'
-                if (serverData && Object.prototype.hasOwnProperty.call(serverData, 'vendedores')) return 'ine_vendedor'
-                return 'ine_comprador'
-              }
-              return 'escritura'
-            }
-            const expedienteTipo = mapToExpedienteTipo(item.docType, processResult?.data)
-
-            const { data: { session } } = await supabase.auth.getSession()
-            const headers: HeadersInit = {}
-            if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
-
-            const uploadFormData = new FormData()
-            uploadFormData.append('file', item.originalFile)
-            uploadFormData.append('compradorId', '')
-            uploadFormData.append('tipo', expedienteTipo)
-            uploadFormData.append('tramiteId', effectiveTramiteId || '')
-            uploadFormData.append('sessionId', conversationIdRef.current || '')
-            uploadFormData.append('metadata', JSON.stringify({
-              preaviso_subtype: item.docType,
-              original_name: item.originalFile.name,
-            }))
-
-            // Timeout para evitar que el pipeline se quede colgado si S3/upload se bloquea.
-            const uploadResp = await fetchWithTimeout('/api/expedientes/documentos/upload', {
-              method: 'POST',
-              headers,
-              body: uploadFormData,
-            }, 45_000, batchAbort.signal)
-
-            try {
-              if (uploadResp.ok) {
-                const uploadedDoc = await uploadResp.json()
-                if (uploadedDoc?.id) {
-                  const docId = String(uploadedDoc.id)
-                  documentoIdByOriginalKey.set(item.originalKey, docId)
-
-                  // Acumular texto por documento para ejecutar una sola extraccion consolidada al final del lote.
-                  if (!extractedOriginalFilesThisBatch.has(item.originalKey)) {
-                    extractedOriginalFilesThisBatch.add(item.originalKey)
-                    try {
-                      const rawTextFromExtraction =
-                        typeof processResult?.extractedData?.textoCompleto === 'string'
-                          ? processResult.extractedData.textoCompleto.trim()
-                          : ''
-                      const requiresOcrFallback = processResult?.extractedData?._requires_ocr === true
-                      const rawTextFromOcr =
-                        typeof processResult?.ocrText === 'string'
-                          ? processResult.ocrText.trim()
-                          : ''
-                      const rawTextForExtraction = rawTextFromExtraction || rawTextFromOcr
-                      const tramiteIdForExtraction = effectiveTramiteId
-                      if (tramiteIdForExtraction && rawTextForExtraction && !requiresOcrFallback) {
-                        const intakeDebug = processResult?.extractedData?._intake_debug || null
-                        const extractedSourceType =
-                          typeof processResult?.extractedData?.source_document_type === 'string'
-                            ? processResult.extractedData.source_document_type
-                            : null
-                        const extractedWarnings = Array.isArray(processResult?.extractedData?.warnings)
-                          ? processResult.extractedData.warnings
-                          : []
-                        console.info('[PreavisoChat] consolidated_input_doc', {
-                          document_id: docId,
-                          file_name: item.originalFile.name,
-                          doc_type: item.docType,
-                          raw_text_length: rawTextForExtraction.length,
-                          intake_detected_type: intakeDebug?.detected_type || null,
-                          intake_summary_count: Array.isArray(intakeDebug?.summary) ? intakeDebug.summary.length : 0,
-                          extracted_source_document_type: extractedSourceType,
-                          extracted_warnings_count: extractedWarnings.length,
-                        })
-                        consolidatedExtractionInputs.push({
-                          documentId: docId,
-                          rawText: rawTextForExtraction,
-                          docType: item.docType,
-                          fileName: item.originalFile.name,
-                          intakeSummary: Array.isArray(intakeDebug?.summary) ? intakeDebug.summary : [],
-                          intakeFacts: Array.isArray(intakeDebug?.facts) ? intakeDebug.facts : [],
-                          intakeRules: intakeDebug?.rules || null,
-                          intakeDetectedType: intakeDebug?.detected_type || null,
-                          intakeConfidence:
-                            typeof intakeDebug?.confidence === 'number' ? intakeDebug.confidence : null,
-                          sourceDocumentType: extractedSourceType,
-                          sourceWarnings: extractedWarnings,
-                          sourceRefs: Array.isArray(processResult?.extractedData?.source_refs)
-                            ? processResult.extractedData.source_refs
-                            : [],
-                        })
-                      }
-                    } catch (extractError) {
-                      console.warn('[PreavisoChat] Error preparing consolidated extraction', extractError)
-                    }
-                  }
-
-                  // flush OCR pendiente
-                  const pend = pendingOcrByOriginalKey.get(item.originalKey) || []
-                  if (pend.length > 0) {
-                    for (const p of pend) {
-                      try {
-                        await postJsonWithTimeout('/api/ai/preaviso-ocr-cache/upsert', {
-                          tramiteId: effectiveTramiteId,
-                          docName: item.originalFile.name,
-                          docSubtype: item.docType,
-                          docRole: null,
-                          pageNumber: p.pageNumber,
-                          text: p.text,
-                        }, 15_000)
-                      } catch { }
-                    }
-                    pendingOcrByOriginalKey.delete(item.originalKey)
-                  }
-                }
-              }
-            } catch {
-              // no bloquear
-            }
+            await uploadOriginalIfNeeded(item, effectiveTramiteId, processResult?.data)
           } catch (uploadError) {
             console.error(`Error subiendo documento ${item.originalFile.name} a S3:`, uploadError)
-            // No bloquear; no reintentar en este lote
           }
         }
 
@@ -3935,17 +3828,21 @@ export function PreavisoChat({
       // Documentos ya procesados: comprobar GLOBAL (API) + conversación actual
       let checkResults: { fileName: string; fileHash: string; alreadyProcessed: boolean }[] = []
       try {
-        const checkForm = new FormData()
-        items.forEach((it: ImgItem) => checkForm.append('files', it.imageFile))
-        const { data: { session } } = await supabase.auth.getSession()
-        const checkRes = await fetch('/api/ai/preaviso-check-document', {
-          method: 'POST',
-          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
-          body: checkForm
-        })
-        if (checkRes.ok) {
-          const body = await checkRes.json()
-          checkResults = body.results || []
+        const CHECK_MAX_BYTES = 6 * 1024 * 1024
+        const hasLargeForCheck = items.some((it: ImgItem) => (it.imageFile?.size || 0) > CHECK_MAX_BYTES)
+        if (!hasLargeForCheck) {
+          const checkForm = new FormData()
+          items.forEach((it: ImgItem) => checkForm.append('files', it.imageFile))
+          const { data: { session } } = await supabase.auth.getSession()
+          const checkRes = await fetch('/api/ai/preaviso-check-document', {
+            method: 'POST',
+            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+            body: checkForm
+          })
+          if (checkRes.ok) {
+            const body = await checkRes.json()
+            checkResults = body.results || []
+          }
         }
       } catch (e) {
         console.warn('[PreavisoChat] Check API error:', e)

@@ -306,6 +306,29 @@ export class S3Service {
   }
 
   /**
+   * Obtiene una URL firmada para subida directa (PUT) a S3.
+   */
+  static async getSignedUploadUrl(
+    key: string,
+    contentType: string,
+    expiresIn: number = 900
+  ): Promise<string> {
+    if (!BUCKET) {
+      throw new Error('AWS_S3_BUCKET environment variable is not set')
+    }
+
+    await this.verifyBucket()
+
+    const command = new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      ContentType: contentType || 'application/octet-stream',
+    })
+
+    return await getSignedUrl(s3Client, command, { expiresIn })
+  }
+
+  /**
    * Elimina un archivo de S3
    */
   static async deleteFile(key: string): Promise<void> {
