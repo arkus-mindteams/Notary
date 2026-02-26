@@ -56,6 +56,24 @@ export interface PreavisoStateComputation {
  */
 export function computePreavisoState(context?: any): PreavisoStateComputation {
   const PREAVISO_DEBUG = process.env.PREAVISO_DEBUG === '1'
+  const isValidCreditInstitution = (value: any): boolean => {
+    if (typeof value !== 'string') return false
+    const raw = value.trim()
+    if (raw.length < 3) return false
+
+    const normalized = raw
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (!normalized) return false
+    if (/(?:inciso|articulo|noveno|terminos del|el cual se otorga|de la presente)/.test(normalized)) return false
+    if (/^(institucion|institucion financiera|entidad|banco|credito|financiamiento)$/.test(normalized)) return false
+    if (/^(por confirmar|desconocido|pendiente|n\/a|na|null)$/.test(normalized)) return false
+    return true
+  }
   const nonEmptyText = (value: any): string | null => {
     const s = String(value ?? '').trim()
     return s.length > 0 ? s : null
@@ -466,7 +484,7 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   } else {
     // Nota: El monto puede quedar pendiente (null) si el usuario explícitamente no lo tiene.
     // Para control de flujo, consideramos completo con institucion + participantes.
-    const creditosCompletos = creditosArr.every((c: any) => c.institucion && c.participantes && c.participantes.length > 0)
+    const creditosCompletos = creditosArr.every((c: any) => isValidCreditInstitution(c?.institucion))
     stateStatus.ESTADO_5 = creditosCompletos ? 'completed' : 'incomplete'
   }
 
@@ -672,8 +690,7 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
       requiredMissing.push('creditos[]')
     } else {
       creditos.forEach((credito: any, index: number) => {
-        if (!credito.institucion) requiredMissing.push(`creditos[${index}].institucion`)
-        if (!credito.participantes || credito.participantes.length === 0) requiredMissing.push(`creditos[${index}].participantes[]`)
+        if (!isValidCreditInstitution(credito?.institucion)) requiredMissing.push(`creditos[${index}].institucion`)
       })
     }
   }

@@ -317,3 +317,43 @@ test('GMIIndependentCaptureFlow asigna rol comprador desde personas detectadas c
     else process.env.GMI_API_KEY = prevApiKey
   }
 })
+
+test('GMIIndependentCaptureFlow resuelve participantes de credito cuando usuario dice "el unico participante es el comprador"', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para inferencia de participantes de credito')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'el unico participante es el comprador',
+      requiredMissing: ['creditos[0].participantes[]'],
+      collectedData: {
+        compradores: [
+          {
+            tipo_persona: 'persona_fisica',
+            persona_fisica: {
+              nombre: 'JOSE GUADALUPE SANDOVAL MURILLO',
+            },
+          },
+        ],
+      },
+    })
+
+    const map = toUpdateMap(result)
+    assert.deepEqual(map.get('creditos[0].participantes'), [
+      {
+        party_id: null,
+        nombre: 'JOSE GUADALUPE SANDOVAL MURILLO',
+        rol: 'acreditado',
+      },
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})

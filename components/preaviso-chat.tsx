@@ -2035,16 +2035,53 @@ export function PreavisoChat({
     sendQuickChatMessage(`el folio real es ${cleanFolio}`)
   }
 
-  const handleSidebarPersonSelect = (name: string) => {
-    const cleanName = String(name || '').trim()
-    if (!cleanName) return
-    const draft = `${cleanName} es `
-    flushSync(() => setInput(draft))
-    setTimeout(() => {
-      textInputRef.current?.focus()
-      const end = draft.length
-      textInputRef.current?.setSelectionRange(end, end)
-    }, 0)
+  const handleSidebarManualUpdate = async (path: string, value: unknown) => {
+    const trimmedPath = String(path || '').trim()
+    if (!trimmedPath) throw new Error('Path inválido para edición manual')
+
+    const effectiveTramiteId = activeTramiteIdRef.current ?? activeTramiteId ?? batchTramiteIdRef.current ?? null
+    if (!effectiveTramiteId) {
+      throw new Error('No se encontró un trámite activo para guardar el cambio')
+    }
+
+    const headers = await withAuthHeaders()
+    const response = await fetch('/api/preaviso/manual-update', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        tramiteId: effectiveTramiteId,
+        updates: [{ path: trimmedPath, value }],
+        source: 'manual',
+      }),
+    })
+
+    const result = await response.json().catch(() => null)
+    if (!response.ok) {
+      const msg = String(result?.error?.message || 'No se pudo guardar el cambio manual.')
+      throw new Error(msg)
+    }
+
+    console.info('[PreavisoChat] manual_update_ok', {
+      path: trimmedPath,
+      trace_id: result?.trace_id || null,
+      applied_updates: result?.applied_updates ?? null,
+    })
+
+    if (result?.state) {
+      setServerState(result.state as ServerStateSnapshot)
+    }
+    if (result?.data) {
+      setData((prevData) => {
+        const nextData = { ...prevData, ...(result.data || {}) }
+        const actos = determineActosNotariales(nextData)
+        nextData.actosNotariales = {
+          cancelacionCreditoVendedor: actos.cancelacionCreditoVendedor,
+          compraventa: actos.compraventa,
+          aperturaCreditoComprador: actos.aperturaCreditoComprador ?? false,
+        }
+        return nextData
+      })
+    }
   }
 
   const handleFileUpload = async (files: FileList | File[] | null, skipProcessingDocumentFlag = false, skipUserMessage = false, userText: string | null = null) => {
@@ -5579,7 +5616,7 @@ export function PreavisoChat({
             isVisible={showDataPanel}
             onClose={(isMobile || isTablet) ? () => setShowDataPanel(false) : undefined}
             onSelectFolioCandidate={handleSidebarFolioSelect}
-            onSelectUncategorizedPerson={handleSidebarPersonSelect}
+            onManualUpdate={handleSidebarManualUpdate}
             bottomActions={
               showExportButtons && exportData ? (
                 <div className="space-y-2">

@@ -156,6 +156,18 @@ async function findExistingDocumentoInSessionByFile(
 
 function mergeExtractedIntoContext(context: any, structured: any): any {
   const next = { ...(context || {}) }
+  const lastQuestionIntent = String(context?._last_question_intent || next?._last_question_intent || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+  const looksIdentification =
+    String(structured?.source_document_type || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase() === 'identificacion'
+  const askedForBuyer = lastQuestionIntent.includes('comprador')
+  const askedForSeller = lastQuestionIntent.includes('vendedor') || lastQuestionIntent.includes('titular')
   const inmueble = structured?.inmueble || {}
   const derivedFolioCandidates = Array.isArray(structured?.__derived?.folio_real_candidates)
     ? structured.__derived.folio_real_candidates
@@ -243,7 +255,9 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
 
   const derivedSellerName = String(structured?.__derived?.vendedor_nombre || '').trim()
   const sellerNameForContext = derivedSellerName || String(structured?.titular_registral?.nombre || '').trim()
-  if (sellerNameForContext) {
+  const shouldApplySellerFromDocument =
+    Boolean(sellerNameForContext) && (!looksIdentification || askedForSeller || !askedForBuyer)
+  if (shouldApplySellerFromDocument) {
     const sellerLooksMoral = looksLikePersonaMoralName(sellerNameForContext)
     const vendedor = {
       party_id: 'vendedor_1',
@@ -300,16 +314,6 @@ function mergeExtractedIntoContext(context: any, structured: any): any {
 
   // Inferencia deductiva: si el ultimo dato faltante era comprador y se sube identificacion,
   // usar un candidato unico de persona detectada para poblar compradores[0].
-  const lastQuestionIntent = String(context?._last_question_intent || next?._last_question_intent || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-  const looksIdentification =
-    String(structured?.source_document_type || '')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase() === 'identificacion'
   const buyersMissing =
     !Array.isArray(next?.compradores) ||
     next.compradores.length === 0 ||

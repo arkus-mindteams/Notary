@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
 
@@ -18,6 +18,7 @@ import {
 import { Card, CardContent } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
+import { EditableField } from '@/components/preaviso/editable-field'
 import {
     PreavisoData,
     ServerStateSnapshot
@@ -30,7 +31,7 @@ interface DocumentSidebarProps {
     onClose?: () => void
     bottomActions?: ReactNode
     onSelectFolioCandidate?: (folio: string) => void
-    onSelectUncategorizedPerson?: (name: string) => void
+    onManualUpdate?: (path: string, value: unknown) => Promise<void>
 }
 
 export function DocumentSidebar({
@@ -40,11 +41,10 @@ export function DocumentSidebar({
     onClose,
     bottomActions,
     onSelectFolioCandidate,
-    onSelectUncategorizedPerson,
+    onManualUpdate,
 }: DocumentSidebarProps) {
     if (!isVisible) return null
     const [showDetectedDetails, setShowDetectedDetails] = useState(true)
-    const [showPeopleDetected, setShowPeopleDetected] = useState(true)
 
     const folioConfirmed = Boolean(
         (data as any)?.folios?.selection?.confirmed_by_user ||
@@ -60,19 +60,11 @@ export function DocumentSidebar({
         if (raw === 'incomplete') return 'blocked'
         return 'pending'
     }
-    const buyerStepCompleted = getStepStatus('ESTADO_4') === 'completed'
-
     useEffect(() => {
         if (folioConfirmed) {
             setShowDetectedDetails(false)
         }
     }, [folioConfirmed])
-
-    useEffect(() => {
-        if (buyerStepCompleted) {
-            setShowPeopleDetected(false)
-        }
-    }, [buyerStepCompleted])
 
     const progress = (() => {
         if (serverState?.wizard_state) {
@@ -98,78 +90,10 @@ export function DocumentSidebar({
         }
     })()
 
-
     const normalizeName = (str: string | null | undefined): string => {
         if (!str) return ''
         return str.toLowerCase().trim().replace(/\s+/g, ' ')
     }
-
-    const isValidDetectedPersonName = (value: unknown): boolean => {
-        const raw = String(value || '').trim()
-        if (!raw) return false
-        const normalized = raw
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .toLowerCase()
-            .replace(/\s+/g, ' ')
-            .trim()
-        if (!normalized) return false
-        if (
-            normalized.includes('[redacted]') ||
-            normalized.includes('redacted') ||
-            normalized === 'n/a' ||
-            normalized === 'na' ||
-            normalized === 'null' ||
-            normalized === 'undefined' ||
-            normalized === 'desconocido' ||
-            normalized === 'sin dato' ||
-            normalized === 'no disponible'
-        ) {
-            return false
-        }
-        return /[a-z]/i.test(raw)
-    }
-
-    const uncategorizedPeople = (() => {
-        const classified = new Set<string>()
-        for (const v of Array.isArray(data?.vendedores) ? data.vendedores : []) {
-            const n = normalizeName(v?.persona_fisica?.nombre || v?.persona_moral?.denominacion_social)
-            if (n) classified.add(n)
-        }
-        for (const c of Array.isArray(data?.compradores) ? data.compradores : []) {
-            const n = normalizeName(c?.persona_fisica?.nombre || c?.persona_moral?.denominacion_social)
-            if (n) classified.add(n)
-            const spouse = normalizeName(c?.persona_fisica?.conyuge?.nombre)
-            if (spouse) classified.add(spouse)
-        }
-        const pendingPersons = Array.isArray((data as any)?._document_people_pending?.persons)
-            ? (data as any)._document_people_pending.persons
-            : []
-        const rawUncategorized = Array.isArray((data as any)?.personas_detectadas_no_clasificadas)
-            ? (data as any).personas_detectadas_no_clasificadas
-            : []
-        const detectedSpouses = Array.isArray((data as any)?.conyuges_detectados)
-            ? (data as any).conyuges_detectados
-            : []
-        const merged = [...pendingPersons, ...rawUncategorized, ...detectedSpouses]
-        const dedup = new Map<string, { name: string; rfc?: string | null; curp?: string | null }>()
-        for (const person of merged) {
-            const name = String(person?.name || person?.nombre || '').trim()
-            if (!isValidDetectedPersonName(name)) continue
-            if (!name) continue
-            const key = normalizeName(name)
-            if (!key) continue
-            if (classified.has(key)) continue
-            if (!dedup.has(key)) {
-                dedup.set(key, {
-                    name,
-                    rfc: person?.rfc ?? null,
-                    curp: person?.curp ?? null
-                })
-            }
-        }
-        return Array.from(dedup.values())
-    })()
 
     const folioCandidates = (() => {
         const candidates = Array.isArray((data as any)?.folios?.candidates)
@@ -197,6 +121,14 @@ export function DocumentSidebar({
     const hasSellerName =
         Boolean(data?.vendedores?.[0]?.persona_fisica?.nombre) ||
         Boolean(data?.vendedores?.[0]?.persona_moral?.denominacion_social)
+
+    const estadoCivilOptions = [
+        { label: 'Casado', value: 'casado' },
+        { label: 'Soltero', value: 'soltero' },
+        { label: 'Divorciado', value: 'divorciado' },
+        { label: 'Viudo', value: 'viudo' },
+        { label: 'Unión libre', value: 'union_libre' },
+    ]
 
     const sellerStepStatus: 'pending' | 'completed' | 'blocked' =
         getStepStatus('ESTADO_3') === 'completed' && !hasSellerName
@@ -240,7 +172,7 @@ export function DocumentSidebar({
                 <div className={`${onClose ? 'h-auto' : 'flex-1 min-h-0 overflow-hidden'}`}>
                     <div className={`${onClose ? 'h-auto' : 'h-full overflow-auto'}`}>
                         <div className={`${onClose ? 'p-3' : 'p-4'} space-y-4`}>
-                            {/* PASO 1 – OPERACIÓN Y FORMA DE PAGO */}
+                            {/* PASO 1 - OPERACION Y FORMA DE PAGO */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
                                     {getStepStatus('ESTADO_1') === 'completed' ? (
@@ -259,9 +191,27 @@ export function DocumentSidebar({
                                             <div><span className="font-medium">Tipo de operación:</span> {data.tipoOperacion}</div>
                                             {getStepStatus('ESTADO_1') === 'completed' ? (
                                                 data.creditos !== undefined && data.creditos.length > 0 ? (
-                                                    <div><span className="font-medium">Forma de pago:</span> Crédito</div>
+                                                    <div>
+                                                        <span className="font-medium">Forma de pago:</span>{' '}
+                                                        <EditableField
+                                                            value={true}
+                                                            path="actosNotariales.aperturaCreditoComprador"
+                                                            fieldType="boolean"
+                                                            onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                            disabled={!onManualUpdate}
+                                                        />
+                                                    </div>
                                                 ) : data.creditos !== undefined && data.creditos.length === 0 ? (
-                                                    <div><span className="font-medium">Forma de pago:</span> Contado</div>
+                                                    <div>
+                                                        <span className="font-medium">Forma de pago:</span>{' '}
+                                                        <EditableField
+                                                            value={false}
+                                                            path="actosNotariales.aperturaCreditoComprador"
+                                                            fieldType="boolean"
+                                                            onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                            disabled={!onManualUpdate}
+                                                        />
+                                                    </div>
                                                 ) : (
                                                     <div className="text-gray-400 italic">Forma de pago: Pendiente</div>
                                                 )
@@ -275,7 +225,7 @@ export function DocumentSidebar({
                                 </div>
                             </div>
 
-                            {/* PASO 2 – INMUEBLE Y REGISTRO (CONSOLIDADO) */}
+                            {/* PASO 2 - INMUEBLE Y REGISTRO (CONSOLIDADO) */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
                                     {getStepStatus('ESTADO_2') === 'completed' ? (
@@ -290,19 +240,34 @@ export function DocumentSidebar({
                                 </div>
                                 <div className={`ml-6 ${onClose ? 'space-y-0.5 mt-1' : 'space-y-1 mt-1.5'} ${onClose ? 'text-[11px]' : 'text-xs'} text-gray-600`}>
                                     {data.inmueble?.folio_real && (
-                                        <div><span className="font-medium">Folio Real:</span> {data.inmueble.folio_real}</div>
+                                        <div>
+                                            <span className="font-medium">Folio Real:</span>{' '}
+                                            <EditableField
+                                                value={data.inmueble.folio_real}
+                                                path="inmueble.folio_real"
+                                                fieldType="text"
+                                                onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                disabled={!onManualUpdate}
+                                            />
+                                        </div>
                                     )}
                                     {data.inmueble?.partidas && data.inmueble.partidas.length > 0 && (
-                                        <div><span className="font-medium">Partida(s):</span> {
-                                            data.inmueble.partidas
-                                                .map((p: any) => {
-                                                    if (typeof p === 'string') return p
-                                                    if (!p) return null
-                                                    return p.partida || p.numero || p.folio || p.value || null
-                                                })
-                                                .filter(Boolean)
-                                                .join(', ')
-                                        }</div>
+                                        <div>
+                                            <span className="font-medium">Partida(s):</span>{' '}
+                                            <EditableField
+                                                value={data.inmueble.partidas
+                                                    .map((p: any) => {
+                                                        if (typeof p === 'string') return p
+                                                        if (!p) return null
+                                                        return p.partida || p.numero || p.folio || p.value || null
+                                                    })
+                                                    .filter(Boolean)}
+                                                path="inmueble.partidas"
+                                                fieldType="list"
+                                                onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                disabled={!onManualUpdate}
+                                            />
+                                        </div>
                                     )}
                                     {(() => {
                                         if (hasMultipleUnresolvedFolios) {
@@ -328,7 +293,7 @@ export function DocumentSidebar({
                                                 dc.lote && `Lote ${dc.lote}`,
                                                 dc.manzana && `Manzana ${dc.manzana}`,
                                                 dc.fraccionamiento
-                                            ].filter(Boolean).join(' – ')
+                                            ].filter(Boolean).join(' - ')
                                             : ''
                                         const texto = conCalle || conColoniaMunicipio || datosCat
                                             ? (datosCat && (conCalle || conColoniaMunicipio)
@@ -390,7 +355,7 @@ export function DocumentSidebar({
                                 </div>
                             </div>
 
-                            {/* PASO 3 – VENDEDOR(ES) */}
+                            {/* PASO 3 - VENDEDOR(ES) */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
                                     {sellerStepStatus === 'completed' ? (
@@ -407,16 +372,62 @@ export function DocumentSidebar({
                                     {data.vendedores && data.vendedores.length > 0 && (
                                         <>
                                             {data.vendedores[0].persona_fisica?.nombre && (
-                                                <div><span className="font-medium">Nombre:</span> {data.vendedores[0].persona_fisica.nombre}</div>
+                                                <div>
+                                                    <span className="font-medium">Nombre:</span>{' '}
+                                                    <EditableField
+                                                        value={data.vendedores[0].persona_fisica.nombre}
+                                                        path="vendedores[0].persona_fisica.nombre"
+                                                        fieldType="text"
+                                                        onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                        disabled={!onManualUpdate}
+                                                    />
+                                                </div>
                                             )}
                                             {data.vendedores[0].persona_moral?.denominacion_social && (
-                                                <div><span className="font-medium">Denominación Social:</span> {data.vendedores[0].persona_moral.denominacion_social}</div>
+                                                <div>
+                                                    <span className="font-medium">Denominación Social:</span>{' '}
+                                                    <EditableField
+                                                        value={data.vendedores[0].persona_moral.denominacion_social}
+                                                        path="vendedores[0].persona_moral.denominacion_social"
+                                                        fieldType="textarea"
+                                                        onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                        disabled={!onManualUpdate}
+                                                    />
+                                                </div>
                                             )}
                                             {(data.vendedores[0].persona_fisica?.rfc || data.vendedores[0].persona_moral?.rfc) && (
-                                                <div><span className="font-medium">RFC:</span> {data.vendedores[0].persona_fisica?.rfc || data.vendedores[0].persona_moral?.rfc}</div>
+                                                <div>
+                                                    <span className="font-medium">RFC:</span>{' '}
+                                                    {data.vendedores[0].persona_fisica?.rfc ? (
+                                                        <EditableField
+                                                            value={data.vendedores[0].persona_fisica?.rfc}
+                                                            path="vendedores[0].persona_fisica.rfc"
+                                                            fieldType="text"
+                                                            onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                            disabled={!onManualUpdate}
+                                                        />
+                                                    ) : (
+                                                        <EditableField
+                                                            value={data.vendedores[0].persona_moral?.rfc || ''}
+                                                            path="vendedores[0].persona_moral.rfc"
+                                                            fieldType="text"
+                                                            onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                            disabled={!onManualUpdate}
+                                                        />
+                                                    )}
+                                                </div>
                                             )}
                                             {data.vendedores[0].persona_fisica?.curp && (
-                                                <div><span className="font-medium">CURP:</span> {data.vendedores[0]?.persona_fisica?.curp}</div>
+                                                <div>
+                                                    <span className="font-medium">CURP:</span>{' '}
+                                                    <EditableField
+                                                        value={data.vendedores[0]?.persona_fisica?.curp}
+                                                        path="vendedores[0].persona_fisica.curp"
+                                                        fieldType="text"
+                                                        onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                        disabled={!onManualUpdate}
+                                                    />
+                                                </div>
                                             )}
                                             {(() => {
                                                 const vendedor = data.vendedores[0]
@@ -444,7 +455,7 @@ export function DocumentSidebar({
                                 </div>
                             </div>
 
-                            {/* PASO 4 – COMPRADOR(ES) */}
+                            {/* PASO 4 - COMPRADOR(ES) */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
                                     {getStepStatus('ESTADO_4') === 'completed' ? (
@@ -510,23 +521,86 @@ export function DocumentSidebar({
                                                         {rolEnCredito && ` (${rolEnCredito})`}
                                                     </div>
                                                     {comprador.persona_fisica?.nombre && (
-                                                        <div><span className="font-medium">Nombre:</span> {comprador.persona_fisica.nombre}</div>
+                                                        <div>
+                                                            <span className="font-medium">Nombre:</span>{' '}
+                                                            <EditableField
+                                                                value={comprador.persona_fisica.nombre}
+                                                                path={`compradores[${idx}].persona_fisica.nombre`}
+                                                                fieldType="text"
+                                                                onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                                disabled={!onManualUpdate}
+                                                            />
+                                                        </div>
                                                     )}
                                                     {comprador.persona_moral?.denominacion_social && (
-                                                        <div><span className="font-medium">Denominación Social:</span> {comprador.persona_moral.denominacion_social}</div>
+                                                        <div>
+                                                            <span className="font-medium">Denominación Social:</span>{' '}
+                                                            <EditableField
+                                                                value={comprador.persona_moral.denominacion_social}
+                                                                path={`compradores[${idx}].persona_moral.denominacion_social`}
+                                                                fieldType="textarea"
+                                                                onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                                disabled={!onManualUpdate}
+                                                            />
+                                                        </div>
                                                     )}
                                                     {rfc && (
-                                                        <div><span className="font-medium">RFC:</span> {rfc}</div>
+                                                        <div>
+                                                            <span className="font-medium">RFC:</span>{' '}
+                                                            {comprador.persona_fisica?.rfc ? (
+                                                                <EditableField
+                                                                    value={comprador.persona_fisica?.rfc}
+                                                                    path={`compradores[${idx}].persona_fisica.rfc`}
+                                                                    fieldType="text"
+                                                                    onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                                    disabled={!onManualUpdate}
+                                                                />
+                                                            ) : (
+                                                                <EditableField
+                                                                    value={comprador.persona_moral?.rfc || ''}
+                                                                    path={`compradores[${idx}].persona_moral.rfc`}
+                                                                    fieldType="text"
+                                                                    onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                                    disabled={!onManualUpdate}
+                                                                />
+                                                            )}
+                                                        </div>
                                                     )}
                                                     {curp && (
-                                                        <div><span className="font-medium">CURP:</span> {curp}</div>
+                                                        <div>
+                                                            <span className="font-medium">CURP:</span>{' '}
+                                                            <EditableField
+                                                                value={curp}
+                                                                path={`compradores[${idx}].persona_fisica.curp`}
+                                                                fieldType="text"
+                                                                onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                                disabled={!onManualUpdate}
+                                                            />
+                                                        </div>
                                                     )}
                                                     {comprador.persona_fisica?.estado_civil && (
-                                                        <div><span className="font-medium">Estado Civil:</span> {comprador.persona_fisica.estado_civil}</div>
+                                                        <div>
+                                                            <span className="font-medium">Estado Civil:</span>{' '}
+                                                            <EditableField
+                                                                value={comprador.persona_fisica.estado_civil}
+                                                                path={`compradores[${idx}].persona_fisica.estado_civil`}
+                                                                fieldType="enum"
+                                                                enumOptions={estadoCivilOptions}
+                                                                onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                                disabled={!onManualUpdate}
+                                                            />
+                                                        </div>
                                                     )}
                                                     {comprador.persona_fisica?.conyuge?.nombre && (
                                                         <div className="text-gray-500 italic">
-                                                            <span className="font-medium">Cónyuge:</span> {comprador.persona_fisica.conyuge.nombre}
+                                                            <span className="font-medium">Cónyuge:</span>{' '}
+                                                            <EditableField
+                                                                value={comprador.persona_fisica.conyuge.nombre}
+                                                                path={`compradores[${idx}].persona_fisica.conyuge.nombre`}
+                                                                fieldType="text"
+                                                                onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                                disabled={!onManualUpdate}
+                                                            />
                                                         </div>
                                                     )}
                                                 </div>
@@ -538,38 +612,7 @@ export function DocumentSidebar({
                                 </div>
                             </div>
 
-                            {uncategorizedPeople.length > 0 && (
-                                <div className="pt-1 ml-6">
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowPeopleDetected((prev) => !prev)}
-                                        className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 hover:text-blue-900"
-                                    >
-                                        {showPeopleDetected ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                                        {showPeopleDetected ? 'Ocultar conyuges/personas detectadas' : 'Ver conyuges/personas detectadas'}
-                                    </button>
-                                    {showPeopleDetected && (
-                                        <div className="mt-2 rounded border border-blue-200 bg-blue-50 p-2 space-y-2">
-                                            <div className="text-[11px] font-semibold text-blue-900">Conyuges / personas detectadas</div>
-                                            <div className={`${onClose ? 'text-[11px]' : 'text-xs'} text-blue-900`}>Puedes clasificar con click y ajustar el texto antes de enviar.</div>
-                                            <div className="space-y-1 pt-1">
-                                                {uncategorizedPeople.map((person, idx) => (
-                                                    <button
-                                                        key={`${normalizeName(person.name)}-${idx}`}
-                                                        type="button"
-                                                        onClick={() => onSelectUncategorizedPerson?.(person.name)}
-                                                        className="w-full text-left rounded border border-blue-300 bg-white px-2 py-1 text-[10px] text-blue-900 hover:bg-blue-100"
-                                                    >
-                                                        {person.name}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            {/* PASO 5 – CRÉDITO DEL COMPRADOR */}
+                            {/* PASO 5 - CREDITO DEL COMPRADOR */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
                                     {getStepStatus('ESTADO_5') === 'completed' ? (
@@ -595,7 +638,16 @@ export function DocumentSidebar({
                                                     return (
                                                         <div key={idx} className="mb-2">
                                                             {credito.institucion && (
-                                                                <div><span className="font-medium">Institución {totalCreditos > 1 ? `(${idx + 1})` : ''}:</span> {credito.institucion}</div>
+                                                                <div>
+                                                                    <span className="font-medium">Institución {totalCreditos > 1 ? `(${idx + 1})` : ''}:</span>{' '}
+                                                                    <EditableField
+                                                                        value={credito.institucion}
+                                                                        path={`creditos[${idx}].institucion`}
+                                                                        fieldType="text"
+                                                                        onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                                        disabled={!onManualUpdate}
+                                                                    />
+                                                                </div>
                                                             )}
                                                             {credito.monto && (
                                                                 <div><span className="font-medium">Monto {totalCreditos > 1 ? `(${idx + 1})` : ''}:</span> {credito.monto}</div>
@@ -617,7 +669,7 @@ export function DocumentSidebar({
                                     )}
                                 </div>
                             </div>
-                            {/* PASO 6 – CANCELACIÓN DE HIPOTECA */}
+                            {/* PASO 6 - CANCELACION DE HIPOTECA */}
                             <div className="space-y-2">
                                 <div className="flex items-center space-x-2">
                                     {getStepStatus('ESTADO_6') === 'completed' ? (
@@ -634,7 +686,16 @@ export function DocumentSidebar({
                                 </div>
                                 <div className={`ml-6 ${onClose ? 'space-y-0.5 mt-1' : 'space-y-1 mt-1.5'} ${onClose ? 'text-[11px]' : 'text-xs'} text-gray-600`}>
                                     {data.inmueble?.existe_hipoteca === false ? (
-                                        <div className="text-gray-500">Libre de gravamen/hipoteca (confirmado)</div>
+                                        <div className="text-gray-500">
+                                            Libre de gravamen/hipoteca (confirmado){' '}
+                                            <EditableField
+                                                value={false}
+                                                path="inmueble.existe_hipoteca"
+                                                fieldType="boolean"
+                                                onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                disabled={!onManualUpdate}
+                                            />
+                                        </div>
                                     ) : Array.isArray(data.gravamenes) && data.gravamenes.length > 0 ? (
                                         (() => {
                                             const g0: any = data.gravamenes[0]
@@ -644,7 +705,16 @@ export function DocumentSidebar({
                                             if (g0?.cancelacion_confirmada === true) {
                                                 return (
                                                     <>
-                                                        <div className="text-green-700">Existe gravamen/hipoteca: cancelación ya inscrita (confirmado)</div>
+                                                        <div className="text-green-700">
+                                                            Existe gravamen/hipoteca: cancelación ya inscrita (confirmado){' '}
+                                                            <EditableField
+                                                                value={true}
+                                                                path="inmueble.existe_hipoteca"
+                                                                fieldType="boolean"
+                                                                onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                                disabled={!onManualUpdate}
+                                                            />
+                                                        </div>
                                                         {acreedor}
                                                     </>
                                                 )
@@ -652,7 +722,16 @@ export function DocumentSidebar({
                                             if (g0?.cancelacion_confirmada === false) {
                                                 return (
                                                     <>
-                                                        <div className="text-green-700">Existe gravamen/hipoteca: se cancelará en la escritura/trámite (confirmado)</div>
+                                                        <div className="text-green-700">
+                                                            Existe gravamen/hipoteca: se cancelará en la escritura/trámite (confirmado){' '}
+                                                            <EditableField
+                                                                value={true}
+                                                                path="inmueble.existe_hipoteca"
+                                                                fieldType="boolean"
+                                                                onSave={async (path, value) => onManualUpdate?.(path, value)}
+                                                                disabled={!onManualUpdate}
+                                                            />
+                                                        </div>
                                                         {acreedor}
                                                     </>
                                                 )
@@ -683,5 +762,8 @@ export function DocumentSidebar({
         </Card>
     )
 }
+
+
+
 
 

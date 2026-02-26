@@ -69,7 +69,7 @@ export function getPreavisoStates(context: any): StateDefinition[] {
             name: 'Crédito del Comprador',
             // Solo aplica si hay créditos (no si es contado o no está confirmado)
             required: (ctx) => Array.isArray(ctx?.creditos) && ctx.creditos.length > 0,
-            fields: ['creditos[].institucion', 'creditos[].participantes[]'],
+            fields: ['creditos[].institucion'],
             conditional: (ctx) => Array.isArray(ctx?.creditos) && ctx.creditos.length > 0,
         },
         {

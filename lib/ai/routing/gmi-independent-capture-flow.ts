@@ -113,6 +113,13 @@ const shortAnswerRouteSchema = z.object({
   top_alternatives: z.array(z.string().trim().min(1)).max(2).optional(),
 })
 
+const creditInstitutionValidationSchema = z.object({
+  is_financial_institution: z.boolean(),
+  canonical_name: z.string().trim().nullable().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  reason: z.string().trim().optional(),
+})
+
 const shortAnswerRouteResponseSchema: GeminiResponseSchema = {
   type: 'OBJECT',
   additionalProperties: false,
@@ -128,6 +135,18 @@ const shortAnswerRouteResponseSchema: GeminiResponseSchema = {
     },
   },
   required: ['chosen_slot_id'],
+}
+
+const creditInstitutionValidationResponseSchema: GeminiResponseSchema = {
+  type: 'OBJECT',
+  additionalProperties: false,
+  properties: {
+    is_financial_institution: { type: 'BOOLEAN' },
+    canonical_name: { type: 'STRING', nullable: true },
+    confidence: { type: 'NUMBER' },
+    reason: { type: 'STRING' },
+  },
+  required: ['is_financial_institution'],
 }
 
 const ALLOWED_UPDATE_PATHS = [
@@ -234,6 +253,7 @@ class GMIClient {
 export class GMIIndependentCaptureFlow {
   private readonly gmi = new GMIClient()
   private readonly shortRouteThreshold = Number(process.env.GMI_SHORT_ROUTE_CONFIDENCE || 0.62)
+  private readonly institutionValidationThreshold = Number(process.env.GMI_INSTITUTION_CONFIDENCE || 0.6)
 
   static canonicalizePath(path: string): string {
     return canonicalizePath(path)
@@ -270,11 +290,15 @@ export class GMIIndependentCaptureFlow {
       pendingQuestions: Array.isArray(input.pendingQuestions) ? input.pendingQuestions : [],
     })
     if (heuristicUpdates.length > 0) {
+      const validatedHeuristicUpdates = await this.validateCreditInstitutionUpdates(heuristicUpdates)
+      if (validatedHeuristicUpdates.length === 0) {
+        return this.emptyResult(traceId, 'No pude validar una institucion financiera confiable con la informacion proporcionada.')
+      }
       return {
         intent: 'UPDATE_STATE',
         agent_used: 'GMIIndependentCaptureFlow',
         answer: 'Detecte multiples datos del mensaje y genere propuestas de actualizacion para los campos faltantes.',
-        proposed_updates: heuristicUpdates,
+        proposed_updates: validatedHeuristicUpdates,
         actions: [
           {
             type: 'review_proposed_updates',
@@ -316,12 +340,16 @@ export class GMIIndependentCaptureFlow {
         `No pude extraer un valor confiable para ${selectedLabel}.`
       )
     }
+    const validatedExtracted = await this.validateCreditInstitutionUpdate(extracted)
+    if (!validatedExtracted) {
+      return this.emptyResult(traceId, 'No pude validar una institucion financiera confiable con la informacion proporcionada.')
+    }
 
     return {
       intent: 'UPDATE_STATE',
       agent_used: 'GMIIndependentCaptureFlow',
       answer: 'Genere una propuesta de actualizacion alineada a los campos faltantes. Revisa y confirma para aplicar.',
-      proposed_updates: [extracted],
+      proposed_updates: [validatedExtracted],
       actions: [
         {
           type: 'review_proposed_updates',
@@ -608,7 +636,6 @@ export class GMIIndependentCaptureFlow {
       280,
       extractionResponseSchema
     )
-    const safe = extractionSchema.safeParse(parsed)
     const normalizedExtraction = normalizeExtractionCandidate(parsed, targetPath)
     const fallbackFolioValue =
       targetPath === 'inmueble.folio_real'
@@ -641,6 +668,82 @@ export class GMIIndependentCaptureFlow {
       reason:
         String(normalizedExtraction.reason || '').trim() ||
         `Captura inferida por GMI para ${input.selectedMissing}`,
+    }
+  }
+
+  private async validateCreditInstitutionUpdates(
+    updates: Array<Record<string, unknown>>
+  ): Promise<Array<Record<string, unknown>>> {
+    const out: Array<Record<string, unknown>> = []
+    for (const update of updates) {
+      const next = await this.validateCreditInstitutionUpdate(update)
+      if (next) out.push(next)
+    }
+    return out
+  }
+
+  private async validateCreditInstitutionUpdate(
+    update: Record<string, unknown>
+  ): Promise<Record<string, unknown> | null> {
+    const path = canonicalizePath(String(update?.path || ''))
+    if (!/^creditos\[\d+\]\.institucion$/.test(path)) return update
+    const rawValue = String(update?.value || '').trim()
+    if (!rawValue) return null
+
+    const verdict = await this.classifyCreditInstitution(rawValue)
+    if (!verdict.valid) return null
+
+    return {
+      ...update,
+      path,
+      value: verdict.canonicalName || rawValue,
+    }
+  }
+
+  private async classifyCreditInstitution(input: string): Promise<{
+    valid: boolean
+    canonicalName: string | null
+    confidence: number
+  }> {
+    const fallback = basicCreditInstitutionHeuristic(input)
+    const payload = {
+      candidate_text: input,
+      locale: 'mx',
+      domain: 'preaviso_notarial_credito',
+      rules: [
+        'Valida si el texto representa una institucion financiera real.',
+        'Rechaza frases legales/genericas y texto narrativo.',
+        'Si es valida, regresa canonical_name limpio.',
+      ],
+    }
+
+    const parsed = await this.gmi.json(
+      'Eres un clasificador de instituciones financieras para tramites notariales en Mexico. Responde SOLO JSON.',
+      payload,
+      140,
+      creditInstitutionValidationResponseSchema
+    )
+
+    const safe = creditInstitutionValidationSchema.safeParse(parsed)
+    if (!safe.success) {
+      return {
+        valid: fallback,
+        canonicalName: fallback ? input.trim() : null,
+        confidence: fallback ? 0.55 : 0,
+      }
+    }
+
+    const valid = safe.data.is_financial_institution === true
+    const confidence = Number(safe.data.confidence ?? 0)
+    if (!valid || confidence < this.institutionValidationThreshold) {
+      return { valid: false, canonicalName: null, confidence }
+    }
+
+    const canonicalName = String(safe.data.canonical_name || '').trim()
+    return {
+      valid: true,
+      canonicalName: canonicalName || input.trim(),
+      confidence,
     }
   }
 
@@ -681,6 +784,20 @@ function normalizeRequiredMissing(requiredMissing?: string[]): string[] {
   return Array.isArray(requiredMissing)
     ? requiredMissing.map((x) => String(x || '').trim()).filter(Boolean)
     : []
+}
+
+function basicCreditInstitutionHeuristic(value: string): boolean {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized || normalized.length < 3) return false
+  if (/(?:inciso|articulo|noveno|terminos del|el cual se otorga|de la presente)/.test(normalized)) return false
+  if (/^(institucion|institucion financiera|entidad|banco|credito|financiamiento)$/.test(normalized)) return false
+  if (/^(por confirmar|desconocido|pendiente|n\/a|na|null)$/.test(normalized)) return false
+  return true
 }
 
 function describeMissingField(field: string): string {
@@ -1141,6 +1258,16 @@ function inferHeuristicUpdates(args: {
         reason: 'Tipo de comprador capturado por respuesta corta',
       })
     }
+  }
+
+  const creditParticipantsFromContext = resolveCreditParticipantsFromContext(message, args.collectedData)
+  if (creditParticipantsFromContext && shouldCapturePath('creditos[0].participantes')) {
+    updates.push({
+      op: 'set',
+      path: 'creditos[0].participantes',
+      value: creditParticipantsFromContext,
+      reason: 'Participantes del credito inferidos por referencia al comprador',
+    })
   }
 
   if (shouldCapturePath('inmueble.folio_real')) {
@@ -1709,6 +1836,55 @@ function resolveBuyerReferenceFromContext(
       }
     }
   }
+
+  return null
+}
+
+function resolveCreditParticipantsFromContext(
+  message: string,
+  collectedData: Record<string, unknown>
+): Array<{ party_id: string | null; nombre: string; rol: 'acreditado' | 'coacreditado' }> | null {
+  const normalized = String(message || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return null
+
+  const mentionsParticipants = /\b(participa|participan|participante|participantes)\b/.test(normalized)
+  const mentionsBuyer = /\bcomprador(?:es)?\b/.test(normalized)
+  if (!mentionsParticipants || !mentionsBuyer) return null
+
+  const buyerName = getPrimaryBuyerNameFromCollectedData(collectedData)
+  if (!buyerName) return null
+
+  const singleBuyerSignal =
+    /\b(unico|unico participante|solo|solamente)\b/.test(normalized) ||
+    /\bel participante es el comprador\b/.test(normalized) ||
+    /\bparticipa el comprador\b/.test(normalized)
+
+  if (!singleBuyerSignal) return null
+
+  return [
+    {
+      party_id: null,
+      nombre: buyerName,
+      rol: 'acreditado',
+    },
+  ]
+}
+
+function getPrimaryBuyerNameFromCollectedData(collectedData: Record<string, unknown>): string | null {
+  const buyers = Array.isArray((collectedData as any)?.compradores) ? ((collectedData as any).compradores as any[]) : []
+  const firstBuyer = buyers[0]
+  if (!firstBuyer || typeof firstBuyer !== 'object') return null
+
+  const personaFisicaNombre = cleanName(String(firstBuyer?.persona_fisica?.nombre || ''))
+  if (personaFisicaNombre) return personaFisicaNombre
+
+  const personaMoralNombre = cleanName(String(firstBuyer?.persona_moral?.denominacion_social || ''))
+  if (personaMoralNombre) return personaMoralNombre
 
   return null
 }

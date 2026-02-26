@@ -14,12 +14,16 @@ const ALLOWED_PATHS = [
   /^compradores\[\d+\]\.persona_fisica\.nombre$/,
   /^compradores\[\d+\]\.persona_fisica\.rfc$/,
   /^compradores\[\d+\]\.persona_fisica\.curp$/,
+  /^compradores\[\d+\]\.persona_moral\.rfc$/,
   /^compradores\[\d+\]\.persona_fisica\.estado_civil$/,
   /^compradores\[\d+\]\.tipo_persona$/,
   /^compradores\[\d+\]\.persona_fisica\.conyuge\.nombre$/,
   /^compradores\[\d+\]\.persona_moral\.denominacion_social$/,
   /^vendedores\[\d+\]\.tipo_persona$/,
   /^vendedores\[\d+\]\.persona_fisica\.nombre$/,
+  /^vendedores\[\d+\]\.persona_fisica\.rfc$/,
+  /^vendedores\[\d+\]\.persona_fisica\.curp$/,
+  /^vendedores\[\d+\]\.persona_moral\.rfc$/,
   /^vendedores\[\d+\]\.persona_moral\.denominacion_social$/,
   /^creditos$/,
   /^creditos\[\d+\]\.institucion$/,
@@ -44,6 +48,7 @@ export class PreavisoProposedUpdateService {
     userId: string
     traceId: string
     proposedUpdates: ProposedUpdate[]
+    source?: 'manual' | 'auto' | string
   }): Promise<{
     applied_updates: number
     data: any
@@ -70,6 +75,8 @@ export class PreavisoProposedUpdateService {
 
     const currentData = isPlainObject(tramite.datos) ? deepClone(tramite.datos) : {}
     let applied = 0
+    const appliedEntries: Array<{ path: string; previous_value: unknown; new_value: unknown }> = []
+    const institutionValidationCache = new Map<string, { valid: boolean; canonical_name: string | null; confidence: number }>()
 
     for (const raw of args.proposedUpdates) {
       const op = String(raw?.op || '').trim().toLowerCase()
@@ -79,11 +86,30 @@ export class PreavisoProposedUpdateService {
       if (!isAllowedPath(path)) {
         throw new ProposedUpdateDomainViolationError(`Path no permitido para commit: ${path}`)
       }
-      if (!isMeaningfulValueForPath(path, raw?.value)) {
+      let candidateValue: unknown = raw?.value
+      if (/^creditos\[\d+\]\.institucion$/.test(path)) {
+        const rawInstitution = String(candidateValue || '').trim()
+        const cacheKey = rawInstitution.toLowerCase()
+        const verdict =
+          institutionValidationCache.get(cacheKey) ||
+          (await classifyCreditInstitutionForCommit(rawInstitution))
+        institutionValidationCache.set(cacheKey, verdict)
+        if (!verdict.valid) {
+          continue
+        }
+        candidateValue = verdict.canonical_name || rawInstitution
+      }
+      if (!isMeaningfulValueForPath(path, candidateValue)) {
         continue
       }
-      setByPath(currentData, path, raw?.value)
+      const previousValue = deepCloneSafe(getByPath(currentData, path))
+      setByPath(currentData, path, candidateValue)
       applied += 1
+      appliedEntries.push({
+        path,
+        previous_value: previousValue,
+        new_value: deepCloneSafe(candidateValue),
+      })
     }
 
     if (applied === 0) {
@@ -110,8 +136,11 @@ export class PreavisoProposedUpdateService {
       eventType: 'proposed_updates_commit',
       metadata: {
         trace_id: args.traceId,
+        source: String(args.source || 'auto'),
+        updated_at: new Date().toISOString(),
         applied_updates: applied,
         paths: args.proposedUpdates.map((x) => String(x.path || '')).filter(Boolean),
+        applied_entries: appliedEntries,
       },
     })
 
@@ -127,6 +156,29 @@ export class PreavisoProposedUpdateService {
         wizard_state: wizardState,
       },
     }
+  }
+}
+
+function getByPath(target: Record<string, any>, path: string): unknown {
+  const segments = parsePath(path)
+  let node: any = target
+  for (const segment of segments) {
+    if (node === null || node === undefined) return undefined
+    if (typeof segment === 'number') {
+      if (!Array.isArray(node)) return undefined
+      node = node[segment]
+      continue
+    }
+    node = node[segment]
+  }
+  return node
+}
+
+function deepCloneSafe<T>(value: T): T {
+  try {
+    return JSON.parse(JSON.stringify(value))
+  } catch {
+    return value
   }
 }
 
@@ -245,10 +297,139 @@ function isMeaningfulValueForPath(path: string, value: unknown): boolean {
   }
 
   if (/^creditos\[\d+\]\.institucion$/.test(path)) {
-    return str.length >= 3
+    const normalized = str
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (normalized.length < 3) return false
+    if (/(?:inciso|articulo|noveno|terminos del|el cual se otorga|de la presente)/.test(normalized)) return false
+    if (/^(institucion|institucion financiera|entidad|banco|credito|financiamiento)$/.test(normalized)) return false
+    if (/^(por confirmar|desconocido|pendiente|n\/a|na|null)$/.test(normalized)) return false
+    return true
   }
 
   return true
+}
+
+async function classifyCreditInstitutionForCommit(
+  value: string
+): Promise<{ valid: boolean; canonical_name: string | null; confidence: number }> {
+  const fallback = basicCreditInstitutionHeuristic(value)
+  const apiKey =
+    process.env.GMI_API_KEY ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    ''
+  if (!apiKey) {
+    return {
+      valid: fallback,
+      canonical_name: fallback ? value.trim() : null,
+      confidence: fallback ? 0.55 : 0,
+    }
+  }
+
+  const model = process.env.GMI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+  const payload = {
+    generationConfig: {
+      temperature: 0,
+      responseMimeType: 'application/json',
+      maxOutputTokens: 140,
+      responseSchema: {
+        type: 'OBJECT',
+        additionalProperties: false,
+        properties: {
+          is_financial_institution: { type: 'BOOLEAN' },
+          canonical_name: { type: 'STRING', nullable: true },
+          confidence: { type: 'NUMBER' },
+        },
+        required: ['is_financial_institution'],
+      },
+    },
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: [
+              'SYSTEM:',
+              'Eres un clasificador de instituciones financieras para tramites notariales en Mexico. Responde SOLO JSON.',
+              '',
+              'PAYLOAD:',
+              JSON.stringify({
+                candidate_text: value,
+                locale: 'mx',
+                domain: 'preaviso_notarial_credito',
+                rules: [
+                  'Valida si el texto representa una institucion financiera real.',
+                  'Rechaza frases legales/genericas y texto narrativo.',
+                  'Si es valida, regresa canonical_name limpio.',
+                ],
+              }),
+            ].join('\n'),
+          },
+        ],
+      },
+    ],
+  }
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!resp.ok) throw new Error(`gmi_status_${resp.status}`)
+    const data = await resp.json().catch(() => ({}))
+    let text = extractGeminiText(data).trim()
+    if (!text) throw new Error('empty_response')
+    if (text.startsWith('```')) {
+      const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
+      if (match?.[1]) text = match[1]
+    }
+    const parsed = JSON.parse(text)
+    const valid = parsed?.is_financial_institution === true
+    const confidence = Number(parsed?.confidence ?? 0)
+    const canonicalName = String(parsed?.canonical_name || '').trim() || null
+    if (!valid || confidence < Number(process.env.GMI_INSTITUTION_CONFIDENCE || 0.6)) {
+      return { valid: false, canonical_name: null, confidence }
+    }
+    return { valid: true, canonical_name: canonicalName || value.trim(), confidence }
+  } catch {
+    return {
+      valid: fallback,
+      canonical_name: fallback ? value.trim() : null,
+      confidence: fallback ? 0.55 : 0,
+    }
+  }
+}
+
+function basicCreditInstitutionHeuristic(value: string): boolean {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized || normalized.length < 3) return false
+  if (/(?:inciso|articulo|noveno|terminos del|el cual se otorga|de la presente)/.test(normalized)) return false
+  if (/^(institucion|institucion financiera|entidad|banco|credito|financiamiento)$/.test(normalized)) return false
+  if (/^(por confirmar|desconocido|pendiente|n\/a|na|null)$/.test(normalized)) return false
+  return true
+}
+
+function extractGeminiText(data: any): string {
+  const parts = data?.candidates?.[0]?.content?.parts
+  if (Array.isArray(parts)) {
+    const text = parts
+      .map((part: any) => String(part?.text || ''))
+      .join('\n')
+      .trim()
+    if (text) return text
+  }
+  return ''
 }
 
 function normalizeCommitPath(path: string): string {

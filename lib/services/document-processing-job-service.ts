@@ -78,17 +78,39 @@ export class DocumentProcessingJobService {
       ...((current as any).metadata || {}),
       ...(args.metadataPatch || {}),
     }
-    const nextStatus = args.status || (current as any).status
+    const nextStatusInput = args.status || (current as any).status
+    const effectiveTotalDocs =
+      args.totalDocs !== undefined ? Math.max(0, Number(args.totalDocs || 0)) : Math.max(0, Number((current as any).total_docs || 0))
+    const effectiveProcessedDocs =
+      args.processedDocs !== undefined
+        ? Math.max(0, Number(args.processedDocs || 0))
+        : Math.max(0, Number((current as any).processed_docs || 0))
+    const effectiveFailedDocs =
+      args.failedDocs !== undefined ? Math.max(0, Number(args.failedDocs || 0)) : Math.max(0, Number((current as any).failed_docs || 0))
+    const effectiveHandledDocs = effectiveProcessedDocs + effectiveFailedDocs
+
+    const autoCompleted =
+      effectiveTotalDocs > 0 &&
+      effectiveHandledDocs >= effectiveTotalDocs &&
+      nextStatusInput !== 'completed' &&
+      nextStatusInput !== 'failed' &&
+      nextStatusInput !== 'cancelled'
+
+    const nextStatus = autoCompleted ? 'completed' : nextStatusInput
     const updates: Record<string, any> = {
       status: nextStatus,
       updated_at: new Date().toISOString(),
       metadata: nextMetadata,
     }
-    if (args.processedDocs !== undefined) updates.processed_docs = Math.max(0, Number(args.processedDocs || 0))
-    if (args.failedDocs !== undefined) updates.failed_docs = Math.max(0, Number(args.failedDocs || 0))
-    if (args.totalDocs !== undefined) updates.total_docs = Math.max(0, Number(args.totalDocs || 0))
+    if (args.processedDocs !== undefined) updates.processed_docs = effectiveProcessedDocs
+    if (args.failedDocs !== undefined) updates.failed_docs = effectiveFailedDocs
+    if (args.totalDocs !== undefined) updates.total_docs = effectiveTotalDocs
     if (args.currentDocument !== undefined) updates.current_document = args.currentDocument
     if (args.message !== undefined) updates.message = args.message
+    if (autoCompleted) {
+      updates.current_document = null
+      if (args.message === undefined) updates.message = 'Procesamiento finalizado'
+    }
     if (nextStatus === 'completed' || nextStatus === 'failed' || nextStatus === 'cancelled') {
       updates.completed_at = new Date().toISOString()
     }

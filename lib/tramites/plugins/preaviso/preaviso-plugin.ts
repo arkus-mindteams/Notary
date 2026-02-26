@@ -147,9 +147,6 @@ export class PreavisoPlugin implements TramitePlugin {
         if (!credito.institucion) {
           errors.push('Crédito sin institución')
         }
-        if (!credito.participantes || credito.participantes.length === 0) {
-          missing.push('creditos[].participantes[]')
-        }
       }
     }
 
