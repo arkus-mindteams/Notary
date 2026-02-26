@@ -34,6 +34,8 @@ const ALLOWED_PATHS = [
   /^inmueble\.direccion$/,
   /^inmueble\.direccion\.(calle|numero|colonia|municipio|estado|codigo_postal)$/,
   /^gravamenes$/,
+  /^gravamenes\[\d+\]\.institucion$/,
+  /^gravamenes\[\d+\]\.cancelacion_confirmada$/,
   /^actosNotariales\.aperturaCreditoComprador$/,
   /^actosNotariales\.cancelacionCreditoVendedor$/,
 ]
@@ -43,6 +45,25 @@ export class ProposedUpdateDomainViolationError extends Error {
 }
 
 export class PreavisoProposedUpdateService {
+  static inspectCommitPaths(proposedUpdates: ProposedUpdate[]): {
+    attempted_paths: string[]
+    path_checks: Array<{ path: string; normalized_path: string; allowlist_match: boolean }>
+    rejected_path: string | null
+  } {
+    const checks = (Array.isArray(proposedUpdates) ? proposedUpdates : []).map((raw) => {
+      const path = String(raw?.path || '')
+      const normalized_path = normalizeCommitPath(path)
+      const allowlist_match = Boolean(normalized_path) && isAllowedPath(normalized_path)
+      return { path, normalized_path, allowlist_match }
+    })
+    const rejected = checks.find((c) => c.normalized_path && !c.allowlist_match) || null
+    return {
+      attempted_paths: checks.map((c) => c.normalized_path || c.path).filter(Boolean),
+      path_checks: checks,
+      rejected_path: rejected?.normalized_path || null,
+    }
+  }
+
   static async commit(args: {
     tramiteId: string
     userId: string
@@ -208,6 +229,13 @@ function setByPath(target: Record<string, any>, path: string, value: unknown) {
       }
       if (node[key] === undefined || node[key] === null) {
         node[key] = typeof nextKey === 'number' ? [] : {}
+      } else if (typeof nextKey !== 'number' && !isPlainObject(node[key])) {
+        if (typeof node[key] === 'string') {
+          const institucion = String(node[key] || '').trim() || null
+          node[key] = { institucion, cancelacion_confirmada: null }
+        } else {
+          node[key] = {}
+        }
       }
       node = node[key]
       continue
@@ -267,6 +295,12 @@ function isMeaningfulValueForPath(path: string, value: unknown): boolean {
 
   if (path === 'gravamenes') {
     return Array.isArray(value)
+  }
+  if (/^gravamenes\[\d+\]\.cancelacion_confirmada$/.test(path)) {
+    return typeof value === 'boolean'
+  }
+  if (/^gravamenes\[\d+\]\.institucion$/.test(path)) {
+    return typeof value === 'string' && value.trim().length > 2
   }
 
   const str = typeof value === 'string' ? value.trim() : String(value ?? '').trim()
@@ -456,12 +490,13 @@ function normalizeCommitPath(path: string): string {
 function normalizeDerivedPreavisoData(data: Record<string, any>, updates: ProposedUpdate[]) {
   const touchedPaths = new Set(
     (updates || [])
-      .map((u) => String(u?.path || '').trim())
+      .map((u) => normalizeCommitPath(String(u?.path || '').trim()))
       .filter(Boolean)
   )
 
   normalizeBuyerNameAliases(data, touchedPaths)
   normalizeCreditosConsistency(data, touchedPaths)
+  normalizeGravamenesConsistency(data, touchedPaths)
 
   if (!touchedPaths.has('inmueble.folio_real')) return
 
@@ -490,6 +525,37 @@ function normalizeDerivedPreavisoData(data: Record<string, any>, updates: Propos
   }
 
   enrichInmuebleFromSelectedFolioCandidate(data, selectedFolio)
+}
+
+function normalizeGravamenesConsistency(data: Record<string, any>, touchedPaths: Set<string>) {
+  const touchedGravamenes =
+    touchedPaths.has('gravamenes') ||
+    Array.from(touchedPaths).some((path) => path.startsWith('gravamenes['))
+  if (!touchedGravamenes) return
+  if (!Array.isArray(data.gravamenes)) {
+    data.gravamenes = []
+    return
+  }
+  data.gravamenes = (data.gravamenes as any[])
+    .map((item) => {
+      if (typeof item === 'string') {
+        const institucion = item.trim()
+        if (!institucion) return null
+        return { institucion, cancelacion_confirmada: null }
+      }
+      if (isPlainObject(item)) {
+        const institucionRaw = (item as any).institucion
+        const institucion = typeof institucionRaw === 'string' ? institucionRaw.trim() : null
+        const cancelacion =
+          typeof (item as any).cancelacion_confirmada === 'boolean'
+            ? (item as any).cancelacion_confirmada
+            : null
+        if (!institucion && cancelacion === null) return null
+        return { ...item, institucion, cancelacion_confirmada: cancelacion }
+      }
+      return null
+    })
+    .filter(Boolean)
 }
 
 function normalizeCreditosConsistency(data: Record<string, any>, touchedPaths: Set<string>) {

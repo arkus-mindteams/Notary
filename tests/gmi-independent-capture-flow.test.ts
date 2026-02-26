@@ -358,6 +358,53 @@ test('GMIIndependentCaptureFlow resuelve participantes de credito cuando usuario
   }
 })
 
+test('routeAnswerEvents detecta confirmacion de cancelacion de gravamen con "si se cancelara"', () => {
+  const routed = GMIIndependentCaptureFlow.routeAnswerEvents({
+    message: 'si se cancelara',
+    requiredMissing: ['gravamenes[0].cancelacion_confirmada'],
+  })
+
+  const eventTypes = routed.events.map((event) => event.type)
+  assert.equal(eventTypes.includes('ANSWER_GRAVAMEN_CANCELACION_CONFIRMADA'), true)
+  const updateMap = new Map<string, unknown>(
+    routed.updates.map((update) => [String((update as any)?.path || ''), (update as any)?.value])
+  )
+  assert.equal(updateMap.get('gravamenes[0].cancelacion_confirmada'), true)
+  assert.equal(routed.updates.length > 0, true)
+})
+
+test('routeAnswerEvents detecta confirmacion negativa de cancelacion de gravamen con "no"', () => {
+  const routed = GMIIndependentCaptureFlow.routeAnswerEvents({
+    message: 'no',
+    requiredMissing: ['gravamenes[0].cancelacion_confirmada'],
+  })
+  const updateMap = new Map<string, unknown>(
+    routed.updates.map((update) => [String((update as any)?.path || ''), (update as any)?.value])
+  )
+  assert.equal(updateMap.get('gravamenes[0].cancelacion_confirmada'), false)
+})
+
+test('routeAnswerEvents normaliza gravamenes legado string a objeto cuando compila cancelacion', () => {
+  const routed = GMIIndependentCaptureFlow.routeAnswerEvents({
+    message: 'si se cancelara',
+    requiredMissing: ['gravamenes[0].cancelacion_confirmada'],
+    collectedData: {
+      gravamenes: ['BANCO DEL BAJIO, SOCIEDAD ANONIMA'],
+    },
+  })
+
+  const updateMap = new Map<string, unknown>(
+    routed.updates.map((update) => [String((update as any)?.path || ''), (update as any)?.value])
+  )
+  assert.deepEqual(updateMap.get('gravamenes'), [
+    {
+      institucion: 'BANCO DEL BAJIO, SOCIEDAD ANONIMA',
+      cancelacion_confirmada: null,
+    },
+  ])
+  assert.equal(updateMap.get('gravamenes[0].cancelacion_confirmada'), true)
+})
+
 test('GMIIndependentCaptureFlow captura credito + institucion en el mismo mensaje cuando falta existencia_credito', async () => {
   const prevApiKey = process.env.GMI_API_KEY
   const originalFetch = globalThis.fetch
@@ -453,6 +500,322 @@ test('GMIIndependentCaptureFlow no deduce comprador por cierre cuando hay mas de
     const map = toUpdateMap(result)
     assert.equal(map.get('compradores[0].persona_fisica.conyuge.nombre'), 'ARMINDA FERRA JUSTO')
     assert.equal(map.has('compradores[0].persona_fisica.nombre'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow compila evento comprador cuando mensaje responde "El comprador es ..."', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para evento comprador determinista')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'EL COMPRADOR es JOSE GUADALUPE SANDOVAL MURILLO',
+      requiredMissing: ['compradores[]', 'compradores[].nombre', 'compradores[].tipo_persona'],
+      collectedData: {},
+    })
+
+    const map = toUpdateMap(result)
+    assert.equal(map.get('compradores[0].persona_fisica.nombre'), 'JOSE GUADALUPE SANDOVAL MURILLO')
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow compila evento vendedor con persona moral cuando mensaje responde "El vendedor es ..."', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para evento vendedor determinista')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'EL VENDEDOR es INMOBILIARIA ENCASA SOCIEDAD ANONIMA PROMOTORA DE INVERSION',
+      requiredMissing: ['vendedores[]', 'vendedores[].tipo_persona'],
+      collectedData: {},
+    })
+
+    const map = toUpdateMap(result)
+    assert.equal(map.get('vendedores[0].tipo_persona'), 'persona_moral')
+    assert.equal(
+      map.get('vendedores[0].persona_moral.denominacion_social'),
+      'INMOBILIARIA ENCASA SOCIEDAD ANONIMA PROMOTORA DE INVERSION'
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow evita calle greedy y segmenta mensaje multi-campo', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para segmentacion multi-campo determinista')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const message = [
+      'CONJ. HABITACIONAL: CONDOMINIO D-2 CONSTRUIDO EN EL LOTE 43, RESULTANTE DE LA RELOTIFICACION DE LOS LOTES 34, 35, 36 Y 37 DE LA MANZANA 831 DE DESARROLLO HABITACIONAL VISTA BUGAMBILIAS, DE ESTA CIUDAD.',
+      'se tiene un gravamen hipotecario vigente',
+      'EL VENDEDOR es INMOBILIARIA Y DESARROLLADORA ENCASA SOCIEDAD ANONIMA PROMOTORA DE INVERSION DE CAPITAL VARIABLE',
+      'EL COMPRADOR es JOSE GUADALUPE SANDOVAL MURILLO',
+      'el pago se realiza con credito BANCO MERCANTIL DEL NORTE',
+    ].join(' ')
+    const result = await flow.process({
+      message,
+      requiredMissing: REQUIRED_MISSING_BASE,
+      collectedData: {},
+    })
+
+    const map = toUpdateMap(result)
+    const calle = String(map.get('inmueble.direccion.calle') || '')
+    assert.equal(/\b(VENDEDOR|COMPRADOR|GRAVAMEN|CREDITO)\b/i.test(calle), false)
+    assert.equal(map.get('vendedores[0].tipo_persona'), 'persona_moral')
+    assert.equal(map.get('compradores[0].persona_fisica.nombre'), 'JOSE GUADALUPE SANDOVAL MURILLO')
+    assert.equal(map.get('inmueble.existe_hipoteca'), true)
+    assert.equal(map.get('actosNotariales.aperturaCreditoComprador'), true)
+    assert.deepEqual(map.get('creditos'), [{ institucion: null, participantes: [] }])
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow captura folio + partida + direccion segura en mensaje clasico completo', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para extraccion determinista de inmueble')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const message = [
+      'PARTIDA NO: 6431741',
+      'FOLIO REAL: 1782485',
+      'CONJ. HABITACIONAL: CONDOMINIO D-2 CONSTRUIDO EN EL LOTE 43 DE DESARROLLO HABITACIONAL VISTA BUGAMBILIAS, DE ESTA CIUDAD.',
+      'EL VENDEDOR es INMOBILIARIA Y DESARROLLADORA ENCASA SOCIEDAD ANONIMA PROMOTORA DE INVERSION DE CAPITAL VARIABLE.',
+      'EL COMPRADOR es JOSE GUADALUPE SANDOVAL MURILLO.',
+      'Se tiene un gravamen hipotecario vigente y el pago sera con credito BANCO MERCANTIL DEL NORTE.',
+    ].join(' ')
+    const result = await flow.process({
+      message,
+      requiredMissing: REQUIRED_MISSING_BASE,
+      collectedData: {},
+    })
+
+    const map = toUpdateMap(result)
+    const calle = String(map.get('inmueble.direccion.calle') || '')
+    assert.equal(map.get('inmueble.folio_real'), '1782485')
+    assert.deepEqual(map.get('inmueble.partidas'), ['6431741'])
+    assert.equal(/\b(VENDEDOR|COMPRADOR|GRAVAMEN|CREDITO)\b/i.test(calle), false)
+    assert.equal(calle.length >= 30, true)
+    assert.equal(map.get('vendedores[0].tipo_persona'), 'persona_moral')
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow no setea direccion.calle cuando input largo no tiene marcador semantico claro', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => ({
+    ok: true,
+    json: async () => ({
+      candidates: [
+        {
+          content: {
+            parts: [{ text: JSON.stringify({ applies: false, op: 'set', path: 'inmueble.direccion.calle', value: null }) }],
+          },
+        },
+      ],
+    }),
+  })) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message:
+        'CONJ. HABITACIONAL: CONDOMINIO D-2 EN LOTE 43 CON DESCRIPCION EXTENSA DEL OBJETO INMOBILIARIO Y MUCHOS DETALLES ADICIONALES DE REFERENCIA REGISTRAL Y UBICACION FISICA QUE SUPERAN LONGITUD ESPERADA SIN MARCADORES DE OTROS CAMPOS Y CON TEXTO EXTRA PARA REBASAR EL UMBRAL DE LONGITUD EN EL BLOQUE DE DIRECCION SIN SEPARADORES SEMANTICOS EXPLICITOS NI ETIQUETAS DE VENDEDOR O COMPRADOR',
+      requiredMissing: ['inmueble.direccion'],
+      collectedData: {},
+    })
+
+    const map = toUpdateMap(result)
+    assert.equal(map.has('inmueble.direccion.calle'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow detecta comprador + conyuge en mensaje clasico completo MAYUSCULAS', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para sectionizer determinista')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const message = [
+      'PARTIDA NO: 6431741',
+      'FOLIO REAL: 1782485',
+      'UNIDAD:6D CONJ. HABITACIONAL: CONDOMINIO D-2 CONSTRUIDO EN EL LOTE 43 DE DESARROLLO HABITACIONAL VISTA BUGAMBILIAS, DE ESTA CIUDAD.',
+      'SE TIENE UN GRAVAMEN CON BANCO DEL BAJIO, SOCIEDAD ANONIMA, INSTITUCION DE BANCA MULTIPLE.',
+      'EL VENDEDOR ES INMOBILIARIA Y DESARROLLADORA ENCASA SOCIEDAD ANONIMA PROMOTORA DE INVERSION DE CAPITAL VARIABLE.',
+      'EL COMPRADOR ES JOSE GUADALUPE SANDOVAL MURILLO JUNTO CON SU ESPOSA ARMIDA FERRA JUSTO.',
+      'EL PAGO DEL INMUEBLE SE REALIZARA MEDIANTE UN CREDITO DE BANCO MERCANTIL DEL NORTE.',
+    ].join(' ')
+
+    const result = await flow.process({
+      message,
+      requiredMissing: [
+        'inmueble.folio_real',
+        'inmueble.partidas',
+        'inmueble.direccion',
+        'vendedores[]',
+        'vendedores[].tipo_persona',
+        'compradores[]',
+        'compradores[].tipo_persona',
+        'existencia_credito',
+        'compradores[].persona_fisica.conyuge.nombre',
+      ],
+      collectedData: {},
+    })
+
+    const map = toUpdateMap(result)
+    assert.equal(map.get('inmueble.folio_real'), '1782485')
+    assert.deepEqual(map.get('inmueble.partidas'), ['6431741'])
+    assert.equal(map.get('vendedores[0].tipo_persona'), 'persona_moral')
+    assert.equal(map.get('compradores[0].persona_fisica.nombre'), 'JOSE GUADALUPE SANDOVAL MURILLO')
+    assert.equal(map.get('compradores[0].persona_fisica.conyuge.nombre'), 'ARMIDA FERRA JUSTO')
+    assert.equal(map.get('actosNotariales.aperturaCreditoComprador'), true)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow captura comprador sin dos puntos: "el comprador es X"', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para comprador determinista sin dos puntos')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'el COMPRADOR es JOSE LUIS PEREZ GOMEZ',
+      requiredMissing: ['compradores[]', 'compradores[].tipo_persona'],
+      collectedData: {},
+    })
+    const map = toUpdateMap(result)
+    assert.equal(map.get('compradores[0].persona_fisica.nombre'), 'JOSE LUIS PEREZ GOMEZ')
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow captura compradores multiples en "compradores: A y B"', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para compradores multiples deterministas')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'compradores: JOSE LUIS PEREZ GOMEZ y MARIA ELENA RAMIREZ LOPEZ',
+      requiredMissing: ['compradores[]', 'compradores[].tipo_persona'],
+      collectedData: {},
+    })
+    const map = toUpdateMap(result)
+    assert.equal(map.get('compradores[0].persona_fisica.nombre'), 'JOSE LUIS PEREZ GOMEZ')
+    assert.equal(map.get('compradores[1].persona_fisica.nombre'), 'MARIA ELENA RAMIREZ LOPEZ')
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow compila credito explicito y cubre existencia_credito', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para credito determinista')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'el pago del inmueble se realizara mediante un credito de BANCO MERCANTIL DEL NORTE',
+      requiredMissing: ['existencia_credito'],
+      collectedData: {},
+    })
+    const map = toUpdateMap(result)
+    assert.equal(map.get('actosNotariales.aperturaCreditoComprador'), true)
+    assert.deepEqual(map.get('creditos'), [{ institucion: null, participantes: [] }])
+    assert.equal(String(map.get('creditos[0].institucion') || '').includes('BANCO MERCANTIL DEL NORTE'), true)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow compila gravamen explicito con institucion', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para gravamen determinista')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'se tiene un gravamen con BANCO DEL BAJIO, SOCIEDAD ANONIMA, INSTITUCION DE BANCA MULTIPLE',
+      requiredMissing: ['gravamenes', 'inmueble.existe_hipoteca'],
+      collectedData: {},
+    })
+    const map = toUpdateMap(result)
+    assert.equal(map.get('inmueble.existe_hipoteca'), true)
+    assert.equal(Array.isArray(map.get('gravamenes')), true)
+    assert.equal((map.get('gravamenes') as any[]).length > 0, true)
   } finally {
     globalThis.fetch = originalFetch
     if (prevApiKey === undefined) delete process.env.GMI_API_KEY

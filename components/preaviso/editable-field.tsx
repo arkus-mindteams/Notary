@@ -11,6 +11,7 @@ interface EditableFieldProps {
   path: string
   fieldType?: EditableFieldType
   enumOptions?: Array<{ label: string; value: string }>
+  booleanLabels?: { trueLabel: string; falseLabel: string }
   onSave: (path: string, value: unknown) => Promise<void>
   disabled?: boolean
   className?: string
@@ -51,6 +52,7 @@ export function EditableField({
   path,
   fieldType = 'text',
   enumOptions = [],
+  booleanLabels,
   onSave,
   disabled = false,
   className,
@@ -77,7 +79,14 @@ export function EditableField({
     return () => clearTimeout(timer)
   }, [isEditing])
 
-  const displayValue = String(baseDraft || '').trim()
+  const displayValue = useMemo(() => {
+    const raw = String(baseDraft || '').trim()
+    if (fieldType === 'boolean') {
+      if (raw === 'true') return booleanLabels?.trueLabel || 'Sí'
+      if (raw === 'false') return booleanLabels?.falseLabel || 'No'
+    }
+    return raw
+  }, [baseDraft, fieldType, booleanLabels])
 
   const handleCancel = () => {
     setDraftValue(baseDraft)
@@ -186,8 +195,8 @@ export function EditableField({
           disabled={isSaving}
         >
           <option value="">Selecciona...</option>
-          <option value="true">Sí</option>
-          <option value="false">No</option>
+          <option value="true">{booleanLabels?.trueLabel || 'Sí'}</option>
+          <option value="false">{booleanLabels?.falseLabel || 'No'}</option>
         </select>
       ) : (
         <input
@@ -213,4 +222,5 @@ export function EditableField({
     </span>
   )
 }
+
 

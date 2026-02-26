@@ -184,6 +184,7 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
         : []
       const activeMissingForQuestions = stickyPeopleMissing.length > 0 ? stickyPeopleMissing : requiredMissing
       const pendingQuestions = activeMissingForQuestions.slice(0, 4).map((f) => mapMissingFieldToQuestion(f))
+      const askMissingIntent = detectAskMissingIntent(body.message)
       const systemInstructions = buildGMISystemInstructions({
         requiredMissing: activeMissingForQuestions,
         blockingReasons,
@@ -203,14 +204,56 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
           prioritizePeopleClassification: false,
         })
       }
-      const shortAnswerMeta = detectShortAnswerSignal(body.message, candidateSlots.length)
-      console.log('[chat-gmi][short-router] detect', {
-        token_count: shortAnswerMeta.token_count,
-        low_structure_reason: shortAnswerMeta.reason,
-        short_answer_detected: shortAnswerMeta.detected,
+      const forceEventRouter = shouldForceEventRouter({
+        message: body.message,
+        requiredMissing,
+      })
+      const answerRouterMeta = detectAnswerRouterSignal({
+        message: body.message,
+        candidateSlotsCount: candidateSlots.length,
+        requiredMissing,
+      })
+      console.log('[chat-gmi][answer-router] detect', {
+        token_count: answerRouterMeta.token_count,
+        low_structure_reason: answerRouterMeta.reason,
+        answer_router_detected: answerRouterMeta.detected,
         candidate_slots_count: candidateSlots.length,
         candidate_slots: candidateSlots.map((slot) => ({ slot_id: slot.slot_id, path: slot.path, source: slot.source })),
       })
+      const answerEventRoute = forceEventRouter
+        ? GMIIndependentCaptureFlow.routeAnswerEvents({
+            message: body.message,
+            requiredMissing,
+            collectedData: tramiteData,
+          })
+        : { events: [], updates: [], blocked_calle_reason: null, sections_detected: [] }
+      const routingDiagnostics: Record<string, unknown> = {
+        router_ran: forceEventRouter,
+        events_detected: answerEventRoute.events.map((event) => event.type),
+        compiler_ran: forceEventRouter,
+        updates_compiled_count: answerEventRoute.updates.length,
+        sections_detected: answerEventRoute.sections_detected,
+        credito_extractor_ran: answerEventRoute.sections_detected.some((s) => String((s as any)?.type || '') === 'credito'),
+        gravamen_extractor_ran: answerEventRoute.sections_detected.some((s) => String((s as any)?.type || '') === 'gravamen'),
+        credito_events_count: answerEventRoute.events.filter((event) =>
+          ['ANSWER_PAYMENT_MODE', 'ANSWER_CREDIT_INSTITUTION_TEXT'].includes(String(event?.type || ''))
+        ).length,
+        gravamen_events_count: answerEventRoute.events.filter((event) =>
+          ['ANSWER_GRAVAMEN_EXISTS', 'ANSWER_GRAVAMEN_INSTITUTION_TEXT', 'ANSWER_GRAVAMEN_CANCELACION_CONFIRMADA'].includes(
+            String(event?.type || '')
+          )
+        ).length,
+        yesno_extractor_ran: requiredMissing.some((missing) =>
+          /^gravamenes\[\d+\]\.cancelacion_confirmada$/.test(String(missing || '').trim())
+        ),
+        yesno_events_count: answerEventRoute.events.filter(
+          (event) => String(event?.type || '') === 'ANSWER_GRAVAMEN_CANCELACION_CONFIRMADA'
+        ).length,
+        blocked_calle_reason: answerEventRoute.blocked_calle_reason,
+        commit_result: 'not_executed',
+        commit_reject_reason: null,
+        ask_missing_intent: askMissingIntent,
+      }
 
       let proposal: Awaited<ReturnType<GMIIndependentCaptureFlow['process']>> = {
         intent: 'UPDATE_STATE',
@@ -222,14 +265,55 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
       }
       let routerOutcome: 'applied' | 'clarify' | 'fallback' = 'fallback'
 
-      if (shortAnswerMeta.detected && candidateSlots.length > 0) {
+      if (askMissingIntent) {
+        const guidance = buildMissingDataGuidance(
+          activeMissingForQuestions,
+          blockingReasons,
+          String((stateSnapshot as any)?.current_state || '')
+        )
+        routingDiagnostics.commit_result = 'skipped_no_updates'
+        routerOutcome = 'fallback'
+        proposal = {
+          intent: 'UPDATE_STATE',
+          agent_used: 'GMIIndependentCaptureFlow',
+          answer: guidance.message,
+          proposed_updates: [],
+          actions: [
+            {
+              type: 'request_missing_field',
+              reason: 'ask_missing_intent',
+              required_missing: guidance.required_missing,
+              blocking_reasons: guidance.blocking_reasons,
+              next_questions: guidance.next_questions,
+            },
+          ],
+          trace_id: randomTraceId(),
+        }
+      } else if (forceEventRouter && answerEventRoute.updates.length > 0) {
+        routerOutcome = 'applied'
+        proposal = {
+          intent: 'UPDATE_STATE',
+          agent_used: 'GMIIndependentCaptureFlow',
+          answer: 'Detecte respuestas del usuario y compile updates deterministas para comprador/vendedor.',
+          proposed_updates: answerEventRoute.updates,
+          actions: [
+            {
+              type: 'review_proposed_updates',
+              requires_domain_commit: true,
+              source: 'gmi_answer_router',
+            },
+          ],
+          trace_id: randomTraceId(),
+        }
+      } else if (answerRouterMeta.detected && candidateSlots.length > 0) {
+        routingDiagnostics.router_ran = true
         const shortRoute = await deps.routeShortAnswer({
           message: body.message,
           candidateSlots,
           systemInstructions,
         })
         routerOutcome = shortRoute.outcome
-        console.log('[chat-gmi][short-router] outcome', {
+        console.log('[chat-gmi][answer-router] outcome', {
           router_outcome: shortRoute.outcome,
           router_selected_slot_id: shortRoute.selected_slot_id || null,
           router_confidence: shortRoute.confidence ?? null,
@@ -295,33 +379,109 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
         proposed_updates: proposal.proposed_updates || [],
         actions: proposal.actions || [],
         trace_id: proposal.trace_id,
+        routing_diagnostics: routingDiagnostics,
         data: tramiteData,
         state: stateSnapshot,
       }
 
       if (Array.isArray(proposal.proposed_updates) && proposal.proposed_updates.length > 0) {
-        const committed = await deps.commitProposedUpdates({
-          tramiteId: body.tramiteId,
-          userId: currentUser.auth_user_id,
-          traceId: proposal.trace_id,
-          proposedUpdates: proposal.proposed_updates as any,
-        })
-        responsePayload = {
-          ...responsePayload,
-          answer: 'Cambios aplicados correctamente al tramite.',
-          proposed_updates: [],
-          actions: [
-            ...(Array.isArray(proposal.actions) ? proposal.actions : []),
-            { type: 'commit_applied', applied_updates: committed.applied_updates, mode: 'auto' },
-          ],
-          commit: {
-            applied_updates: committed.applied_updates,
-            committed: true,
-            mode: 'auto',
-          },
-          data: committed.data,
-          state: committed.state,
+        const isDevDiagnostics = process.env.NODE_ENV !== 'production'
+        const commitPathChecks = PreavisoProposedUpdateService.inspectCommitPaths(
+          proposal.proposed_updates as any
+        )
+        if (isDevDiagnostics) {
+          routingDiagnostics.attempted_paths = commitPathChecks.attempted_paths
+          routingDiagnostics.allowlist_match = commitPathChecks.path_checks.map((x) => ({
+            path: x.normalized_path || x.path,
+            allowlist_match: x.allowlist_match,
+          }))
+          routingDiagnostics.rejected_path = commitPathChecks.rejected_path
         }
+        try {
+          const committed = await deps.commitProposedUpdates({
+            tramiteId: body.tramiteId,
+            userId: currentUser.auth_user_id,
+            traceId: proposal.trace_id,
+            proposedUpdates: proposal.proposed_updates as any,
+          })
+          routingDiagnostics.commit_result = 'applied'
+          responsePayload = {
+            ...responsePayload,
+            answer: 'Cambios aplicados correctamente al tramite.',
+            proposed_updates: [],
+            actions: [
+              ...(Array.isArray(proposal.actions) ? proposal.actions : []),
+              { type: 'commit_applied', applied_updates: committed.applied_updates, mode: 'auto' },
+            ],
+            commit: {
+              applied_updates: committed.applied_updates,
+              committed: true,
+              mode: 'auto',
+            },
+            data: committed.data,
+            state: committed.state,
+          }
+        } catch (error: any) {
+          if (error instanceof ProposedUpdateDomainViolationError) {
+            const noApplicableUpdates = /No hubo updates aplicables en proposed_updates/i.test(String(error?.message || ''))
+            if (noApplicableUpdates) {
+              routingDiagnostics.commit_result = 'skipped_no_updates'
+              routingDiagnostics.commit_reject_reason = null
+            } else {
+              routingDiagnostics.commit_result = 'rejected'
+              routingDiagnostics.commit_reject_reason = error.message
+            }
+            const rejectedPathFromError =
+              String(error?.message || '').match(/Path no permitido para commit:\s*(.+)$/i)?.[1]?.trim() || null
+            if (isDevDiagnostics) {
+              routingDiagnostics.rejected_path = rejectedPathFromError || routingDiagnostics.rejected_path || null
+            }
+            console.warn('[chat-gmi][answer-router] commit_rejected', {
+              trace_id: proposal.trace_id,
+              reason: error.message,
+              code: error.code,
+              updates_count: Array.isArray(proposal.proposed_updates) ? proposal.proposed_updates.length : 0,
+            })
+            const detected = Array.isArray(routingDiagnostics.events_detected)
+              ? (routingDiagnostics.events_detected as string[])
+              : []
+            responsePayload = noApplicableUpdates
+              ? {
+                  ...responsePayload,
+                  answer: 'No se detectaron cambios aplicables en este mensaje.',
+                  proposed_updates: [],
+                  actions: [
+                    ...(Array.isArray(proposal.actions) ? proposal.actions : []),
+                    {
+                      type: 'request_missing_field',
+                      reason: 'no_updates_applicable',
+                    },
+                  ],
+                }
+              : {
+                  ...responsePayload,
+                  answer: `Detecte ${detected.length > 0 ? detected.join(', ') : 'datos relevantes'}, pero no pude aplicarlo por: ${error.message}`,
+                  proposed_updates: [],
+                  actions: [
+                    ...(Array.isArray(proposal.actions) ? proposal.actions : []),
+                    {
+                      type: 'request_missing_field',
+                      reason: 'commit_rejected',
+                    },
+                  ],
+                }
+            ;(responsePayload as any).routing_diagnostics = routingDiagnostics
+          } else {
+            throw error
+          }
+        }
+      }
+
+      if (
+        (!Array.isArray(proposal.proposed_updates) || proposal.proposed_updates.length === 0) &&
+        String(routingDiagnostics.commit_result || '') === 'not_executed'
+      ) {
+        routingDiagnostics.commit_result = 'skipped_no_updates'
       }
 
       const finalState = ((responsePayload as any).state || {}) as Record<string, unknown>
@@ -341,8 +501,17 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
             (action) => String(action?.reason || '') === 'short_answer_ambiguous'
           )
         : false
-      if (!hasShortClarifyAction && (activeMissingForGuidance.length > 0 || blockingReasonsFinal.length > 0)) {
-        const guidance = buildMissingDataGuidance(activeMissingForGuidance, blockingReasonsFinal)
+      const hasAskMissingAction = Array.isArray((responsePayload as any).actions)
+        ? ((responsePayload as any).actions as any[]).some(
+            (action) => String(action?.reason || '') === 'ask_missing_intent'
+          )
+        : false
+      if (!hasShortClarifyAction && !hasAskMissingAction && (activeMissingForGuidance.length > 0 || blockingReasonsFinal.length > 0)) {
+        const guidance = buildMissingDataGuidance(
+          activeMissingForGuidance,
+          blockingReasonsFinal,
+          String((finalState as any)?.current_state || '')
+        )
         responsePayload = {
           ...responsePayload,
           answer: `${String((responsePayload as any).answer || '').trim()}\n\n${guidance.message}`.trim(),
@@ -371,6 +540,7 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
           trace_id: String(responsePayload.trace_id || ''),
           proposed_updates: (responsePayload.proposed_updates as unknown[]) || [],
           actions: (responsePayload.actions as unknown[]) || [],
+          routing_diagnostics: routingDiagnostics,
           tramite_id: body.tramiteId,
         }),
         deps.updateChatSessionTimestamp(body.chatId),
@@ -537,15 +707,55 @@ function inferAllowedValues(path: string): string[] | undefined {
   return undefined
 }
 
-function detectShortAnswerSignal(message: string, candidateSlotsCount: number): {
+function shouldForceEventRouter(args: { message: string; requiredMissing: string[] }): boolean {
+  const required = Array.isArray(args.requiredMissing) ? args.requiredMissing : []
+  const hasRelevantMissing = required.some((missing) => {
+    const normalized = String(missing || '').trim()
+    return (
+      normalized === 'compradores[]' ||
+      normalized.startsWith('compradores[].') ||
+      normalized === 'vendedores[]' ||
+      normalized.startsWith('vendedores[].') ||
+      normalized === 'inmueble.folio_real' ||
+      normalized === 'inmueble.partidas' ||
+      normalized === 'inmueble.direccion' ||
+      normalized === 'existencia_credito' ||
+      normalized === 'creditos[]' ||
+      normalized === 'gravamenes[]' ||
+      normalized === 'gravamenes' ||
+      /^gravamenes\[\d+\]\./.test(normalized)
+    )
+  })
+  const hasSemanticMarker = /\b(comprador|vendedor|conyuge|esposa|esposo|folio\s*real|partida|conj\.?\s*habitacional|credito|cr[eé]dito|contado|gravamen|hipoteca)\b/i.test(
+    String(args.message || '')
+  )
+  return hasRelevantMissing || hasSemanticMarker
+}
+
+function detectAnswerRouterSignal(args: {
+  message: string
+  candidateSlotsCount: number
+  requiredMissing: string[]
+}): {
   detected: boolean
   token_count: number
   reason: string
 } {
-  const text = String(message || '').trim()
+  const text = String(args.message || '').trim()
   const tokens = text ? text.split(/\s+/).filter(Boolean) : []
   const tokenCount = tokens.length
-  if (!text || candidateSlotsCount < 1) {
+  if (!text) {
+    return { detected: false, token_count: tokenCount, reason: 'missing_text_or_slots' }
+  }
+  const hasPeopleMissing = (args.requiredMissing || []).some((missing) =>
+    ['compradores[]', 'compradores[].nombre', 'compradores[].tipo_persona', 'vendedores[]', 'vendedores[].nombre', 'vendedores[].tipo_persona'].includes(
+      String(missing || '')
+    )
+  )
+  if (hasPeopleMissing && /\b(el\s+)?(comprador|vendedor)\b/i.test(text)) {
+    return { detected: true, token_count: tokenCount, reason: 'explicit_party_answer_pattern' }
+  }
+  if (args.candidateSlotsCount < 1) {
     return { detected: false, token_count: tokenCount, reason: 'missing_text_or_slots' }
   }
   const hasDocStructure =
@@ -560,6 +770,23 @@ function detectShortAnswerSignal(message: string, candidateSlotsCount: number): 
     return { detected: true, token_count: tokenCount, reason: 'token_threshold' }
   }
   return { detected: false, token_count: tokenCount, reason: 'not_short_enough' }
+}
+
+function detectAskMissingIntent(message: string): boolean {
+  const normalized = String(message || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return false
+  return (
+    /\b(que|cuales)\s+(documentos|datos)\s+me\s+faltan\b/.test(normalized) ||
+    /\bque\s+me\s+falta\b/.test(normalized) ||
+    /\bfaltantes\b/.test(normalized) ||
+    /\brequisitos\b/.test(normalized) ||
+    /\bque\s+falta\b/.test(normalized)
+  )
 }
 
 function isPeopleClassificationPath(path: string): boolean {
@@ -618,9 +845,14 @@ function getStickyPeopleClassificationMissing(requiredMissing: string[], data: R
 function mapMissingFieldToQuestion(field: string): string {
   const normalized = String(field || '')
   if (normalized === 'inmueble.folio_real') return 'Indica cual folio real corresponde al inmueble de esta operacion.'
+  if (normalized === 'inmueble.partidas') return 'Indica la partida registral del inmueble en el preaviso.'
+  if (normalized === 'inmueble.direccion') return 'Indica la direccion/objeto del inmueble para esta operacion.'
   if (normalized === 'existencia_credito') return 'Indica si la compra se hara con credito.'
   if (/^creditos\[\d+\]\.institucion$/.test(normalized)) return 'Indica la institucion del credito.'
   if (/^creditos\[\d+\]\.participantes\[\]$/.test(normalized)) return 'Indica quienes participan en el credito.'
+  if (/^gravamenes\[\d+\]\.institucion$/.test(normalized)) return 'Indica la institucion del gravamen o hipoteca.'
+  if (/^gravamenes\[\d+\]\.cancelacion_confirmada$/.test(normalized))
+    return 'Confirma si la hipoteca se cancelara con esta operacion (si/no).'
   if (normalized === 'vendedores[]') return 'Indica quien es el vendedor.'
   if (normalized === 'compradores[]') return 'Indica quien es el comprador.'
   if (normalized === 'vendedores[].nombre') return 'Indica el nombre completo del vendedor.'
@@ -642,11 +874,27 @@ function mapMissingFieldToQuestion(field: string): string {
     return 'Confirma si el comprador es persona fisica o moral.'
   if (/^vendedores\[\d+\]\.tipo_persona$/.test(normalized))
     return 'Confirma si el vendedor es persona fisica o moral.'
-  return `Completa: ${normalized}`
+  return mapMissingFieldToSafeCategoryMessage(normalized)
 }
 
-function buildMissingDataGuidance(requiredMissing: string[], blockingReasons: string[]) {
-  const uniqueMissing = Array.from(new Set((requiredMissing || []).filter(Boolean)))
+function mapMissingFieldToSafeCategoryMessage(field: string): string {
+  const normalized = String(field || '').trim()
+  if (!normalized) return 'Falta informacion obligatoria para continuar.'
+  if (normalized.startsWith('inmueble.')) return 'Falta informacion del inmueble (partida/direccion).'
+  if (normalized.startsWith('gravamenes') || normalized === 'inmueble.existe_hipoteca')
+    return 'Falta informacion del gravamen/hipoteca.'
+  if (normalized.startsWith('compradores')) return 'Falta informacion del comprador.'
+  if (normalized.startsWith('vendedores')) return 'Falta informacion del vendedor.'
+  if (normalized.startsWith('creditos') || normalized === 'existencia_credito' || normalized.startsWith('actosNotariales.'))
+    return 'Falta informacion del credito/forma de pago.'
+  return 'Falta informacion obligatoria para continuar.'
+}
+
+function buildMissingDataGuidance(requiredMissing: string[], blockingReasons: string[], currentState = '') {
+  const uniqueMissing = prioritizeMissingForGuidance(
+    Array.from(new Set((requiredMissing || []).filter(Boolean))),
+    String(currentState || '')
+  )
   const uniqueBlocking = Array.from(new Set((blockingReasons || []).filter(Boolean)))
   const nextQuestions = uniqueMissing.slice(0, 3).map((f) => mapMissingFieldToQuestion(f))
 
@@ -665,6 +913,41 @@ function buildMissingDataGuidance(requiredMissing: string[], blockingReasons: st
     blocking_reasons: uniqueBlocking,
     next_questions: nextQuestions,
   }
+}
+
+function priorityGroupForMissing(field: string, currentState: string): number {
+  const f = String(field || '').trim()
+  const state = String(currentState || '').trim()
+  const isGravamen =
+    /^gravamenes(\[\d+\])?(\.|$)/.test(f) ||
+    f === 'inmueble.existe_hipoteca' ||
+    f === 'actosNotariales.cancelacionCreditoVendedor'
+  const isCredito =
+    f === 'existencia_credito' ||
+    /^creditos(\[\d+\])?(\.|$)/.test(f) ||
+    f === 'actosNotariales.aperturaCreditoComprador'
+  const isInmueble = f.startsWith('inmueble.')
+
+  if (state === 'ESTADO_6') {
+    if (isGravamen) return 0
+    if (isCredito) return 1
+    if (isInmueble) return 3
+  }
+  if (state === 'ESTADO_5') {
+    if (isCredito) return 0
+    if (isGravamen) return 1
+    if (isInmueble) return 3
+  }
+  return 2
+}
+
+function prioritizeMissingForGuidance(requiredMissing: string[], currentState: string): string[] {
+  return [...(requiredMissing || [])].sort((a, b) => {
+    const pa = priorityGroupForMissing(a, currentState)
+    const pb = priorityGroupForMissing(b, currentState)
+    if (pa !== pb) return pa - pb
+    return 0
+  })
 }
 
 function buildGMISystemInstructions(args: {

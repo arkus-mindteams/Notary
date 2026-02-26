@@ -44,6 +44,51 @@ export interface GMIShortAnswerRouteResult {
   reason?: string
 }
 
+export type GMIAnswerEventType =
+  | 'ANSWER_BUYER_TEXT'
+  | 'ANSWER_BUYER_TYPE'
+  | 'ANSWER_SELLER_TEXT'
+  | 'ANSWER_SELLER_TYPE'
+  | 'ANSWER_SPOUSE_TEXT'
+  | 'ANSWER_FOLIO_REAL'
+  | 'ANSWER_PARTIDA'
+  | 'ANSWER_ADDRESS_TEXT'
+  | 'ANSWER_PAYMENT_MODE'
+  | 'ANSWER_BUYER_MARITAL_STATUS'
+  | 'ANSWER_CREDIT_INSTITUTION_TEXT'
+  | 'ANSWER_GRAVAMEN_EXISTS'
+  | 'ANSWER_GRAVAMEN_INSTITUTION_TEXT'
+  | 'ANSWER_GRAVAMEN_CANCELACION_CONFIRMADA'
+
+export interface GMIAnswerEvent {
+  type: GMIAnswerEventType
+  payload: Record<string, unknown>
+}
+
+export type GMISectionType = 'buyer' | 'seller' | 'credito' | 'gravamen' | 'inmueble' | 'unknown'
+
+export interface GMIMessageSection {
+  type: GMISectionType
+  start: number
+  end: number
+  raw: string
+  norm: string
+}
+
+export interface GMISectionDiagnostic {
+  type: GMISectionType
+  start: number
+  end: number
+  length: number
+}
+
+export interface GMIAnswerRouterResult {
+  events: GMIAnswerEvent[]
+  updates: Array<Record<string, unknown>>
+  blocked_calle_reason: string | null
+  sections_detected: GMISectionDiagnostic[]
+}
+
 const selectionSchema = z.object({
   matched_required_missing: z.string().trim().nullable(),
   confidence: z.number().min(0).max(1).optional(),
@@ -166,8 +211,11 @@ const ALLOWED_UPDATE_PATHS = [
   /^inmueble\.direccion\.(calle|numero|colonia|municipio|estado|codigo_postal)$/,
   /^inmueble\.existe_hipoteca$/,
   /^gravamenes$/,
+  /^gravamenes\[\d+\]\.institucion$/,
+  /^gravamenes\[\d+\]\.cancelacion_confirmada$/,
   /^actosNotariales\.aperturaCreditoComprador$/,
   /^actosNotariales\.cancelacionCreditoVendedor$/,
+  /^existencia_credito$/,
   /^creditos$/,
   /^creditos\[\d+\]\.institucion$/,
   /^creditos\[\d+\]\.participantes$/,
@@ -267,6 +315,40 @@ export class GMIIndependentCaptureFlow {
     return isAllowedPath(path)
   }
 
+  static routeAnswerEvents(args: {
+    message: string
+    requiredMissing?: string[]
+    collectedData?: Record<string, unknown>
+  }): GMIAnswerRouterResult {
+    const sections = sectionizeMessage(stripCollectionHints(String(args.message || '')))
+    const events = detectDeterministicAnswerEvents({
+      message: stripCollectionHints(String(args.message || '')),
+      requiredMissing: normalizeRequiredMissing(args.requiredMissing),
+      sections,
+    })
+    const updates = compileDeterministicAnswerEvents(events, args.collectedData)
+    const blockedCalleReason = detectBlockedCalleReason(String(args.message || ''))
+    return {
+      events,
+      updates,
+      blocked_calle_reason: blockedCalleReason,
+      sections_detected: sections.map((s) => ({
+        type: s.type,
+        start: s.start,
+        end: s.end,
+        length: Math.max(0, s.end - s.start),
+      })),
+    }
+  }
+
+  static normalizeForDetection(raw: string): string {
+    return normalizeForDetection(raw)
+  }
+
+  static sectionizeMessage(raw: string): GMIMessageSection[] {
+    return sectionizeMessage(raw)
+  }
+
   async process(input: GMIIndependentCaptureInput): Promise<GMIIndependentCaptureResult> {
     const traceId = randomUUID()
     const message = stripCollectionHints(String(input.message || ''))
@@ -282,13 +364,14 @@ export class GMIIndependentCaptureFlow {
       return this.emptyResult(traceId, 'No recibi contenido para capturar.')
     }
 
-    const heuristicUpdates = inferHeuristicUpdates({
+    const heuristicResult = inferHeuristicUpdates({
       message,
       requiredMissing,
       collectedData: input.collectedData || {},
       lastQuestionIntent: input.lastQuestionIntent || null,
       pendingQuestions: Array.isArray(input.pendingQuestions) ? input.pendingQuestions : [],
     })
+    const heuristicUpdates = heuristicResult.updates
     if (heuristicUpdates.length > 0) {
       const validatedHeuristicUpdates = await this.validateCreditInstitutionUpdates(heuristicUpdates)
       if (validatedHeuristicUpdates.length === 0) {
@@ -305,6 +388,8 @@ export class GMIIndependentCaptureFlow {
             requires_domain_commit: true,
             source: 'gmi_independent_capture',
             mode: 'multi_field_fallback',
+            events_detected: heuristicResult.meta.events_detected,
+            blocked_calle_reason: heuristicResult.meta.blocked_calle_reason,
           },
         ],
         trace_id: traceId,
@@ -717,12 +802,17 @@ export class GMIIndependentCaptureFlow {
       ],
     }
 
-    const parsed = await this.gmi.json(
-      'Eres un clasificador de instituciones financieras para tramites notariales en Mexico. Responde SOLO JSON.',
-      payload,
-      140,
-      creditInstitutionValidationResponseSchema
-    )
+    let parsed: unknown = null
+    try {
+      parsed = await this.gmi.json(
+        'Eres un clasificador de instituciones financieras para tramites notariales en Mexico. Responde SOLO JSON.',
+        payload,
+        140,
+        creditInstitutionValidationResponseSchema
+      )
+    } catch {
+      parsed = null
+    }
 
     const safe = creditInstitutionValidationSchema.safeParse(parsed)
     if (!safe.success) {
@@ -824,13 +914,20 @@ function describeMissingField(field: string): string {
     return 'si el comprador es persona fisica o moral'
   if (/^vendedores\[\d+\]\.tipo_persona$/.test(normalized))
     return 'si el vendedor es persona fisica o moral'
-  return `"${normalized}"`
+  if (normalized.startsWith('inmueble.')) return 'informacion del inmueble'
+  if (normalized.startsWith('compradores')) return 'informacion del comprador'
+  if (normalized.startsWith('vendedores')) return 'informacion del vendedor'
+  if (normalized.startsWith('creditos') || normalized.startsWith('actosNotariales.') || normalized === 'existencia_credito') {
+    return 'informacion del credito o forma de pago'
+  }
+  return 'ese dato obligatorio'
 }
 
 function canonicalizePath(path: string): string {
   const raw = String(path || '').trim()
   if (!raw) return raw
   let out = raw
+    .replace(/^existencia_credito$/, 'actosNotariales.aperturaCreditoComprador')
     .replace(/^compradores\[\]\.nombre$/, 'compradores[0].persona_fisica.nombre')
     .replace(/^vendedores\[\]\.nombre$/, 'vendedores[0].persona_fisica.nombre')
     .replace(/^compradores\[\]\.tipo_persona$/, 'compradores[0].tipo_persona')
@@ -858,6 +955,7 @@ function targetPathFromMissing(missing: string): string | null {
   if (raw === 'vendedores[].tipo_persona') return 'vendedores[0].tipo_persona'
   if (raw === 'compradores[].persona_fisica.conyuge.nombre') return 'compradores[0].persona_fisica.conyuge.nombre'
   if (raw === 'gravamenes[]') return 'gravamenes'
+  if (/^gravamenes\[\d+\]\./.test(raw)) return raw
   if (raw === 'inmueble.hipoteca') return 'inmueble.existe_hipoteca'
   if (raw === 'actosNotariales.cancelacionCreditoVendedor') return 'actosNotariales.cancelacionCreditoVendedor'
   if (raw === 'actosNotariales.aperturaCreditoComprador') return 'actosNotariales.aperturaCreditoComprador'
@@ -877,7 +975,9 @@ function matchesMissing(path: string, missing: string): boolean {
   if (canonicalTarget === 'compradores' && canonicalPath.startsWith('compradores[')) return true
   if (canonicalTarget === 'inmueble.direccion' && canonicalPath.startsWith('inmueble.direccion.')) return true
   if (canonicalTarget === 'gravamenes' && (canonicalPath === 'gravamenes' || canonicalPath === 'inmueble.existe_hipoteca')) return true
+  if (/^gravamenes\[\d+\]\./.test(missing) && canonicalPath.startsWith('gravamenes[')) return canonicalPath === missing
   if (canonicalTarget === 'inmueble.existe_hipoteca' && canonicalPath === 'gravamenes') return true
+  if (missing === 'existencia_credito' && canonicalPath === 'actosNotariales.aperturaCreditoComprador') return true
   if (missing === 'existencia_credito' && (canonicalPath === 'creditos' || canonicalPath.startsWith('creditos['))) return true
   if (missing === 'creditos[]' && canonicalPath.startsWith('creditos[')) return true
   if (/^creditos\[\d+\]\./.test(missing) && canonicalPath.startsWith('creditos[')) {
@@ -896,8 +996,42 @@ function normalizeValue(path: string, value: unknown): unknown {
     if (Array.isArray(value)) return value
     if (typeof value === 'string' && value.trim()) return [value.trim()]
   }
-  if (path === 'gravamenes' && typeof value === 'string') {
-    return value.trim() ? [value.trim()] : []
+  if (path === 'gravamenes') {
+    if (typeof value === 'string') {
+      return value.trim() ? [{ institucion: value.trim(), cancelacion_confirmada: null }] : []
+    }
+    if (Array.isArray(value)) {
+      const normalizedItems = value
+        .map((item) => {
+          if (typeof item === 'string') {
+            const institucion = item.trim()
+            return institucion ? { institucion, cancelacion_confirmada: null } : null
+          }
+          if (item && typeof item === 'object') {
+            const rec = item as Record<string, unknown>
+            const institucion = String(rec.institucion ?? '').trim() || null
+            const cancelacion =
+              typeof rec.cancelacion_confirmada === 'boolean' ? rec.cancelacion_confirmada : null
+            if (!institucion && cancelacion === null) return null
+            return { institucion, cancelacion_confirmada: cancelacion }
+          }
+          return null
+        })
+        .filter(Boolean)
+      return normalizedItems
+    }
+  }
+  if (/^gravamenes\[\d+\]\.cancelacion_confirmada$/.test(path)) {
+    if (typeof value === 'boolean') return value
+    const normalized = normalizeForDetection(String(value || ''))
+    if (isAffirmativeToken(normalized)) return true
+    if (isNegativeToken(normalized)) return false
+  }
+  if (path === 'existencia_credito' || path === 'actosNotariales.aperturaCreditoComprador') {
+    if (typeof value === 'boolean') return value
+    const normalized = normalizeForDetection(String(value || ''))
+    if (/(credito|cr[eé]dito|financiamiento)/.test(normalized)) return true
+    if (/(contado|sin credito|sin cr[eé]dito|efectivo)/.test(normalized)) return false
   }
   return value
 }
@@ -1067,16 +1201,35 @@ function extractCandidateFolioFromMessage(message: string, candidates: string[])
   return null
 }
 
+const CALLE_FOREIGN_MARKERS_REGEX = /\b(vendedor|comprador|conyug|esposa|credito|banco|gravamen|hipoteca)\b/i
+const CALLE_FALLBACK_MAX_CHARS = 250
+const CALLE_SEGMENT_MIN_CHARS = 30
+const CALLE_SEGMENT_MAX_CHARS = 250
+
 function inferHeuristicUpdates(args: {
   message: string
   requiredMissing: string[]
   collectedData: Record<string, unknown>
   lastQuestionIntent?: string | null
   pendingQuestions?: string[]
-}): Array<Record<string, unknown>> {
+}): {
+  updates: Array<Record<string, unknown>>
+  meta: {
+    events_detected: string[]
+    blocked_calle_reason: string | null
+  }
+} {
   const message = String(args.message || '')
   const requiredMissing = Array.isArray(args.requiredMissing) ? args.requiredMissing : []
-  if (!message.trim()) return []
+  if (!message.trim()) {
+    return {
+      updates: [],
+      meta: {
+        events_detected: [],
+        blocked_calle_reason: null,
+      },
+    }
+  }
   const opportunistic = isLikelyStructuredCaptureMessage(message)
   const peopleClassificationActive = hasPendingPeopleClassificationTask(requiredMissing, args.collectedData)
 
@@ -1088,6 +1241,15 @@ function inferHeuristicUpdates(args: {
   }
 
   const updates: Array<Record<string, unknown>> = []
+  const compiledAnswerRoute = GMIIndependentCaptureFlow.routeAnswerEvents({
+    message,
+    requiredMissing,
+    collectedData: args.collectedData,
+  })
+  for (const compiled of compiledAnswerRoute.updates) updates.push(compiled)
+  const hasCompiledBuyerName = compiledAnswerRoute.events.some((event) => event.type === 'ANSWER_BUYER_TEXT')
+  const hasCompiledSpouseName = compiledAnswerRoute.events.some((event) => event.type === 'ANSWER_SPOUSE_TEXT')
+  const hasCompiledSellerName = compiledAnswerRoute.events.some((event) => event.type === 'ANSWER_SELLER_TEXT')
   const shortNameCandidate = inferShortNameCandidate(message)
   const nameIntentScope = detectNameIntentScope({
     requiredMissing,
@@ -1346,7 +1508,7 @@ function inferHeuristicUpdates(args: {
   }
 
   if (shouldCapturePath('inmueble.direccion')) {
-    const direccionLine = extractLabeledValue(message, ['conj. habitacional', 'conj habitacional', 'direccion'])
+    const direccionLine = extractAddressSegmentForCalle(message)
     if (direccionLine) {
       updates.push({
         op: 'set',
@@ -1363,7 +1525,7 @@ function inferHeuristicUpdates(args: {
     shouldCapturePath('compradores[0].persona_fisica.conyuge.nombre') ||
     shouldCapturePath('compradores[0].persona_fisica.estado_civil')
   ) {
-    const buyerReference = resolveBuyerReferenceFromContext(message, args.collectedData)
+    const buyerReference = hasCompiledBuyerName ? null : resolveBuyerReferenceFromContext(message, args.collectedData)
     if (buyerReference) {
       if (shouldCapturePath('compradores[0].tipo_persona')) {
         updates.push({
@@ -1381,7 +1543,7 @@ function inferHeuristicUpdates(args: {
           reason: 'Comprador inferido por referencia contextual en mensaje',
         })
       }
-      if (buyerReference.spouseName && shouldCapturePath('compradores[0].persona_fisica.conyuge.nombre')) {
+      if (!hasCompiledSpouseName && buyerReference.spouseName && shouldCapturePath('compradores[0].persona_fisica.conyuge.nombre')) {
         updates.push({
           op: 'set',
           path: 'compradores[0].persona_fisica.conyuge.nombre',
@@ -1399,10 +1561,10 @@ function inferHeuristicUpdates(args: {
       }
     }
 
-    const compradorLine = extractLabeledValue(message, ['comprador'])
+    const compradorLine = hasCompiledBuyerName ? null : extractLabeledValue(message, ['comprador'])
     if (compradorLine) {
       const parsed = parsePersonAndOptionalSpouse(compradorLine)
-      if (parsed.personName) {
+      if (parsed.personName && isLiteralPartyText(parsed.personName)) {
         if (shouldCapturePath('compradores[0].tipo_persona')) {
           updates.push({
             op: 'set',
@@ -1419,7 +1581,7 @@ function inferHeuristicUpdates(args: {
             reason: 'Comprador detectado en mensaje de captura multiple',
           })
         }
-        if (parsed.spouseName && shouldCapturePath('compradores[0].persona_fisica.conyuge.nombre')) {
+        if (!hasCompiledSpouseName && parsed.spouseName && shouldCapturePath('compradores[0].persona_fisica.conyuge.nombre')) {
           updates.push({
             op: 'set',
             path: 'compradores[0].persona_fisica.conyuge.nombre',
@@ -1447,7 +1609,7 @@ function inferHeuristicUpdates(args: {
     shouldCapturePath('vendedores[0].persona_fisica.nombre') ||
     shouldCapturePath('vendedores[0].persona_moral.denominacion_social')
   ) {
-    const vendedorLine = extractLabeledValue(message, ['vendedor'])
+    const vendedorLine = hasCompiledSellerName ? null : extractLabeledValue(message, ['vendedor'])
     if (vendedorLine) {
       const sellerType = inferPartyType(vendedorLine)
       if (shouldCapturePath('vendedores[0].tipo_persona')) {
@@ -1527,6 +1689,14 @@ function inferHeuristicUpdates(args: {
         value: [{ institucion: null, participantes: [] }],
         reason: 'Se detecto financiamiento/credito en el mensaje',
       })
+      if (institutionHint && shouldCapturePath('creditos[0].institucion')) {
+        updates.push({
+          op: 'set',
+          path: 'creditos[0].institucion',
+          value: institutionHint,
+          reason: 'Institucion bancaria detectada en mensaje multi-campo',
+        })
+      }
     }
     if (shouldCapturePath('creditos') && gravamen.aperturaCreditoComprador === false && gravamen.hasContadoSignal) {
       updates.push({
@@ -1558,7 +1728,13 @@ function inferHeuristicUpdates(args: {
   for (const u of canonical) {
     dedup.set(String((u as any).path || ''), u)
   }
-  return Array.from(dedup.values())
+  return {
+    updates: Array.from(dedup.values()),
+    meta: {
+      events_detected: compiledAnswerRoute.events.map((event) => event.type),
+      blocked_calle_reason: detectBlockedCalleReason(message),
+    },
+  }
 }
 
 function isLikelyStructuredCaptureMessage(message: string): boolean {
@@ -1605,16 +1781,725 @@ function extractLabeledValue(message: string, labels: string[]): string | null {
   const source = String(message || '')
   for (const rawLabel of labels) {
     const label = rawLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const regex = new RegExp(`${label}\\s*[:#-]\\s*([\\s\\S]{1,500})`, 'i')
+    const regex = new RegExp(`(?:\\bel\\s+)?${label}\\s*(?:es|[:#-])\\s*([\\s\\S]{1,500})`, 'i')
     const match = source.match(regex)
     if (!match?.[1]) continue
     const value = String(match[1])
-      .split(/\b(vendedor|comprador)\s*[:#-]/i)[0]
+      .split(/\b(vendedor|comprador)\s*(?:es|[:#-])/i)[0]
+      .split(/\b(se tiene un gravamen|gravamen|hipoteca|credito|banco|el pago)\b/i)[0]
       .replace(/\s+/g, ' ')
       .trim()
       .replace(/[.;,:]+$/, '')
     if (value) return value
   }
+  return null
+}
+
+// Detection-only normalization. Keep raw substrings for persisted values.
+function normalizeForDetection(raw: string): string {
+  return String(raw || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function sectionizeMessage(raw: string): GMIMessageSection[] {
+  const source = String(raw || '')
+  if (!source.trim()) return [{ type: 'unknown', start: 0, end: 0, raw: '', norm: '' }]
+
+  const markerPatterns: Array<{ type: Exclude<GMISectionType, 'unknown'>; regex: RegExp }> = [
+    { type: 'buyer', regex: /\b(?:el\s+)?comprador(?:es)?\b/gi },
+    { type: 'seller', regex: /\b(?:el\s+)?vendedor(?:es)?\b/gi },
+    { type: 'credito', regex: /\b(?:credito|cr[eé]dito|contado|forma\s+de\s+pago|pago)\b/gi },
+    { type: 'gravamen', regex: /\b(?:gravamen|hipoteca|hipotecario)\b/gi },
+    { type: 'inmueble', regex: /\b(?:folio\s*real|partida(?:s)?|direccion|direcci[oó]n|objeto\s+del\s+inmueble|conj\.?\s*habitacional)\b/gi },
+  ]
+
+  const markers: Array<{ type: Exclude<GMISectionType, 'unknown'>; index: number }> = []
+  for (const marker of markerPatterns) {
+    const re = new RegExp(marker.regex.source, marker.regex.flags)
+    let match: RegExpExecArray | null
+    while ((match = re.exec(source)) !== null) {
+      markers.push({ type: marker.type, index: match.index })
+    }
+  }
+
+  markers.sort((a, b) => a.index - b.index)
+  const deduped: Array<{ type: Exclude<GMISectionType, 'unknown'>; index: number }> = []
+  const seen = new Set<number>()
+  for (const marker of markers) {
+    if (seen.has(marker.index)) continue
+    seen.add(marker.index)
+    deduped.push(marker)
+  }
+
+  if (deduped.length === 0) {
+    return [{ type: 'unknown', start: 0, end: source.length, raw: source, norm: normalizeForDetection(source) }]
+  }
+
+  const sections: GMIMessageSection[] = []
+  if (deduped[0].index > 0) {
+    const leadingRaw = source.slice(0, deduped[0].index).trim()
+    if (leadingRaw) {
+      sections.push({
+        type: 'unknown',
+        start: 0,
+        end: deduped[0].index,
+        raw: leadingRaw,
+        norm: normalizeForDetection(leadingRaw),
+      })
+    }
+  }
+
+  for (let i = 0; i < deduped.length; i += 1) {
+    const current = deduped[i]
+    const next = deduped[i + 1]
+    const start = current.index
+    const end = next ? next.index : source.length
+    const slice = source.slice(start, end).trim()
+    if (!slice) continue
+    sections.push({
+      type: current.type,
+      start,
+      end,
+      raw: slice,
+      norm: normalizeForDetection(slice),
+    })
+  }
+
+  return sections.length > 0
+    ? sections
+    : [{ type: 'unknown', start: 0, end: source.length, raw: source, norm: normalizeForDetection(source) }]
+}
+
+function dedupeAnswerEvents(events: GMIAnswerEvent[]): GMIAnswerEvent[] {
+  const out: GMIAnswerEvent[] = []
+  const seen = new Set<string>()
+  for (const event of events || []) {
+    const textLike = String(event.payload?.text || event.payload?.value || '').trim()
+    const key = `${event.type}|${normalizeForDetection(textLike)}|${String(event.payload?.index ?? '')}|${String(event.payload?.buyer_index ?? '')}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(event)
+  }
+  return out
+}
+
+function extractBuyerSection(section: GMIMessageSection): GMIAnswerEvent[] {
+  const events: GMIAnswerEvent[] = []
+  const raw = String(section.raw || '')
+  if (!raw.trim()) return events
+  let body = raw
+    .replace(/^\s*(?:el\s+)?comprador(?:es)?\b/i, '')
+    .trim()
+  body = body.replace(/^(?:es|son)?\s*[:#-]?\s*/i, '').trim()
+  if (!body) return events
+
+  const spouseFromPatterns =
+    body.match(/\bjunto\s+con\s+su\s+espos[ao]\s+([A-Za-zÀ-ÿ' ]{4,120})/i)?.[1] ||
+    body.match(/\bsu\s+conyuge\s+([A-Za-zÀ-ÿ' ]{4,120})/i)?.[1] ||
+    body.match(/\bcasad[oa]\s+con\s+([A-Za-zÀ-ÿ' ]{4,120})/i)?.[1] ||
+    null
+  if (spouseFromPatterns) {
+    const spouseName = cleanName(spouseFromPatterns)
+    if (spouseName) events.push({ type: 'ANSWER_SPOUSE_TEXT', payload: { text: spouseName, buyer_index: 0 } })
+  }
+  const marital =
+    /\bsolter[oa]\b/i.test(body) ? 'soltero'
+      : /\bcasad[oa]\b/i.test(body) ? 'casado'
+        : null
+  if (marital) {
+    events.push({ type: 'ANSWER_BUYER_MARITAL_STATUS', payload: { estado_civil: marital, buyer_index: 0 } })
+  }
+
+  let buyerBody = body
+    .replace(/\bjunto\s+con\s+su\s+espos[ao]\s+[A-Za-zÀ-ÿ' ]{4,120}/i, '')
+    .replace(/\bsu\s+conyuge\s+[A-Za-zÀ-ÿ' ]{4,120}/i, '')
+    .replace(/\bcasad[oa]\s+con\s+[A-Za-zÀ-ÿ' ]{4,120}/i, '')
+    .replace(/[.;]+$/g, '')
+    .trim()
+  buyerBody = buyerBody
+    .split(/\b(el\s+pago|pago|se\s+tiene|gravamen|hipoteca|credito|cr[eé]dito|vendedor(?:es)?)\b/i)[0]
+    .replace(/[.;,:-]+$/g, '')
+    .trim()
+
+  const pluralBuyers =
+    /^\s*compradores/i.test(raw) ||
+    (/^\s*compradores/i.test(body) && /\s+y\s+/i.test(body))
+  const candidates = pluralBuyers ? splitBuyerCandidates(buyerBody) : [buyerBody]
+  let index = 0
+  for (const candidate of candidates) {
+    const clean = sanitizeBuyerCandidate(candidate)
+    if (!clean || !isLiteralPartyText(clean)) continue
+    events.push({ type: 'ANSWER_BUYER_TEXT', payload: { text: clean, index } })
+    const inferredType = inferPartyType(clean)
+    if (inferredType === 'persona_moral') {
+      events.push({ type: 'ANSWER_BUYER_TYPE', payload: { tipo_persona: 'persona_moral', index } })
+    }
+    index += 1
+  }
+
+  return events
+}
+
+function sanitizeBuyerCandidate(candidate: string): string {
+  const stripped = String(candidate || '')
+    .replace(/^\s*[:#\-.,;]+\s*/g, '')
+    .replace(/^\s*(?:el\s+)?comprador(?:es)?\s*(?:es|son)?\s*[:#-]?\s*/i, '')
+    .split(/\b(el\s+pago|pago|se\s+tiene|gravamen|hipoteca|credito|cr[eé]dito|vendedor(?:es)?)\b/i)[0]
+    .replace(/\bEL\b\s*$/i, '')
+    .replace(/[,;\s]+solter[oa]\b/gi, '')
+    .replace(/[,;\s]+casad[oa]\b/gi, '')
+    .replace(/[.;,:-]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleanName(stripped)
+}
+
+function splitBuyerCandidates(raw: string): string[] {
+  const text = String(raw || '').trim()
+  if (!text) return []
+  const parts = text
+    .split(/\s+y\s+/i)
+    .map((x) => x.replace(/^[,.;\s]+|[,.;\s]+$/g, '').trim())
+    .filter(Boolean)
+  if (parts.length >= 2) return parts
+  return [text]
+}
+
+function extractSellerSection(section: GMIMessageSection): GMIAnswerEvent[] {
+  const events: GMIAnswerEvent[] = []
+  const sellerText = extractRoleTextSegment(section.raw, 'vendedor')
+  if (!sellerText || !isLiteralPartyText(sellerText)) return events
+  events.push({ type: 'ANSWER_SELLER_TEXT', payload: { text: sellerText } })
+  const sellerType = inferPartyType(sellerText)
+  events.push({ type: 'ANSWER_SELLER_TYPE', payload: { tipo_persona: sellerType } })
+  return events
+}
+
+function extractInmuebleSection(section: GMIMessageSection): GMIAnswerEvent[] {
+  const events: GMIAnswerEvent[] = []
+  const folio = extractFolioRealStrictFromMessage(section.raw)
+  if (folio) events.push({ type: 'ANSWER_FOLIO_REAL', payload: { value: folio } })
+  const partidas = extractPartidasFromMessage(section.raw)
+  if (partidas.length > 0) events.push({ type: 'ANSWER_PARTIDA', payload: { values: partidas } })
+  const address = extractAddressSegmentForCalle(section.raw)
+  if (address) events.push({ type: 'ANSWER_ADDRESS_TEXT', payload: { text: address } })
+  return events
+}
+
+function extractInstitutionRaw(raw: string): string | null {
+  const source = String(raw || '')
+  if (!source.trim()) return null
+  const match =
+    source.match(/\b(?:credito|cr[eé]dito|gravamen|hipoteca)\s+(?:de|con)\s+([A-ZÁÉÍÓÚÑ0-9,.\s]+)(?:$|[.;])/i) ||
+    source.match(/\bcon\s+([A-ZÁÉÍÓÚÑ0-9,.\s]+BANCO[A-ZÁÉÍÓÚÑ0-9,.\s]*)/i) ||
+    source.match(/\b(BANCO[\wÁÉÍÓÚÑ,\.\s-]{6,180})/i)
+  if (!match?.[1]) return null
+  return String(match[1]).replace(/\s+/g, ' ').trim().replace(/[.;,:]+$/, '')
+}
+
+function extractCreditoSection(section: GMIMessageSection): GMIAnswerEvent[] {
+  const events: GMIAnswerEvent[] = []
+  const raw = String(section.raw || '')
+  const norm = normalizeForDetection(raw)
+  if (!raw.trim()) return events
+
+  let mode: 'credito' | 'contado' | null = null
+  if (/\b(mediante un credito|mediante credito|con credito|a traves de credito|a través de crédito|credito de)\b/i.test(raw)) {
+    mode = 'credito'
+  } else if (/\b(al contado|de contado|sin credito|sin crédito|pago en efectivo)\b/i.test(raw)) {
+    mode = 'contado'
+  } else {
+    mode = inferShortPaymentModeHint(raw)
+  }
+  if (mode) {
+    events.push({ type: 'ANSWER_PAYMENT_MODE', payload: { mode } })
+  }
+
+  if (mode === 'credito' || /\b(banco|institucion de banca multiple|institución de banca múltiple)\b/.test(norm)) {
+    const institution =
+      extractInstitutionRaw(raw) ||
+      inferCreditInstitutionFromMessage(raw)
+    if (institution) {
+      events.push({ type: 'ANSWER_CREDIT_INSTITUTION_TEXT', payload: { institucion_raw: institution } })
+    }
+  }
+  return events
+}
+
+function extractGravamenSection(section: GMIMessageSection): GMIAnswerEvent[] {
+  const events: GMIAnswerEvent[] = []
+  const raw = String(section.raw || '')
+  const norm = normalizeForDetection(raw)
+  if (!raw.trim()) return events
+
+  if (/\blibre de gravamen\b/.test(norm)) {
+    events.push({ type: 'ANSWER_GRAVAMEN_EXISTS', payload: { exists: false } })
+    return events
+  }
+  if (/\b(se tiene un gravamen|tiene gravamen|existe hipoteca|gravamen con|hipoteca)\b/.test(norm)) {
+    events.push({ type: 'ANSWER_GRAVAMEN_EXISTS', payload: { exists: true } })
+    const institution = extractInstitutionRaw(raw)
+    if (institution) {
+      events.push({ type: 'ANSWER_GRAVAMEN_INSTITUTION_TEXT', payload: { institucion_raw: institution } })
+    }
+  }
+  return events
+}
+
+function isAffirmativeToken(normalized: string): boolean {
+  const text = String(normalized || '').trim()
+  if (!text) return false
+  if (/\bsi\b/.test(text)) return true
+  return (
+    /^(si|afirmativo|correcto)$/.test(text) ||
+    /\bsi\s+se\s+cancelara\b/.test(text) ||
+    /\bsi\s+se\s+cancelara\s+con\b/.test(text) ||
+    /\bse\s+cancela\b/.test(text) ||
+    /\bse\s+cancelara\b/.test(text) ||
+    /\bse\s+cancelara\s+si\b/.test(text)
+  )
+}
+
+function isNegativeToken(normalized: string): boolean {
+  const text = String(normalized || '').trim()
+  if (!text) return false
+  if (/\bno\b/.test(text)) return true
+  return (
+    /^(no|negativo)$/.test(text) ||
+    /\bno\s+se\s+cancela\b/.test(text) ||
+    /\bno\s+se\s+cancelara\b/.test(text)
+  )
+}
+
+function extractGravamenCancelacionYesNoEvent(args: {
+  message: string
+  requiredMissing: string[]
+}): GMIAnswerEvent[] {
+  const requiredMissing = Array.isArray(args.requiredMissing) ? args.requiredMissing : []
+  const needsCancelacion = requiredMissing.some((missing) =>
+    /^gravamenes\[\d+\]\.cancelacion_confirmada$/.test(String(missing || '').trim())
+  )
+  if (!needsCancelacion) return []
+  const normalized = normalizeForDetection(String(args.message || ''))
+  if (!normalized) return []
+  if (isNegativeToken(normalized)) {
+    return [{ type: 'ANSWER_GRAVAMEN_CANCELACION_CONFIRMADA', payload: { value: false } }]
+  }
+  if (isAffirmativeToken(normalized)) {
+    return [{ type: 'ANSWER_GRAVAMEN_CANCELACION_CONFIRMADA', payload: { value: true } }]
+  }
+  return []
+}
+
+function detectDeterministicAnswerEvents(args: {
+  message: string
+  requiredMissing: string[]
+  sections?: GMIMessageSection[]
+}): GMIAnswerEvent[] {
+  const message = String(args.message || '')
+  const events: GMIAnswerEvent[] = []
+  const normalizedMissing = Array.isArray(args.requiredMissing) ? args.requiredMissing : []
+  const sections = Array.isArray(args.sections) && args.sections.length > 0 ? args.sections : sectionizeMessage(message)
+
+  const hasBuyerRelevantMissing = normalizedMissing.some((missing) =>
+    ['compradores[]', 'compradores[].nombre', 'compradores[].tipo_persona'].includes(String(missing || ''))
+  )
+  const hasSellerRelevantMissing = normalizedMissing.some((missing) =>
+    ['vendedores[]', 'vendedores[].nombre', 'vendedores[].tipo_persona'].includes(String(missing || ''))
+  )
+  const hasFolioMissing = normalizedMissing.some((missing) => String(missing || '').trim() === 'inmueble.folio_real')
+  const hasPartidaMissing = normalizedMissing.some((missing) => String(missing || '').trim() === 'inmueble.partidas')
+  const hasDireccionMissing = normalizedMissing.some((missing) => String(missing || '').trim() === 'inmueble.direccion')
+
+  const sectionEvents: GMIAnswerEvent[] = []
+  sectionEvents.push(
+    ...extractGravamenCancelacionYesNoEvent({
+      message,
+      requiredMissing: normalizedMissing,
+    })
+  )
+  for (const section of sections) {
+    if (section.type === 'buyer') sectionEvents.push(...extractBuyerSection(section))
+    if (section.type === 'seller') sectionEvents.push(...extractSellerSection(section))
+    if (section.type === 'inmueble') sectionEvents.push(...extractInmuebleSection(section))
+    if (section.type === 'credito') sectionEvents.push(...extractCreditoSection(section))
+    if (section.type === 'gravamen') sectionEvents.push(...extractGravamenSection(section))
+  }
+
+  // Global fallback scan keeps compatibility when sectionizer misses explicit markers.
+  if (sectionEvents.length === 0) {
+    const buyerText = extractRoleTextSegment(message, 'comprador')
+    if (buyerText && isLiteralPartyText(buyerText)) {
+      sectionEvents.push({ type: 'ANSWER_BUYER_TEXT', payload: { text: buyerText, index: 0 } })
+    }
+    const sellerText = extractRoleTextSegment(message, 'vendedor')
+    if (sellerText && isLiteralPartyText(sellerText)) {
+      sectionEvents.push({ type: 'ANSWER_SELLER_TEXT', payload: { text: sellerText } })
+    }
+    const spouseText = extractSpouseTextSegment(message)
+    if (spouseText) {
+      sectionEvents.push({ type: 'ANSWER_SPOUSE_TEXT', payload: { text: spouseText, buyer_index: 0 } })
+    }
+  }
+
+  for (const event of sectionEvents) {
+    if (
+      (event.type === 'ANSWER_BUYER_TEXT' || event.type === 'ANSWER_BUYER_TYPE' || event.type === 'ANSWER_SPOUSE_TEXT') &&
+      !hasBuyerRelevantMissing &&
+      !/\bcomprador|compradores|conyuge|esposa|esposo\b/i.test(message)
+    ) {
+      continue
+    }
+    if (
+      (event.type === 'ANSWER_SELLER_TEXT' || event.type === 'ANSWER_SELLER_TYPE') &&
+      !hasSellerRelevantMissing &&
+      !/\bvendedor|vendedores\b/i.test(message)
+    ) {
+      continue
+    }
+    if (event.type === 'ANSWER_FOLIO_REAL' && !hasFolioMissing) continue
+    if (event.type === 'ANSWER_PARTIDA' && !hasPartidaMissing) continue
+    if (event.type === 'ANSWER_ADDRESS_TEXT' && !hasDireccionMissing) continue
+    if (
+      (event.type === 'ANSWER_PAYMENT_MODE' || event.type === 'ANSWER_CREDIT_INSTITUTION_TEXT') &&
+      !normalizedMissing.some((missing) => ['existencia_credito', 'creditos[]'].includes(String(missing || '').trim())) &&
+      !/\bcredito|cr[eé]dito|contado|pago\b/i.test(message)
+    ) {
+      continue
+    }
+    if (
+      (event.type === 'ANSWER_GRAVAMEN_EXISTS' ||
+        event.type === 'ANSWER_GRAVAMEN_INSTITUTION_TEXT' ||
+        event.type === 'ANSWER_GRAVAMEN_CANCELACION_CONFIRMADA') &&
+      !normalizedMissing.some((missing) => {
+        const normalized = String(missing || '').trim()
+        return (
+          ['inmueble.existe_hipoteca', 'gravamenes', 'gravamenes[]'].includes(normalized) ||
+          /^gravamenes\[\d+\]\./.test(normalized)
+        )
+      }) &&
+      !/\bgravamen|hipoteca|cancel/i.test(message)
+    ) {
+      continue
+    }
+    events.push(event)
+  }
+
+  return dedupeAnswerEvents(events)
+}
+
+function compileDeterministicAnswerEvents(
+  events: GMIAnswerEvent[],
+  collectedData?: Record<string, unknown>
+): Array<Record<string, unknown>> {
+  const updates: Array<Record<string, unknown>> = []
+  const pushUpdate = (path: string, value: unknown, reason: string) => {
+    updates.push({
+      op: 'set',
+      path,
+      value,
+      reason,
+    })
+  }
+
+  for (const event of events || []) {
+    if (event.type === 'ANSWER_BUYER_TEXT') {
+      const text = cleanName(String(event.payload?.text || ''))
+      if (!text) continue
+      const index = Number.isFinite(Number(event.payload?.index)) ? Math.max(0, Number(event.payload?.index)) : 0
+      const inferredType = inferPartyType(text)
+      if (inferredType === 'persona_moral') {
+        pushUpdate(`compradores[${index}].tipo_persona`, 'persona_moral', 'Buyer event compilado: tipo_persona inferido')
+        pushUpdate(
+          `compradores[${index}].persona_moral.denominacion_social`,
+          text,
+          'Buyer event compilado: denominacion social'
+        )
+      } else {
+        pushUpdate(`compradores[${index}].persona_fisica.nombre`, text, 'Buyer event compilado: nombre')
+      }
+    }
+    if (event.type === 'ANSWER_BUYER_TYPE') {
+      const tipo = String(event.payload?.tipo_persona || '').trim()
+      const index = Number.isFinite(Number(event.payload?.index)) ? Math.max(0, Number(event.payload?.index)) : 0
+      if (tipo === 'persona_fisica' || tipo === 'persona_moral') {
+        pushUpdate(`compradores[${index}].tipo_persona`, tipo, 'Buyer event compilado: tipo_persona explicito')
+      }
+    }
+    if (event.type === 'ANSWER_SELLER_TEXT') {
+      const text = cleanName(String(event.payload?.text || ''))
+      if (!text) continue
+      const inferredType = inferPartyType(text)
+      if (inferredType === 'persona_moral') {
+        pushUpdate('vendedores[0].tipo_persona', 'persona_moral', 'Seller event compilado: tipo_persona inferido')
+        pushUpdate(
+          'vendedores[0].persona_moral.denominacion_social',
+          text,
+          'Seller event compilado: denominacion social'
+        )
+      } else {
+        pushUpdate('vendedores[0].persona_fisica.nombre', text, 'Seller event compilado: nombre')
+      }
+    }
+    if (event.type === 'ANSWER_SELLER_TYPE') {
+      const tipo = String(event.payload?.tipo_persona || '').trim()
+      if (tipo === 'persona_fisica' || tipo === 'persona_moral') {
+        pushUpdate('vendedores[0].tipo_persona', tipo, 'Seller event compilado: tipo_persona explicito')
+      }
+    }
+    if (event.type === 'ANSWER_SPOUSE_TEXT') {
+      const text = cleanName(String(event.payload?.text || ''))
+      if (!text) continue
+      const buyerIndex = Number.isFinite(Number(event.payload?.buyer_index))
+        ? Math.max(0, Number(event.payload?.buyer_index))
+        : 0
+      pushUpdate(`compradores[${buyerIndex}].persona_fisica.conyuge.nombre`, text, 'Spouse event compilado')
+      pushUpdate(`compradores[${buyerIndex}].persona_fisica.estado_civil`, 'casado', 'Spouse event compilado: estado civil casado')
+    }
+    if (event.type === 'ANSWER_FOLIO_REAL') {
+      const value = String(event.payload?.value || '').trim()
+      if (!value) continue
+      pushUpdate('inmueble.folio_real', value, 'Inmueble event compilado: folio real')
+    }
+    if (event.type === 'ANSWER_PARTIDA') {
+      const values = Array.isArray(event.payload?.values)
+        ? event.payload.values.map((x) => String(x || '').trim()).filter(Boolean)
+        : []
+      if (values.length === 0) continue
+      pushUpdate('inmueble.partidas', Array.from(new Set(values)), 'Inmueble event compilado: partidas')
+    }
+    if (event.type === 'ANSWER_ADDRESS_TEXT') {
+      const text = String(event.payload?.text || '').trim()
+      if (!text) continue
+      pushUpdate('inmueble.direccion.calle', text, 'Inmueble event compilado: direccion segura')
+    }
+    if (event.type === 'ANSWER_PAYMENT_MODE') {
+      const mode = String(event.payload?.mode || '').trim()
+      if (mode === 'credito') {
+        pushUpdate('existencia_credito', true, 'Credito event compilado: existencia_credito')
+        pushUpdate('actosNotariales.aperturaCreditoComprador', true, 'Credito event compilado: apertura')
+        pushUpdate('creditos', [{ institucion: null, participantes: [] }], 'Credito event compilado: estructura creditos')
+      }
+      if (mode === 'contado') {
+        pushUpdate('existencia_credito', false, 'Credito event compilado: existencia_credito')
+        pushUpdate('actosNotariales.aperturaCreditoComprador', false, 'Credito event compilado: operacion contado')
+        pushUpdate('creditos', [], 'Credito event compilado: sin credito')
+      }
+    }
+    if (event.type === 'ANSWER_CREDIT_INSTITUTION_TEXT') {
+      const institutionRaw = String(event.payload?.institucion_raw || '').trim()
+      if (institutionRaw) {
+        pushUpdate('creditos', [{ institucion: null, participantes: [] }], 'Credito event compilado: estructura por institucion')
+        pushUpdate('creditos[0].institucion', institutionRaw, 'Credito event compilado: institucion')
+      }
+    }
+    if (event.type === 'ANSWER_GRAVAMEN_EXISTS') {
+      const exists = event.payload?.exists === true
+      pushUpdate('inmueble.existe_hipoteca', exists, 'Gravamen event compilado: existencia')
+      if (!exists) {
+        pushUpdate('gravamenes', [], 'Gravamen event compilado: libre de gravamen')
+      }
+      if (exists) {
+        pushUpdate(
+          'gravamenes',
+          [{ institucion: null, cancelacion_confirmada: null }],
+          'Gravamen event compilado: estructura base'
+        )
+      }
+    }
+    if (event.type === 'ANSWER_GRAVAMEN_INSTITUTION_TEXT') {
+      const institutionRaw = String(event.payload?.institucion_raw || '').trim()
+      if (institutionRaw) {
+        pushUpdate('inmueble.existe_hipoteca', true, 'Gravamen event compilado: existencia por institucion')
+        pushUpdate(
+          'gravamenes',
+          [{ institucion: institutionRaw, cancelacion_confirmada: null }],
+          'Gravamen event compilado: institucion'
+        )
+        pushUpdate('gravamenes[0].institucion', institutionRaw, 'Gravamen event compilado: institucion puntual')
+      }
+    }
+    if (event.type === 'ANSWER_GRAVAMEN_CANCELACION_CONFIRMADA') {
+      if (typeof event.payload?.value !== 'boolean') continue
+      pushUpdate(
+        'gravamenes[0].cancelacion_confirmada',
+        event.payload.value === true,
+        'Gravamen event compilado: cancelacion confirmada'
+      )
+      if (event.payload.value === true) {
+        pushUpdate('actosNotariales.cancelacionCreditoVendedor', true, 'Gravamen event compilado: cancelacion activa')
+      }
+      if (event.payload.value === false) {
+        pushUpdate('actosNotariales.cancelacionCreditoVendedor', false, 'Gravamen event compilado: cancelacion no aplica')
+      }
+    }
+    if (event.type === 'ANSWER_BUYER_MARITAL_STATUS') {
+      const estadoCivil = String(event.payload?.estado_civil || '').trim()
+      const buyerIndex = Number.isFinite(Number(event.payload?.buyer_index))
+        ? Math.max(0, Number(event.payload?.buyer_index))
+        : 0
+      if (estadoCivil) {
+        pushUpdate(`compradores[${buyerIndex}].persona_fisica.estado_civil`, estadoCivil, 'Buyer event compilado: estado civil')
+      }
+    }
+  }
+
+  const dedup = new Map<string, Record<string, unknown>>()
+  for (const update of updates) dedup.set(String(update.path || ''), update)
+
+  const hasGravamenNestedUpdate = Array.from(dedup.keys()).some((path) => /^gravamenes\[\d+\]\./.test(path))
+  const hasGravamenCollectionUpdate = dedup.has('gravamenes')
+  if (hasGravamenNestedUpdate && !hasGravamenCollectionUpdate) {
+    const existing = Array.isArray((collectedData as any)?.gravamenes) ? (((collectedData as any).gravamenes as any[]) || []) : []
+    const first = existing[0]
+    if (typeof first === 'string' && first.trim()) {
+      dedup.set('gravamenes', {
+        op: 'set',
+        path: 'gravamenes',
+        value: [{ institucion: first.trim(), cancelacion_confirmada: null }],
+        reason: 'Normalizacion de gravamenes: string legado a objeto',
+      })
+    } else if (!first) {
+      dedup.set('gravamenes', {
+        op: 'set',
+        path: 'gravamenes',
+        value: [{ institucion: null, cancelacion_confirmada: null }],
+        reason: 'Normalizacion de gravamenes: estructura base',
+      })
+    }
+  }
+
+  return Array.from(dedup.values())
+}
+
+function inferExplicitRoleTypeFromMessage(
+  message: string,
+  role: 'comprador' | 'vendedor'
+): 'persona_fisica' | 'persona_moral' | null {
+  const normalized = String(message || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized || !normalized.includes(role)) return null
+  if (new RegExp(`\\b${role}\\b[^\\n.;]{0,60}\\bpersona\\s+moral\\b`).test(normalized)) return 'persona_moral'
+  if (new RegExp(`\\b${role}\\b[^\\n.;]{0,60}\\bpersona\\s+fisica\\b`).test(normalized)) return 'persona_fisica'
+  return null
+}
+
+function extractRoleTextSegment(message: string, role: 'comprador' | 'vendedor'): string | null {
+  const source = String(message || '')
+  if (!source.trim()) return null
+
+  const stopMarkers = /\b(se tiene un gravamen|gravamen|hipoteca|el pago|pago|credito|banco|comprador|vendedor)\b/i
+  const inlineRegex = new RegExp(
+    `(?:\\bel\\s+)?${role}\\s*(?:es|[:#-])?\\s*([\\s\\S]{2,320})`,
+    'i'
+  )
+  const inline = source.match(inlineRegex)?.[1]
+  if (inline) {
+    let parsed = String(inline).split(/\r?\n/)[0].trim()
+    const markerIndex = parsed.search(stopMarkers)
+    if (markerIndex > 0) parsed = parsed.slice(0, markerIndex).trim()
+    if (parsed) return cleanName(parsed)
+  }
+
+  const lines = source.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  for (const line of lines) {
+    if (!new RegExp(`\\b${role}\\b`, 'i').test(line)) continue
+    let stripped = line
+      .replace(new RegExp(`^.*?\\b${role}\\b\\s*(?:es|[:#-])?\\s*`, 'i'), '')
+      .trim()
+    const markerIndex = stripped.search(stopMarkers)
+    if (markerIndex > 0) stripped = stripped.slice(0, markerIndex).trim()
+    if (stripped) return cleanName(stripped)
+  }
+
+  return null
+}
+
+function extractSpouseTextSegment(message: string): string | null {
+  const source = String(message || '')
+  const match = source.match(/\b(?:su\s+)?(?:conyuge|conyugue|esposa|esposo)\s*(?:es|[:#-])\s*([^\n.;]{2,180})/i)
+  if (!match?.[1]) return null
+  return cleanName(String(match[1]))
+}
+
+function isLiteralPartyText(value: string): boolean {
+  const normalized = normalizeLooseText(String(value || ''))
+  if (!normalized) return false
+  if (normalized.length < 4) return false
+  if (/\b(esposo|esposa|conyuge|conyugue|acta|adjunto|ine|constancia|siguiente|documento)\b/.test(normalized)) {
+    return false
+  }
+  return true
+}
+
+function detectBlockedCalleReason(message: string): string | null {
+  const source = String(message || '')
+  if (!source.trim()) return null
+  if (source.length > CALLE_FALLBACK_MAX_CHARS) {
+    return 'calle_blocked_input_too_long'
+  }
+  if (CALLE_FOREIGN_MARKERS_REGEX.test(source)) {
+    return 'calle_blocked_foreign_markers'
+  }
+  return null
+}
+
+function extractAddressSegmentForCalle(message: string): string | null {
+  const source = String(message || '')
+  if (!source.trim()) return null
+  if (detectBlockedCalleReason(source)) {
+    const marker = source.search(/\b(se tiene un gravamen|el vendedor|vendedor|el comprador|comprador|el pago|credito|banco|hipoteca|gravamen)\b/i)
+    if (marker <= 0) return null
+    const prefix = source.slice(0, marker).trim()
+    if (!prefix) return null
+    const fromLabel = extractLabeledValue(prefix, ['conj. habitacional', 'conj habitacional', 'direccion'])
+    const candidate = stripAddressTransitionTail(fromLabel || cleanName(prefix))
+    if (
+      !candidate ||
+      candidate.length < CALLE_SEGMENT_MIN_CHARS ||
+      candidate.length > CALLE_SEGMENT_MAX_CHARS ||
+      CALLE_FOREIGN_MARKERS_REGEX.test(candidate)
+    ) {
+      return null
+    }
+    return candidate
+  }
+
+  const direct = stripAddressTransitionTail(extractLabeledValue(source, ['conj. habitacional', 'conj habitacional', 'direccion']))
+  if (!direct) return null
+  if (
+    direct.length < CALLE_SEGMENT_MIN_CHARS ||
+    direct.length > CALLE_SEGMENT_MAX_CHARS ||
+    CALLE_FOREIGN_MARKERS_REGEX.test(direct)
+  ) {
+    return null
+  }
+  return direct
+}
+
+function stripAddressTransitionTail(value: string | null): string {
+  return String(value || '')
+    .replace(/\bse\s+tiene\s+un\s*$/i, '')
+    .replace(/\bse\s+tiene\s*$/i, '')
+    .replace(/[.;,:-]+$/g, '')
+    .trim()
+}
+
+function extractFolioRealStrictFromMessage(message: string): string | null {
+  const source = String(message || '')
+  if (!source.trim()) return null
+  const strict =
+    source.match(/\bfolio\s*real\b\s*[:#-]?\s*([0-9]{5,10})\b/i) ||
+    source.match(/\bfolio\s*real\s+([0-9]{5,10})\b/i)
+  if (strict?.[1]) return String(strict[1]).trim()
   return null
 }
 
@@ -1869,7 +2754,7 @@ function inferShortPaymentModeHint(message: string): 'contado' | 'credito' | nul
   if (/^(contado|es contado|sera contado|sera de contado|si, contado)$/.test(normalized)) return 'contado'
   if (/\b(de contado|sin credito|sin financiamiento|recursos propios)\b/.test(normalized)) return 'contado'
 
-  if (/^(con credito|credito|sera con credito|si, con credito|si credito)$/.test(normalized)) return 'credito'
+  if (/^(con credito|con un credito|credito|sera con credito|si, con credito|si credito)$/.test(normalized)) return 'credito'
   if (/\b(con credito|credito bancario|financiamiento bancario|mediante credito|a credito)\b/.test(normalized)) return 'credito'
   return null
 }

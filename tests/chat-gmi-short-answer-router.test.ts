@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createDirectChatGMIRouteHandler } from '@/app/api/ai/chat-gmi/route'
+import { ProposedUpdateDomainViolationError } from '@/lib/services/preaviso-proposed-update-service'
 
 function buildRequest(body: Record<string, unknown>) {
   return new Request('http://localhost/api/ai/chat-gmi', {
@@ -300,4 +301,455 @@ test('short answer router aplica nombre de conyuge cuando es el unico slot compa
   assert.equal(String(result.update?.value || ''), 'DOMINGO JAVIER MORENO GÁMEZ')
 
   if (!originalApiKey) delete process.env.GMI_API_KEY
+})
+
+test('event router corre en mensaje largo con roles explicitos y compila updates antes del fallback', async () => {
+  let runCaptureCalled = 0
+  let committedUpdates: Array<Record<string, unknown>> = []
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_2',
+      state_status: {},
+      required_missing: ['inmueble.folio_real', 'inmueble.partidas', 'inmueble.direccion'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 2, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    runCapture: async () => {
+      runCaptureCalled += 1
+      return {
+        intent: 'UPDATE_STATE',
+        agent_used: 'GMIIndependentCaptureFlow',
+        answer: 'fallback general',
+        proposed_updates: [],
+        actions: [],
+        trace_id: 'trace-fallback',
+      }
+    },
+    commitProposedUpdates: async (args: any) => {
+      committedUpdates = Array.isArray(args?.proposedUpdates) ? args.proposedUpdates : []
+      return {
+        applied_updates: committedUpdates.length,
+        data: {
+          vendedores: [{ tipo_persona: 'persona_moral' }],
+          compradores: [{ tipo_persona: 'persona_fisica', persona_fisica: { nombre: 'JOSE LUIS PEREZ GOMEZ' } }],
+        },
+        state: {
+          current_state: 'ESTADO_2',
+          state_status: {},
+          required_missing: ['inmueble.folio_real', 'inmueble.partidas', 'inmueble.direccion'],
+          blocking_reasons: [],
+          wizard_state: { current_step: 2, total_steps: 6, steps: [], can_finalize: false },
+        },
+      }
+    },
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message:
+        'CONJ. HABITACIONAL: CONDOMINIO D-2 ... EL VENDEDOR es INMOBILIARIA ENCASA SOCIEDAD ANONIMA. EL COMPRADOR es JOSE LUIS PEREZ GOMEZ. se tiene un gravamen y el pago con credito BANCO.',
+      uiContext: {},
+    })
+  )
+
+  assert.equal(res.status, 200)
+  assert.equal(runCaptureCalled, 0)
+  assert.ok(committedUpdates.some((u) => String((u as any)?.path || '').startsWith('vendedores[0]')))
+  assert.ok(committedUpdates.some((u) => String((u as any)?.path || '').startsWith('compradores[0]')))
+  const json = await res.json()
+  const diagnostics = (json?.routing_diagnostics || {}) as Record<string, unknown>
+  assert.equal(diagnostics.router_ran, true)
+  assert.equal(Number(diagnostics.updates_compiled_count || 0) > 0, true)
+})
+
+test('guidance no expone paths tecnicos para missing sin mapping humano explicito', async () => {
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_2',
+      state_status: {},
+      required_missing: ['inmueble.partidas', 'inmueble.direccion'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 2, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    runCapture: async () => ({
+      intent: 'UPDATE_STATE',
+      agent_used: 'GMIIndependentCaptureFlow',
+      answer: 'No pude mapear el mensaje a un campo faltante especifico.',
+      proposed_updates: [],
+      actions: [],
+      trace_id: 'trace-guidance-safe',
+    }),
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'ok',
+      uiContext: {},
+    })
+  )
+
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  const answer = String(json?.answer || '')
+  assert.equal(/\b(inmueble\.|compradores\[|vendedores\[|creditos\[)/i.test(answer), false, answer)
+  assert.equal(answer.includes('Completa:'), false)
+  const requestAction = (Array.isArray(json?.actions) ? json.actions : []).find(
+    (x: any) => String(x?.type || '') === 'request_missing_field'
+  )
+  const nextQuestions = Array.isArray(requestAction?.next_questions) ? requestAction.next_questions : []
+  assert.equal(
+    nextQuestions.some((q: unknown) => /\b(inmueble\.|compradores\[|vendedores\[|creditos\[)/i.test(String(q || ''))),
+    false
+  )
+})
+
+test('routing_diagnostics incluye sections_detected y eventos buyer/spouse en mensaje clasico completo', async () => {
+  let committedUpdates: Array<Record<string, unknown>> = []
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_1',
+      state_status: {},
+      required_missing: ['existencia_credito', 'compradores[]', 'compradores[].tipo_persona'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 1, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    commitProposedUpdates: async (args: any) => {
+      committedUpdates = Array.isArray(args?.proposedUpdates) ? args.proposedUpdates : []
+      return {
+        applied_updates: committedUpdates.length,
+        data: {
+          compradores: [{ persona_fisica: { nombre: 'JOSE GUADALUPE SANDOVAL MURILLO', conyuge: { nombre: 'ARMIDA FERRA JUSTO' } } }],
+        },
+        state: {
+          current_state: 'ESTADO_1',
+          state_status: {},
+          required_missing: [],
+          blocking_reasons: [],
+          wizard_state: { current_step: 1, total_steps: 6, steps: [], can_finalize: false },
+        },
+      }
+    },
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message:
+        'PARTIDA NO: 6431741 FOLIO REAL: 1782485 EL VENDEDOR ES INMOBILIARIA ENCASA SA. EL COMPRADOR ES JOSE GUADALUPE SANDOVAL MURILLO JUNTO CON SU ESPOSA ARMIDA FERRA JUSTO. EL PAGO SERA MEDIANTE UN CREDITO BANCO MERCANTIL DEL NORTE.',
+      uiContext: {},
+    })
+  )
+
+  assert.equal(res.status, 200)
+  assert.equal(committedUpdates.length >= 4, true)
+  const json = await res.json()
+  const diagnostics = (json?.routing_diagnostics || {}) as Record<string, unknown>
+  const events = Array.isArray(diagnostics.events_detected) ? diagnostics.events_detected : []
+  assert.equal(events.includes('ANSWER_BUYER_TEXT'), true)
+  assert.equal(events.includes('ANSWER_SPOUSE_TEXT'), true)
+  assert.equal(Array.isArray(diagnostics.sections_detected), true)
+  assert.equal((diagnostics.sections_detected as any[]).every((x) => typeof x?.length === 'number'), true)
+  assert.equal(String(diagnostics.commit_result || ''), 'applied')
+})
+
+test('route remueve missing existencia_credito cuando mensaje indica credito explicito', async () => {
+  let committedUpdates: Array<Record<string, unknown>> = []
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_1',
+      state_status: {},
+      required_missing: ['existencia_credito'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 1, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    commitProposedUpdates: async (args: any) => {
+      committedUpdates = Array.isArray(args?.proposedUpdates) ? args.proposedUpdates : []
+      return {
+        applied_updates: committedUpdates.length,
+        data: { actosNotariales: { aperturaCreditoComprador: true }, creditos: [{ institucion: 'BANCO MERCANTIL DEL NORTE' }] },
+        state: {
+          current_state: 'ESTADO_1',
+          state_status: {},
+          required_missing: [],
+          blocking_reasons: [],
+          wizard_state: { current_step: 1, total_steps: 6, steps: [], can_finalize: false },
+        },
+      }
+    },
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'el pago del inmueble se realizara mediante un credito de BANCO MERCANTIL DEL NORTE',
+      uiContext: {},
+    })
+  )
+
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  const requiredMissing = Array.isArray(json?.state?.required_missing) ? json.state.required_missing : []
+  assert.equal(requiredMissing.includes('existencia_credito'), false)
+  const diagnostics = (json?.routing_diagnostics || {}) as Record<string, unknown>
+  const events = Array.isArray(diagnostics.events_detected) ? diagnostics.events_detected : []
+  assert.equal(events.includes('ANSWER_PAYMENT_MODE'), true)
+  assert.equal(Number(diagnostics.credito_events_count || 0) > 0, true)
+})
+
+test('route forzado en ESTADO_6 aplica yes/no de cancelacion de gravamen y evita fallback', async () => {
+  let committedUpdates: Array<Record<string, unknown>> = []
+  const deps = createBaseDeps({
+    loadTramiteData: async () => ({
+      gravamenes: ['BANCO DEL BAJIO, SOCIEDAD ANONIMA, INSTITUCION DE BANCA MULTIPLE'],
+    }),
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_6',
+      state_status: {},
+      required_missing: ['gravamenes[0].institucion', 'gravamenes[0].cancelacion_confirmada'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    commitProposedUpdates: async (args: any) => {
+      committedUpdates = Array.isArray(args?.proposedUpdates) ? args.proposedUpdates : []
+      return {
+        applied_updates: committedUpdates.length,
+        data: {
+          gravamenes: [
+            {
+              institucion: 'BANCO DEL BAJIO, SOCIEDAD ANONIMA, INSTITUCION DE BANCA MULTIPLE',
+              cancelacion_confirmada: true,
+            },
+          ],
+        },
+        state: {
+          current_state: 'ESTADO_6',
+          state_status: {},
+          required_missing: ['gravamenes[0].institucion'],
+          blocking_reasons: [],
+          wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+        },
+      }
+    },
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'si se cancelara',
+      uiContext: {},
+    })
+  )
+
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  const diagnostics = (json?.routing_diagnostics || {}) as Record<string, unknown>
+  const events = Array.isArray(diagnostics.events_detected) ? diagnostics.events_detected : []
+  assert.equal(diagnostics.router_ran, true)
+  assert.equal(diagnostics.yesno_extractor_ran, true)
+  assert.equal(Number(diagnostics.yesno_events_count || 0) > 0, true)
+  assert.equal(events.includes('ANSWER_GRAVAMEN_CANCELACION_CONFIRMADA'), true)
+  assert.equal(
+    committedUpdates.some((u) => String((u as any)?.path || '') === 'gravamenes[0].cancelacion_confirmada'),
+    true
+  )
+  assert.equal(
+    committedUpdates.some((u) => String((u as any)?.path || '') === 'gravamenes'),
+    true
+  )
+  const requiredMissing = Array.isArray(json?.state?.required_missing) ? json.state.required_missing : []
+  assert.equal(requiredMissing.includes('gravamenes[0].cancelacion_confirmada'), false)
+  assert.equal(String(json?.answer || '').includes('No pude mapear'), false)
+})
+
+test('routing_diagnostics dev incluye attempted_paths y allowlist cuando commit rechaza path', async () => {
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_6',
+      state_status: {},
+      required_missing: [],
+      blocking_reasons: [],
+      wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    runCapture: async () => ({
+      intent: 'UPDATE_STATE',
+      agent_used: 'GMIIndependentCaptureFlow',
+      answer: 'captura',
+      proposed_updates: [
+        {
+          op: 'set',
+          path: 'gravamenes[0].cancelacion_confirmada',
+          value: true,
+        },
+        {
+          op: 'set',
+          path: 'foo.bar',
+          value: 'x',
+        },
+      ],
+      actions: [],
+      trace_id: 'trace-dev-diag',
+    }),
+    commitProposedUpdates: async () => {
+      throw new ProposedUpdateDomainViolationError('Path no permitido para commit: foo.bar')
+    },
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'ok',
+      uiContext: {},
+    })
+  )
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  const diagnostics = (json?.routing_diagnostics || {}) as Record<string, unknown>
+  assert.equal(String(diagnostics.commit_result || ''), 'rejected')
+  const attempted = Array.isArray(diagnostics.attempted_paths) ? diagnostics.attempted_paths : []
+  assert.equal(attempted.includes('gravamenes[0].cancelacion_confirmada'), true)
+  assert.equal(attempted.includes('foo.bar'), true)
+  const checks = Array.isArray(diagnostics.allowlist_match) ? diagnostics.allowlist_match : []
+  assert.equal(checks.some((c: any) => c?.path === 'gravamenes[0].cancelacion_confirmada' && c?.allowlist_match === true), true)
+  assert.equal(checks.some((c: any) => c?.path === 'foo.bar' && c?.allowlist_match === false), true)
+  assert.equal(String(diagnostics.rejected_path || ''), 'foo.bar')
+})
+
+test('ESTADO_6 ASK_MISSING no intenta commit y responde faltantes humanizados', async () => {
+  let commitCalls = 0
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_6',
+      state_status: {},
+      required_missing: ['gravamenes[0].cancelacion_confirmada'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    commitProposedUpdates: async () => {
+      commitCalls += 1
+      throw new Error('commit should not run for ask_missing')
+    },
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'que documentos me faltan?',
+      uiContext: {},
+    })
+  )
+  assert.equal(res.status, 200)
+  assert.equal(commitCalls, 0)
+  const json = await res.json()
+  const diagnostics = (json?.routing_diagnostics || {}) as Record<string, unknown>
+  assert.equal(diagnostics.ask_missing_intent, true)
+  assert.equal(String(diagnostics.commit_result || ''), 'skipped_no_updates')
+  assert.equal(String(diagnostics.commit_reject_reason || ''), '')
+  const answer = String(json?.answer || '')
+  assert.equal(answer.includes('Confirma si la hipoteca se cancelara con esta operacion (si/no).'), true)
+})
+
+test('ESTADO_6 con mensaje "si" aplica cancelacion_confirmada=true y commit applied', async () => {
+  let committedUpdates: Array<Record<string, unknown>> = []
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_6',
+      state_status: {},
+      required_missing: ['gravamenes[0].cancelacion_confirmada'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    loadTramiteData: async () => ({
+      gravamenes: [{ institucion: 'BANCO DEL BAJIO', cancelacion_confirmada: null }],
+    }),
+    commitProposedUpdates: async (args: any) => {
+      committedUpdates = Array.isArray(args?.proposedUpdates) ? args.proposedUpdates : []
+      return {
+        applied_updates: committedUpdates.length,
+        data: {
+          gravamenes: [{ institucion: 'BANCO DEL BAJIO', cancelacion_confirmada: true }],
+        },
+        state: {
+          current_state: 'ESTADO_6',
+          state_status: {},
+          required_missing: [],
+          blocking_reasons: [],
+          wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+        },
+      }
+    },
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'si',
+      uiContext: {},
+    })
+  )
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  const diagnostics = (json?.routing_diagnostics || {}) as Record<string, unknown>
+  assert.equal(String(diagnostics.commit_result || ''), 'applied')
+  assert.equal(
+    committedUpdates.some((u) => String((u as any)?.path || '') === 'gravamenes[0].cancelacion_confirmada' && (u as any)?.value === true),
+    true
+  )
+})
+
+test('ESTADO_6 prioriza guidance de gravamen sobre inmueble cuando required_missing viene mezclado', async () => {
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_6',
+      state_status: {},
+      required_missing: ['inmueble.partidas', 'inmueble.direccion', 'gravamenes[0].cancelacion_confirmada'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    runCapture: async () => ({
+      intent: 'UPDATE_STATE',
+      agent_used: 'GMIIndependentCaptureFlow',
+      answer: 'No pude mapear el mensaje a un campo faltante especifico.',
+      proposed_updates: [],
+      actions: [],
+      trace_id: 'trace-mixed-missing',
+    }),
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'ok',
+      uiContext: {},
+    })
+  )
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  const requestAction = (Array.isArray(json?.actions) ? json.actions : []).find(
+    (x: any) => String(x?.type || '') === 'request_missing_field'
+  )
+  const nextQuestions = Array.isArray(requestAction?.next_questions) ? requestAction.next_questions : []
+  assert.equal(
+    String(nextQuestions[0] || ''),
+    'Confirma si la hipoteca se cancelara con esta operacion (si/no).'
+  )
 })

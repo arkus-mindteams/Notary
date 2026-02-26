@@ -197,6 +197,7 @@ export function DocumentSidebar({
                                                             value={true}
                                                             path="actosNotariales.aperturaCreditoComprador"
                                                             fieldType="boolean"
+                                                            booleanLabels={{ trueLabel: 'credito', falseLabel: 'contado' }}
                                                             onSave={async (path, value) => onManualUpdate?.(path, value)}
                                                             disabled={!onManualUpdate}
                                                         />
@@ -208,6 +209,7 @@ export function DocumentSidebar({
                                                             value={false}
                                                             path="actosNotariales.aperturaCreditoComprador"
                                                             fieldType="boolean"
+                                                            booleanLabels={{ trueLabel: 'credito', falseLabel: 'contado' }}
                                                             onSave={async (path, value) => onManualUpdate?.(path, value)}
                                                             disabled={!onManualUpdate}
                                                         />
