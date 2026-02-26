@@ -53,6 +53,7 @@ export type GMIAnswerEventType =
   | 'ANSWER_FOLIO_REAL'
   | 'ANSWER_PARTIDA'
   | 'ANSWER_ADDRESS_TEXT'
+  | 'ANSWER_LAND_AREA'
   | 'ANSWER_PAYMENT_MODE'
   | 'ANSWER_BUYER_MARITAL_STATUS'
   | 'ANSWER_CREDIT_INSTITUTION_TEXT'
@@ -209,6 +210,7 @@ const ALLOWED_UPDATE_PATHS = [
   /^inmueble\.partidas$/,
   /^inmueble\.direccion$/,
   /^inmueble\.direccion\.(calle|numero|colonia|municipio|estado|codigo_postal)$/,
+  /^inmueble\.superficie$/,
   /^inmueble\.existe_hipoteca$/,
   /^gravamenes$/,
   /^gravamenes\[\d+\]\.institucion$/,
@@ -1985,9 +1987,25 @@ function extractInmuebleSection(section: GMIMessageSection): GMIAnswerEvent[] {
   if (folio) events.push({ type: 'ANSWER_FOLIO_REAL', payload: { value: folio } })
   const partidas = extractPartidasFromMessage(section.raw)
   if (partidas.length > 0) events.push({ type: 'ANSWER_PARTIDA', payload: { values: partidas } })
+  const superficie = extractSuperficieFromMessage(section.raw)
+  if (superficie) events.push({ type: 'ANSWER_LAND_AREA', payload: { value: superficie } })
   const address = extractAddressSegmentForCalle(section.raw)
   if (address) events.push({ type: 'ANSWER_ADDRESS_TEXT', payload: { text: address } })
   return events
+}
+
+function extractSuperficieFromMessage(message: string): string | null {
+  const source = String(message || '')
+  if (!source.trim()) return null
+  const match =
+    source.match(
+      /\b(?:superficie|terreno|area(?:\s+de\s+terreno)?)\s*(?:total)?\s*(?:de|:)?\s*([0-9]+(?:[.,][0-9]{1,2})?)\s*(?:m2|m²|metros?\s*cuadrados?)\b/i
+    ) ||
+    source.match(/\b([0-9]+(?:[.,][0-9]{1,2})?)\s*(?:m2|m²|metros?\s*cuadrados?)\b/i)
+  if (!match?.[1]) return null
+  const normalizedNumber = String(match[1]).replace(',', '.').trim()
+  if (!/^\d+(?:\.\d+)?$/.test(normalizedNumber)) return null
+  return `${normalizedNumber} m2`
 }
 
 function extractInstitutionRaw(raw: string): string | null {
@@ -2114,6 +2132,7 @@ function detectDeterministicAnswerEvents(args: {
   const hasFolioMissing = normalizedMissing.some((missing) => String(missing || '').trim() === 'inmueble.folio_real')
   const hasPartidaMissing = normalizedMissing.some((missing) => String(missing || '').trim() === 'inmueble.partidas')
   const hasDireccionMissing = normalizedMissing.some((missing) => String(missing || '').trim() === 'inmueble.direccion')
+  const hasSuperficieMissing = normalizedMissing.some((missing) => String(missing || '').trim() === 'inmueble.superficie')
 
   const sectionEvents: GMIAnswerEvent[] = []
   sectionEvents.push(
@@ -2164,6 +2183,13 @@ function detectDeterministicAnswerEvents(args: {
     if (event.type === 'ANSWER_FOLIO_REAL' && !hasFolioMissing) continue
     if (event.type === 'ANSWER_PARTIDA' && !hasPartidaMissing) continue
     if (event.type === 'ANSWER_ADDRESS_TEXT' && !hasDireccionMissing) continue
+    if (
+      event.type === 'ANSWER_LAND_AREA' &&
+      !hasSuperficieMissing &&
+      !/\b(terreno|superficie|m2|m²|metros?\s*cuadrados?)\b/i.test(message)
+    ) {
+      continue
+    }
     if (
       (event.type === 'ANSWER_PAYMENT_MODE' || event.type === 'ANSWER_CREDIT_INSTITUTION_TEXT') &&
       !normalizedMissing.some((missing) => ['existencia_credito', 'creditos[]'].includes(String(missing || '').trim())) &&
@@ -2276,6 +2302,11 @@ function compileDeterministicAnswerEvents(
       const text = String(event.payload?.text || '').trim()
       if (!text) continue
       pushUpdate('inmueble.direccion.calle', text, 'Inmueble event compilado: direccion segura')
+    }
+    if (event.type === 'ANSWER_LAND_AREA') {
+      const value = String(event.payload?.value || '').trim()
+      if (!value) continue
+      pushUpdate('inmueble.superficie', value, 'Inmueble event compilado: superficie')
     }
     if (event.type === 'ANSWER_PAYMENT_MODE') {
       const mode = String(event.payload?.mode || '').trim()
@@ -2461,7 +2492,7 @@ function extractAddressSegmentForCalle(message: string): string | null {
     const prefix = source.slice(0, marker).trim()
     if (!prefix) return null
     const fromLabel = extractLabeledValue(prefix, ['conj. habitacional', 'conj habitacional', 'direccion'])
-    const candidate = stripAddressTransitionTail(fromLabel || cleanName(prefix))
+    const candidate = stripAddressAreaTail(stripAddressTransitionTail(fromLabel || cleanName(prefix)))
     if (
       !candidate ||
       candidate.length < CALLE_SEGMENT_MIN_CHARS ||
@@ -2473,7 +2504,9 @@ function extractAddressSegmentForCalle(message: string): string | null {
     return candidate
   }
 
-  const direct = stripAddressTransitionTail(extractLabeledValue(source, ['conj. habitacional', 'conj habitacional', 'direccion']))
+  const direct = stripAddressAreaTail(
+    stripAddressTransitionTail(extractLabeledValue(source, ['conj. habitacional', 'conj habitacional', 'direccion']))
+  )
   if (!direct) return null
   if (
     direct.length < CALLE_SEGMENT_MIN_CHARS ||
@@ -2483,6 +2516,20 @@ function extractAddressSegmentForCalle(message: string): string | null {
     return null
   }
   return direct
+}
+
+function stripAddressAreaTail(value: string | null): string {
+  return String(value || '')
+    .replace(
+      /[.;,:-\s]*\bun?\s+terreno\s+de\s+\d+(?:[.,]\d+)?\s*(?:m2|m²|metros?\s*cuadrados?)\b\s*$/i,
+      ''
+    )
+    .replace(
+      /[.;,:-\s]*\bsuperficie\s+(?:total\s+)?(?:de\s+)?\d+(?:[.,]\d+)?\s*(?:m2|m²|metros?\s*cuadrados?)\b\s*$/i,
+      ''
+    )
+    .replace(/[.;,:-]+$/g, '')
+    .trim()
 }
 
 function stripAddressTransitionTail(value: string | null): string {

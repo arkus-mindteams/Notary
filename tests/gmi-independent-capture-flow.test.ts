@@ -613,6 +613,7 @@ test('GMIIndependentCaptureFlow captura folio + partida + direccion segura en me
       'PARTIDA NO: 6431741',
       'FOLIO REAL: 1782485',
       'CONJ. HABITACIONAL: CONDOMINIO D-2 CONSTRUIDO EN EL LOTE 43 DE DESARROLLO HABITACIONAL VISTA BUGAMBILIAS, DE ESTA CIUDAD.',
+      'un terreno de 200 m2',
       'EL VENDEDOR es INMOBILIARIA Y DESARROLLADORA ENCASA SOCIEDAD ANONIMA PROMOTORA DE INVERSION DE CAPITAL VARIABLE.',
       'EL COMPRADOR es JOSE GUADALUPE SANDOVAL MURILLO.',
       'Se tiene un gravamen hipotecario vigente y el pago sera con credito BANCO MERCANTIL DEL NORTE.',
@@ -627,7 +628,9 @@ test('GMIIndependentCaptureFlow captura folio + partida + direccion segura en me
     const calle = String(map.get('inmueble.direccion.calle') || '')
     assert.equal(map.get('inmueble.folio_real'), '1782485')
     assert.deepEqual(map.get('inmueble.partidas'), ['6431741'])
+    assert.equal(map.get('inmueble.superficie'), '200 m2')
     assert.equal(/\b(VENDEDOR|COMPRADOR|GRAVAMEN|CREDITO)\b/i.test(calle), false)
+    assert.equal(/\bterreno\s+de\s+200\s*m2\b/i.test(calle), false)
     assert.equal(calle.length >= 30, true)
     assert.equal(map.get('vendedores[0].tipo_persona'), 'persona_moral')
   } finally {

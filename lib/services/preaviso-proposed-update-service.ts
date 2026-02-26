@@ -33,6 +33,7 @@ const ALLOWED_PATHS = [
   /^inmueble\.partidas$/,
   /^inmueble\.direccion$/,
   /^inmueble\.direccion\.(calle|numero|colonia|municipio|estado|codigo_postal)$/,
+  /^inmueble\.superficie$/,
   /^gravamenes$/,
   /^gravamenes\[\d+\]\.institucion$/,
   /^gravamenes\[\d+\]\.cancelacion_confirmada$/,
