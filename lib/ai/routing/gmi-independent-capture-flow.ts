@@ -1814,7 +1814,7 @@ function sectionizeMessage(raw: string): GMIMessageSection[] {
   const markerPatterns: Array<{ type: Exclude<GMISectionType, 'unknown'>; regex: RegExp }> = [
     { type: 'buyer', regex: /\b(?:el\s+)?comprador(?:es)?\b/gi },
     { type: 'seller', regex: /\b(?:el\s+)?vendedor(?:es)?\b/gi },
-    { type: 'credito', regex: /\b(?:credito|cr[eé]dito|contado|forma\s+de\s+pago|pago)\b/gi },
+    { type: 'credito', regex: /\b(?:credito|cr[eé]dito|contado|forma\s+de\s+pago|pago|banco|institucion|instituci[oó]n)\b/gi },
     { type: 'gravamen', regex: /\b(?:gravamen|hipoteca|hipotecario)\b/gi },
     { type: 'inmueble', regex: /\b(?:folio\s*real|partida(?:s)?|direccion|direcci[oó]n|objeto\s+del\s+inmueble|conj\.?\s*habitacional)\b/gi },
   ]
@@ -2151,6 +2151,7 @@ function detectDeterministicAnswerEvents(args: {
 
   // Global fallback scan keeps compatibility when sectionizer misses explicit markers.
   if (sectionEvents.length === 0) {
+    sectionEvents.push(...extractCreditoSection({ type: 'credito', start: 0, end: message.length, raw: message, norm: normalizeForDetection(message) }))
     const buyerText = extractRoleTextSegment(message, 'comprador')
     if (buyerText && isLiteralPartyText(buyerText)) {
       sectionEvents.push({ type: 'ANSWER_BUYER_TEXT', payload: { text: buyerText, index: 0 } })
@@ -2192,8 +2193,11 @@ function detectDeterministicAnswerEvents(args: {
     }
     if (
       (event.type === 'ANSWER_PAYMENT_MODE' || event.type === 'ANSWER_CREDIT_INSTITUTION_TEXT') &&
-      !normalizedMissing.some((missing) => ['existencia_credito', 'creditos[]'].includes(String(missing || '').trim())) &&
-      !/\bcredito|cr[eé]dito|contado|pago\b/i.test(message)
+      !normalizedMissing.some((missing) => {
+        const normalized = String(missing || '').trim()
+        return ['existencia_credito', 'creditos[]'].includes(normalized) || /^creditos\[\d+\]\./.test(normalized)
+      }) &&
+      !/\bcredito|cr[eé]dito|contado|pago|banco|institucion|instituci[oó]n\b/i.test(message)
     ) {
       continue
     }

@@ -506,6 +506,59 @@ test('route remueve missing existencia_credito cuando mensaje indica credito exp
   assert.equal(Number(diagnostics.credito_events_count || 0) > 0, true)
 })
 
+test('ESTADO_5 captura institucion de credito con mensaje "la institucion es banco ..."', async () => {
+  let committedUpdates: Array<Record<string, unknown>> = []
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_5',
+      state_status: {},
+      required_missing: ['creditos[0].institucion'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 5, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    commitProposedUpdates: async (args: any) => {
+      committedUpdates = Array.isArray(args?.proposedUpdates) ? args.proposedUpdates : []
+      return {
+        applied_updates: committedUpdates.length,
+        data: {
+          creditos: [{ institucion: 'BANCO MERCANTIL DEL NORTE', participantes: [] }],
+        },
+        state: {
+          current_state: 'ESTADO_5',
+          state_status: {},
+          required_missing: [],
+          blocking_reasons: [],
+          wizard_state: { current_step: 5, total_steps: 6, steps: [], can_finalize: false },
+        },
+      }
+    },
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'la institucion es banco mercantil del norte',
+      uiContext: {},
+    })
+  )
+
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  const diagnostics = (json?.routing_diagnostics || {}) as Record<string, unknown>
+  const events = Array.isArray(diagnostics.events_detected) ? diagnostics.events_detected : []
+  assert.equal(diagnostics.router_ran, true)
+  assert.equal(events.includes('ANSWER_CREDIT_INSTITUTION_TEXT'), true)
+  assert.equal(String(diagnostics.commit_result || ''), 'applied')
+  assert.equal(
+    committedUpdates.some((u) => String((u as any)?.path || '') === 'creditos[0].institucion'),
+    true
+  )
+  const requiredMissing = Array.isArray(json?.state?.required_missing) ? json.state.required_missing : []
+  assert.equal(requiredMissing.includes('creditos[0].institucion'), false)
+})
+
 test('route forzado en ESTADO_6 aplica yes/no de cancelacion de gravamen y evita fallback', async () => {
   let committedUpdates: Array<Record<string, unknown>> = []
   const deps = createBaseDeps({
@@ -751,5 +804,182 @@ test('ESTADO_6 prioriza guidance de gravamen sobre inmueble cuando required_miss
   assert.equal(
     String(nextQuestions[0] || ''),
     'Confirma si la hipoteca se cancelara con esta operacion (si/no).'
+  )
+})
+
+test('ESTADO_6 con required_missing inmueble.existe_hipoteca pregunta cancelacion de hipoteca y no fallback de inmueble', async () => {
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_6',
+      state_status: {},
+      required_missing: ['inmueble.existe_hipoteca'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    runCapture: async () => ({
+      intent: 'UPDATE_STATE',
+      agent_used: 'GMIIndependentCaptureFlow',
+      answer: 'No pude mapear el mensaje a un campo faltante especifico.',
+      proposed_updates: [],
+      actions: [],
+      trace_id: 'trace-estado6-existe-hipoteca',
+    }),
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'ok',
+      uiContext: {},
+    })
+  )
+
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  const requestAction = (Array.isArray(json?.actions) ? json.actions : []).find(
+    (x: any) => String(x?.type || '') === 'request_missing_field'
+  )
+  const nextQuestions = Array.isArray(requestAction?.next_questions) ? requestAction.next_questions : []
+  assert.equal(String(nextQuestions[0] || ''), 'Confirma si la hipoteca se cancelara con esta operacion (si/no).')
+  assert.equal(String(nextQuestions[0] || '').includes('inmueble (partida/direccion)'), false)
+})
+
+test('ESTADO_6 con required_missing gravamenes[] pregunta institucion de gravamen y evita fallback generico', async () => {
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_6',
+      state_status: {},
+      required_missing: ['gravamenes[]'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    runCapture: async () => ({
+      intent: 'UPDATE_STATE',
+      agent_used: 'GMIIndependentCaptureFlow',
+      answer: 'No pude mapear el mensaje a un campo faltante especifico.',
+      proposed_updates: [],
+      actions: [],
+      trace_id: 'trace-estado6-gravamenes-array',
+    }),
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'ok',
+      uiContext: {},
+    })
+  )
+
+  assert.equal(res.status, 200)
+  const json = await res.json()
+  const requestAction = (Array.isArray(json?.actions) ? json.actions : []).find(
+    (x: any) => String(x?.type || '') === 'request_missing_field'
+  )
+  const nextQuestions = Array.isArray(requestAction?.next_questions) ? requestAction.next_questions : []
+  assert.equal(String(nextQuestions[0] || ''), 'Indica la institucion del gravamen o hipoteca.')
+  assert.equal(String(nextQuestions[0] || '').includes('Falta informacion del gravamen/hipoteca.'), false)
+})
+
+test('ESTADO_6 cuando short-router aplica inmueble.existe_hipoteca sincroniza cancelacion_confirmada para no repreguntar si/no', async () => {
+  let committedUpdates: Array<Record<string, unknown>> = []
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_6',
+      state_status: {},
+      required_missing: ['inmueble.existe_hipoteca'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    routeShortAnswer: async () => ({
+      outcome: 'applied',
+      selected_slot_id: 'slot:inmueble.existe_hipoteca',
+      confidence: 0.99,
+      normalized_value: 'si',
+      update: { op: 'set', path: 'inmueble.existe_hipoteca', value: true },
+    }),
+    commitProposedUpdates: async (args: any) => {
+      committedUpdates = Array.isArray(args?.proposedUpdates) ? args.proposedUpdates : []
+      return {
+        applied_updates: committedUpdates.length,
+        data: { inmueble: { existe_hipoteca: true }, gravamenes: [{ institucion: null, cancelacion_confirmada: true }] },
+        state: {
+          current_state: 'ESTADO_6',
+          state_status: {},
+          required_missing: ['gravamenes[]'],
+          blocking_reasons: [],
+          wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+        },
+      }
+    },
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'si',
+      uiContext: {},
+    })
+  )
+  assert.equal(res.status, 200)
+  assert.equal(
+    committedUpdates.some((u) => String((u as any)?.path || '') === 'gravamenes[0].cancelacion_confirmada'),
+    true
+  )
+})
+
+test('ESTADO_6 cuando short-router aplica gravamenes con texto convierte a gravamenes[0].institucion para preservar cancelacion', async () => {
+  let committedUpdates: Array<Record<string, unknown>> = []
+  const deps = createBaseDeps({
+    getTramiteStateSnapshot: async () => ({
+      current_state: 'ESTADO_6',
+      state_status: {},
+      required_missing: ['gravamenes[]'],
+      blocking_reasons: [],
+      wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+    }),
+    routeShortAnswer: async () => ({
+      outcome: 'applied',
+      selected_slot_id: 'slot:gravamenes',
+      confidence: 0.99,
+      normalized_value: 'infonavit',
+      update: { op: 'set', path: 'gravamenes', value: 'infonavit' },
+    }),
+    commitProposedUpdates: async (args: any) => {
+      committedUpdates = Array.isArray(args?.proposedUpdates) ? args.proposedUpdates : []
+      return {
+        applied_updates: committedUpdates.length,
+        data: { gravamenes: [{ institucion: 'infonavit', cancelacion_confirmada: true }] },
+        state: {
+          current_state: 'ESTADO_6',
+          state_status: {},
+          required_missing: [],
+          blocking_reasons: [],
+          wizard_state: { current_step: 6, total_steps: 6, steps: [], can_finalize: false },
+        },
+      }
+    },
+  })
+
+  const handler = createDirectChatGMIRouteHandler(deps as any)
+  const res = await handler(
+    buildRequest({
+      chatId: '11111111-1111-4111-8111-111111111111',
+      tramiteId: '22222222-2222-4222-8222-222222222222',
+      message: 'infonavit',
+      uiContext: {},
+    })
+  )
+  assert.equal(res.status, 200)
+  assert.equal(committedUpdates.some((u) => String((u as any)?.path || '') === 'gravamenes'), false)
+  assert.equal(
+    committedUpdates.some((u) => String((u as any)?.path || '') === 'gravamenes[0].institucion'),
+    true
   )
 })

@@ -321,11 +321,15 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
         })
 
         if (shortRoute.outcome === 'applied' && shortRoute.update) {
+          const normalizedShortUpdates = normalizeShortRouterUpdatesForState({
+            updates: [shortRoute.update as Record<string, unknown>],
+            currentState: String((stateSnapshot as any)?.current_state || ''),
+          })
           proposal = {
             intent: 'UPDATE_STATE',
             agent_used: 'GMIIndependentCaptureFlow',
             answer: 'Genere una propuesta de actualizacion alineada a una respuesta corta del usuario.',
-            proposed_updates: [shortRoute.update],
+            proposed_updates: normalizedShortUpdates,
             actions: [
               {
                 type: 'review_proposed_updates',
@@ -707,6 +711,48 @@ function inferAllowedValues(path: string): string[] | undefined {
   return undefined
 }
 
+function normalizeShortRouterUpdatesForState(args: {
+  updates: Array<Record<string, unknown>>
+  currentState: string
+}): Array<Record<string, unknown>> {
+  const updates = Array.isArray(args.updates) ? args.updates : []
+  const state = String(args.currentState || '').trim()
+  if (state !== 'ESTADO_6' || updates.length === 0) return updates
+
+  const out: Array<Record<string, unknown>> = []
+  const pushUnique = (candidate: Record<string, unknown>) => {
+    const path = GMIIndependentCaptureFlow.canonicalizePath(String(candidate?.path || ''))
+    if (!path) return
+    if (out.some((u) => GMIIndependentCaptureFlow.canonicalizePath(String(u?.path || '')) === path)) return
+    out.push(candidate)
+  }
+
+  for (const update of updates) {
+    const path = GMIIndependentCaptureFlow.canonicalizePath(String(update?.path || ''))
+    const value = (update as any)?.value
+    if (path === 'inmueble.existe_hipoteca' && typeof value === 'boolean') {
+      pushUnique(update)
+      pushUnique({
+        op: 'set',
+        path: 'gravamenes[0].cancelacion_confirmada',
+        value,
+        reason: 'Sincroniza confirmacion de cancelacion cuando ESTADO_6 usa respuesta si/no',
+      })
+      continue
+    }
+    if (path === 'gravamenes' && typeof value === 'string' && value.trim()) {
+      pushUnique({
+        ...(update || {}),
+        path: 'gravamenes[0].institucion',
+        value: value.trim(),
+      })
+      continue
+    }
+    pushUnique(update)
+  }
+  return out
+}
+
 function shouldForceEventRouter(args: { message: string; requiredMissing: string[] }): boolean {
   const required = Array.isArray(args.requiredMissing) ? args.requiredMissing : []
   const hasRelevantMissing = required.some((missing) => {
@@ -721,12 +767,13 @@ function shouldForceEventRouter(args: { message: string; requiredMissing: string
       normalized === 'inmueble.direccion' ||
       normalized === 'existencia_credito' ||
       normalized === 'creditos[]' ||
+      /^creditos\[\d+\]\./.test(normalized) ||
       normalized === 'gravamenes[]' ||
       normalized === 'gravamenes' ||
       /^gravamenes\[\d+\]\./.test(normalized)
     )
   })
-  const hasSemanticMarker = /\b(comprador|vendedor|conyuge|esposa|esposo|folio\s*real|partida|conj\.?\s*habitacional|credito|cr[eé]dito|contado|gravamen|hipoteca)\b/i.test(
+  const hasSemanticMarker = /\b(comprador|vendedor|conyuge|esposa|esposo|folio\s*real|partida|conj\.?\s*habitacional|credito|cr[eé]dito|contado|gravamen|hipoteca|banco|institucion|instituci[oó]n)\b/i.test(
     String(args.message || '')
   )
   return hasRelevantMissing || hasSemanticMarker
@@ -847,9 +894,13 @@ function mapMissingFieldToQuestion(field: string): string {
   if (normalized === 'inmueble.folio_real') return 'Indica cual folio real corresponde al inmueble de esta operacion.'
   if (normalized === 'inmueble.partidas') return 'Indica la partida registral del inmueble en el preaviso.'
   if (normalized === 'inmueble.direccion') return 'Indica la direccion/objeto del inmueble para esta operacion.'
+  if (normalized === 'inmueble.existe_hipoteca')
+    return 'Confirma si la hipoteca se cancelara con esta operacion (si/no).'
   if (normalized === 'existencia_credito') return 'Indica si la compra se hara con credito.'
   if (/^creditos\[\d+\]\.institucion$/.test(normalized)) return 'Indica la institucion del credito.'
   if (/^creditos\[\d+\]\.participantes\[\]$/.test(normalized)) return 'Indica quienes participan en el credito.'
+  if (normalized === 'gravamenes[]' || normalized === 'gravamenes')
+    return 'Indica la institucion del gravamen o hipoteca.'
   if (/^gravamenes\[\d+\]\.institucion$/.test(normalized)) return 'Indica la institucion del gravamen o hipoteca.'
   if (/^gravamenes\[\d+\]\.cancelacion_confirmada$/.test(normalized))
     return 'Confirma si la hipoteca se cancelara con esta operacion (si/no).'
@@ -880,9 +931,9 @@ function mapMissingFieldToQuestion(field: string): string {
 function mapMissingFieldToSafeCategoryMessage(field: string): string {
   const normalized = String(field || '').trim()
   if (!normalized) return 'Falta informacion obligatoria para continuar.'
-  if (normalized.startsWith('inmueble.')) return 'Falta informacion del inmueble (partida/direccion).'
   if (normalized.startsWith('gravamenes') || normalized === 'inmueble.existe_hipoteca')
     return 'Falta informacion del gravamen/hipoteca.'
+  if (normalized.startsWith('inmueble.')) return 'Falta informacion del inmueble (partida/direccion).'
   if (normalized.startsWith('compradores')) return 'Falta informacion del comprador.'
   if (normalized.startsWith('vendedores')) return 'Falta informacion del vendedor.'
   if (normalized.startsWith('creditos') || normalized === 'existencia_credito' || normalized.startsWith('actosNotariales.'))
@@ -971,3 +1022,4 @@ function buildGMISystemInstructions(args: {
 
   return instructions.join(' ')
 }
+
