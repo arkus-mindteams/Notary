@@ -146,3 +146,78 @@ Si se extiende el sistema:
 - Caso de nombre con acentos para comprador/cónyuge.
 - Verificación de que UX no muestra `compradores[]`/`vendedores[]`.
 
+
+---
+
+## 12) Sectioner determinista (nuevo)
+Se agrega una etapa determinista para mensajes largos/multi-campo:
+
+`normalizeForDetection(raw) -> sectionizeMessage(raw) -> extractores por seccion -> eventos -> compiler -> proposed_updates`
+
+### 12.1 Objetivo
+- Evitar perdida de entidades cuando el usuario pega un bloque completo.
+- Evitar que `inmueble.direccion.calle` se vuelva un catch-all.
+- Permitir extraer comprador/vendedor/credito/gravamen/inmueble sin depender de LLM.
+
+### 12.2 Normalizacion de deteccion
+`normalizeForDetection(raw)` se usa solo para detectar patrones:
+- lowercase
+- sin acentos
+- espacios colapsados
+
+Los valores persistidos se toman del `raw` (no del texto normalizado).
+
+### 12.3 Algoritmo de `sectionizeMessage(raw)`
+1. Detecta marcadores semanticos por regex (comprador, vendedor, credito, gravamen, hipoteca, folio real, partida, direccion, etc.).
+2. Ordena los marcadores por offset de aparicion.
+3. Corta spans `[start,end)` y tipa cada span:
+   - `buyer`
+   - `seller`
+   - `credito`
+   - `gravamen`
+   - `inmueble`
+   - `unknown`
+4. Si no hay marcadores, devuelve una sola seccion `unknown`.
+
+Salida canonica:
+`Array<{ type, start, end, raw, norm }>`
+
+### 12.4 Extractores deterministas por seccion
+- `buyer`: `ANSWER_BUYER_TEXT`, `ANSWER_BUYER_TYPE`, `ANSWER_SPOUSE_TEXT`
+- `seller`: `ANSWER_SELLER_TEXT`, `ANSWER_SELLER_TYPE`
+- `inmueble`: `ANSWER_FOLIO_REAL`, `ANSWER_PARTIDA`, `ANSWER_ADDRESS_TEXT`
+- `credito`: `ANSWER_PAYMENT_MODE`, `ANSWER_CREDIT_INSTITUTION_TEXT`
+- `gravamen`: `ANSWER_GRAVAMEN_EXISTS`, `ANSWER_GRAVAMEN_INSTITUTION_TEXT`, `ANSWER_GRAVAMEN_CANCELACION_CONFIRMADA`
+
+Los eventos se deduplican por tipo + payload normalizado.
+
+### 12.5 Anti-greedy de direccion
+- Se bloquea mapear calle con input completo cuando:
+  - hay marcadores semanticos de otros campos, o
+  - texto muy largo.
+- Si hay marcador de corte, se usa solo el prefijo de direccion seguro.
+- Se limpia cola de transicion (ej. `se tiene un`) antes de persistir.
+
+### 12.6 Integracion en `route.ts`
+- El event router puede forzarse por:
+  - `required_missing` relevante, o
+  - marcadores semanticos.
+- Si hay eventos compilados (`updates_compiled_count > 0`), se intentan antes del fallback heuristico.
+- Si el usuario pregunta faltantes (`ASK_MISSING`), no se intenta commit y se devuelve guidance.
+
+### 12.7 Observabilidad minima por turno
+`routing_diagnostics` incluye:
+- `router_ran`
+- `sections_detected` (solo type/start/end/length, sin texto)
+- `events_detected`
+- `updates_compiled_count`
+- `blocked_calle_reason`
+- `credito_events_count`
+- `gravamen_events_count`
+- `yesno_events_count`
+- `commit_result` (`applied|rejected|skipped_no_updates`)
+- `commit_reject_reason`
+
+### 12.8 Invariante de seguridad
+El sectioner y el compiler proponen cambios, pero la autoridad final sigue siendo:
+`PreavisoProposedUpdateService.commit`.
