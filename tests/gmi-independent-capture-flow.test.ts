@@ -357,3 +357,105 @@ test('GMIIndependentCaptureFlow resuelve participantes de credito cuando usuario
     else process.env.GMI_API_KEY = prevApiKey
   }
 })
+
+test('GMIIndependentCaptureFlow captura credito + institucion en el mismo mensaje cuando falta existencia_credito', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para inferencia local de credito + institucion')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'se realizara con un credito con banco mercantil del norte',
+      requiredMissing: ['existencia_credito'],
+      collectedData: {},
+    })
+
+    const map = toUpdateMap(result)
+    assert.equal(map.get('actosNotariales.aperturaCreditoComprador'), true)
+    assert.deepEqual(map.get('creditos'), [{ institucion: null, participantes: [] }])
+    assert.equal(map.get('creditos[0].institucion'), 'BANCO MERCANTIL DEL NORTE')
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow hace role-closure cuando hay 2 personas y usuario asigna conyuge con typo leve', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para role-closure determinista')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'armida es la conyuge',
+      requiredMissing: [
+        'compradores[]',
+        'compradores[].tipo_persona',
+        'compradores[].persona_fisica.conyuge.nombre',
+        'compradores[0].persona_fisica.estado_civil',
+      ],
+      collectedData: {
+        documentos: ['1763578352094_Actadematrimonio_1.pdf'],
+        personas_detectadas_no_clasificadas: [
+          { nombre: 'JOSE GUADALUPE MURILLO SANDOVAL' },
+          { nombre: 'ARMINDA FERRA JUSTO' },
+        ],
+      },
+    })
+
+    const map = toUpdateMap(result)
+    assert.equal(map.get('compradores[0].persona_fisica.conyuge.nombre'), 'ARMINDA FERRA JUSTO')
+    assert.equal(map.get('compradores[0].persona_fisica.nombre'), 'JOSE GUADALUPE MURILLO SANDOVAL')
+    assert.equal(map.get('compradores[0].tipo_persona'), 'persona_fisica')
+    assert.equal(map.get('compradores[0].persona_fisica.estado_civil'), 'casado')
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})
+
+test('GMIIndependentCaptureFlow no deduce comprador por cierre cuando hay mas de 2 personas detectadas', async () => {
+  const prevApiKey = process.env.GMI_API_KEY
+  const originalFetch = globalThis.fetch
+  process.env.GMI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => {
+    throw new Error('No deberia llamar red para prueba de no-cierre')
+  }) as any
+
+  try {
+    const flow = new GMIIndependentCaptureFlow()
+    const result = await flow.process({
+      message: 'arminda es la conyuge',
+      requiredMissing: [
+        'compradores[]',
+        'compradores[].tipo_persona',
+        'compradores[].persona_fisica.conyuge.nombre',
+      ],
+      collectedData: {
+        personas_detectadas_no_clasificadas: [
+          { nombre: 'JOSE GUADALUPE MURILLO SANDOVAL' },
+          { nombre: 'ARMINDA FERRA JUSTO' },
+          { nombre: 'OTRA PERSONA MAS' },
+        ],
+      },
+    })
+
+    const map = toUpdateMap(result)
+    assert.equal(map.get('compradores[0].persona_fisica.conyuge.nombre'), 'ARMINDA FERRA JUSTO')
+    assert.equal(map.has('compradores[0].persona_fisica.nombre'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (prevApiKey === undefined) delete process.env.GMI_API_KEY
+    else process.env.GMI_API_KEY = prevApiKey
+  }
+})

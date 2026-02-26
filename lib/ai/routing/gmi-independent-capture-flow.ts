@@ -878,6 +878,7 @@ function matchesMissing(path: string, missing: string): boolean {
   if (canonicalTarget === 'inmueble.direccion' && canonicalPath.startsWith('inmueble.direccion.')) return true
   if (canonicalTarget === 'gravamenes' && (canonicalPath === 'gravamenes' || canonicalPath === 'inmueble.existe_hipoteca')) return true
   if (canonicalTarget === 'inmueble.existe_hipoteca' && canonicalPath === 'gravamenes') return true
+  if (missing === 'existencia_credito' && (canonicalPath === 'creditos' || canonicalPath.startsWith('creditos['))) return true
   if (missing === 'creditos[]' && canonicalPath.startsWith('creditos[')) return true
   if (/^creditos\[\d+\]\./.test(missing) && canonicalPath.startsWith('creditos[')) {
     const missNorm = missing.replace(/\.participantes\[\]$/, '.participantes')
@@ -1077,9 +1078,11 @@ function inferHeuristicUpdates(args: {
   const requiredMissing = Array.isArray(args.requiredMissing) ? args.requiredMissing : []
   if (!message.trim()) return []
   const opportunistic = isLikelyStructuredCaptureMessage(message)
+  const peopleClassificationActive = hasPendingPeopleClassificationTask(requiredMissing, args.collectedData)
 
   const shouldCapturePath = (path: string): boolean => {
     if (requiredMissing.some((missing) => matchesMissing(path, missing))) return true
+    if (peopleClassificationActive && isPeopleClassificationPath(path)) return true
     if (!opportunistic) return false
     return isAllowedPath(path)
   }
@@ -1117,7 +1120,8 @@ function inferHeuristicUpdates(args: {
     }
   }
 
-  const paymentModeHint = inferShortPaymentModeHint(message)
+  const paymentModeHint = peopleClassificationActive ? null : inferShortPaymentModeHint(message)
+  const institutionHint = peopleClassificationActive ? null : inferCreditInstitutionFromMessage(message)
   const estadoCivilHint = inferShortEstadoCivilHint(message)
   const roleAssignment = resolveDetectedPersonRoleAssignment({
     message,
@@ -1181,6 +1185,38 @@ function inferHeuristicUpdates(args: {
           reason: 'Estado civil inferido por asignacion explicita de conyuge',
         })
       }
+
+      const roleClosure = resolveRoleClosureFromConyugeAssignment({
+        assignedConyugeName: roleAssignment.personName,
+        requiredMissing,
+        collectedData: args.collectedData,
+      })
+      if (roleClosure) {
+        if (shouldCapturePath('compradores[0].tipo_persona')) {
+          updates.push({
+            op: 'set',
+            path: 'compradores[0].tipo_persona',
+            value: 'persona_fisica',
+            reason: 'Tipo de comprador inferido por cierre determinista de roles',
+          })
+        }
+        if (shouldCapturePath('compradores[0].persona_fisica.nombre')) {
+          updates.push({
+            op: 'set',
+            path: 'compradores[0].persona_fisica.nombre',
+            value: roleClosure.buyerName,
+            reason: 'Comprador inferido por cierre determinista de roles (2 personas detectadas)',
+          })
+        }
+        if (roleClosure.forceCasado && shouldCapturePath('compradores[0].persona_fisica.estado_civil')) {
+          updates.push({
+            op: 'set',
+            path: 'compradores[0].persona_fisica.estado_civil',
+            value: 'casado',
+            reason: 'Estado civil inferido por evidencia de acta de matrimonio y cierre de roles',
+          })
+        }
+      }
     }
   }
 
@@ -1217,6 +1253,14 @@ function inferHeuristicUpdates(args: {
         path: 'actosNotariales.aperturaCreditoComprador',
         value: true,
         reason: 'Modo de pago con credito capturado por respuesta corta',
+      })
+    }
+    if (institutionHint && shouldCapturePath('creditos[0].institucion')) {
+      updates.push({
+        op: 'set',
+        path: 'creditos[0].institucion',
+        value: institutionHint,
+        reason: 'Institucion del credito detectada en el mismo mensaje de confirmacion de credito',
       })
     }
   }
@@ -1260,7 +1304,9 @@ function inferHeuristicUpdates(args: {
     }
   }
 
-  const creditParticipantsFromContext = resolveCreditParticipantsFromContext(message, args.collectedData)
+  const creditParticipantsFromContext = peopleClassificationActive
+    ? null
+    : resolveCreditParticipantsFromContext(message, args.collectedData)
   if (creditParticipantsFromContext && shouldCapturePath('creditos[0].participantes')) {
     updates.push({
       op: 'set',
@@ -1431,7 +1477,16 @@ function inferHeuristicUpdates(args: {
     }
   }
 
-  const gravamen = inferGravamenAndCreditSemantics(message)
+  const gravamen = peopleClassificationActive
+    ? {
+        hasSignal: false,
+        existeHipoteca: null,
+        gravamenes: null,
+        cancelacionCreditoVendedor: null,
+        aperturaCreditoComprador: null,
+        hasContadoSignal: false,
+      }
+    : inferGravamenAndCreditSemantics(message)
   if (gravamen.hasSignal) {
     if (shouldCapturePath('inmueble.existe_hipoteca') && gravamen.existeHipoteca !== null) {
       updates.push({
@@ -1616,6 +1671,167 @@ function cleanName(value: string): string {
     .replace(/[.;,:]+$/, '')
 }
 
+function normalizeLooseText(value: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function getSemanticTokens(value: string): string[] {
+  const stopwords = new Set([
+    'el',
+    'la',
+    'los',
+    'las',
+    'un',
+    'una',
+    'de',
+    'del',
+    'y',
+    'es',
+    'como',
+    'con',
+    'sin',
+    'al',
+    'por',
+    'para',
+    'que',
+    'su',
+    'esposa',
+    'esposo',
+    'conyuge',
+    'conyugue',
+    'comprador',
+    'vendedor',
+  ])
+  return normalizeLooseText(value)
+    .split(' ')
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3 && !stopwords.has(token))
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  const x = String(a || '')
+  const y = String(b || '')
+  if (x === y) return 0
+  if (!x.length) return y.length
+  if (!y.length) return x.length
+  const dp: number[] = Array.from({ length: y.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= x.length; i += 1) {
+    let prev = dp[0]
+    dp[0] = i
+    for (let j = 1; j <= y.length; j += 1) {
+      const temp = dp[j]
+      const cost = x[i - 1] === y[j - 1] ? 0 : 1
+      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + cost)
+      prev = temp
+    }
+  }
+  return dp[y.length]
+}
+
+function fuzzyTokenMatch(a: string, b: string): boolean {
+  if (!a || !b) return false
+  if (a === b) return true
+  const minLen = Math.min(a.length, b.length)
+  if (minLen < 4) return false
+  const threshold = minLen >= 7 ? 2 : 1
+  return levenshteinDistance(a, b) <= threshold
+}
+
+function scorePersonMention(message: string, personName: string): number {
+  const messageNorm = normalizeLooseText(message)
+  const personNorm = normalizeLooseText(personName)
+  if (!messageNorm || !personNorm) return 0
+  if (messageNorm.includes(personNorm)) return 100
+
+  const messageTokens = getSemanticTokens(messageNorm)
+  const personTokens = getSemanticTokens(personNorm)
+  if (messageTokens.length === 0 || personTokens.length === 0) return 0
+
+  let exact = 0
+  let fuzzy = 0
+  for (const personToken of personTokens) {
+    if (messageTokens.includes(personToken)) {
+      exact += 1
+      continue
+    }
+    if (messageTokens.some((msgToken) => fuzzyTokenMatch(personToken, msgToken))) {
+      fuzzy += 1
+    }
+  }
+  return exact * 3 + fuzzy * 2
+}
+
+function findBestDetectedPersonByMessage(message: string, detected: Array<{ nombre: string }>): { nombre: string } | null {
+  if (!detected.length) return null
+  const scored = detected
+    .map((person) => ({ person, score: scorePersonMention(message, person.nombre) }))
+    .sort((a, b) => b.score - a.score)
+
+  const top = scored[0]
+  if (!top || top.score <= 0) return null
+  const second = scored[1]
+  if (second && second.score === top.score) return null
+  return top.person
+}
+
+function resolveRoleClosureFromConyugeAssignment(args: {
+  assignedConyugeName: string
+  requiredMissing: string[]
+  collectedData: Record<string, unknown>
+}): { buyerName: string; forceCasado: boolean } | null {
+  const detected = extractUnclassifiedPeople(args.collectedData)
+  if (detected.length !== 2) return null
+
+  const buyerPaths = [
+    'compradores[]',
+    'compradores[].nombre',
+    'compradores[0].persona_fisica.nombre',
+    'compradores[].tipo_persona',
+    'compradores[0].tipo_persona',
+  ]
+  const sellerPaths = [
+    'vendedores[]',
+    'vendedores[].nombre',
+    'vendedores[0].persona_fisica.nombre',
+    'vendedores[].tipo_persona',
+    'vendedores[0].tipo_persona',
+  ]
+  const hasBuyerMissing = args.requiredMissing.some((missing) => buyerPaths.some((path) => matchesMissing(path, missing)))
+  const hasSellerMissing = args.requiredMissing.some((missing) => sellerPaths.some((path) => matchesMissing(path, missing)))
+  if (!hasBuyerMissing || hasSellerMissing) return null
+
+  const assigned =
+    findBestDetectedPersonByMessage(args.assignedConyugeName, detected) ||
+    detected.find(
+      (person) =>
+        normalizeLooseText(person.nombre) === normalizeLooseText(args.assignedConyugeName)
+    ) ||
+    null
+  if (!assigned) return null
+
+  const counterpart = detected.find((person) => person.nombre !== assigned.nombre)
+  if (!counterpart) return null
+
+  const forceCasado = hasMarriageActEvidence(args.collectedData)
+  return { buyerName: counterpart.nombre, forceCasado }
+}
+
+function hasMarriageActEvidence(collectedData: Record<string, unknown>): boolean {
+  const docs = Array.isArray((collectedData as any)?.documentos)
+    ? ((collectedData as any).documentos as unknown[])
+    : []
+  return docs.some((doc) => {
+    const name = normalizeLooseText(String(doc || ''))
+    return name.includes('acta') && name.includes('matrimonio')
+  })
+}
+
 function inferPartyType(value: string): 'persona_fisica' | 'persona_moral' {
   const upper = String(value || '').toUpperCase()
   if (
@@ -1651,9 +1867,59 @@ function inferShortPaymentModeHint(message: string): 'contado' | 'credito' | nul
 
   if (/^(compra )?de contado$/.test(normalized)) return 'contado'
   if (/^(contado|es contado|sera contado|sera de contado|si, contado)$/.test(normalized)) return 'contado'
+  if (/\b(de contado|sin credito|sin financiamiento|recursos propios)\b/.test(normalized)) return 'contado'
 
   if (/^(con credito|credito|sera con credito|si, con credito|si credito)$/.test(normalized)) return 'credito'
+  if (/\b(con credito|credito bancario|financiamiento bancario|mediante credito|a credito)\b/.test(normalized)) return 'credito'
   return null
+}
+
+function inferCreditInstitutionFromMessage(message: string): string | null {
+  const raw = String(message || '')
+  if (!raw.trim()) return null
+
+  const normalizeInstitution = (input: string): string | null => {
+    const cleaned = String(input || '')
+      .replace(/\s+/g, ' ')
+      .replace(/[.,;:]+$/g, '')
+      .trim()
+    if (!cleaned) return null
+    return cleaned.toUpperCase()
+  }
+
+  const commonBanks = [
+    'BANCO MERCANTIL DEL NORTE',
+    'BANORTE',
+    'BBVA',
+    'BANAMEX',
+    'SANTANDER',
+    'HSBC',
+    'SCOTIABANK',
+    'BANCO AZTECA',
+    'BANCO DEL BAJIO',
+    'INBURSA',
+    'AFIRME',
+    'FOVISSSTE',
+    'INFONAVIT',
+  ]
+  const normalized = raw
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  for (const bank of commonBanks) {
+    if (normalized.includes(bank)) return bank
+  }
+
+  const withLabel =
+    raw.match(/\b(?:banco|institucion|instituci[oó]n|financiamiento)\b\s*(?:de|del|con)?\s*[:\-]?\s*([A-Za-z0-9&.\s]{3,120})/i) ||
+    raw.match(/\bcon\s+credito\s+con\s+([A-Za-z0-9&.\s]{3,120})/i) ||
+    raw.match(/\bcredito\s+con\s+([A-Za-z0-9&.\s]{3,120})/i)
+  if (!withLabel?.[1]) return null
+
+  const candidate = withLabel[1]
+    .split(/\b(?:acreditado|coacreditado|participa|participantes|comprador|vendedor)\b/i)[0]
+    .trim()
+  return normalizeInstitution(candidate)
 }
 
 function inferShortEstadoCivilHint(
@@ -1682,7 +1948,14 @@ function inferShortNameCandidate(message: string): string | null {
   if (/\d/.test(raw)) return null
   if (/[:#\-]/.test(raw)) return null
   if (/[,.]/.test(raw)) return null
-  if (/\b(fisica|moral|credito|contado|folio|partida|casad[oa]|solter[oa]|gravamen|hipoteca)\b/i.test(raw)) {
+  if (
+    /\b(fisica|moral|credito|contado|folio|partida|casad[oa]|solter[oa]|gravamen|hipoteca|conyuge|conyugue|esposa|esposo|comprador|vendedor)\b/i.test(
+      raw
+    )
+  ) {
+    return null
+  }
+  if (/\bes\s+(el|la|un|una)\b/i.test(raw)) {
     return null
   }
   if (!/^[\p{L}'\s]+$/u.test(raw)) return null
@@ -1709,7 +1982,7 @@ function resolveDetectedPersonRoleAssignment(args: {
 
   const hasBuyer = /\bcomprador(?:es)?\b/.test(normalized)
   const hasSeller = /\bvendedor(?:es)?\b/.test(normalized)
-  const hasSpouse = /\b(conyuge|esposa|esposo)\b/.test(normalized)
+  const hasSpouse = /\b(conyuge|conyugue|esposa|esposo)\b/.test(normalized)
 
   let role: 'comprador' | 'vendedor' | 'conyuge' | null = null
   if (hasSpouse) role = 'conyuge'
@@ -1726,7 +1999,7 @@ function resolveDetectedPersonRoleAssignment(args: {
     .replace(/[\u0300-\u036f]/g, '')
 
   if (!role && /^(es|si|correcto|ok)\b/.test(normalized)) {
-    if (/\bconyuge|conyuge|esposa|esposo\b/.test(pendingText) || /\bconyuge\b/.test(lastIntent)) role = 'conyuge'
+    if (/\b(conyuge|conyugue|esposa|esposo)\b/.test(pendingText) || /\bconyug(?:e|ue)\b/.test(lastIntent)) role = 'conyuge'
     else if (/\bcomprador\b/.test(pendingText) || /\bcomprador\b/.test(lastIntent)) role = 'comprador'
     else if (/\bvendedor\b/.test(pendingText) || /\bvendedor\b/.test(lastIntent)) role = 'vendedor'
   }
@@ -1740,17 +2013,26 @@ function resolveDetectedPersonRoleAssignment(args: {
     return { role, personName: detected[0].nombre }
   }
 
-  const messageNorm = normalized
-  const matched = detected.filter((p) => {
-    const personNorm = String(p.nombre || '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-    return personNorm && messageNorm.includes(personNorm)
+  // Match determinista de frases tipo "ARMINDA es la conyuge" (orden libre)
+  const explicitRoleWithName = detected.find((p) => {
+    const personNorm = normalizeLooseText(String(p.nombre || ''))
+    if (!personNorm) return false
+    if (!normalized.includes(personNorm)) return false
+    if (role === 'conyuge') return /\b(conyuge|conyugue|esposa|esposo)\b/.test(normalized)
+    if (role === 'comprador') return /\bcomprador(?:es)?\b/.test(normalized)
+    if (role === 'vendedor') return /\bvendedor(?:es)?\b/.test(normalized)
+    return false
   })
-  if (matched.length === 1) return { role, personName: matched[0].nombre }
+  if (explicitRoleWithName) return { role, personName: explicitRoleWithName.nombre }
+
+  const exactMatched = detected.filter((p) => {
+    const personNorm = normalizeLooseText(String(p.nombre || ''))
+    return personNorm && normalized.includes(personNorm)
+  })
+  if (exactMatched.length === 1) return { role, personName: exactMatched[0].nombre }
+
+  const bestMatch = findBestDetectedPersonByMessage(args.message, detected)
+  if (bestMatch) return { role, personName: bestMatch.nombre }
 
   return null
 }
@@ -1914,15 +2196,56 @@ function extractCouplePeople(collectedData: Record<string, unknown>): Array<{ no
 }
 
 function extractUnclassifiedPeople(collectedData: Record<string, unknown>): Array<{ nombre: string }> {
-  const raw = Array.isArray((collectedData as any)?.personas_detectadas_no_clasificadas)
+  const fromPending =
+    Array.isArray((collectedData as any)?._document_people_pending?.persons)
+      ? ((collectedData as any)._document_people_pending.persons as any[])
+      : []
+  const fromUnclassified = Array.isArray((collectedData as any)?.personas_detectadas_no_clasificadas)
     ? ((collectedData as any).personas_detectadas_no_clasificadas as any[])
     : []
-  return raw
-    .map((item) => {
-      const nombre = cleanName(String(item?.nombre || item?.name || ''))
-      return nombre ? { nombre } : null
-    })
-    .filter(Boolean) as Array<{ nombre: string }>
+  const fromSpouses = Array.isArray((collectedData as any)?.conyuges_detectados)
+    ? ((collectedData as any).conyuges_detectados as any[])
+    : []
+  const seen = new Set<string>()
+  const result: Array<{ nombre: string }> = []
+  for (const item of [...fromPending, ...fromUnclassified, ...fromSpouses]) {
+    const nombre = cleanName(String(item?.nombre || item?.name || ''))
+    const key = normalizeLooseText(nombre)
+    if (!nombre || !key || seen.has(key)) continue
+    seen.add(key)
+    result.push({ nombre })
+  }
+  return result
+}
+
+function isPeopleClassificationPath(path: string): boolean {
+  const canonical = canonicalizePath(String(path || ''))
+  return (
+    canonical === 'compradores[0].persona_fisica.nombre' ||
+    canonical === 'compradores[0].tipo_persona' ||
+    canonical === 'compradores[0].persona_fisica.conyuge.nombre' ||
+    canonical === 'compradores[0].persona_fisica.estado_civil' ||
+    canonical === 'vendedores[0].persona_fisica.nombre' ||
+    canonical === 'vendedores[0].tipo_persona'
+  )
+}
+
+function hasPendingPeopleClassificationTask(requiredMissing: string[], collectedData: Record<string, unknown>): boolean {
+  const pendingPeople = extractUnclassifiedPeople(collectedData)
+  if (pendingPeople.length === 0) return false
+  return (requiredMissing || []).some((missing) => {
+    const normalized = String(missing || '').trim()
+    return (
+      matchesMissing('compradores[]', normalized) ||
+      matchesMissing('compradores[0].persona_fisica.nombre', normalized) ||
+      matchesMissing('compradores[0].tipo_persona', normalized) ||
+      matchesMissing('compradores[0].persona_fisica.conyuge.nombre', normalized) ||
+      matchesMissing('compradores[0].persona_fisica.estado_civil', normalized) ||
+      matchesMissing('vendedores[]', normalized) ||
+      matchesMissing('vendedores[0].persona_fisica.nombre', normalized) ||
+      matchesMissing('vendedores[0].tipo_persona', normalized)
+    )
+  })
 }
 
 function inferGravamenAndCreditSemantics(message: string): {

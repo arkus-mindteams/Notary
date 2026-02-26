@@ -696,7 +696,9 @@ export function computePreavisoState(context?: any): PreavisoStateComputation {
   }
 
   if (currentState === 'ESTADO_6') {
-    if (existeHipoteca === true && gravamenes.length === 0) {
+    if (existeHipoteca === null) {
+      requiredMissing.push('inmueble.existe_hipoteca')
+    } else if (existeHipoteca === true && gravamenes.length === 0) {
       requiredMissing.push('gravamenes[]')
     } else if (gravamenes.length > 0) {
       gravamenes.forEach((gravamen: any, index: number) => {

@@ -175,23 +175,34 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
       ])
       const requiredMissing = Array.isArray(stateSnapshot.required_missing) ? stateSnapshot.required_missing : []
       const blockingReasons = Array.isArray(stateSnapshot.blocking_reasons) ? stateSnapshot.blocking_reasons : []
+      const stickyPeopleMissing = getStickyPeopleClassificationMissing(requiredMissing, tramiteData)
       const folioCandidates = Array.isArray((tramiteData as any)?.folios?.candidates)
         ? ((tramiteData as any).folios.candidates as any[])
             .map((c: any) => String(c?.folio || '').trim())
             .filter(Boolean)
             .slice(0, 20)
         : []
-      const pendingQuestions = requiredMissing.slice(0, 4).map((f) => mapMissingFieldToQuestion(f))
+      const activeMissingForQuestions = stickyPeopleMissing.length > 0 ? stickyPeopleMissing : requiredMissing
+      const pendingQuestions = activeMissingForQuestions.slice(0, 4).map((f) => mapMissingFieldToQuestion(f))
       const systemInstructions = buildGMISystemInstructions({
-        requiredMissing,
+        requiredMissing: activeMissingForQuestions,
         blockingReasons,
         folioCandidates,
       })
-      const candidateSlots = buildCandidateSlots({
+      let candidateSlots = buildCandidateSlots({
         requiredMissing,
         recentMessages,
         collectedData: tramiteData,
+        prioritizePeopleClassification: stickyPeopleMissing.length > 0,
       })
+      if (candidateSlots.length === 0 && stickyPeopleMissing.length > 0) {
+        candidateSlots = buildCandidateSlots({
+          requiredMissing,
+          recentMessages,
+          collectedData: tramiteData,
+          prioritizePeopleClassification: false,
+        })
+      }
       const shortAnswerMeta = detectShortAnswerSignal(body.message, candidateSlots.length)
       console.log('[chat-gmi][short-router] detect', {
         token_count: shortAnswerMeta.token_count,
@@ -320,13 +331,18 @@ export function createDirectChatGMIRouteHandler(deps: RouteDeps = defaultDeps) {
       const blockingReasonsFinal = Array.isArray((finalState as any).blocking_reasons)
         ? ((finalState as any).blocking_reasons as string[])
         : []
+      const finalData = (responsePayload as any)?.data && typeof (responsePayload as any).data === 'object'
+        ? ((responsePayload as any).data as Record<string, unknown>)
+        : {}
+      const stickyPeopleMissingFinal = getStickyPeopleClassificationMissing(requiredMissingFinal, finalData)
+      const activeMissingForGuidance = stickyPeopleMissingFinal.length > 0 ? stickyPeopleMissingFinal : requiredMissingFinal
       const hasShortClarifyAction = Array.isArray((responsePayload as any).actions)
         ? ((responsePayload as any).actions as any[]).some(
             (action) => String(action?.reason || '') === 'short_answer_ambiguous'
           )
         : false
-      if (!hasShortClarifyAction && (requiredMissingFinal.length > 0 || blockingReasonsFinal.length > 0)) {
-        const guidance = buildMissingDataGuidance(requiredMissingFinal, blockingReasonsFinal)
+      if (!hasShortClarifyAction && (activeMissingForGuidance.length > 0 || blockingReasonsFinal.length > 0)) {
+        const guidance = buildMissingDataGuidance(activeMissingForGuidance, blockingReasonsFinal)
         responsePayload = {
           ...responsePayload,
           answer: `${String((responsePayload as any).answer || '').trim()}\n\n${guidance.message}`.trim(),
@@ -383,6 +399,7 @@ function buildCandidateSlots(args: {
   requiredMissing: string[]
   recentMessages: Array<{ id?: string; role: string; content: string; metadata?: Record<string, unknown> | null; created_at: string }>
   collectedData: Record<string, unknown>
+  prioritizePeopleClassification?: boolean
 }): GMICandidateSlot[] {
   const slots = new Map<string, GMICandidateSlot>()
   const recent = Array.isArray(args.recentMessages) ? args.recentMessages.slice(-24) : []
@@ -404,6 +421,7 @@ function buildCandidateSlots(args: {
         if (!path) continue
         const canonicalPath = GMIIndependentCaptureFlow.canonicalizePath(path)
         if (!GMIIndependentCaptureFlow.isAllowedPath(canonicalPath)) continue
+        if (args.prioritizePeopleClassification && !isPeopleClassificationPath(canonicalPath)) continue
         if (hasMeaningfulValue(getPathValue(args.collectedData || {}, canonicalPath))) continue
         const slotId = `slot:${canonicalPath}`
         if (!slots.has(slotId)) {
@@ -425,6 +443,7 @@ function buildCandidateSlots(args: {
     if (!path) continue
     const canonicalPath = GMIIndependentCaptureFlow.canonicalizePath(path)
     if (!GMIIndependentCaptureFlow.isAllowedPath(canonicalPath)) continue
+    if (args.prioritizePeopleClassification && !isPeopleClassificationPath(canonicalPath)) continue
     if (hasMeaningfulValue(getPathValue(args.collectedData || {}, canonicalPath))) continue
     const slotId = `slot:${canonicalPath}`
     if (!slots.has(slotId)) {
@@ -442,6 +461,7 @@ function buildCandidateSlots(args: {
   for (const globalSlot of knownGlobal) {
     const canonicalPath = GMIIndependentCaptureFlow.canonicalizePath(globalSlot.path)
     if (!GMIIndependentCaptureFlow.isAllowedPath(canonicalPath)) continue
+    if (args.prioritizePeopleClassification && !isPeopleClassificationPath(canonicalPath)) continue
     if (hasMeaningfulValue(getPathValue(args.collectedData || {}, canonicalPath))) continue
     const slotId = `slot:${canonicalPath}`
     if (!slots.has(slotId)) {
@@ -462,6 +482,9 @@ function buildCandidateSlots(args: {
     global: 1,
   }
   return Array.from(slots.values()).sort((a, b) => {
+    const aPeople = isPeopleClassificationPath(a.path) ? 1 : 0
+    const bPeople = isPeopleClassificationPath(b.path) ? 1 : 0
+    if (bPeople !== aPeople) return bPeople - aPeople
     const aTs = Date.parse(String(a.asked_at || '')) || 0
     const bTs = Date.parse(String(b.asked_at || '')) || 0
     if (bTs !== aTs) return bTs - aTs
@@ -537,6 +560,59 @@ function detectShortAnswerSignal(message: string, candidateSlotsCount: number): 
     return { detected: true, token_count: tokenCount, reason: 'token_threshold' }
   }
   return { detected: false, token_count: tokenCount, reason: 'not_short_enough' }
+}
+
+function isPeopleClassificationPath(path: string): boolean {
+  const p = GMIIndependentCaptureFlow.canonicalizePath(String(path || ''))
+  return (
+    p === 'compradores[0].persona_fisica.nombre' ||
+    p === 'compradores[0].tipo_persona' ||
+    p === 'compradores[0].persona_fisica.conyuge.nombre' ||
+    p === 'compradores[0].persona_fisica.estado_civil' ||
+    p === 'vendedores[0].persona_fisica.nombre' ||
+    p === 'vendedores[0].tipo_persona'
+  )
+}
+
+function extractPendingPeopleNames(data: Record<string, unknown>): string[] {
+  const fromPending = Array.isArray((data as any)?._document_people_pending?.persons)
+    ? ((data as any)._document_people_pending.persons as any[])
+    : []
+  const fromUnclassified = Array.isArray((data as any)?.personas_detectadas_no_clasificadas)
+    ? ((data as any).personas_detectadas_no_clasificadas as any[])
+    : []
+  const fromSpouses = Array.isArray((data as any)?.conyuges_detectados)
+    ? ((data as any).conyuges_detectados as any[])
+    : []
+  const normalize = (value: string) =>
+    String(value || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const names: string[] = []
+  const seen = new Set<string>()
+  for (const item of [...fromPending, ...fromUnclassified, ...fromSpouses]) {
+    const name = String(item?.name || item?.nombre || '').trim()
+    const key = normalize(name)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    names.push(name)
+  }
+  return names
+}
+
+function isPeopleClassificationMissing(missing: string): boolean {
+  const target = GMIIndependentCaptureFlow.targetPathFromMissing(String(missing || ''))
+  return target ? isPeopleClassificationPath(target) : false
+}
+
+function getStickyPeopleClassificationMissing(requiredMissing: string[], data: Record<string, unknown>): string[] {
+  const pendingPeople = extractPendingPeopleNames(data)
+  if (pendingPeople.length === 0) return []
+  const peopleMissing = (requiredMissing || []).filter((missing) => isPeopleClassificationMissing(missing))
+  return peopleMissing
 }
 
 function mapMissingFieldToQuestion(field: string): string {
