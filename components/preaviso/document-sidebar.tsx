@@ -311,13 +311,6 @@ export function DocumentSidebar({
                                                 : String(data.inmueble.superficie)
                                         }</div>
                                     )}
-                                    {data.inmueble?.valor && (
-                                        <div><span className="font-medium">Valor:</span> {
-                                            typeof data.inmueble.valor === 'string'
-                                                ? data.inmueble.valor
-                                                : String(data.inmueble.valor)
-                                        }</div>
-                                    )}
                                     {!data.inmueble?.folio_real && (!data.inmueble?.partidas || data.inmueble.partidas.length === 0) && (
                                         <div className="text-gray-400 italic">Pendiente</div>
                                     )}
