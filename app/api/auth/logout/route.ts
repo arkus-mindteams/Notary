@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClientClient } from '@/lib/supabase'
 
+const ROLE_COOKIE_NAME = 'sb-user-role'
+
 export async function POST(req: Request) {
   try {
     const supabase = createClientClient()
@@ -13,7 +15,9 @@ export async function POST(req: Request) {
       )
     }
 
-    return NextResponse.json({ success: true })
+    const res = NextResponse.json({ success: true })
+    res.headers.set('Set-Cookie', `${ROLE_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`)
+    return res
   } catch (error: any) {
     console.error('[api/auth/logout] Error:', error)
     return NextResponse.json(

@@ -1,18 +1,35 @@
 import { NextResponse } from 'next/server'
 import { TramiteService } from '@/lib/services/tramite-service'
 import { TramiteDocumentoService } from '@/lib/services/tramite-documento-service'
+import { getAuthContext } from '@/lib/auth/authContext'
+import { listVisibleCases, canReadCase } from '@/lib/authz/rebac'
 import { getCurrentUserFromRequest } from '@/lib/utils/auth-helper'
 import type { CreateTramiteRequest, UpdateTramiteRequest, TramiteConDocumentos } from '@/lib/types/expediente-types'
 
 export async function GET(req: Request) {
   try {
+    const ctx = await getAuthContext(req)
+    if (!ctx) {
+      return NextResponse.json(
+        { error: 'unauthorized', message: 'No autenticado' },
+        { status: 401 }
+      )
+    }
+
     const { searchParams } = new URL(req.url)
     const id = searchParams.get('id')
     const compradorId = searchParams.get('compradorId')
     const tipo = searchParams.get('tipo')
 
-    // Si hay ID, obtener trámite específico con documentos
+    // Si hay ID, obtener trámite específico con documentos (ReBAC: solo si puede leer)
     if (id) {
+      const allowed = await canReadCase(ctx, id)
+      if (!allowed) {
+        return NextResponse.json(
+          { error: 'not_found', message: 'Trámite no encontrado' },
+          { status: 404 }
+        )
+      }
       const tramite = await TramiteService.findTramiteById(id)
       if (!tramite) {
         return NextResponse.json(
@@ -30,19 +47,20 @@ export async function GET(req: Request) {
       return NextResponse.json(tramiteConDocumentos)
     }
 
-    // Si hay compradorId, listar trámites del comprador
+    // Si hay compradorId, listar trámites del comprador (solo los visibles por ReBAC)
     if (compradorId) {
       let tramites
-      
       if (tipo) {
         tramites = await TramiteService.findTramitesByTipo(compradorId, tipo as any)
       } else {
         tramites = await TramiteService.findTramitesByCompradorId(compradorId)
       }
 
-      // Obtener documentos de cada trámite
+      const visibleSet = new Set((await listVisibleCases(ctx)).map((t) => t.id))
+      const filtered = tramites.filter((t) => visibleSet.has(t.id))
+
       const tramitesConDocumentos = await Promise.all(
-        tramites.map(async (tramite) => {
+        filtered.map(async (tramite) => {
           const documentos = await TramiteDocumentoService.listDocumentosPorTramite(tramite.id)
           return {
             ...tramite,

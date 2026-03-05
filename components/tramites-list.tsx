@@ -4,15 +4,17 @@ import { useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { 
-  FileText, 
-  Calendar, 
-  CheckCircle2, 
-  Clock, 
+import {
+  FileText,
+  Calendar,
+  CheckCircle2,
+  Clock,
   Archive,
   Eye,
-  Download
+  Download,
 } from 'lucide-react'
+import { useAuth } from '@/lib/auth-context'
+import { TramiteAsignaciones } from '@/components/tramite-asignaciones'
 import type { TramiteConDocumentos } from '@/lib/types/expediente-types'
 
 interface TramitesListProps {
@@ -21,6 +23,7 @@ interface TramitesListProps {
 }
 
 export function TramitesList({ tramites, compradorId }: TramitesListProps) {
+  const { user: currentUser } = useAuth()
   const [selectedTramite, setSelectedTramite] = useState<string | null>(null)
 
   const getEstadoBadge = (estado: string) => {
@@ -149,7 +152,7 @@ export function TramitesList({ tramites, compradorId }: TramitesListProps) {
 
                   {/* Detalles expandidos */}
                   {isExpanded && (
-                    <div className="mt-4 pt-4 border-t space-y-2">
+                    <div className="mt-4 pt-4 border-t space-y-4">
                       <div>
                         <h4 className="text-sm font-semibold text-gray-700 mb-2">Documentos asociados:</h4>
                         {tramite.documentos.length > 0 ? (
@@ -186,6 +189,16 @@ export function TramitesList({ tramites, compradorId }: TramitesListProps) {
                           <p className="text-sm text-gray-500">No hay documentos asociados</p>
                         )}
                       </div>
+                      {currentUser && (currentUser.role === 'abogado' || currentUser.role === 'notario') && (
+                        <div className="pt-2 border-t">
+                          <TramiteAsignaciones
+                            tramiteId={tramite.id}
+                            ownerId={tramite.user_id ?? null}
+                            currentUserId={currentUser.id}
+                            canEdit={currentUser.id === (tramite.user_id ?? '')}
+                          />
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

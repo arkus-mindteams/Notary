@@ -1242,7 +1242,7 @@ async function callOpenAIVision(prompt: string, images: File[]): Promise<any> {
           ],
         },
       ],
-      temperature: 0.1,
+      temperature: 1,
       response_format: { type: "json_object" },
       // GPT-5.1 and newer models require max_completion_tokens instead of max_tokens
       // We use max_completion_tokens for newer models (gpt-5.x, o1) and max_tokens for older ones

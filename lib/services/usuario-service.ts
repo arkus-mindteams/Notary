@@ -1,5 +1,5 @@
 import { createServerClient } from '@/lib/supabase'
-import type { Usuario, CreateUsuarioRequest, UpdateUsuarioRequest } from '@/lib/types/auth-types'
+import type { Usuario, UserRole, CreateUsuarioRequest, UpdateUsuarioRequest } from '@/lib/types/auth-types'
 
 export class UsuarioService {
   /**
@@ -8,12 +8,10 @@ export class UsuarioService {
   static async createUsuario(data: CreateUsuarioRequest): Promise<Usuario> {
     const supabase = createServerClient()
     
-    // Validar: abogados deben tener notaria_id
-    if (data.rol === 'abogado' && !data.notaria_id) {
-      throw new Error('Los abogados deben tener una notaría asignada')
+    const rolesConNotaria = ['notario', 'abogado', 'asistente']
+    if (rolesConNotaria.includes(data.rol) && !data.notaria_id) {
+      throw new Error('Notario, abogado y asistente deben tener una notaría asignada')
     }
-    
-    // Validar: superadmin no debe tener notaria_id
     if (data.rol === 'superadmin' && data.notaria_id) {
       throw new Error('El superadmin no debe tener notaría asignada (es global)')
     }
@@ -135,7 +133,7 @@ export class UsuarioService {
    */
   static async listUsuarios(options?: {
     notariaId?: string | null
-    rol?: 'superadmin' | 'abogado'
+    rol?: UserRole
     activos?: boolean
   }): Promise<Usuario[]> {
     const supabase = createServerClient()
@@ -189,11 +187,10 @@ export class UsuarioService {
       
       const nuevoRol = updates.rol || usuario.rol
       const nuevaNotariaId = updates.notaria_id !== undefined ? updates.notaria_id : usuario.notaria_id
-      
-      if (nuevoRol === 'abogado' && !nuevaNotariaId) {
-        throw new Error('Los abogados deben tener una notaría asignada')
+      const rolesConNotaria = ['notario', 'abogado', 'asistente']
+      if (rolesConNotaria.includes(nuevoRol) && !nuevaNotariaId) {
+        throw new Error('Notario, abogado y asistente deben tener una notaría asignada')
       }
-      
       if (nuevoRol === 'superadmin' && nuevaNotariaId) {
         throw new Error('El superadmin no debe tener notaría asignada')
       }

@@ -31,10 +31,21 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { toast } from 'sonner'
-import { Plus, Edit, Trash2, X, Loader2, RefreshCw } from 'lucide-react'
+import { Plus, Edit, Trash2, X, Loader2, RefreshCw, UserCheck, Users } from 'lucide-react'
 import { createBrowserClient } from '@/lib/supabase'
 import type { Usuario, Notaria, CreateUsuarioRequest, UpdateUsuarioRequest } from '@/lib/types/auth-types'
 import { useMemo } from 'react'
+import { AsistentesModal } from '@/components/asistentes-modal'
+import { toastApiError } from '@/lib/api-error-toast'
+
+interface PendingInvitation {
+  id: string
+  email: string
+  role: string
+  status: string
+  created_at: string
+  expires_at: string | null
+}
 
 export default function AdminUsuariosPage() {
   const { user: currentUser, session } = useAuth()
@@ -48,6 +59,12 @@ export default function AdminUsuariosPage() {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [usuarioToDelete, setUsuarioToDelete] = useState<Usuario | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [activatingUserId, setActivatingUserId] = useState<string | null>(null)
+  const [invitations, setInvitations] = useState<PendingInvitation[]>([])
+  const [resendingId, setResendingId] = useState<string | null>(null)
+  const [revokingId, setRevokingId] = useState<string | null>(null)
+  const [asistentesModalLawyerId, setAsistentesModalLawyerId] = useState<string | null>(null)
+  const [asistentesModalNotariaId, setAsistentesModalNotariaId] = useState<string | null>(null)
   const [formData, setFormData] = useState<Partial<CreateUsuarioRequest>>({
     nombre: '',
     apellido_paterno: '',
@@ -61,9 +78,11 @@ export default function AdminUsuariosPage() {
   const lastUserIdRef = useRef<string | undefined>(undefined)
   const isLoadingRef = useRef(false)
 
-  // Verificar que sea superadmin
+  // Bloquear render si no tiene capability ADMIN_USERS_VIEW (o rol equivalente: superadmin/notario)
   useEffect(() => {
-    if (currentUser && currentUser.role !== 'superadmin') {
+    if (!currentUser) return
+    const hasAccess = currentUser.capabilities?.includes('ADMIN_USERS_VIEW') ?? (currentUser.role === 'superadmin' || currentUser.role === 'notario')
+    if (!hasAccess) {
       window.location.href = '/dashboard'
     }
   }, [currentUser])
@@ -89,26 +108,45 @@ export default function AdminUsuariosPage() {
           'Authorization': `Bearer ${currentSession.access_token}`,
         },
       })
-      if (!usuariosRes.ok) throw new Error('Error cargando usuarios')
+      if (!usuariosRes.ok) {
+        await toastApiError(usuariosRes, 'Error cargando datos')
+        throw new Error('Error cargando usuarios')
+      }
       const usuariosData = await usuariosRes.json()
       setUsuarios(usuariosData)
 
-      // Cargar notarías
-      const notariasRes = await fetch('/api/admin/notarias', {
-        headers: {
-          'Authorization': `Bearer ${currentSession.access_token}`,
-        },
-      })
-      if (!notariasRes.ok) throw new Error('Error cargando notarías')
-      const notariasData = await notariasRes.json()
-      setNotarias(notariasData)
+      // Cargar notarías solo para superadmin (notario no tiene capability ADMIN_NOTARIAS y no muestra el selector)
+      if (currentUser?.role === 'superadmin') {
+        const notariasRes = await fetch('/api/admin/notarias', {
+          headers: {
+            'Authorization': `Bearer ${currentSession.access_token}`,
+          },
+        })
+        if (!notariasRes.ok) throw new Error('Error cargando notarías')
+        const notariasData = await notariasRes.json()
+        setNotarias(notariasData)
+      } else {
+        setNotarias([])
+      }
+
+      if (currentUser?.role === 'superadmin' || currentUser?.role === 'notario') {
+        const invRes = await fetch('/api/admin/usuarios/invitations', {
+          headers: { 'Authorization': `Bearer ${currentSession.access_token}` },
+        })
+        if (invRes.ok) {
+          const invData = await invRes.json()
+          setInvitations(Array.isArray(invData?.data) ? invData.data : invData || [])
+        } else {
+          setInvitations([])
+        }
+      }
     } catch (error: any) {
       toast.error('Error cargando datos', { description: error.message })
     } finally {
       isLoadingRef.current = false
       setIsLoading(false)
     }
-  }, [supabase])
+  }, [supabase, currentUser?.role, currentUser?.id])
 
   // Detectar cuando la página vuelve a estar visible y resetear isLoading si está atascado
   useEffect(() => {
@@ -144,7 +182,7 @@ export default function AdminUsuariosPage() {
 
   // Cargar datos solo cuando es necesario (montaje inicial, remount, o cambio de usuario/sesión)
   useEffect(() => {
-    if (currentUser?.role === 'superadmin' && session) {
+    if ((currentUser?.role === 'superadmin' || currentUser?.role === 'notario') && session) {
       // Si cambió el usuario, recargar datos
       const userChanged = currentUser.id !== lastUserIdRef.current
       
@@ -158,7 +196,7 @@ export default function AdminUsuariosPage() {
         lastUserIdRef.current = currentUser.id
       }
     } else {
-      // Si no hay sesión o no es superadmin, resetear el ref
+      // Si no hay sesión o no es admin (superadmin/notario), resetear el ref
       hasLoadedDataRef.current = false
       lastUserIdRef.current = undefined
     }
@@ -171,7 +209,7 @@ export default function AdminUsuariosPage() {
       apellido_paterno: '',
       telefono: '',
       rol: 'abogado',
-      notaria_id: null,
+      notaria_id: currentUser?.role === 'notario' ? (currentUser.notariaId ?? null) : null,
       email: '',
       password: '',
     })
@@ -238,8 +276,10 @@ export default function AdminUsuariosPage() {
         return
       }
 
-      if (formData.rol === 'abogado' && !formData.notaria_id) {
-        toast.error('Los abogados deben tener una notaría asignada')
+      const effectiveNotariaId = formData.notaria_id || (currentUser?.role === 'notario' ? currentUser.notariaId ?? null : null)
+      const rolesConNotaria = ['notario', 'abogado', 'asistente']
+      if (rolesConNotaria.includes(formData.rol!) && !effectiveNotariaId) {
+        toast.error('Notario, abogado y asistente deben tener una notaría asignada')
         setIsSubmitting(false)
         return
       }
@@ -269,14 +309,14 @@ export default function AdminUsuariosPage() {
           return
         }
 
-        // Actualizar
+        // Actualizar (notario: notaría fija)
         const updateData: UpdateUsuarioRequest = {
           nombre: formData.nombre,
           apellido_paterno: formData.apellido_paterno,
           apellido_materno: undefined, // Solo usamos un apellido
           telefono: formData.telefono,
           rol: formData.rol,
-          notaria_id: formData.notaria_id || null,
+          notaria_id: formData.notaria_id || (currentUser?.role === 'notario' ? currentUser.notariaId ?? null : null),
         }
 
         const res = await fetch(`/api/admin/usuarios/${usuarioId}`, {
@@ -288,23 +328,15 @@ export default function AdminUsuariosPage() {
           body: JSON.stringify(updateData),
         })
 
-        if (!res.ok) {
-          let errorMessage = 'Error actualizando usuario'
-          try {
-            const error = await res.json()
-            errorMessage = error.message || errorMessage
-          } catch {
-            // Si no se puede parsear el JSON, usar el mensaje por defecto
-            errorMessage = `Error al actualizar usuario: ${res.status} ${res.statusText}`
-          }
-          toast.error('Error al actualizar usuario', { description: errorMessage })
-          setIsSubmitting(false)
-          return
-        }
+      if (!res.ok) {
+        await toastApiError(res, 'Error al actualizar usuario')
+        setIsSubmitting(false)
+        return
+      }
 
         toast.success('Usuario actualizado correctamente')
       } else {
-        // Crear
+        // Crear (notario: notaría fija)
         const createData: CreateUsuarioRequest = {
           email: formData.email!,
           password: formData.password!,
@@ -313,7 +345,7 @@ export default function AdminUsuariosPage() {
           apellido_materno: undefined, // Solo usamos un apellido
           telefono: formData.telefono,
           rol: formData.rol!,
-          notaria_id: formData.notaria_id || null,
+          notaria_id: formData.notaria_id || (currentUser?.role === 'notario' ? currentUser.notariaId ?? null : null),
         }
 
         const res = await fetch('/api/admin/usuarios', {
@@ -326,15 +358,7 @@ export default function AdminUsuariosPage() {
         })
 
         if (!res.ok) {
-          let errorMessage = 'Error creando usuario'
-          try {
-            const error = await res.json()
-            errorMessage = error.message || errorMessage
-          } catch {
-            // Si no se puede parsear el JSON, usar el mensaje por defecto
-            errorMessage = `Error al crear usuario: ${res.status} ${res.statusText}`
-          }
-          toast.error('Error al crear usuario', { description: errorMessage })
+          await toastApiError(res, 'Error al crear usuario')
           setIsSubmitting(false)
           return
         }
@@ -388,10 +412,9 @@ export default function AdminUsuariosPage() {
       })
 
       if (!res.ok) {
-        const error = await res.json()
-        throw new Error(error.message || 'Error desactivando usuario')
+        await toastApiError(res, 'Error desactivando usuario')
+        return
       }
-
       toast.success('Usuario desactivado correctamente')
       setIsDeleteDialogOpen(false)
       setUsuarioToDelete(null)
@@ -403,13 +426,46 @@ export default function AdminUsuariosPage() {
     }
   }
 
+  const handleActivate = async (usuario: Usuario) => {
+    if (!session) {
+      toast.error('No hay sesión activa')
+      return
+    }
+    try {
+      setActivatingUserId(usuario.id)
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      if (!currentSession) {
+        toast.error('No hay sesión activa')
+        return
+      }
+      const res = await fetch(`/api/admin/usuarios/${usuario.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentSession.access_token}`,
+        },
+        body: JSON.stringify({ activo: true }),
+      })
+      if (!res.ok) {
+        await toastApiError(res, 'Error al activar usuario')
+        return
+      }
+      toast.success('Usuario activado correctamente')
+      await loadData()
+    } catch (error: any) {
+      toast.error('Error', { description: error.message })
+    } finally {
+      setActivatingUserId(null)
+    }
+  }
+
   const getNotariaNombre = (notariaId: string | null) => {
     if (!notariaId) return 'N/A'
     const notaria = notarias.find(n => n.id === notariaId)
     return notaria?.nombre || 'N/A'
   }
 
-  if (currentUser?.role !== 'superadmin') {
+  if (currentUser?.role !== 'superadmin' && currentUser?.role !== 'notario') {
     return null
   }
 
@@ -452,6 +508,81 @@ export default function AdminUsuariosPage() {
           </div>
         </div>
 
+        {invitations.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Invitaciones pendientes</CardTitle>
+              <CardDescription>Enlaces de activación enviados. Reenviar o revocar.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Correo</TableHead>
+                    <TableHead>Rol</TableHead>
+                    <TableHead>Envío</TableHead>
+                    <TableHead className="text-right">Acciones</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {invitations.map((inv) => (
+                    <TableRow key={inv.id}>
+                      <TableCell>{inv.email}</TableCell>
+                      <TableCell className="capitalize">{inv.role}</TableCell>
+                      <TableCell className="text-sm text-gray-600">
+                        {new Date(inv.created_at).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={resendingId === inv.id}
+                          onClick={async () => {
+                            setResendingId(inv.id)
+                            try {
+                              const { data: { session: s } } = await supabase.auth.getSession()
+                              if (!s) { toast.error('Sin sesión'); return }
+                              const res = await fetch('/api/admin/usuarios/invite/resend', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${s.access_token}` },
+                                body: JSON.stringify({ invitation_id: inv.id }),
+                              })
+                              if (!res.ok) await toastApiError(res, 'Error al reenviar'); else { toast.success('Invitación reenviada'); await loadData() }
+                            } finally { setResendingId(null) }
+                          }}
+                        >
+                          {resendingId === inv.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Reenviar'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-600"
+                          disabled={revokingId === inv.id}
+                          onClick={async () => {
+                            setRevokingId(inv.id)
+                            try {
+                              const { data: { session: s } } = await supabase.auth.getSession()
+                              if (!s) { toast.error('Sin sesión'); return }
+                              const res = await fetch('/api/admin/usuarios/invite/revoke', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${s.access_token}` },
+                                body: JSON.stringify({ invitation_id: inv.id }),
+                              })
+                              if (!res.ok) await toastApiError(res, 'Error al revocar'); else { toast.success('Invitación revocada'); await loadData() }
+                            } finally { setRevokingId(null) }
+                          }}
+                        >
+                          {revokingId === inv.id ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Revocar'}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        )}
+
         <Card>
           <CardHeader>
             <CardTitle>Listado de Usuarios</CardTitle>
@@ -471,7 +602,7 @@ export default function AdminUsuariosPage() {
                     <TableHead>Correo electronico</TableHead>
                     <TableHead>Teléfono</TableHead>
                     <TableHead>Rol</TableHead>
-                    <TableHead>Notaría</TableHead>
+                    {currentUser?.role !== 'notario' && <TableHead>Notaría</TableHead>}
                     <TableHead>Estado</TableHead>
                     <TableHead className="text-right">Acciones</TableHead>
                   </TableRow>
@@ -479,7 +610,7 @@ export default function AdminUsuariosPage() {
                 <TableBody>
                   {usuarios.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center py-8 text-gray-500">
+                      <TableCell colSpan={currentUser?.role === 'notario' ? 6 : 7} className="text-center py-8 text-gray-500">
                         No hay usuarios registrados
                       </TableCell>
                     </TableRow>
@@ -495,12 +626,16 @@ export default function AdminUsuariosPage() {
                           <span className={`px-2 py-1 rounded text-xs font-medium uppercase ${
                             usuario.rol === 'superadmin'
                               ? 'bg-indigo-100 text-sky-700 border border-sky-200'
+                              : usuario.rol === 'notario'
+                              ? 'bg-violet-100 text-violet-700 border border-violet-200'
                               : 'bg-slate-100 text-slate-700 border border-slate-200'
                           }`}>
-                            {usuario.rol === 'superadmin' ? 'Administrador' : usuario.rol}
+                            {usuario.rol === 'superadmin' ? 'Administrador' : usuario.rol === 'notario' ? 'Notario' : usuario.rol === 'abogado' ? 'Abogado' : usuario.rol === 'asistente' ? 'Asistente' : usuario.rol}
                           </span>
                         </TableCell>
-                        <TableCell>{getNotariaNombre(usuario.notaria_id)}</TableCell>
+                        {currentUser?.role !== 'notario' && (
+                          <TableCell>{getNotariaNombre(usuario.notaria_id)}</TableCell>
+                        )}
                         <TableCell>
                           <span className={`px-2 py-1 rounded text-xs font-medium uppercase${
                             usuario.activo
@@ -512,6 +647,36 @@ export default function AdminUsuariosPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-2">
+                            {!usuario.activo && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleActivate(usuario)}
+                                disabled={activatingUserId === usuario.id}
+                                className="text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
+                                title="Activar usuario"
+                              >
+                                {activatingUserId === usuario.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <UserCheck className="h-4 w-4" />
+                                )}
+                              </Button>
+                            )}
+                            {currentUser?.capabilities?.includes('LAWYER_SUPPORTS_EDIT') && currentUser?.role !== 'superadmin' && usuario.rol === 'abogado' && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  setAsistentesModalLawyerId(usuario.id)
+                                  setAsistentesModalNotariaId(usuario.notaria_id)
+                                }}
+                                className="hover:bg-gray-200"
+                                title="Gestionar asistentes"
+                              >
+                                <Users className="h-4 w-4" />
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
                               size="sm"
@@ -625,11 +790,11 @@ export default function AdminUsuariosPage() {
                 <Select
                   value={formData.rol}
                   required
-                  onValueChange={(value: 'superadmin' | 'abogado') => {
+                  onValueChange={(value: 'superadmin' | 'notario' | 'abogado' | 'asistente') => {
                     setFormData({
                       ...formData,
                       rol: value,
-                      notaria_id: value === 'superadmin' ? null : formData.notaria_id,
+                      notaria_id: value === 'superadmin' ? null : (currentUser?.role === 'notario' ? (currentUser.notariaId ?? formData.notaria_id) : formData.notaria_id),
                     })
                   }}
                 >
@@ -637,21 +802,37 @@ export default function AdminUsuariosPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="superadmin">Administrador</SelectItem>
+                    {currentUser?.role === 'superadmin' && (
+                      <SelectItem value="superadmin">Administrador</SelectItem>
+                    )}
+                    {(() => {
+                      const effectiveNotariaId = formData.notaria_id ?? (currentUser?.role === 'notario' ? (currentUser.notariaId ?? null) : null)
+                      const existingNotarioInNotaria = effectiveNotariaId ? usuarios.find((u) => u.rol === 'notario' && u.notaria_id === effectiveNotariaId) : null
+                      const canSelectNotario = !effectiveNotariaId || !existingNotarioInNotaria || (editingUsuario?.id === existingNotarioInNotaria?.id)
+                      return canSelectNotario ? <SelectItem value="notario">Notario</SelectItem> : null
+                    })()}
                     <SelectItem value="abogado">Abogado</SelectItem>
+                    <SelectItem value="asistente">Asistente</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              {formData.rol === 'abogado' && (
+              {(formData.rol === 'notario' || formData.rol === 'abogado' || formData.rol === 'asistente') && currentUser?.role !== 'notario' && (
                 <div className="flex flex-col gap-2 w-full">
                   <Label htmlFor="notaria_id">Notaría <span className="text-red-500">*</span></Label>
                   <Select
                     required
                     value={formData.notaria_id || ''}
-                    onValueChange={(value) =>
-                      setFormData({ ...formData, notaria_id: value })
-                    }
+                    onValueChange={(value) => {
+                      const newNotariaId = value || null
+                      const alreadyHasNotario = newNotariaId ? usuarios.some((u) => u.rol === 'notario' && u.notaria_id === newNotariaId && u.id !== editingUsuario?.id) : false
+                      const mustClearNotario = formData.rol === 'notario' && alreadyHasNotario
+                      setFormData({
+                        ...formData,
+                        notaria_id: newNotariaId,
+                        ...(mustClearNotario ? { rol: 'abogado' as const } : {}),
+                      })
+                    }}
                   >
                     <SelectTrigger className="w-full">
                       <SelectValue placeholder="Selecciona una notaría" />
@@ -778,6 +959,24 @@ export default function AdminUsuariosPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {asistentesModalLawyerId && (
+          <AsistentesModal
+            open={!!asistentesModalLawyerId}
+            onOpenChange={(open) => !open && setAsistentesModalLawyerId(null)}
+            lawyerId={asistentesModalLawyerId}
+            lawyerNotariaId={asistentesModalNotariaId}
+            asistentesOfNotaria={usuarios
+              .filter((u) => u.rol === 'asistente' && u.notaria_id === asistentesModalNotariaId)
+              .map((u) => ({
+                id: u.id,
+                email: u.email,
+                nombre: `${u.nombre} ${u.apellido_paterno || ''}`.trim(),
+              }))}
+            accessToken={session?.access_token ?? ''}
+            onSuccess={loadData}
+          />
+        )}
       </div>
     </DashboardLayout>
   )
