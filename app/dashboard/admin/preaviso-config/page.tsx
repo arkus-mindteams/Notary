@@ -34,16 +34,16 @@ export default function AdminPreavisoConfigPage() {
   const [jsonSchema, setJsonSchema] = useState('')
   const hasLoadedDataRef = useRef(false)
 
-  // Verificar que sea superadmin (solo después de que el usuario esté cargado)
+  // Verificar que sea superadmin o notario (solo después de que el usuario esté cargado)
   useEffect(() => {
-    if (!authLoading && currentUser && currentUser.role !== 'superadmin') {
+    if (!authLoading && currentUser && currentUser.role !== 'superadmin' && currentUser.role !== 'notario') {
       router.push('/dashboard')
     }
   }, [currentUser, authLoading, router])
 
   // Cargar datos (montaje inicial, remount, o cambio de usuario/sesión)
   useEffect(() => {
-    if (!authLoading && currentUser?.role === 'superadmin' && session) {
+    if (!authLoading && (currentUser?.role === 'superadmin' || currentUser?.role === 'notario') && session) {
       // Si el config está vacío (remount), necesitamos cargar
       const configEmpty = !config
       
@@ -53,7 +53,7 @@ export default function AdminPreavisoConfigPage() {
         hasLoadedDataRef.current = true
       }
     } else {
-      // Resetear el ref si no hay sesión o no es superadmin
+      // Resetear el ref si no hay sesión o no es admin (superadmin/notario)
       hasLoadedDataRef.current = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -156,7 +156,7 @@ export default function AdminPreavisoConfigPage() {
   }
 
   // Verificar rol después de que el usuario esté cargado
-  if (currentUser.role !== 'superadmin') {
+  if (currentUser.role !== 'superadmin' && currentUser.role !== 'notario') {
     return (
       <ProtectedRoute>
         <DashboardLayout>

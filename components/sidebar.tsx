@@ -161,7 +161,7 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
                     {user.name}
                   </p>
                   <p className="text-xs text-gray-400 capitalize">
-                    {user.role === 'superadmin' ? 'Administrador' : user.role}
+                    {user.role === 'superadmin' ? 'Administrador' : user.role === 'notario' ? 'Notario' : user.role === 'abogado' ? 'Abogado' : user.role === 'asistente' ? 'Asistente' : user.role}
                   </p>
                 </div>
               )}
@@ -172,48 +172,52 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
 
       {/* Navegación */}
       <div className={`${isMobile ? '' : 'flex-1'} ${isMobile && isCollapsed ? 'hidden' : 'p-4 space-y-2'}`}>
-        <Button
-          variant="ghost"
-          className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
-            } ${pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde'
-              ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-            }`}
-          onClick={() => handleNavigation('/dashboard/deslinde?reset=1')}
-        >
-          <FileText className="h-4 w-4 flex-shrink-0" />
-          {!isCollapsed && <span className="ml-3 truncate text-sm">Lectura de Plantas Arquitectónicas</span>}
-        </Button>
+        {/* Deslinde, Pre-Aviso, Expedientes: solo para notario, abogado, asistente (no superadmin) */}
+        {user?.role !== 'superadmin' && (
+          <>
+            <Button
+              variant="ghost"
+              className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
+                } ${pathname === '/dashboard/deslinde?reset=1' || pathname === '/dashboard/deslinde'
+                  ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                }`}
+              onClick={() => handleNavigation('/dashboard/deslinde?reset=1')}
+            >
+              <FileText className="h-4 w-4 flex-shrink-0" />
+              {!isCollapsed && <span className="ml-3 truncate text-sm">Lectura de Plantas Arquitectónicas</span>}
+            </Button>
 
-        <Button
-          variant="ghost"
-          className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
-            } ${pathname === '/dashboard/preaviso'
-              ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-            }`}
-          onClick={() => handleNavigation('/dashboard/preaviso')}
-        >
-          <MessageSquare className="h-4 w-4 flex-shrink-0" />
-          {!isCollapsed && <span className="ml-3 truncate text-sm">Pre-Aviso</span>}
-        </Button>
+            <Button
+              variant="ghost"
+              className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
+                } ${pathname === '/dashboard/preaviso'
+                  ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                }`}
+              onClick={() => handleNavigation('/dashboard/preaviso')}
+            >
+              <MessageSquare className="h-4 w-4 flex-shrink-0" />
+              {!isCollapsed && <span className="ml-3 truncate text-sm">Pre-Aviso</span>}
+            </Button>
 
-        <Button
-          variant="ghost"
-          className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
-            } ${pathname === '/dashboard/expedientes'
-              ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-            }`}
-          onClick={() => handleNavigation('/dashboard/expedientes')}
-        >
-          <FolderOpen className="h-4 w-4 flex-shrink-0" />
-          {!isCollapsed && <span className="ml-3 truncate text-sm">Expedientes</span>}
-        </Button>
+            <Button
+              variant="ghost"
+              className={`w-full justify-start overflow-hidden ${isCollapsed ? 'px-2' : 'px-3'
+                } ${pathname === '/dashboard/expedientes'
+                  ? 'bg-gray-600 text-gray-200 hover:bg-gray-700'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                }`}
+              onClick={() => handleNavigation('/dashboard/expedientes')}
+            >
+              <FolderOpen className="h-4 w-4 flex-shrink-0" />
+              {!isCollapsed && <span className="ml-3 truncate text-sm">Expedientes</span>}
+            </Button>
+          </>
+        )}
 
-
-        {/* Separator and Configuración (expandible inline) - Superadmin Only */}
-        {user?.role === 'superadmin' && (
+        {/* Configuración: superadmin (solo esto) y notario (además de lo anterior) */}
+        {(user?.role === 'superadmin' || user?.role === 'notario') && (
           <>
             <div className="my-2 border-t border-gray-700 mx-4" />
             <div className="space-y-0.5">
@@ -248,59 +252,77 @@ export function Sidebar({ isCollapsed, onToggle, onNavigate, isMobile = false }:
               {/* Submenú inline cuando está expandido y el sidebar no está colapsado */}
               {!isCollapsed && configMenuExpanded && (
                 <div className="ml-1 pl-2 space-y-1 py-1">
-                  <div className="px-2 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    Opciones
-                  </div>
-                  <Button
-                    variant="ghost"
-                    className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/settings'
-                      ? 'bg-gray-700 text-gray-200'
-                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                    }`}
-                    onClick={() => handleNavigation('/dashboard/settings')}
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2 flex-shrink-0 inline-block" />
-                    <span className="truncate">Reglas de Texto Notarial</span>
-                  </Button>
-
-                  <div className="my-1 border-t border-gray-700" />
-
-                  <div className="px-2 py-1 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    Administración
-                  </div>
-                  <Button
-                    variant="ghost"
-                    className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/usuarios'
-                      ? 'bg-gray-700 text-gray-200'
-                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                    }`}
-                    onClick={() => handleNavigation('/dashboard/admin/usuarios')}
-                  >
-                    <Users className="h-4 w-4 mr-2 flex-shrink-0" />
-                    <span className="truncate">Usuarios</span>
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/preaviso-config'
-                      ? 'bg-gray-700 text-gray-200'
-                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                    }`}
-                    onClick={() => handleNavigation('/dashboard/admin/preaviso-config')}
-                  >
-                    <FileCode className="h-4 w-4 mr-2 flex-shrink-0" />
-                    <span className="truncate">Config. Preaviso</span>
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/usage'
-                      ? 'bg-gray-700 text-gray-200'
-                      : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-                    }`}
-                    onClick={() => handleNavigation('/dashboard/admin/usage')}
-                  >
-                    <Activity className="h-4 w-4 mr-2 flex-shrink-0" />
-                    <span className="truncate">Consumo AI</span>
-                  </Button>
+                  {/* Reglas de Texto Notarial, Config. Preaviso, Consumo AI: solo superadmin */}
+                  {user?.role === 'superadmin' && (
+                    <>
+                      <div className="px-2 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                        Opciones
+                      </div>
+                      <Button
+                        variant="ghost"
+                        className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/settings'
+                          ? 'bg-gray-700 text-gray-200'
+                          : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                        }`}
+                        onClick={() => handleNavigation('/dashboard/settings')}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mr-2 flex-shrink-0 inline-block" />
+                        <span className="truncate">Reglas de Texto Notarial</span>
+                      </Button>
+                      <div className="my-1 border-t border-gray-700" />
+                      <div className="px-2 py-1 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                        Administración
+                      </div>
+                    </>
+                  )}
+                  {/* Usuarios: superadmin y notario */}
+                  {(user?.role === 'superadmin' || user?.role === 'notario') && (
+                    <>
+                      {user?.role === 'notario' && (
+                        <div className="px-2 py-1 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          Administración
+                        </div>
+                      )}
+                      <Button
+                        variant="ghost"
+                        className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/usuarios'
+                          ? 'bg-gray-700 text-gray-200'
+                          : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                        }`}
+                        onClick={() => handleNavigation('/dashboard/admin/usuarios')}
+                      >
+                        <Users className="h-4 w-4 mr-2 flex-shrink-0" />
+                        <span className="truncate">Usuarios</span>
+                      </Button>
+                    </>
+                  )}
+                  {/* Config. Preaviso y Consumo AI: solo superadmin */}
+                  {user?.role === 'superadmin' && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/preaviso-config'
+                          ? 'bg-gray-700 text-gray-200'
+                          : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                        }`}
+                        onClick={() => handleNavigation('/dashboard/admin/preaviso-config')}
+                      >
+                        <FileCode className="h-4 w-4 mr-2 flex-shrink-0" />
+                        <span className="truncate">Config. Preaviso</span>
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        className={`w-full justify-start h-8 px-2 text-sm ${pathname === '/dashboard/admin/usage'
+                          ? 'bg-gray-700 text-gray-200'
+                          : 'text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                        }`}
+                        onClick={() => handleNavigation('/dashboard/admin/usage')}
+                      >
+                        <Activity className="h-4 w-4 mr-2 flex-shrink-0" />
+                        <span className="truncate">Consumo AI</span>
+                      </Button>
+                    </>
+                  )}
                 </div>
               )}
             </div>

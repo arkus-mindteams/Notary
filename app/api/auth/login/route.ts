@@ -4,6 +4,12 @@ import { UsuarioService } from '@/lib/services/usuario-service'
 import { AuthService } from '@/lib/services/auth-service'
 import type { LoginRequest, AuthUser } from '@/lib/types/auth-types'
 
+const ROLE_COOKIE_NAME = 'sb-user-role'
+function roleCookie(role: string) {
+  const isProd = process.env.NODE_ENV === 'production'
+  return `${ROLE_COOKIE_NAME}=${encodeURIComponent(role)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${isProd ? '; Secure' : ''}`
+}
+
 export async function POST(req: Request) {
   try {
     const body: LoginRequest = await req.json()
@@ -42,7 +48,8 @@ export async function POST(req: Request) {
       )
     }
 
-    if (!usuario.activo) {
+    const activo = usuario.status != null ? usuario.status === 'ACTIVE' : usuario.activo
+    if (!activo) {
       await supabase.auth.signOut()
       return NextResponse.json(
         { error: 'forbidden', message: 'Usuario desactivado' },
@@ -53,17 +60,18 @@ export async function POST(req: Request) {
     // 3. Actualizar último login
     await AuthService.updateLastLogin(authData.user.id)
 
-    // 4. Construir respuesta con usuario simplificado
     const nombreCompleto = `${usuario.nombre} ${usuario.apellido_paterno || ''} ${usuario.apellido_materno || ''}`.trim()
     const authUser: AuthUser = {
       id: usuario.id,
+      authUserId: usuario.auth_user_id || '',
       email: usuario.email,
       name: nombreCompleto,
       role: usuario.rol,
       notariaId: usuario.notaria_id,
+      ...(usuario.status != null && { status: usuario.status }),
     }
 
-    return NextResponse.json({
+    const res = NextResponse.json({
       user: authUser,
       session: {
         access_token: authData.session.access_token,
@@ -71,6 +79,8 @@ export async function POST(req: Request) {
         expires_at: authData.session.expires_at || 0,
       },
     })
+    res.headers.set('Set-Cookie', roleCookie(usuario.rol))
+    return res
   } catch (error: any) {
     console.error('[api/auth/login] Error:', error)
     return NextResponse.json(

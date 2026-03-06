@@ -1,6 +1,10 @@
 // Tipos para el sistema de autenticación
 
-export type UserRole = 'superadmin' | 'abogado'
+/** Rol en BD (una sola columna). superadmin = global; notario, abogado, asistente = por notaría. */
+export type UserRole = 'superadmin' | 'notario' | 'abogado' | 'asistente'
+
+/** Estado de cuenta (BD: usuarios.status). */
+export type UserStatus = 'ACTIVE' | 'SUSPENDED'
 
 export interface Notaria {
   id: string
@@ -24,6 +28,7 @@ export interface Usuario {
   created_at: string
   updated_at: string
   last_login_at?: string | null
+  status?: UserStatus | null
 }
 
 // Tipo para el usuario en el contexto de autenticación (simplificado)
@@ -34,6 +39,9 @@ export interface AuthUser {
   name: string
   role: UserRole
   notariaId: string | null // NULL para superadmin
+  status?: UserStatus | null
+  /** Capabilities del usuario (Paso 2 authz); usado por frontend/middleware para ocultar/bloquear UI. */
+  capabilities?: string[]
 }
 
 // Request para crear usuario
@@ -45,7 +53,7 @@ export interface CreateUsuarioRequest {
   apellido_materno?: string
   telefono?: string
   rol: UserRole
-  notaria_id?: string | null // NULL para superadmin, requerido para abogado
+  notaria_id?: string | null // NULL para superadmin; requerido para notario, abogado, asistente
 }
 
 // Request para actualizar usuario
